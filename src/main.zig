@@ -44,5 +44,6 @@ test {
     _ = @import("pipeline.zig");
     _ = @import("golden.zig");
     _ = @import("sort.zig");
+    _ = @import("why.zig");
     _ = disk;
 }

@@ -84,11 +84,46 @@ pub const Plan = struct {
     }
 };
 
-const Want = struct {
+/// a package the config asks for. `cause` is the key that implies it, or
+/// null for the `packages` list itself.
+pub const Want = struct {
     name: []const u8,
     cause: ?[]const u8,
     src: ?config.Src,
 };
+
+/// every package the config asks for, directly or through services,
+/// hardware, desktop, and boot choices, in that order.
+pub fn wants(a: Allocator, c: *const config.Config) ![]const Want {
+    var out: std.ArrayList(Want) = .empty;
+    for (c.packages.items.items) |it| try addWant(a, &out, it.name, null, it.src);
+    const kernel = if (c.boot.kernel) |k| k.v else catalog.default_kernel;
+    try addWant(a, &out, kernel, "boot.kernel", if (c.boot.kernel) |k| k.src else null);
+    if (c.hardware.cpu) |v| for (catalog.cpuPackages(v.v)) |n| try addWant(a, &out, n, "hardware.cpu", v.src);
+    if (c.hardware.gpu) |v| for (catalog.gpuPackages(v.v)) |n| try addWant(a, &out, n, "hardware.gpu", v.src);
+    if (c.desktop.session) |v| for (catalog.sessionPackages(v.v)) |n| try addWant(a, &out, n, "desktop.session", v.src);
+    if (c.desktop.audio) |v| for (catalog.audioPackages(v.v)) |n| try addWant(a, &out, n, "desktop.audio", v.src);
+    for (c.services.entries.items) |e| {
+        const enabled = if (e.value.enabled) |en| en.v else true;
+        if (!enabled) continue;
+        const pkg = if (e.value.package) |p| p.v else catalog.service(e.name).?.package;
+        try addWant(a, &out, pkg, try std.fmt.allocPrint(a, "services.{s}", .{e.name}), e.value.src);
+    }
+    return out.items;
+}
+
+/// the wanted packages plus everything they depend on in the lock. every
+/// wanted package must be in the lock.
+pub fn closure(a: Allocator, l: *const lock.Lock, ws: []const Want) !std.StringArrayHashMapUnmanaged(void) {
+    var needed: std.StringArrayHashMapUnmanaged(void) = .empty;
+    var queue: std.ArrayList([]const u8) = .empty;
+    for (ws) |w| try queue.append(a, w.name);
+    while (queue.pop()) |name| {
+        if ((try needed.getOrPut(a, name)).found_existing) continue;
+        for (l.package(name).?.depends) |d| try queue.append(a, d);
+    }
+    return needed;
+}
 
 /// builds the plan. returns null, with diagnostics, if the lock doesn't
 /// cover what the config asks for. everything is allocated in `a`, which
@@ -96,25 +131,11 @@ const Want = struct {
 pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *const facts.Facts, diags: *diag.List) !?Plan {
     var changes: std.ArrayList(Change) = .empty;
 
-    // what the config asks for, and why.
-    var wants: std.ArrayList(Want) = .empty;
-    for (c.packages.items.items) |it| try addWant(a, &wants, it.name, null, it.src);
-    const kernel = if (c.boot.kernel) |k| k.v else catalog.default_kernel;
-    try addWant(a, &wants, kernel, "boot.kernel", if (c.boot.kernel) |k| k.src else null);
-    if (c.hardware.cpu) |v| for (catalog.cpuPackages(v.v)) |n| try addWant(a, &wants, n, "hardware.cpu", v.src);
-    if (c.hardware.gpu) |v| for (catalog.gpuPackages(v.v)) |n| try addWant(a, &wants, n, "hardware.gpu", v.src);
-    if (c.desktop.session) |v| for (catalog.sessionPackages(v.v)) |n| try addWant(a, &wants, n, "desktop.session", v.src);
-    if (c.desktop.audio) |v| for (catalog.audioPackages(v.v)) |n| try addWant(a, &wants, n, "desktop.audio", v.src);
-    for (c.services.entries.items) |e| {
-        const enabled = if (e.value.enabled) |en| en.v else true;
-        if (!enabled) continue;
-        const pkg = if (e.value.package) |p| p.v else catalog.service(e.name).?.package;
-        try addWant(a, &wants, pkg, try std.fmt.allocPrint(a, "services.{s}", .{e.name}), e.value.src);
-    }
+    const ws = try wants(a, c);
 
     // every wanted package has to be in the lock.
     var stale = false;
-    for (wants.items) |w| {
+    for (ws) |w| {
         if (l.package(w.name) != null) continue;
         stale = true;
         const at: ?diag.Span = if (w.src) |s| s.span() else null;
@@ -123,20 +144,14 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
     if (stale) return null;
 
     // the lock's closure of the wanted packages is what should be installed.
-    var needed: std.StringArrayHashMapUnmanaged(void) = .empty;
-    var queue: std.ArrayList([]const u8) = .empty;
-    for (wants.items) |w| try queue.append(a, w.name);
-    while (queue.pop()) |name| {
-        if ((try needed.getOrPut(a, name)).found_existing) continue;
-        for (l.package(name).?.depends) |d| try queue.append(a, d);
-    }
+    const needed = try closure(a, l, ws);
 
     // packages: install, upgrade, or re-mark what's needed.
     const need_names = try a.dupe([]const u8, needed.keys());
     sort.strings(need_names);
     for (need_names) |name| {
         const lp = l.package(name).?;
-        const want = findWant(wants.items, name);
+        const want = findWant(ws, name);
         const kind: Kind = if (want != null) .package else .dependency;
         const cause = if (want) |w| w.cause else null;
         const reboot = catalog.rebootReason(name);
@@ -209,13 +224,13 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
     return .{ .changes = changes.items };
 }
 
-fn addWant(a: Allocator, wants: *std.ArrayList(Want), name: []const u8, cause: ?[]const u8, src: ?config.Src) !void {
-    if (findWant(wants.items, name) != null) return;
-    try wants.append(a, .{ .name = name, .cause = cause, .src = src });
+fn addWant(a: Allocator, list: *std.ArrayList(Want), name: []const u8, cause: ?[]const u8, src: ?config.Src) !void {
+    if (findWant(list.items, name) != null) return;
+    try list.append(a, .{ .name = name, .cause = cause, .src = src });
 }
 
-fn findWant(wants: []const Want, name: []const u8) ?*const Want {
-    for (wants) |*w| {
+pub fn findWant(list: []const Want, name: []const u8) ?*const Want {
+    for (list) |*w| {
         if (std.mem.eql(u8, w.name, name)) return w;
     }
     return null;

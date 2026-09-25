@@ -10,6 +10,7 @@ const show = @import("show.zig");
 const facts = @import("facts.zig");
 const planner = @import("planner.zig");
 const pipeline = @import("pipeline.zig");
+const why = @import("why.zig");
 
 pub const default_config = "/etc/yoq/machine.toml";
 
@@ -39,6 +40,7 @@ const commands = [_]Command{
     .{ .name = "help", .summary = "show this help", .handler = help },
     .{ .name = "version", .summary = "print the version", .handler = version },
     .{ .name = "plan", .summary = "show what apply would change (plan --facts <file>)", .handler = planCmd },
+    .{ .name = "why", .summary = "say which config line brings in a package", .handler = whyCmd },
     .{ .name = "config", .summary = "show the merged config (config show [--resolved])", .handler = configCmd },
     .{ .name = "facts", .summary = "show what os knows about this machine (facts --from <file>)", .handler = factsCmd },
     .{ .name = "explain", .summary = "explain an error code, like E0213", .handler = explain },
@@ -237,11 +239,23 @@ fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer result.deinit();
 
     if (ctx.json) {
-        try planner.writeJson(ctx.out, result.arena.allocator(), &result.plan);
+        try planner.writeJson(ctx.out, result.allocator(), &result.plan);
     } else {
-        try planner.writeText(ctx.out, result.arena.allocator(), &result.plan, .{ .verbose = verbose });
+        try planner.writeText(ctx.out, result.allocator(), &result.plan, .{ .verbose = verbose });
     }
     return 0;
+}
+
+fn whyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    if (args.len != 1 or args[0][0] == '-') return usageError(ctx, "os why <package>");
+    var diags: diag.List = .init(ctx.gpa);
+    defer diags.deinit();
+    var state = try pipeline.load(ctx.gpa, ctx.files, ctx.config_path, null, &diags) orelse return reportDiags(ctx, &diags);
+    defer state.deinit();
+
+    const ans = try why.explain(state.arena.allocator(), state.config(), &state.lock, args[0]);
+    if (ctx.json) try why.writeJson(ctx.out, &ans) else try why.writeText(ctx.out, &ans);
+    return if (ans.root == null) 1 else 0;
 }
 
 /// until the observer exists, facts have to come from a file.
@@ -515,5 +529,27 @@ test "plan from fixture files" {
     try t.exec(&.{"plan"});
     try std.testing.expectEqual(1, t.code);
     try t.exec(&.{ "plan", "--bogus" });
+    try std.testing.expectEqual(2, t.code);
+}
+
+test "why reads the config and lock" {
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
+    try t.fs.put("/etc/yoq/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n" ++
+        "[packages.git]\nversion = \"1\"\nrepo = \"extra\"\nsha256 = \"" ++ "a" ** 64 ++ "\"\ndepends = [\"zlib\"]\n" ++
+        "[packages.linux]\nversion = \"1\"\nrepo = \"core\"\nsha256 = \"" ++ "a" ** 64 ++ "\"\n" ++
+        "[packages.zlib]\nversion = \"1\"\nrepo = \"core\"\nsha256 = \"" ++ "a" ** 64 ++ "\"\n");
+    try t.exec(&.{ "why", "zlib" });
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expectEqualStrings("zlib: needed by git -> zlib\ngit: in packages  (/etc/yoq/machine.toml:1)\n", t.out.buffered());
+
+    try t.exec(&.{ "why", "nano", "--json" });
+    try std.testing.expectEqual(1, t.code);
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, t.out.buffered(), .{});
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.object.get("needed").?.bool);
+
+    try t.exec(&.{"why"});
     try std.testing.expectEqual(2, t.code);
 }
