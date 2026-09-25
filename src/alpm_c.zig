@@ -10,6 +10,7 @@ const Allocator = std.mem.Allocator;
 const c = @cImport(@cInclude("alpm.h"));
 const Error = api.Error;
 const ResolveInput = api.ResolveInput;
+const Resolved = api.Resolved;
 
 /// a libalpm handle on one root and database directory.
 const Handle = struct {
@@ -74,13 +75,8 @@ const Questions = struct {
     providers: []const lock.Provider,
     chosen: std.ArrayList(lock.Provider) = .empty,
     /// virtual packages with several providers and no choice in the config.
-    open: std.ArrayList(Open) = .empty,
+    open: std.ArrayList(api.Choice) = .empty,
     failed: bool = false,
-
-    const Open = struct {
-        name: []const u8,
-        options: []const []const u8,
-    };
 
     fn answer(ctx: ?*anyopaque, q_ptr: [*c]c.alpm_question_t) callconv(.c) void {
         const self: *Questions = @ptrCast(@alignCast(ctx));
@@ -105,16 +101,6 @@ const Questions = struct {
         return false;
     }
 
-    /// reports every provider question the config didn't answer. returns
-    /// true if there were any.
-    fn reportOpen(self: *const Questions, diags: *diag.List) !bool {
-        for (self.open.items) |o| {
-            const options = try std.mem.join(self.a, ", ", o.options);
-            try diags.addHint(.provider_choice, null, "{s} has more than one provider: {s}", .{ o.name, options }, "pick one in [providers], like {s} = \"{s}\"", .{ o.name, o.options[0] });
-        }
-        return self.open.items.len > 0;
-    }
-
     fn selectProvider(self: *Questions, sp: *c.alpm_question_select_provider_t, dep: []const u8) !void {
         var names: std.ArrayList([]const u8) = .empty;
         var it = listItems(c.alpm_pkg_t, sp.providers);
@@ -133,32 +119,32 @@ const Questions = struct {
     }
 };
 
-pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Error!?lock.Lock {
-    const scratch = try Scratch.make(a, io, in, diags) orelse return null;
-    const h = try Handle.open(a, scratch.root, scratch.dbpath, diags) orelse return null;
+pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Error!Resolved {
+    const scratch = try Scratch.make(a, io, in, diags) orelse return .failed;
+    const h = try Handle.open(a, scratch.root, scratch.dbpath, diags) orelse return .failed;
     defer h.close();
     var questions: Questions = .{ .a = a, .providers = in.providers };
     _ = c.alpm_option_set_questioncb(h.h, Questions.answer, &questions);
     for (in.dbs) |db| {
         if (c.alpm_register_syncdb(h.h, (try a.dupeZ(u8, db.name)).ptr, 0) == null) {
             try diags.add(.alpm_failed, null, "can't load the {s} database: {s}", .{ db.name, h.lastError() }, null);
-            return null;
+            return .failed;
         }
     }
 
     if (c.alpm_trans_init(h.h, 0) != 0) {
         try diags.add(.alpm_failed, null, "can't start resolving: {s}", .{h.lastError()}, null);
-        return null;
+        return .failed;
     }
     defer _ = c.alpm_trans_release(h.h);
-    if (!try addWants(a, h, in.wants, &questions, diags)) return null;
+    if (!try addWants(a, h, in.wants, &questions, diags)) return .failed;
 
     var data: ?*c.alpm_list_t = null;
     if (c.alpm_trans_prepare(h.h, &data) != 0) {
         try reportPrepare(h, data, diags);
-        return null;
+        return .failed;
     }
-    if (try questions.reportOpen(diags)) return null;
+    if (questions.open.items.len > 0) return .{ .choose = questions.open.items };
 
     var l: lock.Lock = .{
         .sync_date = in.sync_date,
@@ -167,7 +153,7 @@ pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Er
         .packages = try lockPackages(a, c.alpm_trans_get_add(h.h)),
     };
     try lock.normalize(a, &l);
-    return l;
+    return .{ .lock = l };
 }
 
 /// an empty root with an empty local database and copies of the sync ones,

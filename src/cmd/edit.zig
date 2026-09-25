@@ -50,7 +50,7 @@ fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
     const outcome = try change.plan(a, &loaded.config, top, text, op, names, &w.diags);
     if (w.failed()) return w.report();
     if (outcome.changed()) {
-        if (!try change.check(ctx.gpa, ctx.files, top, outcome.text, op, outcome.notes, &w.diags)) return w.report();
+        if (!try change.check(ctx.gpa, ctx.files, top, outcome.text, outcome.notes, &w.diags)) return w.report();
         ctx.files.write(top, outcome.text) catch {
             try ctx.err.print("os: can't write {s}\n", .{top});
             return 1;
@@ -67,6 +67,7 @@ fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
             .removed => try ctx.out.print("- packages \"{s}\"\n", .{n.name}),
             .excluded => try ctx.out.print("+ remove.packages \"{s}\"  (set in {s})\n", .{ n.name, n.detail.? }),
             .enabled, .disabled => try ctx.out.print("~ services.{s} = {}\n", .{ n.name, n.what == .enabled }),
+            .chosen => try ctx.out.print("+ providers.{s} = \"{s}\"\n", .{ n.name, n.detail.? }),
             .unchanged => try ctx.out.print("  {s} is already set that way  ({s})\n", .{ n.name, n.detail.? }),
         }
     }

@@ -10,11 +10,17 @@ pub fn main(init: std.process.Init) !void {
     const stdout = std.Io.File.stdout();
     var out = stdout.writer(init.io, &out_buf);
     var err = std.Io.File.stderr().writer(init.io, &err_buf);
+    var in_buf: [1024]u8 = undefined;
+    const stdin = std.Io.File.stdin();
+    var in = stdin.reader(init.io, &in_buf);
+    const tty = (stdout.isTty(init.io) catch false) and (stdin.isTty(init.io) catch false);
 
     var disk_files: disk.Files = .{ .io = init.io };
     var ctx: cli.Context = .{
         .io = init.io,
         .files = disk_files.files(),
+        .in = &in.interface,
+        .interactive = tty,
         .gpa = init.gpa,
         .out = &out.interface,
         .err = &err.interface,

@@ -43,12 +43,32 @@ pub fn localPackages(a: Allocator, root: []const u8, dbpath: []const u8, diags: 
     return if (comptime available) impl.localPackages(a, root, dbpath, diags) else error.AlpmUnavailable;
 }
 
+/// a virtual package with several providers and no choice in the config.
+pub const Choice = struct {
+    name: []const u8,
+    options: []const []const u8,
+};
+
+pub const Resolved = union(enum) {
+    lock: lock.Lock,
+    /// resolving needs these choices first. nothing went to `diags`.
+    choose: []const Choice,
+    /// the reasons are in `diags`.
+    failed,
+};
+
 /// resolves `in.wants` and everything they depend on against the sync
-/// databases, the way pacman would install them into an empty root. returns
-/// null, with the reasons in `diags`, if that can't be done without a
-/// choice or at all.
-pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Error!?lock.Lock {
+/// databases, the way pacman would install them into an empty root.
+pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Error!Resolved {
     return if (comptime available) impl.resolve(a, io, in, diags) else error.AlpmUnavailable;
+}
+
+/// reports choices nobody made, for when there's no one to ask.
+pub fn reportChoices(a: Allocator, choices: []const Choice, diags: *diag.List) !void {
+    for (choices) |ch| {
+        const options = try std.mem.join(a, ", ", ch.options);
+        try diags.addHint(.provider_choice, null, "{s} has more than one provider: {s}", .{ ch.name, options }, "pick one in [providers], like {s} = \"{s}\"", .{ ch.name, ch.options[0] });
+    }
 }
 
 // -- tests --
@@ -77,7 +97,7 @@ const Fixture = struct {
         t.arena.deinit();
     }
 
-    fn resolve(t: *Fixture, wants: []const []const u8, providers: []const lock.Provider) !?lock.Lock {
+    fn resolve(t: *Fixture, wants: []const []const u8, providers: []const lock.Provider) !Resolved {
         return alpm.resolve(t.arena.allocator(), testing.io, .{
             .dbs = &fixture_dbs,
             .wants = wants,
@@ -104,7 +124,7 @@ test "resolve pulls in the whole closure with resolved dependencies" {
     var t: Fixture = .{};
     defer t.deinit();
     try t.init();
-    const l = (try t.resolve(&.{ "git", "linux" }, &.{})).?;
+    const l = (try t.resolve(&.{ "git", "linux" }, &.{})).lock;
     const names = [_][]const u8{ "bash", "curl", "filesystem", "git", "glibc", "linux", "mkinitcpio", "openssl", "perl", "perl-error", "readline" };
     try testing.expectEqual(names.len, l.packages.len);
     for (names, l.packages) |n, p| try testing.expectEqualStrings(n, p.name);
@@ -134,13 +154,17 @@ test "a virtual package with several providers needs a choice" {
     var t: Fixture = .{};
     defer t.deinit();
     try t.init();
-    try testing.expectEqual(null, try t.resolve(&.{"jdk-tool"}, &.{}));
+    const choices = (try t.resolve(&.{"jdk-tool"}, &.{})).choose;
+    try testing.expectEqual(1, choices.len);
+    try testing.expectEqualStrings("java-runtime", choices[0].name);
+    try testing.expectEqualStrings("jre17-openjdk", choices[0].options[1]);
+    try reportChoices(t.arena.allocator(), choices, &t.diags);
     try t.expectDiag(.provider_choice, "java-runtime has more than one provider: jre-openjdk, jre17-openjdk");
 
     var t2: Fixture = .{};
     defer t2.deinit();
     try t2.init();
-    const l = (try t2.resolve(&.{"jdk-tool"}, &.{.{ .name = "java-runtime", .chosen = "jre17-openjdk" }})).?;
+    const l = (try t2.resolve(&.{"jdk-tool"}, &.{.{ .name = "java-runtime", .chosen = "jre17-openjdk" }})).lock;
     try testing.expect(l.package("jre17-openjdk") != null);
     try testing.expect(l.package("jre-openjdk") == null);
     try testing.expectEqualStrings("jre17-openjdk", l.package("jdk-tool").?.depends[0]);
@@ -152,19 +176,19 @@ test "missing packages, missing dependencies, and conflicts" {
     var t: Fixture = .{};
     defer t.deinit();
     try t.init();
-    try testing.expectEqual(null, try t.resolve(&.{ "git", "nope" }, &.{}));
+    try testing.expect(try t.resolve(&.{ "git", "nope" }, &.{}) == .failed);
     try t.expectDiag(.unresolvable, "no package called nope in the sync databases");
 
     var t2: Fixture = .{};
     defer t2.deinit();
     try t2.init();
-    try testing.expectEqual(null, try t2.resolve(&.{"broken"}, &.{}));
+    try testing.expect(try t2.resolve(&.{"broken"}, &.{}) == .failed);
     try t2.expectDiag(.unresolvable, "broken needs no-such-package, which no sync database provides");
 
     var t3: Fixture = .{};
     defer t3.deinit();
     try t3.init();
-    try testing.expectEqual(null, try t3.resolve(&.{ "vim", "neovim" }, &.{}));
+    try testing.expect(try t3.resolve(&.{ "vim", "neovim" }, &.{}) == .failed);
     try t3.expectDiag(.unresolvable, "vim and neovim conflict");
 }
 

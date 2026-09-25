@@ -6,6 +6,8 @@ const cli = @import("../cli.zig");
 const alpm = @import("../alpm.zig");
 const config = @import("../config.zig");
 const lock = @import("../lock.zig");
+const change = @import("../change.zig");
+const edit = @import("../edit.zig");
 const output = @import("../output.zig");
 const planner = @import("../planner.zig");
 const sort = @import("../sort.zig");
@@ -46,7 +48,23 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     in.dbs = dbs;
     in.sync_date = date orelse try today(ctx.io, a);
     in.scratch = scratch;
-    const l = try alpm.resolve(a, ctx.io, in, &w.diags) orelse return w.report();
+
+    // each round of choices can surface new ones, since a picked provider
+    // brings its own dependencies.
+    const l = while (true) {
+        const choices = switch (try alpm.resolve(a, ctx.io, in, &w.diags)) {
+            .lock => |l| break l,
+            .failed => return w.report(),
+            .choose => |choices| choices,
+        };
+        if (!ctx.interactive) {
+            try alpm.reportChoices(a, choices, &w.diags);
+            return w.report();
+        }
+        const picked = try askProviders(ctx, a, choices) orelse return 1;
+        if (!try saveProviders(ctx, &w, loaded.files.items[0], picked)) return w.report();
+        in.providers = try std.mem.concat(a, lock.Provider, &.{ in.providers, picked });
+    };
 
     var out: std.Io.Writer.Allocating = .init(a);
     try lock.write(&out.writer, &l);
@@ -61,6 +79,38 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.out.print("resolved {d} packages as of {s} into {s}.\n", .{ l.packages.len, l.sync_date, lock_path });
     }
     return 0;
+}
+
+fn askProviders(ctx: *Context, a: Allocator, choices: []const alpm.Choice) !?[]const lock.Provider {
+    const picked = try a.alloc(lock.Provider, choices.len);
+    for (choices, picked) |ch, *p| {
+        const q = try std.fmt.allocPrint(a, "{s} has more than one provider:", .{ch.name});
+        const i = try cli.choose(ctx, q, ch.options) orelse return null;
+        p.* = .{ .name = ch.name, .chosen = ch.options[i] };
+    }
+    return picked;
+}
+
+/// writes provider picks into `[providers]` of the top config file, so the
+/// question isn't asked again.
+fn saveProviders(ctx: *Context, w: *cli.Work, top: []const u8, picked: []const lock.Provider) !bool {
+    const a = w.allocator();
+    var text: []const u8 = ctx.files.read(a, top) catch {
+        try ctx.err.print("os: can't read {s}\n", .{top});
+        return false;
+    };
+    const notes = try a.alloc(change.Note, picked.len);
+    for (picked, notes) |p, *n| {
+        text = try edit.setProvider(a, text, p.name, p.chosen) orelse text;
+        n.* = .{ .name = p.name, .what = .chosen, .detail = p.chosen };
+    }
+    if (!try change.check(ctx.gpa, ctx.files, top, text, notes, &w.diags)) return false;
+    ctx.files.write(top, text) catch {
+        try ctx.err.print("os: can't write {s}\n", .{top});
+        return false;
+    };
+    for (picked) |p| try ctx.out.print("+ providers.{s} = \"{s}\"\n", .{ p.name, p.chosen });
+    return true;
 }
 
 /// what the config asks the resolver for: its wanted packages and provider
@@ -158,4 +208,35 @@ test "update resolves the fixture repos into a lock" {
     try t.exec(&.{ "plan", "--facts", "f.json" });
     try std.testing.expectEqual(0, t.code);
     try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "+ git 2.51.0-1") != null);
+}
+
+test "update asks for providers and saves the answer" {
+    if (!alpm.available) return error.SkipZigTest;
+    var t: TestRun = .{ .input = "x\n2\n" };
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"jdk-tool\"]\n");
+    try t.exec(&.{ "update", "--dbs", "tests/alpm/repos", "--date", "2026-09-25" });
+    try std.testing.expectEqualStrings("", t.err.buffered());
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expectEqualStrings(
+        \\java-runtime has more than one provider:
+        \\  1) jre-openjdk
+        \\  2) jre17-openjdk
+        \\pick one [1]: pick a number from 1 to 2.
+        \\pick one [1]: + providers.java-runtime = "jre17-openjdk"
+        \\resolved 8 packages as of 2026-09-25 into /etc/yoq/machine.lock.
+        \\
+    , t.out.buffered());
+    try std.testing.expectEqualStrings("packages = [\"jdk-tool\"]\n\n[providers]\njava-runtime = \"jre17-openjdk\"\n", t.fs.get("/etc/yoq/machine.toml").?);
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.jre17-openjdk]") != null);
+}
+
+test "update without a terminal says which choices to make" {
+    if (!alpm.available) return error.SkipZigTest;
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"jdk-tool\"]\n");
+    try t.exec(&.{ "update", "--dbs", "tests/alpm/repos" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0123]: java-runtime has more than one provider: jre-openjdk, jre17-openjdk"));
 }

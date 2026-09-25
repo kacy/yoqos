@@ -26,6 +26,10 @@ pub const Context = struct {
     /// set by `--config <path>`.
     config_path: []const u8 = default_config,
     files: compose.Files,
+    /// answers to questions. commands ask only when `interactive` is set:
+    /// stdin and stdout are terminals and --json is off.
+    in: ?*std.Io.Reader = null,
+    interactive: bool = false,
 };
 
 const Handler = *const fn (ctx: *Context, args: []const [:0]const u8) anyerror!u8;
@@ -79,6 +83,7 @@ pub fn run(ctx: *Context, raw: []const [:0]const u8) !u8 {
     };
     defer ctx.gpa.free(args);
 
+    if (ctx.json) ctx.interactive = false;
     if (args.len == 0) return help(ctx, args);
 
     const name = args[0];
@@ -203,6 +208,24 @@ pub const Work = struct {
     }
 };
 
+/// asks the user to pick one of `options` and returns its index. empty
+/// input picks the first. returns null at the end of input.
+pub fn choose(ctx: *Context, question: []const u8, options: []const []const u8) !?usize {
+    try ctx.out.print("{s}\n", .{question});
+    for (options, 1..) |o, i| try ctx.out.print("  {d}) {s}\n", .{ i, o });
+    while (true) {
+        try ctx.out.writeAll("pick one [1]: ");
+        try ctx.out.flush();
+        const read = ctx.in.?.takeDelimiter('\n') catch return null;
+        const line = read orelse return null;
+        const answer = std.mem.trim(u8, line, " \t\r");
+        if (answer.len == 0) return 0;
+        const n = std.fmt.parseInt(usize, answer, 10) catch 0;
+        if (n >= 1 and n <= options.len) return n - 1;
+        try ctx.out.print("pick a number from 1 to {d}.\n", .{options.len});
+    }
+}
+
 /// prints collected problems to stderr, or as a json document on stdout
 /// with --json. returns the exit code for a failed command.
 pub fn reportDiags(ctx: *Context, diags: *const diag.List) !u8 {
@@ -246,6 +269,9 @@ pub const TestRun = struct {
     err: std.Io.Writer = undefined,
     ctx: Context = undefined,
     fs: compose.MemFiles = .{},
+    /// typed answers to any questions, which makes the run interactive.
+    input: ?[]const u8 = null,
+    reader: std.Io.Reader = undefined,
     code: u8 = 0,
 
     pub fn deinit(t: *TestRun) void {
@@ -256,6 +282,11 @@ pub const TestRun = struct {
         t.out = .fixed(&t.out_buf);
         t.err = .fixed(&t.err_buf);
         t.ctx = .{ .gpa = std.testing.allocator, .io = std.testing.io, .out = &t.out, .err = &t.err, .files = t.fs.files() };
+        if (t.input) |text| {
+            t.reader = .fixed(text);
+            t.ctx.in = &t.reader;
+            t.ctx.interactive = true;
+        }
         t.code = try run(&t.ctx, args);
     }
 };

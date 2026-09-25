@@ -37,6 +37,30 @@ const Doc = struct {
         return t;
     }
 
+    const Found = struct {
+        table: *const toml.Table,
+        /// the value that holds the table, when a parent table holds it.
+        value: ?*const toml.Value,
+        /// the path from the nearest table with a header, for tables made
+        /// by dotted keys.
+        dotted: []const []const u8,
+    };
+
+    /// like `table`, but also says how the table is written.
+    fn find(d: *const Doc, path: []const []const u8) ?Found {
+        var t: *const toml.Table = d.doc.root;
+        var value: ?*const toml.Value = null;
+        var header: usize = 0;
+        for (path, 0..) |p, i| {
+            const v = t.get(p) orelse return null;
+            if (v.data != .table) return null;
+            t = v.data.table;
+            value = v;
+            if (t.origin != .dotted) header = i + 1;
+        }
+        return .{ .table = t, .value = value, .dotted = path[header..] };
+    }
+
     /// the offset just past the end of the line holding `off`.
     fn lineEnd(d: *const Doc, off: usize) usize {
         const nl = std.mem.indexOfScalarPos(u8, d.text, off, '\n') orelse return d.text.len;
@@ -195,45 +219,75 @@ pub fn removeFromList(a: Allocator, text: []const u8, path: []const []const u8, 
     return try splice(a, text, start, end - start, "");
 }
 
-/// sets `[services.<name>] enabled`, writing `name = true` style where the
-/// service isn't set yet. returns null if it already has that value.
-pub fn setService(a: Allocator, text_in: []const u8, name: []const u8, enabled: bool) Error!?[]u8 {
+/// sets `key = value` in the table at `path`, where `value` is toml text
+/// like `true` or `"mkinitcpio"`. the table may be a `[section]`, an inline
+/// `{ ... }`, dotted keys, or missing, in which case a section is added at
+/// the end. returns null if the key already holds exactly that text.
+pub fn setKey(a: Allocator, text_in: []const u8, path: []const []const u8, key: []const u8, value: []const u8) Error!?[]u8 {
     const text = try ensureNewline(a, text_in);
     var d = try Doc.init(a, text);
     defer d.deinit();
-    const value: []const u8 = if (enabled) "true" else "false";
-    const key = try keyText(a, name);
+    const k = try keyText(a, key);
 
-    const services = d.table(&.{"services"});
-    const e = if (services) |s| s.get(name) else null;
-    if (e) |v| switch (v.data) {
-        .boolean => |b| {
-            if (b == enabled) return null;
-            return try splice(a, text, v.span.start.offset, v.span.end - v.span.start.offset, value);
-        },
-        .table => |t| {
-            if (t.get("enabled")) |en| {
-                if (en.data == .boolean and en.data.boolean == enabled) return null;
-                return try splice(a, text, en.span.start.offset, en.span.end - en.span.start.offset, value);
-            }
-            return switch (t.origin) {
-                .inline_table => if (t.entries.items.len == 0)
-                    try splice(a, text, v.span.start.offset, v.span.end - v.span.start.offset, try std.fmt.allocPrint(a, "{{ enabled = {s} }}", .{value}))
-                else
-                    try splice(a, text, lastEnd(t), 0, try std.fmt.allocPrint(a, ", enabled = {s}", .{value})),
-                .dotted => try splice(a, text, d.lineEnd(v.span.end), 0, try std.fmt.allocPrint(a, "{s}.enabled = {s}\n", .{ key, value })),
-                else => try splice(a, text, d.newKeyLine(t), 0, try std.fmt.allocPrint(a, "enabled = {s}\n", .{value})),
-            };
-        },
-        else => return error.BadToml,
+    const found = d.find(path) orelse {
+        const header = try pathText(a, path);
+        return try splice(a, text, text.len, 0, try std.fmt.allocPrint(a, "{s}[{s}]\n{s} = {s}\n", .{ if (text.len > 0) "\n" else "", header, k, value }));
     };
-
-    const line = try std.fmt.allocPrint(a, "{s} = {s}\n", .{ key, value });
-    if (services) |s| {
-        if (s.origin == .header) return try splice(a, text, d.newKeyLine(s), 0, line);
+    const t = found.table;
+    if (t.get(key)) |v| {
+        const old = text[v.span.start.offset..v.span.end];
+        if (std.mem.eql(u8, old, value)) return null;
+        return try splice(a, text, v.span.start.offset, old.len, value);
     }
-    const section = try std.fmt.allocPrint(a, "{s}[services]\n{s}", .{ if (text.len > 0) "\n" else "", line });
-    return try splice(a, text, text.len, 0, section);
+    switch (t.origin) {
+        .inline_table, .inline_dotted => {
+            const v = found.value.?;
+            if (t.entries.items.len == 0) {
+                return try splice(a, text, v.span.start.offset, v.span.end - v.span.start.offset, try std.fmt.allocPrint(a, "{{ {s} = {s} }}", .{ k, value }));
+            }
+            return try splice(a, text, lastEnd(t), 0, try std.fmt.allocPrint(a, ", {s} = {s}", .{ k, value }));
+        },
+        .dotted => {
+            const prefix = try pathText(a, found.dotted);
+            return try splice(a, text, d.lineEnd(lastEnd(t)), 0, try std.fmt.allocPrint(a, "{s}.{s} = {s}\n", .{ prefix, k, value }));
+        },
+        .implicit => {
+            // only sub-tables define it so far, so give it its own header.
+            const header = try pathText(a, path);
+            return try splice(a, text, text.len, 0, try std.fmt.allocPrint(a, "\n[{s}]\n{s} = {s}\n", .{ header, k, value }));
+        },
+        .root, .header, .array_element => return try splice(a, text, d.newKeyLine(t), 0, try std.fmt.allocPrint(a, "{s} = {s}\n", .{ k, value })),
+    }
+}
+
+/// sets `[services.<name>] enabled`, writing `name = true` style where the
+/// service isn't set yet. returns null if it already has that value.
+pub fn setService(a: Allocator, text: []const u8, name: []const u8, enabled: bool) Error!?[]u8 {
+    const value: []const u8 = if (enabled) "true" else "false";
+    var d = try Doc.init(a, text);
+    defer d.deinit();
+    const services = d.table(&.{"services"});
+    if (services) |s| {
+        if (s.get(name)) |v| {
+            if (v.data == .table) return setKey(a, text, &.{ "services", name }, "enabled", value);
+        }
+    }
+    return setKey(a, text, &.{"services"}, name, value);
+}
+
+/// sets `[providers] <name> = "<chosen>"`.
+pub fn setProvider(a: Allocator, text: []const u8, name: []const u8, chosen: []const u8) Error!?[]u8 {
+    return setKey(a, text, &.{"providers"}, name, try quoted(a, chosen));
+}
+
+/// a dotted key path, each part quoted if it needs to be.
+fn pathText(a: Allocator, path: []const []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (path, 0..) |p, i| {
+        if (i > 0) try out.append(a, '.');
+        try out.appendSlice(a, try keyText(a, p));
+    }
+    return out.items;
 }
 
 fn lastEnd(t: *const toml.Table) usize {
@@ -328,8 +382,25 @@ test "enable and disable services" {
     try expectEdit(setService(a, "[services.custom]\nunit = \"c.service\"\n", "custom", false), "[services.custom]\nunit = \"c.service\"\nenabled = false\n");
     try expectEdit(setService(a, "[services]\ncustom = { unit = \"c.service\" }\n", "custom", true), "[services]\ncustom = { unit = \"c.service\", enabled = true }\n");
     try expectEdit(setService(a, "[services]\ncustom = {}\n", "custom", true), "[services]\ncustom = { enabled = true }\n");
-    // only sub-tables so far: [services] is implicit, so add a new table
+    // only sub-tables so far: [services] is implicit, so it gets a header
     try expectEdit(setService(a, "[services.custom]\nunit = \"c.service\"\n", "ssh", true), "[services.custom]\nunit = \"c.service\"\n\n[services]\nssh = true\n");
+}
+
+test "set keys in every kind of table" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // inline table at the top
+    try expectEdit(setProvider(a, "version = 1\nproviders = { initramfs = \"mkinitcpio\" }\npackages = []\n", "libxtables.so", "iptables"), "version = 1\nproviders = { initramfs = \"mkinitcpio\", \"libxtables.so\" = \"iptables\" }\npackages = []\n");
+    try expectEdit(setProvider(a, "providers = {}\n", "initramfs", "booster"), "providers = { initramfs = \"booster\" }\n");
+    // a section, replacing and adding
+    try expectEdit(setProvider(a, "[providers]\ninitramfs = \"dracut\"  # fast\n\n[system]\n", "initramfs", "mkinitcpio"), "[providers]\ninitramfs = \"mkinitcpio\"  # fast\n\n[system]\n");
+    try expectEdit(setProvider(a, "[providers]\ninitramfs = \"mkinitcpio\"\n", "initramfs", "mkinitcpio"), null);
+    // missing
+    try expectEdit(setProvider(a, "packages = [\"git\"]\n", "initramfs", "mkinitcpio"), "packages = [\"git\"]\n\n[providers]\ninitramfs = \"mkinitcpio\"\n");
+    // dotted keys
+    try expectEdit(setProvider(a, "providers.initramfs = \"mkinitcpio\"\n[system]\n", "sh", "bash"), "providers.initramfs = \"mkinitcpio\"\nproviders.sh = \"bash\"\n[system]\n");
+    try expectEdit(setKey(a, "[services]\nssh.enabled = true\n", &.{ "services", "ssh" }, "unit", "\"x.service\""), "[services]\nssh.enabled = true\nssh.unit = \"x.service\"\n");
 }
 
 test "odd names are quoted" {

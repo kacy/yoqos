@@ -26,6 +26,8 @@ pub const Note = struct {
         excluded,
         enabled,
         disabled,
+        /// a provider picked for a virtual package; `detail` is the pick.
+        chosen,
         unchanged,
     };
 };
@@ -110,7 +112,7 @@ fn service(a: Allocator, c: *const config.Config, text: *[]const u8, name: []con
 /// loads the whole config as if `path` held `text`. returns false, with
 /// the problems in `diags`, if the edit would leave the config broken or
 /// didn't take effect.
-pub fn check(gpa: Allocator, files: compose.Files, path: []const u8, text: []const u8, op: Op, notes: []const Note, diags: *diag.List) !bool {
+pub fn check(gpa: Allocator, files: compose.Files, path: []const u8, text: []const u8, notes: []const Note, diags: *diag.List) !bool {
     var overlay: Overlay = .{ .base = files, .path = path, .text = text };
     var loaded = try compose.load(gpa, overlay.files(), path, diags);
     defer loaded.deinit();
@@ -121,10 +123,11 @@ pub fn check(gpa: Allocator, files: compose.Files, path: []const u8, text: []con
             .added => c.packages.contains(n.name),
             .removed, .excluded => !c.packages.contains(n.name),
             .enabled, .disabled => if (c.services.get(n.name)) |s| s.enabled != null and s.enabled.?.v == (n.what == .enabled) else false,
+            .chosen => if (c.providers.get(n.name)) |p| std.mem.eql(u8, p.v, n.detail.?) else false,
             .unchanged => true,
         };
         if (!ok) {
-            try diags.add(.bad_value, null, "the edit to {s} didn't take effect for {s} ({s})", .{ path, n.name, @tagName(op) }, "this is a bug in os; the file was left alone");
+            try diags.add(.bad_value, null, "the edit to {s} didn't take effect for {s} ({s})", .{ path, n.name, @tagName(n.what) }, "this is a bug in os; the file was left alone");
             return false;
         }
     }
