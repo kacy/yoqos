@@ -55,5 +55,13 @@ test "reads a file and reports a missing one" {
     defer std.testing.allocator.free(again);
     try std.testing.expectEqualStrings("packages = []\n", again);
     try std.testing.expectError(error.FileNotFound, f.read(std.testing.allocator, "/nonexistent/machine.toml"));
-    try std.testing.expectError(error.WriteFailed, f.write("/nonexistent/machine.toml", "x"));
+    // a directory can't be made under a file, even by root.
+    const under_file = try std.fmt.allocPrint(std.testing.allocator, "{s}/nested", .{path});
+    defer std.testing.allocator.free(under_file);
+    try std.testing.expectError(error.WriteFailed, f.write(under_file, "x"));
+
+    // missing parent directories are made, which `os init` relies on.
+    const deep = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}/etc/yoq/machine.toml", .{tmp.sub_path});
+    defer std.testing.allocator.free(deep);
+    try f.write(deep, "version = 1\n");
 }
