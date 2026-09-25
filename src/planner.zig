@@ -112,12 +112,14 @@ pub fn wants(a: Allocator, c: *const config.Config) ![]const Want {
     return out.items;
 }
 
-/// the wanted packages plus everything they depend on in the lock. every
-/// wanted package must be in the lock.
+/// the wanted packages plus everything they depend on in the lock. wanted
+/// packages the lock doesn't have yet are left out.
 pub fn closure(a: Allocator, l: *const lock.Lock, ws: []const Want) !std.StringArrayHashMapUnmanaged(void) {
     var needed: std.StringArrayHashMapUnmanaged(void) = .empty;
     var queue: std.ArrayList([]const u8) = .empty;
-    for (ws) |w| try queue.append(a, w.name);
+    for (ws) |w| {
+        if (l.package(w.name) != null) try queue.append(a, w.name);
+    }
     while (queue.pop()) |name| {
         if ((try needed.getOrPut(a, name)).found_existing) continue;
         for (l.package(name).?.depends) |d| try queue.append(a, d);
@@ -227,6 +229,19 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
 fn addWant(a: Allocator, list: *std.ArrayList(Want), name: []const u8, cause: ?[]const u8, src: ?config.Src) !void {
     if (findWant(list.items, name) != null) return;
     try list.append(a, .{ .name = name, .cause = cause, .src = src });
+}
+
+/// explicitly installed packages that nothing in the config asks for or
+/// needs, in facts order.
+pub fn extraPackages(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *const facts.Facts) ![]const []const u8 {
+    const ws = try wants(a, c);
+    const needed = try closure(a, l, ws);
+    var out: std.ArrayList([]const u8) = .empty;
+    for (f.packages) |p| {
+        if (p.reason != .explicit or needed.contains(p.name) or findWant(ws, p.name) != null) continue;
+        try out.append(a, p.name);
+    }
+    return out.items;
 }
 
 pub fn findWant(list: []const Want, name: []const u8) ?*const Want {

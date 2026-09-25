@@ -1,0 +1,5 @@
+atlas · lock from 2026-09-25 (today)
+
+ok        11 packages
+changed   10 packages aren't installed yet  -> os plan
+failing   none

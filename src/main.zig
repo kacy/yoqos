@@ -62,5 +62,6 @@ test {
     _ = @import("observe.zig");
     _ = @import("sync.zig");
     _ = @import("systemd.zig");
+    _ = @import("status.zig");
     _ = disk;
 }

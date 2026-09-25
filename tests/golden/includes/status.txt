@@ -1,0 +1,7 @@
+atlas · lock from 2026-09-25 (today)
+
+ok        11 packages
+changed   installed but not in the config: nano  -> os adopt keeps them, os plan removes them
+          11 packages aren't installed yet  -> os plan
+          services not as configured: sshd.service  -> os plan
+failing   none

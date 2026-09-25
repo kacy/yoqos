@@ -9,6 +9,8 @@ const alpm = @import("../alpm.zig");
 const lock = @import("../lock.zig");
 const sync = @import("../sync.zig");
 const update = @import("update.zig");
+const pipeline = @import("../pipeline.zig");
+const planner = @import("../planner.zig");
 const Context = cli.Context;
 
 pub fn addCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
@@ -38,7 +40,54 @@ fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
             return 2;
         }
     }
+    const names = try ctx.gpa.alloc([]const u8, args.len);
+    defer ctx.gpa.free(names);
+    for (args, names) |arg, *n| n.* = arg;
+    return apply(ctx, op, names);
+}
 
+/// `os adopt [package...]`: puts packages installed outside the config into
+/// it, all of them or the ones named.
+pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    var facts_path: ?[]const u8 = null;
+    var wanted: std.ArrayList([]const u8) = .empty;
+    defer wanted.deinit(ctx.gpa);
+    var it: cli.ArgIter = .{ .args = args };
+    while (it.next()) |a| {
+        if (cli.eql(a, "--facts")) {
+            facts_path = it.next() orelse return cli.usageError(ctx, "os adopt [--facts <file>] [package...]");
+        } else if (a[0] == '-') {
+            return cli.usageError(ctx, "os adopt [--facts <file>] [package...]");
+        } else try wanted.append(ctx.gpa, a);
+    }
+
+    var w: cli.Work = .init(ctx);
+    defer w.deinit();
+    const a = w.allocator();
+    const state = try w.state() orelse return w.report();
+    const f = pipeline.getFacts(ctx.files, ctx.io, a, facts_path, ctx.root, &w.diags) catch |e| return cli.factsError(ctx, e, facts_path);
+    if (w.failed()) return w.report();
+
+    const extra = try planner.extraPackages(a, state.config(), &state.lock, &f);
+    for (wanted.items) |name| {
+        for (extra) |e| {
+            if (cli.eql(e, name)) break;
+        } else {
+            try ctx.err.print("os: {s} isn't installed outside the config\n", .{name});
+            return 1;
+        }
+    }
+    const names = if (wanted.items.len > 0) wanted.items else extra;
+    if (names.len == 0) {
+        try ctx.out.writeAll("nothing to adopt: every installed package is in the config.\n");
+        return 0;
+    }
+    return apply(ctx, .add, names);
+}
+
+/// edits the config for `op` on each name, writes it, and brings the lock
+/// along.
+fn apply(ctx: *Context, op: change.Op, names: []const []const u8) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
@@ -49,8 +98,6 @@ fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
         return 1;
     };
 
-    const names = try a.alloc([]const u8, args.len);
-    for (args, names) |arg, *n| n.* = arg;
     const outcome = try change.plan(a, &loaded.config, top, text, op, names, &w.diags);
     if (w.failed()) return w.report();
     if (outcome.changed()) {
@@ -201,4 +248,30 @@ test "add and remove update the lock from the cached databases" {
     try t.exec(&.{ "--root", root, "remove", "git" });
     try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: -5. applying isn't built yet; `os plan` shows what would change.\n"));
     try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "perl-error") == null);
+}
+
+test "adopt puts extra packages into the config" {
+    var t: TestRun = .{};
+    defer t.deinit();
+    const h = "a" ** 64;
+    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
+    try t.fs.put("/etc/yoq/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n" ++
+        "[packages.git]\nversion = \"1\"\nrepo = \"extra\"\nsha256 = \"" ++ h ++ "\"\n" ++
+        "[packages.linux]\nversion = \"1\"\nrepo = \"core\"\nsha256 = \"" ++ h ++ "\"\n");
+    try t.fs.put("f.json",
+        \\{"schema":"yoq.facts/1","packages":[
+        \\ {"name":"git","version":"1"},{"name":"linux","version":"1"},
+        \\ {"name":"htop","version":"3.4-1"},{"name":"btop","version":"1.4-1"},
+        \\ {"name":"ncurses","version":"6.5","reason":"dependency"}]}
+    );
+    try t.exec(&.{ "adopt", "--facts", "f.json", "nano" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expectEqualStrings("os: nano isn't installed outside the config\n", t.err.buffered());
+
+    try t.exec(&.{ "adopt", "--facts", "f.json", "htop" });
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expectEqualStrings("packages = [\"git\", \"htop\"]\n", t.fs.get("/etc/yoq/machine.toml").?);
+
+    try t.exec(&.{ "adopt", "--facts", "f.json" });
+    try std.testing.expectEqualStrings("packages = [\"git\", \"htop\", \"btop\"]\n", t.fs.get("/etc/yoq/machine.toml").?);
 }

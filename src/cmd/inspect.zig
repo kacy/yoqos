@@ -4,11 +4,11 @@
 const std = @import("std");
 const cli = @import("../cli.zig");
 const facts = @import("../facts.zig");
-const observe = @import("../observe.zig");
 const pipeline = @import("../pipeline.zig");
 const planner = @import("../planner.zig");
 const show = @import("../show.zig");
 const why = @import("../why.zig");
+const status = @import("../status.zig");
 const Context = cli.Context;
 const eql = cli.eql;
 
@@ -55,10 +55,7 @@ pub fn factsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
     var w: cli.Work = .init(ctx);
     defer w.deinit();
-    const f = if (from) |path|
-        pipeline.readFacts(ctx.files, w.allocator(), path) catch |e| return factsError(ctx, e, path)
-    else
-        try observe.observe(w.allocator(), ctx.io, .{ .root = ctx.root }, &w.diags);
+    const f = pipeline.getFacts(ctx.files, ctx.io, w.allocator(), from, ctx.root, &w.diags) catch |e| return cli.factsError(ctx, e, from);
     if (w.failed()) return w.report();
 
     if (ctx.json) {
@@ -78,7 +75,7 @@ pub fn factsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
 pub fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const usage_text = "os plan [--facts <file>] [--lock <file>] [-v]";
-    var in: pipeline.Inputs = .{ .config_path = ctx.config_path };
+    var in = cli.inputs(ctx);
     var verbose = false;
     var it: cli.ArgIter = .{ .args = args };
     while (it.next()) |a| {
@@ -93,7 +90,7 @@ pub fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
     var w: cli.Work = .init(ctx);
     defer w.deinit();
-    const built = pipeline.buildPlan(ctx.gpa, ctx.io, ctx.files, in, &w.diags) catch |e| return factsError(ctx, e, in.facts_path orelse "this machine");
+    const built = pipeline.buildPlan(ctx.gpa, ctx.io, ctx.files, in, &w.diags) catch |e| return cli.factsError(ctx, e, in.facts_path);
     var result = built orelse return w.report();
     defer result.deinit();
 
@@ -105,6 +102,27 @@ pub fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     return 0;
 }
 
+pub fn statusCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    const usage_text = "os status [--facts <file>]";
+    var in = cli.inputs(ctx);
+    var it: cli.ArgIter = .{ .args = args };
+    while (it.next()) |a| {
+        if (eql(a, "--facts")) {
+            in.facts_path = it.next() orelse return cli.usageError(ctx, usage_text);
+        } else return cli.usageError(ctx, usage_text);
+    }
+
+    var w: cli.Work = .init(ctx);
+    defer w.deinit();
+    const built = pipeline.buildPlan(ctx.gpa, ctx.io, ctx.files, in, &w.diags) catch |e| return cli.factsError(ctx, e, in.facts_path);
+    var result = built orelse return w.report();
+    defer result.deinit();
+
+    const s = try status.summarize(result.allocator(), result.state.config(), &result.state.lock, &result.facts, &result.plan);
+    if (ctx.json) try status.writeJson(ctx.out, &s) else try status.writeText(ctx.out, &s);
+    return if (s.failing.len > 0) 1 else 0;
+}
+
 pub fn whyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (args.len != 1 or args[0][0] == '-') return cli.usageError(ctx, "os why <package>");
     var w: cli.Work = .init(ctx);
@@ -114,16 +132,6 @@ pub fn whyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const ans = try why.explain(w.allocator(), state.config(), &state.lock, args[0]);
     if (ctx.json) try why.writeJson(ctx.out, &ans) else try why.writeText(ctx.out, &ans);
     return if (ans.root == null) 1 else 0;
-}
-
-/// says why a facts file couldn't be used. returns the exit code.
-fn factsError(ctx: *Context, e: pipeline.Error, path: []const u8) !u8 {
-    switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        error.FactsUnreadable => try ctx.err.print("os: can't read facts from {s}\n", .{path}),
-        error.BadFacts => try ctx.err.print("os: {s} isn't a facts document ({s})\n", .{ path, facts.schema }),
-    }
-    return 1;
 }
 
 // -- tests --

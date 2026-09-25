@@ -1,0 +1,8 @@
+archlinux · lock from 2026-09-25 (today)
+
+ok        11 packages
+changed   installed but not in the config: nano  -> os adopt keeps them, os plan removes them
+          14 packages aren't installed yet  -> os plan
+          settings differ: system.hostname, system.timezone, system.locale  -> os plan
+          services not as configured: sshd.service, tailscaled.service  -> os plan
+failing   none

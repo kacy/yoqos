@@ -1,0 +1,6 @@
+atlas · lock from 2026-09-25 (today)
+
+ok        22 packages, 2 services
+changed   installed but not in the config: neovim  -> os adopt keeps them, os plan removes them
+          2 packages are no longer needed  -> os plan
+failing   none

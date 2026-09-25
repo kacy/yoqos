@@ -12,6 +12,7 @@ const disk = @import("disk.zig");
 const diag = @import("diag.zig");
 const pipeline = @import("pipeline.zig");
 const planner = @import("planner.zig");
+const status = @import("status.zig");
 const sort = @import("sort.zig");
 
 const root = "tests/golden";
@@ -68,8 +69,12 @@ fn runCase(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8
         try planner.writeText(&text.writer, a, &result.plan, .{ .verbose = true });
         var json: std.Io.Writer.Allocating = .init(a);
         try planner.writeJson(&json.writer, a, &result.plan);
+        var st: std.Io.Writer.Allocating = .init(a);
+        const s = try status.summarize(a, result.state.config(), &result.state.lock, &result.facts, &result.plan);
+        try status.writeText(&st.writer, &s);
         try outputs.append(a, .{ "plan.txt", text.written() });
         try outputs.append(a, .{ "plan.json", json.written() });
+        try outputs.append(a, .{ "status.txt", st.written() });
     } else {
         var text: std.Io.Writer.Allocating = .init(a);
         try diags.render(&text.writer);

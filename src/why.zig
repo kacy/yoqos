@@ -31,12 +31,7 @@ pub fn explain(a: Allocator, c: *const config.Config, l: *const lock.Lock, name:
         answer.root = w.*;
         answer.chain = try a.dupe([]const u8, &.{name});
     }
-    // wanted packages missing from the lock have no dependencies to follow.
-    var in_lock: std.ArrayList(planner.Want) = .empty;
-    for (ws) |w| {
-        if (l.package(w.name) != null) try in_lock.append(a, w);
-    }
-    const needed = try planner.closure(a, l, in_lock.items);
+    const needed = try planner.closure(a, l, ws);
     if (!needed.contains(name)) return answer;
 
     var parents: std.ArrayList([]const u8) = .empty;
@@ -52,7 +47,8 @@ pub fn explain(a: Allocator, c: *const config.Config, l: *const lock.Lock, name:
     // breadth-first from the wanted packages finds the shortest chain.
     var came_from: std.StringHashMapUnmanaged([]const u8) = .empty;
     var queue: std.ArrayList([]const u8) = .empty;
-    for (in_lock.items) |w| {
+    for (ws) |w| {
+        if (l.package(w.name) == null) continue;
         try came_from.put(a, w.name, "");
         try queue.append(a, w.name);
     }

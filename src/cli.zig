@@ -49,12 +49,14 @@ const Command = struct {
 const commands = [_]Command{
     .{ .name = "help", .summary = "show this help", .handler = help },
     .{ .name = "version", .summary = "print the version", .handler = version },
+    .{ .name = "status", .summary = "what matches the config, what changed, what's failing", .handler = inspect.statusCmd },
     .{ .name = "plan", .summary = "show what apply would change", .handler = inspect.planCmd },
     .{ .name = "update", .summary = "resolve the config into machine.lock (update --dbs <dir>)", .handler = update.updateCmd },
     .{ .name = "add", .summary = "add packages to the config", .handler = edit.addCmd },
     .{ .name = "remove", .summary = "remove packages from the config", .handler = edit.removeCmd },
     .{ .name = "enable", .summary = "turn services on in the config", .handler = edit.enableCmd },
     .{ .name = "disable", .summary = "turn services off in the config", .handler = edit.disableCmd },
+    .{ .name = "adopt", .summary = "put packages installed outside os into the config", .handler = edit.adoptCmd },
     .{ .name = "why", .summary = "say which config line brings in a package", .handler = inspect.whyCmd },
     .{ .name = "config", .summary = "show the merged config (config show [--resolved])", .handler = inspect.configCmd },
     .{ .name = "facts", .summary = "show what os knows about this machine", .handler = inspect.factsCmd },
@@ -216,6 +218,23 @@ pub const Work = struct {
         return &w.loaded_state.?;
     }
 };
+
+/// says why facts couldn't be read. returns the exit code.
+pub fn factsError(ctx: *Context, e: pipeline.Error, path: ?[]const u8) !u8 {
+    const from = path orelse "this machine";
+    switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.FactsUnreadable => try ctx.err.print("os: can't read facts from {s}\n", .{from}),
+        error.BadFacts => try ctx.err.print("os: {s} isn't a facts document (yoq.facts/1)\n", .{from}),
+    }
+    return 1;
+}
+
+/// the planner inputs for a command: the config path and machine root from
+/// the global flags.
+pub fn inputs(ctx: *const Context) pipeline.Inputs {
+    return .{ .config_path = ctx.config_path, .root = ctx.root };
+}
 
 /// asks the user to pick one of `options` and returns its index. empty
 /// input picks the first. returns null at the end of input.

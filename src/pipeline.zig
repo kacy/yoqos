@@ -67,15 +67,25 @@ pub fn readFacts(files: compose.Files, a: Allocator, path: []const u8) Error!fac
     return facts.parse(a, bytes);
 }
 
+/// facts from `path` if given, else observed from the machine under
+/// `root`. observer problems go to `diags`.
+pub fn getFacts(files: compose.Files, io: std.Io, a: Allocator, path: ?[]const u8, root: []const u8, diags: *diag.List) Error!facts.Facts {
+    if (path) |p| return readFacts(files, a, p);
+    return observe.observe(a, io, .{ .root = root }, diags);
+}
+
 pub const Inputs = struct {
     config_path: []const u8,
     lock_path: ?[]const u8 = null,
     /// read facts from this file instead of observing the machine.
     facts_path: ?[]const u8 = null,
+    /// the machine to observe when there's no facts file.
+    root: []const u8 = "/",
 };
 
 pub const Result = struct {
     state: State,
+    facts: facts.Facts,
     plan: planner.Plan,
 
     pub fn allocator(r: *Result) Allocator {
@@ -92,7 +102,7 @@ pub fn buildPlan(gpa: Allocator, io: std.Io, files: compose.Files, in: Inputs, d
     var state = try load(gpa, files, in.config_path, in.lock_path, diags) orelse return null;
     errdefer state.deinit();
     const a = state.arena.allocator();
-    const f = if (in.facts_path) |path| try readFacts(files, a, path) else try observe.observe(a, io, .{}, diags);
+    const f = try getFacts(files, io, a, in.facts_path, in.root, diags);
     if (diags.items.items.len > 0) {
         state.deinit();
         return null;
@@ -101,5 +111,5 @@ pub fn buildPlan(gpa: Allocator, io: std.Io, files: compose.Files, in: Inputs, d
         state.deinit();
         return null;
     };
-    return .{ .state = state, .plan = p };
+    return .{ .state = state, .facts = f, .plan = p };
 }
