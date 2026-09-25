@@ -376,15 +376,8 @@ fn quotedList(comptime E: type) []const u8 {
 /// checks a merged config for problems that need the whole picture, like a
 /// service no file explains.
 pub fn validate(c: *const Config, diags: *diag.List) !void {
-    const known = catalog.serviceNames();
     for (c.services.entries.items) |e| {
-        if (catalog.service(e.name) != null) continue;
-        if (e.value.unit != null and e.value.package != null) continue;
-        if (diag.suggest(e.name, &known)) |s| {
-            try diags.addHint(.unknown_service, e.value.src.span(), "unknown service \"{s}\"", .{e.name}, "did you mean \"{s}\"?", .{s});
-        } else {
-            try diags.add(.unknown_service, e.value.src.span(), "unknown service \"{s}\"", .{e.name}, "set its unit and package in [services.<name>]");
-        }
+        if (!knownService(c, e.name)) try unknownService(diags, e.name, e.value.src.span());
     }
     if (c.system.hostname) |h| {
         if (!validHostname(h.v)) {
@@ -395,6 +388,23 @@ pub fn validate(c: *const Config, diags: *diag.List) !void {
         if (!validUserName(u.name)) {
             try diags.add(.bad_value, u.value.src.span(), "\"{s}\" isn't a valid user name", .{u.name}, "start with a lowercase letter or _, then lowercase letters, digits, _ or -, up to 32 characters");
         }
+    }
+}
+
+/// a service os can set up: one the catalog knows, or one the config
+/// describes with its own unit and package.
+pub fn knownService(c: *const Config, name: []const u8) bool {
+    if (catalog.service(name) != null) return true;
+    const s = c.services.get(name) orelse return false;
+    return s.unit != null and s.package != null;
+}
+
+pub fn unknownService(diags: *diag.List, name: []const u8, at: ?diag.Span) !void {
+    const known = catalog.serviceNames();
+    if (diag.suggest(name, &known)) |s| {
+        try diags.addHint(.unknown_service, at, "unknown service \"{s}\"", .{name}, "did you mean \"{s}\"?", .{s});
+    } else {
+        try diags.add(.unknown_service, at, "unknown service \"{s}\"", .{name}, "set its unit and package in [services.<name>]");
     }
 }
 

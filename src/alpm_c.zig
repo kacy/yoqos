@@ -9,7 +9,6 @@ const api = @import("alpm.zig");
 const Allocator = std.mem.Allocator;
 const c = @cImport(@cInclude("alpm.h"));
 const Error = api.Error;
-const SyncDb = api.SyncDb;
 const ResolveInput = api.ResolveInput;
 
 /// a libalpm handle on one root and database directory.
@@ -99,6 +98,23 @@ const Questions = struct {
         };
     }
 
+    fn isOpen(self: *const Questions, name: []const u8) bool {
+        for (self.open.items) |o| {
+            if (std.mem.eql(u8, o.name, name)) return true;
+        }
+        return false;
+    }
+
+    /// reports every provider question the config didn't answer. returns
+    /// true if there were any.
+    fn reportOpen(self: *const Questions, diags: *diag.List) !bool {
+        for (self.open.items) |o| {
+            const options = try std.mem.join(self.a, ", ", o.options);
+            try diags.addHint(.provider_choice, null, "{s} has more than one provider: {s}", .{ o.name, options }, "pick one in [providers], like {s} = \"{s}\"", .{ o.name, o.options[0] });
+        }
+        return self.open.items.len > 0;
+    }
+
     fn selectProvider(self: *Questions, sp: *c.alpm_question_select_provider_t, dep: []const u8) !void {
         var names: std.ArrayList([]const u8) = .empty;
         var it = listItems(c.alpm_pkg_t, sp.providers);
@@ -118,25 +134,8 @@ const Questions = struct {
 };
 
 pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Error!?lock.Lock {
-
-    // a scratch root: an empty local database and copies of the sync ones.
-    const dbpath = try std.fs.path.join(a, &.{ in.scratch, "db" });
-    const root = try std.fs.path.join(a, &.{ in.scratch, "root" });
-    const cwd = std.Io.Dir.cwd();
-    const sync_dir = try std.fs.path.join(a, &.{ dbpath, "sync" });
-    const local_dir = try std.fs.path.join(a, &.{ dbpath, "local" });
-    for ([_][]const u8{ root, sync_dir, local_dir }) |d| cwd.createDirPath(io, d) catch return error.AlpmFailed;
-    cwd.writeFile(io, .{ .sub_path = try std.fs.path.join(a, &.{ local_dir, "ALPM_DB_VERSION" }), .data = "9\n" }) catch return error.AlpmFailed;
-    for (in.dbs) |db| {
-        const bytes = cwd.readFileAlloc(io, db.path, a, .limited(256 << 20)) catch {
-            try diags.add(.alpm_failed, null, "can't read the {s} database at {s}", .{ db.name, db.path }, null);
-            return null;
-        };
-        const dest = try std.fmt.allocPrint(a, "{s}/{s}.db", .{ sync_dir, db.name });
-        cwd.writeFile(io, .{ .sub_path = dest, .data = bytes }) catch return error.AlpmFailed;
-    }
-
-    const h = try Handle.open(a, root, dbpath, diags) orelse return null;
+    const scratch = try Scratch.make(a, io, in, diags) orelse return null;
+    const h = try Handle.open(a, scratch.root, scratch.dbpath, diags) orelse return null;
     defer h.close();
     var questions: Questions = .{ .a = a, .providers = in.providers };
     _ = c.alpm_option_set_questioncb(h.h, Questions.answer, &questions);
@@ -152,36 +151,75 @@ pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Er
         return null;
     }
     defer _ = c.alpm_trans_release(h.h);
+    if (!try addWants(a, h, in.wants, &questions, diags)) return null;
 
+    var data: ?*c.alpm_list_t = null;
+    if (c.alpm_trans_prepare(h.h, &data) != 0) {
+        try reportPrepare(h, data, diags);
+        return null;
+    }
+    if (try questions.reportOpen(diags)) return null;
+
+    var l: lock.Lock = .{
+        .sync_date = in.sync_date,
+        .keyring = if (in.keyring.len > 0) in.keyring else try keyringVersion(a, h),
+        .providers = questions.chosen.items,
+        .packages = try lockPackages(a, c.alpm_trans_get_add(h.h)),
+    };
+    try lock.normalize(a, &l);
+    return l;
+}
+
+/// an empty root with an empty local database and copies of the sync ones,
+/// so resolving sees everything as not installed.
+const Scratch = struct {
+    root: []const u8,
+    dbpath: []const u8,
+
+    fn make(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Error!?Scratch {
+        const cwd = std.Io.Dir.cwd();
+        const s: Scratch = .{
+            .root = try std.fs.path.join(a, &.{ in.scratch, "root" }),
+            .dbpath = try std.fs.path.join(a, &.{ in.scratch, "db" }),
+        };
+        const sync_dir = try std.fs.path.join(a, &.{ s.dbpath, "sync" });
+        const local_dir = try std.fs.path.join(a, &.{ s.dbpath, "local" });
+        for ([_][]const u8{ s.root, sync_dir, local_dir }) |d| cwd.createDirPath(io, d) catch return error.AlpmFailed;
+        cwd.writeFile(io, .{ .sub_path = try std.fs.path.join(a, &.{ local_dir, "ALPM_DB_VERSION" }), .data = "9\n" }) catch return error.AlpmFailed;
+        for (in.dbs) |db| {
+            const bytes = cwd.readFileAlloc(io, db.path, a, .limited(256 << 20)) catch {
+                try diags.add(.alpm_failed, null, "can't read the {s} database at {s}", .{ db.name, db.path }, null);
+                return null;
+            };
+            const dest = try std.fmt.allocPrint(a, "{s}/{s}.db", .{ sync_dir, db.name });
+            cwd.writeFile(io, .{ .sub_path = dest, .data = bytes }) catch return error.AlpmFailed;
+        }
+        return s;
+    }
+};
+
+/// adds each wanted package to the transaction. returns false if one isn't
+/// in any sync database.
+fn addWants(a: Allocator, h: Handle, wants: []const []const u8, questions: *const Questions, diags: *diag.List) Error!bool {
     const syncdbs = c.alpm_get_syncdbs(h.h);
-    var missing = false;
-    for (in.wants) |w| {
+    var ok = true;
+    for (wants) |w| {
         const p = c.alpm_find_dbs_satisfier(h.h, syncdbs, (try a.dupeZ(u8, w)).ptr) orelse {
-            if (questions.open.items.len > 0 and std.mem.eql(u8, questions.open.items[questions.open.items.len - 1].name, w)) continue;
+            // a virtual package with an open provider question is reported
+            // with the other questions, not as missing.
+            if (questions.isOpen(w)) continue;
             try diags.add(.unresolvable, null, "no package called {s} in the sync databases", .{w}, null);
-            missing = true;
+            ok = false;
             continue;
         };
         _ = c.alpm_add_pkg(h.h, p);
     }
-    if (missing or questions.failed) return null;
+    return ok and !questions.failed;
+}
 
-    var data: ?*c.alpm_list_t = null;
-    if (c.alpm_trans_prepare(h.h, &data) != 0) {
-        try reportPrepare(a, h, data, diags);
-        return null;
-    }
-    if (questions.open.items.len > 0) {
-        for (questions.open.items) |o| {
-            const options = try std.mem.join(a, ", ", o.options);
-            try diags.addHint(.provider_choice, null, "{s} has more than one provider: {s}", .{ o.name, options }, "pick one in [providers], like {s} = \"{s}\"", .{ o.name, o.options[0] });
-        }
-        return null;
-    }
-
-    // every package that would be installed, with its dependencies resolved
-    // to the package that satisfies them.
-    const adds = c.alpm_trans_get_add(h.h);
+/// every package the transaction would install, with each dependency
+/// resolved to the package that satisfies it.
+fn lockPackages(a: Allocator, adds: ?*c.alpm_list_t) Error![]const lock.Package {
     var packages: std.ArrayList(lock.Package) = .empty;
     var it = listItems(c.alpm_pkg_t, adds);
     while (it.next()) |p| {
@@ -205,27 +243,20 @@ pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Er
             .depends = deps.items,
         });
     }
-    var keyring = in.keyring;
-    if (keyring.len == 0) {
-        keyring = "none";
-        var dbs = listItems(c.alpm_db_t, syncdbs);
-        while (dbs.next()) |db| {
-            const p = c.alpm_db_get_pkg(db, "archlinux-keyring") orelse continue;
-            keyring = try a.dupe(u8, str(c.alpm_pkg_get_version(p)));
-            break;
-        }
-    }
-    var l: lock.Lock = .{
-        .sync_date = in.sync_date,
-        .keyring = keyring,
-        .providers = questions.chosen.items,
-        .packages = packages.items,
-    };
-    try lock.normalize(a, &l);
-    return l;
+    return packages.items;
 }
 
-fn reportPrepare(a: Allocator, h: Handle, data: ?*c.alpm_list_t, diags: *diag.List) !void {
+/// the archlinux-keyring version in the sync databases, or "none".
+fn keyringVersion(a: Allocator, h: Handle) Error![]const u8 {
+    var dbs = listItems(c.alpm_db_t, c.alpm_get_syncdbs(h.h));
+    while (dbs.next()) |db| {
+        const p = c.alpm_db_get_pkg(db, "archlinux-keyring") orelse continue;
+        return a.dupe(u8, str(c.alpm_pkg_get_version(p)));
+    }
+    return "none";
+}
+
+fn reportPrepare(h: Handle, data: ?*c.alpm_list_t, diags: *diag.List) !void {
     switch (c.alpm_errno(h.h)) {
         c.ALPM_ERR_UNSATISFIED_DEPS => {
             var it = listItems(c.alpm_depmissing_t, data);
@@ -243,5 +274,4 @@ fn reportPrepare(a: Allocator, h: Handle, data: ?*c.alpm_list_t, diags: *diag.Li
         },
         else => try diags.add(.alpm_failed, null, "resolving failed: {s}", .{h.lastError()}, null),
     }
-    _ = a;
 }

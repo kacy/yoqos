@@ -6,7 +6,6 @@
 const std = @import("std");
 const compose = @import("compose.zig");
 const config = @import("config.zig");
-const catalog = @import("catalog.zig");
 const planner = @import("planner.zig");
 const diag = @import("diag.zig");
 const edit = @import("edit.zig");
@@ -94,14 +93,8 @@ fn remove(a: Allocator, c: *const config.Config, top: []const u8, text: *[]const
 }
 
 fn service(a: Allocator, c: *const config.Config, text: *[]const u8, name: []const u8, enabled: bool, diags: *diag.List) !?Note {
-    const known = catalog.service(name) != null or if (c.services.get(name)) |s| s.unit != null and s.package != null else false;
-    if (!known) {
-        const names = catalog.serviceNames();
-        if (diag.suggest(name, &names)) |s| {
-            try diags.addHint(.unknown_service, null, "unknown service \"{s}\"", .{name}, "did you mean \"{s}\"?", .{s});
-        } else {
-            try diags.add(.unknown_service, null, "unknown service \"{s}\"", .{name}, "set its unit and package in [services.<name>]");
-        }
+    if (!config.knownService(c, name)) {
+        try config.unknownService(diags, name, null);
         return null;
     }
     const what: Note.What = if (enabled) .enabled else .disabled;

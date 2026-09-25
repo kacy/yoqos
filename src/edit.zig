@@ -69,9 +69,19 @@ fn splice(a: Allocator, text: []const u8, at: usize, remove: usize, insert: []co
     return std.mem.concat(a, u8, &.{ text[0..at], insert, text[at + remove ..] });
 }
 
+/// `s` as a toml string, quotes included.
 fn quoted(a: Allocator, s: []const u8) ![]u8 {
+    return render(a, toml.writeString, s);
+}
+
+/// `key` as a toml key: bare when it can be, quoted otherwise.
+fn keyText(a: Allocator, key: []const u8) ![]u8 {
+    return render(a, toml.writeKey, key);
+}
+
+fn render(a: Allocator, comptime f: fn (*std.Io.Writer, []const u8) std.Io.Writer.Error!void, s: []const u8) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(a);
-    toml.writeString(&out.writer, s) catch return error.OutOfMemory;
+    f(&out.writer, s) catch return error.OutOfMemory;
     return out.toOwnedSlice();
 }
 
@@ -230,12 +240,6 @@ fn lastEnd(t: *const toml.Table) usize {
     var end: usize = 0;
     for (t.entries.items) |e| end = @max(end, e.value.span.end);
     return end;
-}
-
-fn keyText(a: Allocator, key: []const u8) ![]const u8 {
-    var out: std.Io.Writer.Allocating = .init(a);
-    toml.writeKey(&out.writer, key) catch return error.OutOfMemory;
-    return out.toOwnedSlice();
 }
 
 // -- tests --
