@@ -158,19 +158,14 @@ test "apply installs, sets, and removes, and the plan comes back empty" {
     const local = try std.fs.path.join(a, &.{ root, "var/lib/pacman/local" });
     try cwd.createDirPath(io, local);
     try cwd.writeFile(io, .{ .sub_path = try std.fs.path.join(a, &.{ local, "ALPM_DB_VERSION" }), .data = "9\n" });
-    const cache = try std.fs.path.join(a, &.{ root, "var/cache/yoq/sync/2026-09-25" });
-    try cwd.createDirPath(io, cache);
-    for ([_][]const u8{ "core", "extra" }) |r| {
-        const bytes = try cwd.readFileAlloc(io, try std.fmt.allocPrint(a, "tests/alpm/repos/{s}.db", .{r}), a, .limited(1 << 20));
-        try cwd.writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "{s}/{s}.db", .{ cache, r }), .data = bytes });
-    }
+    const cache = try @import("../test_helpers.zig").cacheFixtureDbs(a, root);
 
     var t: TestRun = .{};
     defer t.deinit();
     const server = try std.fmt.allocPrint(a, "file://{s}/tests/alpm/repos/$repo", .{here});
     try t.fs.put(try std.fs.path.join(a, &.{ root, "etc/pacman.conf" }), try std.fmt.allocPrint(a, "[core]\nServer = {s}\n[extra]\nServer = {s}\n", .{ server, server }));
     try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n[system]\nhostname = \"atlas\"\n");
-    try t.exec(&.{ "--root", root, "update", "--dbs", try a.dupeZ(u8, cache), "--date", "2026-09-25" });
+    try t.exec(&.{ "--root", root, "update", "--dbs", cache, "--date", "2026-09-25" });
     try std.testing.expectEqual(0, t.code);
 
     try t.exec(&.{ "--root", root, "apply" });

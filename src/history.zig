@@ -2,6 +2,7 @@
 //! git commit there, so there's a record without anyone remembering git.
 
 const std = @import("std");
+const exec = @import("exec.zig");
 const Allocator = std.mem.Allocator;
 
 pub const History = struct {
@@ -41,19 +42,7 @@ pub const Git = struct {
     }
 
     fn run(g: *Git, a: Allocator, argv: []const []const u8, why: *[]const u8) !bool {
-        const r = std.process.run(a, g.io, .{ .argv = argv }) catch |e| switch (e) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.FileNotFound => {
-                why.* = "can't run git: it isn't installed (pacman -S git)";
-                return false;
-            },
-            else => {
-                why.* = try std.fmt.allocPrint(a, "can't run git: {s}", .{@errorName(e)});
-                return false;
-            },
-        };
-        if (r.term == .exited and r.term.exited == 0) return true;
-        why.* = std.mem.trim(u8, if (r.stderr.len > 0) r.stderr else r.stdout, " \n");
+        why.* = try exec.run(a, g.io, argv) orelse return true;
         return false;
     }
 

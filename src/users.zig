@@ -10,55 +10,36 @@ const std = @import("std");
 const diag = @import("diag.zig");
 const observe = @import("observe.zig");
 const planner = @import("planner.zig");
+const rootfs = @import("rootfs.zig");
+const exec = @import("exec.zig");
 const Allocator = std.mem.Allocator;
 
 /// makes one user change from a plan: "new user", "shell zsh",
 /// "join wheel", or "leave docker". returns false after saying why in
 /// `diags`.
 pub fn apply(a: Allocator, io: std.Io, root: []const u8, c: planner.Change, diags: *diag.List) !bool {
-    const r: Root = .{ .a = a, .io = io, .root = root, .diags = diags };
+    const u: Users = .{ .fs = .{ .a = a, .io = io, .dir = root }, .diags = diags };
     const step = c.to orelse c.from.?;
     const name = c.subject;
-    if (std.mem.eql(u8, step, "new user")) return r.create(name);
+    if (std.mem.eql(u8, step, "new user")) return u.create(name);
     if (std.mem.startsWith(u8, step, "shell ")) {
-        const shell = try r.shellPath(step["shell ".len..]) orelse return false;
-        return r.run(&.{ "usermod", "--root", root, "--shell", shell, name });
+        const shell = try u.shellPath(step["shell ".len..]) orelse return false;
+        return u.run(&.{ "usermod", "--root", root, "--shell", shell, name });
     }
-    if (std.mem.startsWith(u8, step, "join ")) return r.run(&.{ "gpasswd", "--root", root, "--add", name, step["join ".len..] });
-    if (std.mem.startsWith(u8, step, "leave ")) return r.run(&.{ "gpasswd", "--root", root, "--delete", name, step["leave ".len..] });
+    if (std.mem.startsWith(u8, step, "join ")) return u.run(&.{ "gpasswd", "--root", root, "--add", name, step["join ".len..] });
+    if (std.mem.startsWith(u8, step, "leave ")) return u.run(&.{ "gpasswd", "--root", root, "--delete", name, step["leave ".len..] });
     try diags.add(.bad_value, null, "os doesn't know how to {s} for {s}", .{ step, name }, null);
     return false;
 }
 
-const Root = struct {
-    a: Allocator,
-    io: std.Io,
-    root: []const u8,
+const Users = struct {
+    fs: rootfs.Root,
     diags: *diag.List,
 
-    fn path(r: Root, rel: []const u8) ![]const u8 {
-        return std.fs.path.join(r.a, &.{ r.root, rel });
-    }
-
-    fn read(r: Root, rel: []const u8) ![]const u8 {
-        return std.Io.Dir.cwd().readFileAlloc(r.io, try r.path(rel), r.a, .limited(16 << 20)) catch |e| switch (e) {
-            error.OutOfMemory => error.OutOfMemory,
-            else => "",
-        };
-    }
-
     /// runs a shadow tool. its own message says what went wrong.
-    fn run(r: Root, argv: []const []const u8) !bool {
-        const res = std.process.run(r.a, r.io, .{ .argv = argv }) catch |e| switch (e) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => {
-                try r.diags.add(.bad_value, null, "can't run {s}: {s}", .{ argv[0], @errorName(e) }, "it comes with the shadow package");
-                return false;
-            },
-        };
-        if (res.term == .exited and res.term.exited == 0) return true;
-        const why = std.mem.trim(u8, if (res.stderr.len > 0) res.stderr else res.stdout, " \n");
-        try r.diags.add(.bad_value, null, "{s} failed: {s}", .{ argv[0], why }, null);
+    fn run(u: Users, argv: []const []const u8) !bool {
+        const why = try exec.run(u.fs.a, u.fs.io, argv) orelse return true;
+        try u.diags.add(.bad_value, null, "{s}", .{why}, null);
         return false;
     }
 
@@ -66,42 +47,40 @@ const Root = struct {
     /// id map has for it, then records the uid it got. a group already
     /// named after the user, as a userdel can leave behind, becomes its
     /// group.
-    fn create(r: Root, name: []const u8) !bool {
+    fn create(u: Users, name: []const u8) !bool {
+        const a = u.fs.a;
         var argv: std.ArrayList([]const u8) = .empty;
-        try argv.appendSlice(r.a, &.{ "useradd", "--root", r.root, "--create-home" });
-        const group_line = try std.fmt.allocPrint(r.a, "\n{s}:", .{name});
-        const groups = try std.mem.concat(r.a, u8, &.{ "\n", try r.read("etc/group") });
-        if (std.mem.indexOf(u8, groups, group_line) != null) {
-            try argv.appendSlice(r.a, &.{ "--gid", name });
-        } else try argv.append(r.a, "--user-group");
-        const ids = try r.read(ids_path);
-        if (lookup(ids, name)) |uid| try argv.appendSlice(r.a, &.{ "--uid", uid });
-        try argv.append(r.a, name);
-        if (!try r.run(argv.items)) return false;
-        if (lookup(ids, name) != null) return true;
+        try argv.appendSlice(a, &.{ "useradd", "--root", u.fs.dir, "--create-home" });
+        const groups = try std.mem.concat(a, u8, &.{ "\n", try u.fs.read("etc/group") });
+        if (std.mem.indexOf(u8, groups, try std.fmt.allocPrint(a, "\n{s}:", .{name})) != null) {
+            try argv.appendSlice(a, &.{ "--gid", name });
+        } else try argv.append(a, "--user-group");
+        const known = lookup(try u.fs.read(ids_path), name);
+        if (known) |uid| try argv.appendSlice(a, &.{ "--uid", uid });
+        try argv.append(a, name);
+        if (!try u.run(argv.items)) return false;
+        if (known != null) return true;
 
-        const users = try observe.users(r.a, try r.read("etc/passwd"), "");
-        const u = for (users) |u| {
-            if (std.mem.eql(u8, u.name, name)) break u;
-        } else return true;
-        const line = try std.fmt.allocPrint(r.a, "{s} {d}\n", .{ name, u.uid });
-        const cwd = std.Io.Dir.cwd();
-        const p = try r.path(ids_path);
-        cwd.createDirPath(r.io, std.fs.path.dirnamePosix(p).?) catch {};
-        cwd.writeFile(r.io, .{ .sub_path = p, .data = try std.mem.concat(r.a, u8, &.{ ids, line }) }) catch {
-            try r.diags.add(.bad_value, null, "created {s}, but can't record its uid in {s}", .{ name, p }, null);
-            return false;
-        };
+        for (try observe.users(a, try u.fs.read("etc/passwd"), "")) |made| {
+            if (!std.mem.eql(u8, made.name, name)) continue;
+            u.fs.append(ids_path, try std.fmt.allocPrint(a, "{s} {d}\n", .{ name, made.uid })) catch |e| switch (e) {
+                error.OutOfMemory => return e,
+                error.WriteFailed => {
+                    try u.diags.add(.bad_value, null, "created {s}, but can't record its uid in {s}", .{ name, try u.fs.path(ids_path) }, null);
+                    return false;
+                },
+            };
+        }
         return true;
     }
 
     /// a shell by name, like "zsh", is the binary of that name under the
     /// root. a path is used as it is.
-    fn shellPath(r: Root, shell: []const u8) !?[]const u8 {
+    fn shellPath(u: Users, shell: []const u8) !?[]const u8 {
         if (std.mem.indexOfScalar(u8, shell, '/') != null) return shell;
-        const full = try std.fmt.allocPrint(r.a, "/usr/bin/{s}", .{shell});
-        std.Io.Dir.cwd().access(r.io, try r.path(full[1..]), .{}) catch {
-            try r.diags.add(.bad_value, null, "the shell {s} isn't installed", .{shell}, try std.fmt.allocPrint(r.a, "add {s} to packages", .{shell}));
+        const full = try std.fmt.allocPrint(u.fs.a, "/usr/bin/{s}", .{shell});
+        std.Io.Dir.cwd().access(u.fs.io, try u.fs.path(full[1..]), .{}) catch {
+            try u.diags.add(.bad_value, null, "the shell {s} isn't installed", .{shell}, try std.fmt.allocPrint(u.fs.a, "add {s} to packages", .{shell}));
             return null;
         };
         return full;
@@ -171,7 +150,8 @@ test "users under a root: create, shell, groups, and the same uid again" {
         step("guest", .change, "shell zsh"),
         step("guest", .add, "join wheel"),
     }) |c| try expectOk(try apply(a, io, root, c, &diags), &diags);
-    const r: Root = .{ .a = a, .io = io, .root = root, .diags = &diags };
+    const u: Users = .{ .fs = .{ .a = a, .io = io, .dir = root }, .diags = &diags };
+    const r = u.fs;
     const us = try observe.users(a, try r.read("etc/passwd"), try r.read("etc/group"));
     try testing.expectEqual(1, us.len);
     try testing.expectEqualStrings("guest", us[0].name);
@@ -185,7 +165,7 @@ test "users under a root: create, shell, groups, and the same uid again" {
 
     // gone and back: the same uid, where useradd alone would take the
     // next one after other's.
-    try expectOk(try r.run(&.{ "userdel", "--root", root, "guest" }), &diags);
+    try expectOk(try u.run(&.{ "userdel", "--root", root, "guest" }), &diags);
     try tmp.dir.writeFile(io, .{ .sub_path = "etc/passwd", .data = "root:x:0:0::/root:/bin/sh\nother:x:1001:1001::/:/bin/sh\n" });
     diags.items.clearRetainingCapacity();
     try expectOk(try apply(a, io, root, step("guest", .add, "new user"), &diags), &diags);

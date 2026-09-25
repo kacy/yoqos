@@ -231,19 +231,12 @@ test "edits update the lock from the cached databases" {
     const a = arena.allocator();
     const root = try std.fmt.allocPrintSentinel(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}, 0);
 
-    // the fixture databases, cached as if downloaded on 2026-09-25.
-    const cache = try std.fs.path.join(a, &.{ root, "var/cache/yoq/sync/2026-09-25" });
-    const cwd = std.Io.Dir.cwd();
-    try cwd.createDirPath(std.testing.io, cache);
-    for ([_][]const u8{ "core", "extra" }) |r| {
-        const bytes = try cwd.readFileAlloc(std.testing.io, try std.fmt.allocPrint(a, "tests/alpm/repos/{s}.db", .{r}), a, .limited(1 << 20));
-        try cwd.writeFile(std.testing.io, .{ .sub_path = try std.fmt.allocPrint(a, "{s}/{s}.db", .{ cache, r }), .data = bytes });
-    }
+    const cache = try @import("../test_helpers.zig").cacheFixtureDbs(a, root);
 
     var t: TestRun = .{};
     defer t.deinit();
     try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
-    try t.exec(&.{ "--root", root, "update", "--dbs", try a.dupeZ(u8, cache), "--date", "2026-09-25" });
+    try t.exec(&.{ "--root", root, "update", "--dbs", cache, "--date", "2026-09-25" });
     try std.testing.expectEqual(0, t.code);
 
     try t.exec(&.{ "--root", root, "add", "neovim" });

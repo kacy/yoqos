@@ -14,6 +14,7 @@ const planner = @import("planner.zig");
 const settings = @import("settings.zig");
 const systemd = @import("systemd.zig");
 const users = @import("users.zig");
+const rootfs = @import("rootfs.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Target = alpm.Target;
@@ -91,26 +92,24 @@ fn changeUnits(a: Allocator, p: *const planner.Plan, off: bool, diags: *diag.Lis
     return true;
 }
 
-/// where the journal lives under a root.
-fn journalPath(a: Allocator, root: []const u8) ![]const u8 {
-    return std.fs.path.join(a, &.{ root, "var/lib/yoq/journal" });
-}
+const journal = "var/lib/yoq/journal";
 
-/// appends one line to the journal.
+/// appends one line to the journal. a journal that can't be written
+/// doesn't stop the apply.
 pub fn record(a: Allocator, io: std.Io, root: []const u8, time: i64, event: []const u8, hash: []const u8) !void {
-    const path = try journalPath(a, root);
-    const cwd = std.Io.Dir.cwd();
-    cwd.createDirPath(io, std.fs.path.dirnamePosix(path).?) catch return;
-    const old = cwd.readFileAlloc(io, path, a, .limited(64 << 20)) catch "";
+    const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
     const line = try std.fmt.allocPrint(a, "{{\"time\":{d},\"event\":\"{s}\",\"plan\":\"{s}\"}}\n", .{ time, event, hash });
-    cwd.writeFile(io, .{ .sub_path = path, .data = try std.mem.concat(a, u8, &.{ old, line }) }) catch return;
+    fs.append(journal, line) catch |e| switch (e) {
+        error.OutOfMemory => return e,
+        error.WriteFailed => {},
+    };
 }
 
 /// the plan hash of a run that started and never finished, if the last one
 /// didn't.
 pub fn unfinished(a: Allocator, io: std.Io, root: []const u8) !?[]const u8 {
-    const text = std.Io.Dir.cwd().readFileAlloc(io, try journalPath(a, root), a, .limited(64 << 20)) catch return null;
-    const trimmed = std.mem.trimEnd(u8, text, "\n");
+    const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
+    const trimmed = std.mem.trimEnd(u8, try fs.read(journal), "\n");
     const last = trimmed[if (std.mem.lastIndexOfScalar(u8, trimmed, '\n')) |i| i + 1 else 0..];
     const Line = struct { time: i64, event: []const u8, plan: []const u8 };
     const parsed = std.json.parseFromSliceLeaky(Line, a, last, .{}) catch return null;
