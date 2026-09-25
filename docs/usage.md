@@ -175,15 +175,29 @@ $ os add fd
 + packages "fd"
 
 saved /etc/yoq/machine.toml.
-updated machine.lock: +1. next: os plan, then os apply
+updated machine.lock: +1.
+
+packages
+  + fd 10.3.0-1
+
+plan: 1 to add, 0 to change, 0 to remove · no reboot
+
+apply this? [y/N] y
+
+applied 1 change.
 ```
 
-these edit `machine.toml` for you and keep its comments and formatting.
+these edit `machine.toml` for you, keep its comments and formatting, and
+then apply the change the way `os apply` does: the plan, a question, and
+the change. `--yes` skips the question, and `--no-apply` stops after the
+edit. without a terminal, or with `--json`, they stop after the edit too,
+and `os apply` makes the change.
+
 they also update the lock, since a service brings its package, resolving
 against the same package date the lock already has, so adding one package
-never upgrades anything else.
-that needs the package databases for that date, which `os update` downloads.
-if they aren't there, `add` says so, and `os update` catches the lock up.
+never upgrades anything else. that needs the package databases for that
+date, which `os update` downloads. if they aren't there, `add` says so,
+doesn't apply, and `os update` catches the lock up.
 
 `remove` works on packages from includes too: it adds them to `[remove]`
 rather than editing the included file. if a package comes from a service or

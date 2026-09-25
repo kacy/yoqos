@@ -52,7 +52,7 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try output.writeDoc(ctx.out, "yoq.update/1", .{ .lock = path, .sync_date = l.sync_date, .packages = l.packages.len, .diff = d });
         return 0;
     }
-    try locking.reportLock(ctx, try std.fmt.allocPrint(a, "resolved {d} packages as of {s}", .{ l.packages.len, l.sync_date }), d);
+    try locking.reportLock(ctx, try std.fmt.allocPrint(a, "resolved {d} packages as of {s}", .{ l.packages.len, l.sync_date }), d, true);
     return 0;
 }
 

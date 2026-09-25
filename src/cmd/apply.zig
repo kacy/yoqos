@@ -18,17 +18,29 @@ const Allocator = std.mem.Allocator;
 pub fn applyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var yes = false;
     for (args) |arg| {
-        if (cli.eql(arg, "--yes") or cli.eql(arg, "-y")) yes = true else return cli.usageError(ctx, "os apply [--yes]");
+        if (isYes(arg)) yes = true else return cli.usageError(ctx, "os apply [--yes]");
     }
-    if (!alpm.available) {
-        try ctx.err.writeAll("os: this build can't change packages. build with -Dalpm.\n");
+    if (blocker(ctx)) |why| {
+        try ctx.err.print("os: {s}.\n", .{why});
         return 1;
     }
-    if (cli.eql(ctx.root, "/") and std.os.linux.geteuid() != 0) {
-        try ctx.err.writeAll("os: apply changes the machine, so it needs root.\n");
-        return 1;
-    }
+    return run(ctx, yes);
+}
 
+pub fn isYes(arg: []const u8) bool {
+    return cli.eql(arg, "--yes") or cli.eql(arg, "-y");
+}
+
+/// why apply can't run here at all, if it can't.
+pub fn blocker(ctx: *Context) ?[]const u8 {
+    if (!alpm.available) return "this build can't change packages. build with -Dalpm";
+    if (cli.eql(ctx.root, "/") and std.os.linux.geteuid() != 0) return "applying changes the machine, so it needs root";
+    return null;
+}
+
+/// shows the plan, asks unless `yes`, applies it, and checks the result.
+/// the caller has checked `blocker`.
+pub fn run(ctx: *Context, yes: bool) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
@@ -184,9 +196,8 @@ test "apply installs, sets, and removes, and the plan comes back empty" {
 
     // removing git orphans glibc and filesystem, which apply keeps until
     // [remove] names them.
-    try t.exec(&.{ "--root", root, "remove", "git" });
-    try std.testing.expectEqual(0, t.code);
-    try t.exec(&.{ "--root", root, "apply", "--yes" });
+    // `remove --yes` edits, relocks, and applies in one go.
+    try t.exec(&.{ "--root", root, "remove", "--yes", "git" });
     try std.testing.expectEqual(1, t.code);
     try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0126]: applying would remove filesystem, glibc,"));
     try t.fs.put("/etc/yoq/machine.toml", "[boot]\nkernel = \"none\"\n[system]\nhostname = \"atlas\"\n[remove]\npackages = [\"filesystem\", \"glibc\"]\n");

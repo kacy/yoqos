@@ -9,6 +9,7 @@ const alpm = @import("../alpm.zig");
 const lock = @import("../lock.zig");
 const sync = @import("../sync.zig");
 const locking = @import("lock.zig");
+const applying = @import("apply.zig");
 const planner = @import("../planner.zig");
 const Context = cli.Context;
 
@@ -30,13 +31,35 @@ pub fn disableCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
 fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
     const usage_text = switch (op) {
-        inline else => |o| "os " ++ @tagName(o) ++ if (o == .add or o == .remove) " <package>..." else " <service>...",
+        inline else => |o| "os " ++ @tagName(o) ++ (if (o == .add or o == .remove) " <package>..." else " <service>...") ++ " [--yes] [--no-apply]",
     };
-    if (args.len == 0) return cli.usageError(ctx, usage_text);
-    const names = try namesOf(ctx, ctx.gpa, args, usage_text) orelse return 2;
+    var then: Then = .{ .apply = true };
+    var rest: std.ArrayList([:0]const u8) = .empty;
+    defer rest.deinit(ctx.gpa);
+    for (args) |arg| {
+        if (applying.isYes(arg)) {
+            then.yes = true;
+        } else if (cli.eql(arg, "--no-apply")) {
+            then.apply = false;
+        } else try rest.append(ctx.gpa, arg);
+    }
+    if (rest.items.len == 0) return cli.usageError(ctx, usage_text);
+    const names = try namesOf(ctx, ctx.gpa, rest.items, usage_text) orelse return 2;
     defer ctx.gpa.free(names);
-    return apply(ctx, op, names);
+    return editConfig(ctx, op, names, then);
 }
+
+/// what follows an edit.
+const Then = struct {
+    apply: bool = false,
+    yes: bool = false,
+
+    /// whether applying can follow here: it's wanted, someone can say yes
+    /// to it, and the output stays one json document.
+    fn applies(t: Then, ctx: *Context) bool {
+        return t.apply and !ctx.json and (t.yes or ctx.interactive) and applying.blocker(ctx) == null;
+    }
+};
 
 /// the arguments as names. returns null after a usage error if one looks
 /// like a flag.
@@ -73,17 +96,18 @@ pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             return 1;
         }
     }
-    if (wanted.len > 0) return apply(ctx, .add, wanted);
+    // adopting records what's already installed; there's nothing to apply.
+    if (wanted.len > 0) return editConfig(ctx, .add, wanted, .{});
     if (extra.len == 0) {
         try ctx.out.writeAll("nothing to adopt: every installed package is in the config.\n");
         return 0;
     }
-    return apply(ctx, .add, extra);
+    return editConfig(ctx, .add, extra, .{});
 }
 
 /// edits the config for `op` on each name, writes it, and brings the lock
 /// along.
-fn apply(ctx: *Context, op: change.Op, names: []const []const u8) !u8 {
+fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: Then) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
@@ -116,12 +140,18 @@ fn apply(ctx: *Context, op: change.Op, names: []const []const u8) !u8 {
             .unchanged => try ctx.out.print("  {s} is already set that way  ({s})\n", .{ n.name, n.detail.? }),
         }
     }
-    if (!outcome.changed()) return 0;
-    if (!ctx.json) try ctx.out.print("\nsaved {s}.\n", .{top});
-    // services and packages both change what's wanted.
-    const code = try relock(ctx, top);
-    try cli.record(ctx, a, top, try commitMessage(a, op, outcome.notes));
-    return code;
+    const now = then.applies(ctx);
+    if (outcome.changed()) {
+        if (!ctx.json) try ctx.out.print("\nsaved {s}.\n", .{top});
+        // services and packages both change what's wanted.
+        const locked = try relock(ctx, top, !now);
+        try cli.record(ctx, a, top, try commitMessage(a, op, outcome.notes));
+        if (locked != .locked) return @intFromBool(locked == .failed);
+    }
+    if (!now) return 0;
+    // a name already in the config applies too: the machine may be behind.
+    try ctx.out.writeByte('\n');
+    return applying.run(ctx, then.yes);
 }
 
 /// "add fd, bat": what the change did, in the words of the command.
@@ -133,30 +163,38 @@ fn commitMessage(a: std.mem.Allocator, op: change.Op, notes: []const change.Note
     return std.fmt.allocPrint(a, "{s} {s}", .{ @tagName(op), try std.mem.join(a, ", ", names.items) });
 }
 
+const Relocked = enum { locked, skipped, failed };
+
 /// brings the lock in line with a changed config, using the
 /// databases cached for the lock's own date, so nothing else moves. with
-/// no cache for that date, it says to run `os update` instead.
-fn relock(ctx: *Context, top: []const u8) !u8 {
+/// no cache for that date, it says to run `os update` instead. `next` says
+/// what comes after, when applying doesn't follow.
+fn relock(ctx: *Context, top: []const u8, next: bool) !Relocked {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
     const old = try locking.readLock(ctx, a, top) orelse {
         try ctx.out.writeAll("no machine.lock yet: `os update` resolves one.\n");
-        return 0;
+        return .skipped;
     };
     if (!alpm.available) {
         try ctx.out.writeAll("this build can't resolve packages, so machine.lock wasn't updated.\n");
-        return 0;
+        return .skipped;
     }
     const dbs = try sync.cached(a, ctx.io, try locking.repos(ctx, a), try locking.cacheDir(ctx, a), old.sync_date) orelse {
         try ctx.out.print("no package databases cached for {s}: `os update` resolves against today's.\n", .{old.sync_date});
-        return 0;
+        return .skipped;
     };
-    const loaded = try w.config() orelse return w.fail();
-    const l = try locking.resolveLock(ctx, &w, &loaded.config, top, dbs, old.sync_date, &.{}) orelse return w.fail();
-    _ = try locking.writeLock(ctx, a, top, &l) orelse return w.fail();
-    try locking.reportLock(ctx, "updated machine.lock", try lock.diff(a, &old, &l));
-    return 0;
+    const loaded = try w.config() orelse return failed(&w);
+    const l = try locking.resolveLock(ctx, &w, &loaded.config, top, dbs, old.sync_date, &.{}) orelse return failed(&w);
+    _ = try locking.writeLock(ctx, a, top, &l) orelse return failed(&w);
+    try locking.reportLock(ctx, "updated machine.lock", try lock.diff(a, &old, &l), next);
+    return .locked;
+}
+
+fn failed(w: *cli.Work) !Relocked {
+    _ = try w.fail();
+    return .failed;
 }
 
 // -- tests --

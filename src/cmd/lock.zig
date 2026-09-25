@@ -137,10 +137,12 @@ pub fn writeLock(ctx: *Context, a: Allocator, top: []const u8, l: *const lock.Lo
 }
 
 /// "<what>: +2 -1. next: os plan, then os apply" after the lock changes.
-pub fn reportLock(ctx: *Context, what: []const u8, d: lock.Diff) !void {
+/// says how the lock changed, and what's next unless `next` is false
+/// because applying follows right away.
+pub fn reportLock(ctx: *Context, what: []const u8, d: lock.Diff, next: bool) !void {
     try ctx.out.print("{s}: ", .{what});
     try d.write(ctx.out);
-    try ctx.out.writeAll(". next: os plan, then os apply\n");
+    try ctx.out.writeAll(if (next) ". next: os plan, then os apply\n" else ".\n");
 }
 
 /// the repositories in the machine's pacman.conf, or core and extra from
