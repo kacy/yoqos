@@ -7,6 +7,7 @@ const output = @import("output.zig");
 const diag = @import("diag.zig");
 const compose = @import("compose.zig");
 const pipeline = @import("pipeline.zig");
+const sync = @import("sync.zig");
 const inspect = @import("cmd/inspect.zig");
 const edit = @import("cmd/edit.zig");
 const update = @import("cmd/update.zig");
@@ -25,6 +26,11 @@ pub const Context = struct {
     color: bool = false,
     /// set by `--config <path>`.
     config_path: []const u8 = default_config,
+    /// set by `--root <dir>`: where the machine's own files are, like
+    /// /etc/pacman.conf and /var/cache/yoq. "/" for the running machine.
+    root: []const u8 = "/",
+    /// downloads package databases.
+    fetcher: sync.Fetcher,
     files: compose.Files,
     /// answers to questions. commands ask only when `interactive` is set:
     /// stdin and stdout are terminals and --json is off.
@@ -76,7 +82,7 @@ pub fn eql(a: []const u8, b: []const u8) bool {
 pub fn run(ctx: *Context, raw: []const [:0]const u8) !u8 {
     const args = takeGlobalFlags(ctx, raw) catch |e| switch (e) {
         error.MissingConfigPath => {
-            try ctx.err.writeAll("os: --config needs a path\n");
+            try ctx.err.writeAll("os: --config and --root need a path\n");
             return 2;
         },
         else => return e,
@@ -113,6 +119,8 @@ fn takeGlobalFlags(ctx: *Context, raw: []const [:0]const u8) ![]const [:0]const 
             ctx.json = true;
         } else if (eql(arg, "--config")) {
             ctx.config_path = it.next() orelse return error.MissingConfigPath;
+        } else if (eql(arg, "--root")) {
+            ctx.root = it.next() orelse return error.MissingConfigPath;
         } else if (std.mem.startsWith(u8, arg, "--config=")) {
             ctx.config_path = arg["--config=".len..];
         } else {
@@ -130,6 +138,7 @@ fn usage(w: *std.Io.Writer) !void {
         \\global flags:
         \\  --json           machine-readable output
         \\  --config <path>  config file (default /etc/yoq/machine.toml)
+        \\  --root <dir>     the machine's files live under dir (default /)
         \\
     );
 }
@@ -271,6 +280,9 @@ pub const TestRun = struct {
     fs: compose.MemFiles = .{},
     /// typed answers to any questions, which makes the run interactive.
     input: ?[]const u8 = null,
+    /// answers downloads. by default every download fails, so no test
+    /// touches the network by accident.
+    fetcher: ?sync.Fetcher = null,
     reader: std.Io.Reader = undefined,
     code: u8 = 0,
 
@@ -281,7 +293,14 @@ pub const TestRun = struct {
     pub fn exec(t: *TestRun, args: []const [:0]const u8) !void {
         t.out = .fixed(&t.out_buf);
         t.err = .fixed(&t.err_buf);
-        t.ctx = .{ .gpa = std.testing.allocator, .io = std.testing.io, .out = &t.out, .err = &t.err, .files = t.fs.files() };
+        t.ctx = .{
+            .gpa = std.testing.allocator,
+            .io = std.testing.io,
+            .out = &t.out,
+            .err = &t.err,
+            .files = t.fs.files(),
+            .fetcher = t.fetcher orelse offline,
+        };
         if (t.input) |text| {
             t.reader = .fixed(text);
             t.ctx.in = &t.reader;
@@ -290,6 +309,17 @@ pub const TestRun = struct {
         t.code = try run(&t.ctx, args);
     }
 };
+
+const offline: sync.Fetcher = .{ .ctx = undefined, .fetchFn = struct {
+    fn f(_: *anyopaque, _: std.mem.Allocator, _: []const u8) error{OutOfMemory}!?[]const u8 {
+        return null;
+    }
+}.f };
+
+/// a path under the machine's root, like /etc/pacman.conf.
+pub fn machinePath(ctx: *const Context, a: std.mem.Allocator, path: []const u8) ![]const u8 {
+    return std.fs.path.join(a, &.{ ctx.root, path });
+}
 
 test {
     _ = inspect;

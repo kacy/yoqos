@@ -11,12 +11,14 @@ const edit = @import("../edit.zig");
 const output = @import("../output.zig");
 const planner = @import("../planner.zig");
 const sort = @import("../sort.zig");
+const sync = @import("../sync.zig");
+const compose = @import("../compose.zig");
 const Context = cli.Context;
 const eql = cli.eql;
 const Allocator = std.mem.Allocator;
 
 pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os update --dbs <dir> [--date yyyy-mm-dd]";
+    const usage_text = "os update [--dbs <dir>] [--date yyyy-mm-dd]";
     var dbs_dir: ?[]const u8 = null;
     var date: ?[]const u8 = null;
     var it: cli.ArgIter = .{ .args = args };
@@ -31,22 +33,22 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.err.writeAll("os: this build can't resolve packages. build with -Dalpm.\n");
         return 1;
     }
-    const dir = dbs_dir orelse {
-        try ctx.err.writeAll("os: downloading package databases isn't built yet. pass --dbs <dir> with core.db and friends.\n");
-        return 1;
-    };
 
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
     const loaded = try w.config() orelse return w.report();
-    const dbs = try syncDbs(ctx, a, dir) orelse return 1;
+    const sync_date = date orelse try today(ctx.io, a);
+    const dbs = if (dbs_dir) |dir|
+        try syncDbs(ctx, a, dir) orelse return 1
+    else
+        try sync.databases(a, ctx.io, ctx.fetcher, try repos(ctx, a), try cacheDir(ctx, a), sync_date, &w.diags) orelse return w.report();
     const scratch = try std.fmt.allocPrint(a, "/tmp/os-resolve-{d}", .{std.Io.Timestamp.now(ctx.io, .real).toNanoseconds()});
     defer std.Io.Dir.cwd().deleteTree(ctx.io, scratch) catch {};
 
     var in = try resolveInput(a, &loaded.config);
     in.dbs = dbs;
-    in.sync_date = date orelse try today(ctx.io, a);
+    in.sync_date = sync_date;
     in.scratch = scratch;
 
     // each round of choices can surface new ones, since a picked provider
@@ -111,6 +113,29 @@ fn saveProviders(ctx: *Context, w: *cli.Work, top: []const u8, picked: []const l
     };
     for (picked) |p| try ctx.out.print("+ providers.{s} = \"{s}\"\n", .{ p.name, p.chosen });
     return true;
+}
+
+/// the repositories in the machine's pacman.conf, or core and extra from
+/// arch's main mirror if there isn't one.
+pub fn repos(ctx: *Context, a: Allocator) ![]const sync.Repo {
+    const conf = try readMachineFile(ctx, a, "/etc/pacman.conf") orelse return &.{
+        .{ .name = "core", .servers = &.{} },
+        .{ .name = "extra", .servers = &.{} },
+    };
+    return sync.repos(a, conf, ctx, readMachineFile);
+}
+
+/// where downloaded package databases are kept, one directory per date.
+pub fn cacheDir(ctx: *Context, a: Allocator) ![]const u8 {
+    return cli.machinePath(ctx, a, "/var/cache/yoq/sync");
+}
+
+fn readMachineFile(ptr: *anyopaque, a: Allocator, path: []const u8) error{OutOfMemory}!?[]const u8 {
+    const ctx: *Context = @ptrCast(@alignCast(ptr));
+    return ctx.files.read(a, try cli.machinePath(ctx, a, path)) catch |e| switch (e) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => null,
+    };
 }
 
 /// what the config asks the resolver for: its wanted packages and provider
@@ -239,4 +264,45 @@ test "update without a terminal says which choices to make" {
     try t.exec(&.{ "update", "--dbs", "tests/alpm/repos" });
     try std.testing.expectEqual(1, t.code);
     try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0123]: java-runtime has more than one provider: jre-openjdk, jre17-openjdk"));
+}
+
+/// serves the fixture databases the way a mirror would.
+const FixtureMirror = struct {
+    fetched: usize = 0,
+
+    fn fetcher(m: *FixtureMirror) sync.Fetcher {
+        return .{ .ctx = m, .fetchFn = fetch };
+    }
+
+    fn fetch(ctx: *anyopaque, a: Allocator, url: []const u8) error{OutOfMemory}!?[]const u8 {
+        const m: *FixtureMirror = @ptrCast(@alignCast(ctx));
+        const name = std.fs.path.basename(url);
+        const path = try std.fmt.allocPrint(a, "tests/alpm/repos/{s}", .{name});
+        m.fetched += 1;
+        return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, a, .limited(1 << 20)) catch null;
+    }
+};
+
+test "update downloads the databases pacman.conf names, once per date" {
+    if (!alpm.available) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const root = try std.fmt.allocPrintSentinel(arena.allocator(), ".zig-cache/tmp/{s}", .{tmp.sub_path}, 0);
+
+    var mirror: FixtureMirror = .{};
+    var t: TestRun = .{ .fetcher = mirror.fetcher() };
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
+    try t.fs.put(try std.fs.path.join(arena.allocator(), &.{ root, "etc/pacman.conf" }), "[options]\n[core]\nServer = https://mirror.example/$repo/os/$arch\n[extra]\nServer = https://mirror.example/$repo/os/$arch\n");
+    try t.exec(&.{ "--root", root, "update", "--date", "2026-09-25" });
+    try std.testing.expectEqualStrings("", t.err.buffered());
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expectEqual(2, mirror.fetched);
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.perl-error]") != null);
+
+    try t.exec(&.{ "--root", root, "update", "--date", "2026-09-25" });
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expectEqual(2, mirror.fetched);
 }

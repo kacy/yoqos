@@ -1,6 +1,7 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 const disk = @import("disk.zig");
+const sync = @import("sync.zig");
 
 pub fn main(init: std.process.Init) !void {
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
@@ -16,9 +17,12 @@ pub fn main(init: std.process.Init) !void {
     const tty = (stdout.isTty(init.io) catch false) and (stdin.isTty(init.io) catch false);
 
     var disk_files: disk.Files = .{ .io = init.io };
+    var http: sync.HttpFetcher = .init(init.gpa, init.io);
+    defer http.deinit();
     var ctx: cli.Context = .{
         .io = init.io,
         .files = disk_files.files(),
+        .fetcher = http.fetcher(),
         .in = &in.interface,
         .interactive = tty,
         .gpa = init.gpa,
@@ -56,5 +60,6 @@ test {
     _ = @import("change.zig");
     _ = @import("alpm.zig");
     _ = @import("observe.zig");
+    _ = @import("sync.zig");
     _ = disk;
 }

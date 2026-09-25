@@ -45,15 +45,12 @@ pub fn configCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 pub fn factsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os facts [--from <file> | --root <dir>]";
+    const usage_text = "os facts [--from <file>]";
     var from: ?[]const u8 = null;
-    var root: []const u8 = "/";
     var it: cli.ArgIter = .{ .args = args };
     while (it.next()) |a| {
         if (eql(a, "--from")) {
             from = it.next() orelse return cli.usageError(ctx, usage_text);
-        } else if (eql(a, "--root")) {
-            root = it.next() orelse return cli.usageError(ctx, usage_text);
         } else return cli.usageError(ctx, usage_text);
     }
 
@@ -62,7 +59,7 @@ pub fn factsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const f = if (from) |path|
         pipeline.readFacts(ctx.files, w.allocator(), path) catch |e| return factsError(ctx, e, path)
     else
-        try observe.observe(w.allocator(), ctx.io, .{ .root = root }, &w.diags);
+        try observe.observe(w.allocator(), ctx.io, .{ .root = ctx.root }, &w.diags);
     if (w.failed()) return w.report();
 
     if (ctx.json) {
