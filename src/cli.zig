@@ -10,6 +10,7 @@ const pipeline = @import("pipeline.zig");
 const sync = @import("sync.zig");
 const history = @import("history.zig");
 const init_cmd = @import("cmd/init.zig");
+const apply_cmd = @import("cmd/apply.zig");
 const inspect = @import("cmd/inspect.zig");
 const edit = @import("cmd/edit.zig");
 const update = @import("cmd/update.zig");
@@ -56,6 +57,7 @@ const commands = [_]Command{
     .{ .name = "init", .summary = "write a config that describes this machine", .handler = init_cmd.initCmd },
     .{ .name = "status", .summary = "what matches the config, what changed, what's failing", .handler = inspect.statusCmd },
     .{ .name = "plan", .summary = "show what apply would change", .handler = inspect.planCmd },
+    .{ .name = "apply", .summary = "make this machine match its config", .handler = apply_cmd.applyCmd },
     .{ .name = "update", .summary = "resolve the config against today's arch packages", .handler = update.updateCmd },
     .{ .name = "add", .summary = "add packages to the config", .handler = edit.addCmd },
     .{ .name = "remove", .summary = "remove packages from the config", .handler = edit.removeCmd },
@@ -298,6 +300,15 @@ pub fn inputs(ctx: *const Context) pipeline.Inputs {
     return .{ .config_path = ctx.config_path, .root = ctx.root, .facts_path = ctx.facts_path };
 }
 
+/// asks a yes or no question. anything but y or yes is no.
+pub fn confirm(ctx: *Context, question: []const u8) !bool {
+    try ctx.out.print("{s} [y/N] ", .{question});
+    try ctx.out.flush();
+    const read = ctx.in.?.takeDelimiter('\n') catch return false;
+    const answer = std.mem.trim(u8, read orelse return false, " \t\r");
+    return std.ascii.eqlIgnoreCase(answer, "y") or std.ascii.eqlIgnoreCase(answer, "yes");
+}
+
 /// asks the user to pick one of `options` and returns its index. empty
 /// input picks the first. returns null at the end of input.
 pub fn choose(ctx: *Context, question: []const u8, options: []const []const u8) !?usize {
@@ -425,6 +436,7 @@ pub fn machinePath(ctx: *const Context, a: std.mem.Allocator, path: []const u8) 
 
 test {
     _ = init_cmd;
+    _ = apply_cmd;
     _ = inspect;
     _ = edit;
     _ = update;

@@ -7,8 +7,8 @@ going to change, and every change becomes a generation you can boot back into.
 it's still arch underneath: same packages, same wiki, and you can stop using it
 whenever you want.
 
-it's early. nothing installs or removes packages yet, but the rest of the
-loop is there:
+it's early. `os apply` installs and removes packages and sets the system
+settings. services, users, and rollback come next.
 
 ```
 os init       # write a config that describes this machine
@@ -16,6 +16,7 @@ os status     # what matches the config, what changed, what's failing
 os add fd     # edit the config (and the lock) for you
 os update     # resolve against today's arch packages into machine.lock
 os plan       # what applying would change
+os apply      # show the plan, ask, apply it
 os why perl   # which config line brings a package in
 ```
 
@@ -47,8 +48,8 @@ ssh = true
 ```
 
 ```
-os apply      # show the plan, ask, apply it
 os update     # move to today's arch packages
+os apply      # show the plan, ask, apply it
 os rollback   # go back to the previous generation
 ```
 

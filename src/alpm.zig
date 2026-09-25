@@ -22,6 +22,9 @@ pub const SyncDb = struct {
     name: []const u8,
     /// a `<name>.db` file.
     path: []const u8,
+    /// where the repository's packages download from, most preferred first:
+    /// directories like https://geo.mirror.pkgbuild.com/core/os/x86_64.
+    servers: []const []const u8 = &.{},
 };
 
 pub const ResolveInput = struct {
@@ -58,6 +61,43 @@ pub const Resolved = union(enum) {
 /// databases, the way pacman would install them into an empty root.
 pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Error!Resolved {
     return if (comptime available) impl.resolve(a, io, in, diags) else error.AlpmUnavailable;
+}
+
+/// the parts of libalpm's download sandbox to turn off.
+pub const Sandbox = struct {
+    no_filesystem: bool = false,
+    no_syscalls: bool = false,
+};
+
+/// a change to the packages installed in a root: what `os apply` does.
+pub const Transaction = struct {
+    root: []const u8,
+    /// pacman's database directory for `root`.
+    dbpath: []const u8,
+    /// the sync databases the lock was resolved against. they replace the
+    /// ones in `dbpath`, so libalpm sees exactly the locked versions.
+    dbs: []const SyncDb,
+    /// where downloaded packages are kept.
+    cachedir: []const u8,
+    /// pacman's keyring, to check package signatures. null skips checking,
+    /// which only tests should do.
+    gpgdir: ?[]const u8,
+    /// how libalpm downloads, from pacman.conf.
+    download_user: ?[]const u8 = null,
+    sandbox: Sandbox = .{},
+    /// packages to install or upgrade, at exactly these versions.
+    install: []const lock.Package = &.{},
+    remove: []const []const u8 = &.{},
+    /// install reasons to set afterwards: installed on purpose or not.
+    explicit: []const []const u8 = &.{},
+    dependency: []const []const u8 = &.{},
+};
+
+/// runs `t`: removals first, then installs and upgrades, then reasons.
+/// returns false, with reasons in `diags`, if any step failed; steps
+/// already committed stay committed.
+pub fn transact(a: Allocator, io: std.Io, t: Transaction, diags: *diag.List) Error!bool {
+    return if (comptime available) impl.transact(a, io, t, diags) else error.AlpmUnavailable;
 }
 
 /// reports choices nobody made, for when there's no one to ask.
@@ -145,6 +185,19 @@ test "resolve pulls in the whole closure with resolved dependencies" {
     try testing.expectEqual(l.packages.len, back.packages.len);
 }
 
+test "a dependency that names a package gets it, even when something provides the name" {
+    if (!available) return error.SkipZigTest;
+    var t: Fixture = .{};
+    defer t.deinit();
+    try t.init();
+    const l = (try t.resolve(&.{"fetcher"}, &.{})).lock;
+    try testing.expect(l.package("certs") != null);
+    const f = l.package("fetcher").?;
+    try testing.expectEqual(2, f.depends.len);
+    try testing.expectEqualStrings("certs", f.depends[0]);
+    try testing.expectEqualStrings("certs-utils", f.depends[1]);
+}
+
 test "a virtual package with several providers needs a choice" {
     if (!available) return error.SkipZigTest;
     var t: Fixture = .{};
@@ -222,4 +275,65 @@ test "without -Dalpm everything says so" {
     var diags: diag.List = .init(testing.allocator);
     defer diags.deinit();
     try testing.expectError(error.AlpmUnavailable, localPackages(testing.allocator, "/", "/var/lib/pacman", &diags));
+}
+
+test "install a locked closure into a root, then remove part of it" {
+    if (!available) return error.SkipZigTest;
+    // installing sets file ownership, which takes root.
+    if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
+    var t: Fixture = .{};
+    defer t.deinit();
+    try t.init();
+    const a = t.arena.allocator();
+    const io = testing.io;
+    const l = (try t.resolve(&.{"git"}, &.{})).lock;
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = buf[0..try std.process.currentPath(io, &buf)];
+    const root = try std.fs.path.join(a, &.{ cwd, t.scratch, "target" });
+    const dbpath = try std.fs.path.join(a, &.{ root, "var/lib/pacman" });
+    const local = try std.fs.path.join(a, &.{ dbpath, "local" });
+    try std.Io.Dir.cwd().createDirPath(io, local);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fs.path.join(a, &.{ local, "ALPM_DB_VERSION" }), .data = "9\n" });
+
+    var dbs: [fixture_dbs.len]SyncDb = undefined;
+    for (fixture_dbs, &dbs) |f, *d| {
+        const server = try std.fmt.allocPrint(a, "file://{s}/tests/alpm/repos/{s}", .{ cwd, f.name });
+        d.* = .{ .name = f.name, .path = f.path, .servers = try a.dupe([]const u8, &.{server}) };
+    }
+    var deps: std.ArrayList([]const u8) = .empty;
+    for (l.packages) |p| {
+        if (!std.mem.eql(u8, p.name, "git")) try deps.append(a, p.name);
+    }
+    const base: Transaction = .{
+        .root = root,
+        .dbpath = dbpath,
+        .dbs = &dbs,
+        .cachedir = try std.fs.path.join(a, &.{ root, "var/cache/pkg" }),
+        .gpgdir = null,
+    };
+
+    var install = base;
+    install.install = l.packages;
+    install.explicit = &.{"git"};
+    install.dependency = deps.items;
+    if (!try transact(a, io, install, &t.diags)) {
+        for (t.diags.items.items) |d| std.debug.print("{s}\n", .{d.message});
+        return error.TestUnexpectedResult;
+    }
+    var have = (try localPackages(a, root, dbpath, &t.diags)).?;
+    try testing.expectEqual(l.packages.len, have.len);
+    var f: facts.Facts = .{ .packages = have };
+    f.normalize();
+    try testing.expectEqual(facts.Package.Reason.explicit, f.package("git").?.reason);
+    try testing.expectEqual(facts.Package.Reason.dependency, f.package("glibc").?.reason);
+    try testing.expectEqualStrings("2.51.0-1", f.package("git").?.version);
+    // the package's files are on disk.
+    try std.Io.Dir.cwd().access(io, try std.fs.path.join(a, &.{ root, "usr/share/doc/git/README" }), .{});
+
+    var remove = base;
+    remove.remove = &.{ "git", "perl-error", "perl", "curl", "openssl" };
+    try testing.expect(try transact(a, io, remove, &t.diags));
+    have = (try localPackages(a, root, dbpath, &t.diags)).?;
+    try testing.expectEqual(l.packages.len - 5, have.len);
 }

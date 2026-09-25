@@ -7,7 +7,10 @@ const lock = @import("lock.zig");
 const diag = @import("diag.zig");
 const api = @import("alpm.zig");
 const Allocator = std.mem.Allocator;
-const c = @cImport(@cInclude("alpm.h"));
+const c = @cImport({
+    @cInclude("alpm.h");
+    @cInclude("stdio.h");
+});
 const Error = api.Error;
 const ResolveInput = api.ResolveInput;
 const Resolved = api.Resolved;
@@ -32,6 +35,9 @@ const Handle = struct {
     fn lastError(h: Handle) []const u8 {
         return std.mem.span(c.alpm_strerror(c.alpm_errno(h.h)));
     }
+
+    const configure = configureImpl;
+    const run = runImpl;
 };
 
 fn listItems(comptime T: type, list: ?*c.alpm_list_t) ListIter(T) {
@@ -132,18 +138,35 @@ pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Er
         }
     }
 
-    if (c.alpm_trans_init(h.h, 0) != 0) {
-        try diags.add(.alpm_failed, null, "can't start resolving: {s}", .{h.lastError()}, null);
-        return .failed;
+    // a dependency that names a real package gets that package, even when
+    // something already in the set provides the name: curl needs
+    // ca-certificates, which ca-certificates-utils also provides. that's
+    // what an installed arch has, and it doesn't hang on the order
+    // libalpm adds things. resolve again until nothing's missing.
+    var targets: std.ArrayList([]const u8) = .empty;
+    try targets.appendSlice(a, in.wants);
+    while (true) {
+        if (c.alpm_trans_init(h.h, 0) != 0) {
+            try diags.add(.alpm_failed, null, "can't start resolving: {s}", .{h.lastError()}, null);
+            return .failed;
+        }
+        questions = .{ .a = a, .providers = in.providers };
+        if (!try addWants(a, h, targets.items, &questions, diags)) {
+            _ = c.alpm_trans_release(h.h);
+            return .failed;
+        }
+        var data: ?*c.alpm_list_t = null;
+        if (c.alpm_trans_prepare(h.h, &data) != 0) {
+            try reportPrepare(h, data, diags);
+            _ = c.alpm_trans_release(h.h);
+            return .failed;
+        }
+        const before = targets.items.len;
+        try namedDepends(a, h, &targets);
+        if (targets.items.len == before) break;
+        _ = c.alpm_trans_release(h.h);
     }
     defer _ = c.alpm_trans_release(h.h);
-    if (!try addWants(a, h, in.wants, &questions, diags)) return .failed;
-
-    var data: ?*c.alpm_list_t = null;
-    if (c.alpm_trans_prepare(h.h, &data) != 0) {
-        try reportPrepare(h, data, diags);
-        return .failed;
-    }
     if (questions.open.items.len > 0) return .{ .choose = questions.open.items };
 
     var l: lock.Lock = .{
@@ -209,6 +232,25 @@ fn addWants(a: Allocator, h: Handle, wants: []const []const u8, questions: *cons
     return ok and !questions.failed;
 }
 
+/// adds to `targets` each package a dependency names that the transaction
+/// leaves out.
+fn namedDepends(a: Allocator, h: Handle, targets: *std.ArrayList([]const u8)) Error!void {
+    const adds = c.alpm_trans_get_add(h.h);
+    var it = listItems(c.alpm_pkg_t, adds);
+    while (it.next()) |p| {
+        var di = listItems(c.alpm_depend_t, c.alpm_pkg_get_depends(p));
+        while (di.next()) |d| {
+            if (d.mod != c.ALPM_DEP_MOD_ANY or c.alpm_pkg_find(adds, d.name) != null) continue;
+            var dbs = listItems(c.alpm_db_t, c.alpm_get_syncdbs(h.h));
+            while (dbs.next()) |db| {
+                if (c.alpm_db_get_pkg(db, d.name) == null) continue;
+                try targets.append(a, try a.dupe(u8, str(d.name)));
+                break;
+            }
+        }
+    }
+}
+
 /// every package the transaction would install, with each dependency
 /// resolved to the package that satisfies it.
 fn lockPackages(a: Allocator, adds: ?*c.alpm_list_t) Error![]const lock.Package {
@@ -220,7 +262,8 @@ fn lockPackages(a: Allocator, adds: ?*c.alpm_list_t) Error![]const lock.Package 
         while (di.next()) |d| {
             const s = c.alpm_dep_compute_string(d);
             defer std.c.free(s);
-            const sat = c.alpm_find_satisfier(adds, s) orelse continue;
+            const named = if (d.mod == c.ALPM_DEP_MOD_ANY) c.alpm_pkg_find(adds, d.name) else null;
+            const sat = named orelse c.alpm_find_satisfier(adds, s) orelse continue;
             // `bash` and `sh` can both resolve to bash; list it once.
             const name = str(c.alpm_pkg_get_name(sat));
             for (deps.items) |seen| {
@@ -266,4 +309,156 @@ fn reportPrepare(h: Handle, data: ?*c.alpm_list_t, diags: *diag.List) !void {
         },
         else => try diags.add(.alpm_failed, null, "resolving failed: {s}", .{h.lastError()}, null),
     }
+}
+
+pub fn transact(a: Allocator, io: std.Io, t: api.Transaction, diags: *diag.List) Error!bool {
+    const cwd = std.Io.Dir.cwd();
+    // the lock's databases, where libalpm will look for sync databases.
+    const sync_dir = try std.fs.path.join(a, &.{ t.dbpath, "sync" });
+    cwd.createDirPath(io, sync_dir) catch return fail(diags, "can't create {s}", .{sync_dir});
+    for (t.dbs) |db| {
+        const bytes = cwd.readFileAlloc(io, db.path, a, .limited(256 << 20)) catch return fail(diags, "can't read {s}", .{db.path});
+        const dest = try std.fmt.allocPrint(a, "{s}/{s}.db", .{ sync_dir, db.name });
+        cwd.writeFile(io, .{ .sub_path = dest, .data = bytes }) catch return fail(diags, "can't write {s}", .{dest});
+    }
+    cwd.createDirPath(io, t.cachedir) catch return fail(diags, "can't create {s}", .{t.cachedir});
+
+    const h = try Handle.open(a, t.root, t.dbpath, diags) orelse return false;
+    defer h.close();
+    if (!try h.configure(a, t, diags)) return false;
+    var questions: Questions = .{ .a = a, .providers = &.{} };
+    _ = c.alpm_option_set_questioncb(h.h, Questions.answer, &questions);
+    _ = c.alpm_option_set_logcb(h.h, logErrors, diags);
+
+    // install first: removing can take away what downloading needs, like
+    // the tls certificates.
+    if (t.install.len > 0 and !try h.run(a, t, .install, diags)) return false;
+    if (t.remove.len > 0 and !try h.run(a, t, .remove, diags)) return false;
+
+    const local = c.alpm_get_localdb(h.h);
+    for ([_]struct { []const []const u8, c.alpm_pkgreason_t }{
+        .{ t.explicit, c.ALPM_PKG_REASON_EXPLICIT },
+        .{ t.dependency, c.ALPM_PKG_REASON_DEPEND },
+    }) |group| {
+        for (group[0]) |name| {
+            const p = c.alpm_db_get_pkg(local, (try a.dupeZ(u8, name)).ptr) orelse continue;
+            if (c.alpm_pkg_set_reason(p, group[1]) != 0) return fail(diags, "can't mark {s}: {s}", .{ name, h.lastError() });
+        }
+    }
+    return true;
+}
+
+const VaList = @typeInfo(@typeInfo(@typeInfo(c.alpm_cb_log).optional.child).pointer.child).@"fn".params[3].type.?;
+
+/// libalpm's error messages, like why a download failed, as diagnostics.
+fn logErrors(ctx: ?*anyopaque, level: c.alpm_loglevel_t, fmt: [*c]const u8, args: VaList) callconv(.c) void {
+    if (level != c.ALPM_LOG_ERROR) return;
+    const diags: *diag.List = @ptrCast(@alignCast(ctx));
+    var buf: [512]u8 = undefined;
+    const n = c.vsnprintf(&buf, buf.len, fmt, args);
+    if (n < 0) return;
+    const msg = std.mem.trimEnd(u8, buf[0..@min(@as(usize, @intCast(n)), buf.len - 1)], "\n");
+    diags.add(.alpm_failed, null, "{s}", .{msg}, null) catch {};
+}
+
+/// pacman 7.1 split the sandbox switch in two, and dropped the old one from
+/// the library but not the header.
+fn setSandbox(h: Handle, s: api.Sandbox) bool {
+    if (@hasDecl(c, "alpm_option_set_disable_sandbox_filesystem")) {
+        return c.alpm_option_set_disable_sandbox_filesystem(h.h, @intFromBool(s.no_filesystem)) == 0 and
+            c.alpm_option_set_disable_sandbox_syscalls(h.h, @intFromBool(s.no_syscalls)) == 0;
+    }
+    return c.alpm_option_set_disable_sandbox(h.h, @intFromBool(s.no_filesystem or s.no_syscalls)) == 0;
+}
+
+fn fail(diags: *diag.List, comptime fmt: []const u8, args: anytype) Error!bool {
+    try diags.add(.alpm_failed, null, fmt, args, null);
+    return false;
+}
+
+/// a directory path with the trailing slash libalpm wants.
+fn dirZ(a: Allocator, parts: []const []const u8) ![*:0]const u8 {
+    const joined = try std.fs.path.join(a, parts);
+    return (try std.fmt.allocPrintSentinel(a, "{s}/", .{joined}, 0)).ptr;
+}
+
+const Step = enum { remove, install };
+
+fn configureImpl(h: Handle, a: Allocator, t: api.Transaction, diags: *diag.List) Error!bool {
+    if (c.alpm_option_add_cachedir(h.h, try dirZ(a, &.{t.cachedir})) != 0 or
+        c.alpm_option_add_hookdir(h.h, try dirZ(a, &.{ t.root, "usr/share/libalpm/hooks" })) != 0 or
+        c.alpm_option_add_hookdir(h.h, try dirZ(a, &.{ t.root, "etc/pacman.d/hooks" })) != 0 or
+        c.alpm_option_add_architecture(h.h, @import("sync.zig").arch) != 0 or
+        c.alpm_option_set_logfile(h.h, (try a.dupeZ(u8, try std.fs.path.join(a, &.{ t.root, "var/log/pacman.log" }))).ptr) != 0)
+    {
+        return fail(diags, "can't set up libalpm: {s}", .{h.lastError()});
+    }
+    if (!setSandbox(h, t.sandbox)) return fail(diags, "can't turn off the download sandbox: {s}", .{h.lastError()});
+    if (t.download_user) |user| {
+        if (c.alpm_option_set_sandboxuser(h.h, (try a.dupeZ(u8, user)).ptr) != 0) return fail(diags, "can't download as {s}: {s}", .{ user, h.lastError() });
+    }
+    // arch's default: packages must be signed, databases may be.
+    var level: c_int = 0;
+    if (t.gpgdir) |g| {
+        if (c.alpm_option_set_gpgdir(h.h, try dirZ(a, &.{g})) != 0) return fail(diags, "can't use the keyring at {s}: {s}", .{ g, h.lastError() });
+        level = c.ALPM_SIG_PACKAGE | c.ALPM_SIG_DATABASE | c.ALPM_SIG_DATABASE_OPTIONAL;
+    }
+    for (t.dbs) |db| {
+        const d = c.alpm_register_syncdb(h.h, (try a.dupeZ(u8, db.name)).ptr, level) orelse return fail(diags, "can't load the {s} database: {s}", .{ db.name, h.lastError() });
+        for (db.servers) |server| {
+            if (c.alpm_db_add_server(d, (try a.dupeZ(u8, server)).ptr) != 0) return fail(diags, "bad server {s}", .{server});
+        }
+    }
+    return true;
+}
+
+/// one transaction: all the removals, or all the installs.
+fn runImpl(h: Handle, a: Allocator, t: api.Transaction, step: Step, diags: *diag.List) Error!bool {
+    if (c.alpm_trans_init(h.h, 0) != 0) return fail(diags, "can't start the transaction: {s}", .{h.lastError()});
+    defer _ = c.alpm_trans_release(h.h);
+    switch (step) {
+        .remove => {
+            const local = c.alpm_get_localdb(h.h);
+            for (t.remove) |name| {
+                const p = c.alpm_db_get_pkg(local, (try a.dupeZ(u8, name)).ptr) orelse continue;
+                if (c.alpm_remove_pkg(h.h, p) != 0) return fail(diags, "can't remove {s}: {s}", .{ name, h.lastError() });
+            }
+        },
+        .install => for (t.install) |want| {
+            const p = try syncPackage(h, a, want, diags) orelse return false;
+            if (c.alpm_add_pkg(h.h, p) != 0) return fail(diags, "can't add {s}: {s}", .{ want.name, h.lastError() });
+        },
+    }
+    var data: ?*c.alpm_list_t = null;
+    if (c.alpm_trans_prepare(h.h, &data) != 0) {
+        try reportPrepare(h, data, diags);
+        return false;
+    }
+    if (c.alpm_trans_commit(h.h, &data) != 0) {
+        if (c.alpm_errno(h.h) == c.ALPM_ERR_FILE_CONFLICTS) {
+            var it = listItems(c.alpm_fileconflict_t, data);
+            while (it.next()) |fc| try diags.add(.alpm_failed, null, "{s} would overwrite {s}", .{ str(fc.target), str(fc.file) }, "a file there isn't owned by the package; move it away");
+            return false;
+        }
+        return fail(diags, "the transaction failed: {s}", .{h.lastError()});
+    }
+    return true;
+}
+
+/// the sync package for a locked one, checked against the lock.
+fn syncPackage(h: Handle, a: Allocator, want: lock.Package, diags: *diag.List) Error!?*c.alpm_pkg_t {
+    var dbs = listItems(c.alpm_db_t, c.alpm_get_syncdbs(h.h));
+    while (dbs.next()) |db| {
+        if (!std.mem.eql(u8, str(c.alpm_db_get_name(db)), want.repo)) continue;
+        const p = c.alpm_db_get_pkg(db, (try a.dupeZ(u8, want.name)).ptr) orelse break;
+        const version = str(c.alpm_pkg_get_version(p));
+        const sha = str(c.alpm_pkg_get_sha256sum(p));
+        if (!std.mem.eql(u8, version, want.version) or !std.mem.eql(u8, sha, want.sha256)) {
+            _ = try fail(diags, "the {s} database has {s} {s}, but the lock says {s}", .{ want.repo, want.name, version, want.version });
+            return null;
+        }
+        return p;
+    }
+    _ = try fail(diags, "{s} isn't in the {s} database the lock came from", .{ want.name, want.repo });
+    return null;
 }

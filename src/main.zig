@@ -67,5 +67,7 @@ test {
     _ = @import("status.zig");
     _ = @import("history.zig");
     _ = @import("generate.zig");
+    _ = @import("settings.zig");
+    _ = @import("apply.zig");
     _ = disk;
 }

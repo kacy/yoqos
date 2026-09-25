@@ -147,7 +147,7 @@ test "update asks for providers and saves the answer" {
         \\  2) jre17-openjdk
         \\pick one [1]: pick a number from 1 to 2.
         \\pick one [1]: + providers.java-runtime = "jre17-openjdk"
-        \\resolved 8 packages as of 2026-09-25: +8. applying isn't built yet; `os plan` shows what would change.
+        \\resolved 8 packages as of 2026-09-25: +8. next: os plan, then os apply
         \\
     , t.out.buffered());
     try std.testing.expectEqualStrings("packages = [\"jdk-tool\"]\n\n[providers]\njava-runtime = \"jre17-openjdk\"\n", t.fs.get("/etc/yoq/machine.toml").?);

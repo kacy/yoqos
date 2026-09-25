@@ -109,17 +109,22 @@ pub fn writeLock(ctx: *Context, a: Allocator, top: []const u8, l: *const lock.Lo
     return path;
 }
 
-/// "<what>: +2 -1. applying isn't built yet; ..." after the lock changes.
+/// "<what>: +2 -1. next: os plan, then os apply" after the lock changes.
 pub fn reportLock(ctx: *Context, what: []const u8, d: lock.Diff) !void {
     try ctx.out.print("{s}: ", .{what});
     try d.write(ctx.out);
-    try ctx.out.writeAll(". applying isn't built yet; `os plan` shows what would change.\n");
+    try ctx.out.writeAll(". next: os plan, then os apply\n");
 }
 
 /// the repositories in the machine's pacman.conf, or core and extra from
 /// arch's main mirror if there isn't one.
 pub fn repos(ctx: *Context, a: Allocator) ![]const sync.Repo {
-    return sync.repos(a, ctx.files, ctx.root);
+    return (try pacman(ctx, a)).repos;
+}
+
+/// the machine's pacman.conf, as far as `os` uses it.
+pub fn pacman(ctx: *Context, a: Allocator) !sync.Pacman {
+    return sync.pacmanConf(a, ctx.files, ctx.root);
 }
 
 /// where downloaded package databases are kept, one directory per date.

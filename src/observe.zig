@@ -104,14 +104,18 @@ const Reader = struct {
         return out.items;
     }
 
-    /// pacman's database lives in /usr on the rollback rung and in /var
-    /// otherwise.
     fn dbpath(r: Reader) ![]const u8 {
-        const moved = try r.path("usr/lib/sysimage/pacman");
-        std.Io.Dir.cwd().access(r.io, try std.fs.path.join(r.a, &.{ moved, "local" }), .{}) catch return r.path("var/lib/pacman");
-        return moved;
+        return pacmanDb(r.a, r.io, r.root);
     }
 };
+
+/// pacman's database directory under `root`: in /usr on the rollback rung,
+/// in /var otherwise.
+pub fn pacmanDb(a: Allocator, io: std.Io, root: []const u8) ![]const u8 {
+    const moved = try std.fs.path.join(a, &.{ root, "usr/lib/sysimage/pacman" });
+    std.Io.Dir.cwd().access(io, try std.fs.path.join(a, &.{ moved, "local" }), .{}) catch return std.fs.path.join(a, &.{ root, "var/lib/pacman" });
+    return moved;
+}
 
 /// "amd" or "intel" from /proc/cpuinfo's vendor_id, or the raw vendor.
 fn cpuVendor(text: []const u8) ?[]const u8 {

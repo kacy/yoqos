@@ -100,7 +100,7 @@ pub fn wants(a: Allocator, c: *const config.Config) ![]const Want {
     var out: std.ArrayList(Want) = .empty;
     for (c.packages.items.items) |it| try addWant(a, &out, it.name, null, it.src);
     const kernel = if (c.boot.kernel) |k| k.v else catalog.default_kernel;
-    try addWant(a, &out, kernel, "boot.kernel", if (c.boot.kernel) |k| k.src else null);
+    if (!std.mem.eql(u8, kernel, catalog.no_kernel)) try addWant(a, &out, kernel, "boot.kernel", if (c.boot.kernel) |k| k.src else null);
     if (c.hardware.cpu) |v| for (catalog.cpuPackages(v.v)) |n| try addWant(a, &out, n, "hardware.cpu", v.src);
     if (c.hardware.gpu) |v| for (catalog.gpuPackages(v.v)) |n| try addWant(a, &out, n, "hardware.gpu", v.src);
     if (c.desktop.session) |v| for (catalog.sessionPackages(v.v)) |n| try addWant(a, &out, n, "desktop.session", v.src);
@@ -603,4 +603,14 @@ test "the same inputs give the same plan and hash" {
     defer parsed.deinit();
     try testing.expectEqualStrings(&first.?, parsed.value.object.get("hash").?.string);
     try testing.expectEqual(2, parsed.value.object.get("summary").?.object.get("remove").?.integer);
+}
+
+test "a machine without a kernel" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("packages = [\"git\"]\n[boot]\nkernel = \"none\"\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{lockPkg("git", "1", &.{})} };
+    var have = [_]facts.Package{.{ .name = "git", .version = "1" }};
+    const f: facts.Facts = .{ .packages = &have };
+    try testing.expect((try plan(t.a(), &c, &l, &f, &t.diags)).?.empty());
 }

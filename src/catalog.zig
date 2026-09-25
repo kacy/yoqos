@@ -86,6 +86,10 @@ pub fn audioPackages(audio: anytype) []const []const u8 {
 
 pub const default_kernel = "linux";
 
+/// `[boot] kernel = "none"`: a machine without its own kernel, like a
+/// container.
+pub const no_kernel = "none";
+
 /// arch's kernel packages.
 pub const kernels = [_][]const u8{ "linux", "linux-lts", "linux-zen", "linux-hardened" };
 

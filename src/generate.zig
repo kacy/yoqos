@@ -18,10 +18,11 @@ pub fn fromFacts(a: Allocator, f: *const facts.Facts) !config.Config {
     inline for (comptime config.keysOf(config.System)) |field| {
         if (@field(f, field)) |v| @field(c.system, field) = .{ .v = v, .src = at };
     }
+    // no kernel installed at all, as in a container, is worth saying.
+    c.boot.kernel = .{ .v = catalog.no_kernel, .src = at };
     for (catalog.kernels) |k| {
-        const p = f.package(k) orelse continue;
-        if (p.reason != .explicit) continue;
-        if (!std.mem.eql(u8, k, catalog.default_kernel)) c.boot.kernel = .{ .v = k, .src = at };
+        if (f.package(k) == null) continue;
+        c.boot.kernel = if (std.mem.eql(u8, k, catalog.default_kernel)) null else .{ .v = k, .src = at };
         break;
     }
     if (f.cpu) |cpu| {

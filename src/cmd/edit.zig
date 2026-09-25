@@ -247,13 +247,13 @@ test "add and remove update the lock from the cached databases" {
 
     try t.exec(&.{ "--root", root, "add", "neovim" });
     try std.testing.expectEqualStrings("", t.err.buffered());
-    try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: +3. applying isn't built yet; `os plan` shows what would change.\n"));
+    try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: +3. next: os plan, then os apply\n"));
     const locked = t.fs.get("/etc/yoq/machine.lock").?;
     try std.testing.expect(std.mem.indexOf(u8, locked, "[packages.luajit]") != null);
     try std.testing.expect(std.mem.indexOf(u8, locked, "sync_date = \"2026-09-25\"") != null);
 
     try t.exec(&.{ "--root", root, "remove", "git" });
-    try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: -5. applying isn't built yet; `os plan` shows what would change.\n"));
+    try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: -5. next: os plan, then os apply\n"));
     try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "perl-error") == null);
 }
 

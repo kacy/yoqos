@@ -7,15 +7,17 @@ to use it today.
 ## what works today
 
 `os` reads a machine, writes a config for it, keeps that config and its lock
-up to date, and tells you what's different. it doesn't change the machine
-yet: there's no `os apply`, so nothing installs, removes, or enables anything.
-everything below is safe to run.
+up to date, tells you what's different, and applies the difference. `os
+apply` installs and removes packages and sets the `[system]` settings.
+services and users show up in the plan, but `apply` doesn't change them yet.
+every other command only reads the machine or edits the config.
 
 | command | what it does |
 | --- | --- |
 | `os init` | writes a config that describes this machine |
 | `os status` | what matches the config, what changed, what's failing |
 | `os plan` | every change applying would make |
+| `os apply` | makes those changes, after asking |
 | `os update` | resolves the config against today's arch packages into the lock |
 | `os add`, `os remove` | edit the package list, and the lock with it |
 | `os enable`, `os disable` | turn services on or off in the config |
@@ -70,7 +72,8 @@ behind, the plan shows the upgrades.
 
 from there, the idea is to make the config yours. move the packages you care
 about from `imported.toml` into `packages` in `machine.toml`, and delete the
-ones you don't. `os plan` shows what that would remove.
+ones you don't. `os plan` shows what that would remove, and `os apply`
+removes it.
 
 ## the everyday commands
 
@@ -122,6 +125,37 @@ key that asked for a change, when it isn't the `packages` list itself. `-v`
 lists the dependencies one by one. the last line says whether the change
 needs a reboot, and why.
 
+### apply
+
+```
+$ os apply
+packages
+  + tree 2.3.2-1
+
+plan: 1 to add, 0 to change, 0 to remove · no reboot
+
+apply this? [y/N] y
+
+applied 1 change.
+```
+
+`apply` shows the plan, asks, and then makes the changes: one pacman
+transaction for the packages, then the settings. it installs exactly the
+versions in the lock, checks each package against the lock's checksum and
+arch's signatures, and marks packages as explicit or dependencies to match
+the config. it uses the machine's own pacman.conf for mirrors and download
+settings. packages come from the lock's date, so run `os update` first to
+move to today's.
+
+afterwards it plans again and says if anything still differs. `--yes` skips
+the question; without a terminal, `apply` needs it. it needs root.
+
+read the plan before you say yes. `apply` removes every package the config
+doesn't ask for, so a config that leaves out `base` removes `base`.
+
+`apply` keeps a journal in `/var/lib/yoq/journal`. if one is cut off
+halfway, the next `apply` says so and starts from the machine as it is.
+
 ### add, remove, enable, disable
 
 ```
@@ -129,7 +163,7 @@ $ os add fd
 + packages "fd"
 
 saved /etc/yoq/machine.toml.
-updated machine.lock: +1. applying isn't built yet; `os plan` shows what would change.
+updated machine.lock: +1. next: os plan, then os apply
 ```
 
 these edit `machine.toml` for you and keep its comments and formatting. `add`
@@ -233,7 +267,7 @@ bluetooth = false
 | `packages` | packages you want installed. dependencies come along on their own. |
 | `[providers]` | which package provides a virtual one, like `initramfs` |
 | `[system]` | `hostname`, `timezone`, `locale`, and `keymap` |
-| `[boot]` | `kernel`: `linux` unless you say otherwise |
+| `[boot]` | `kernel`: `linux` unless you say otherwise. `none` for a machine without its own kernel, like a container. |
 | `[hardware]` | `cpu`: `amd` or `intel`. `gpu`: `amd`, `intel`, `nvidia`, or `none`. these bring in microcode and drivers. |
 | `[desktop]` | `session`: `hyprland`. `audio`: `pipewire`. these bring in their packages. |
 | `[users.<name>]` | `shell`, and `groups`: the full list of groups beyond the user's own |

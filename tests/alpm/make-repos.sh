@@ -1,7 +1,7 @@
 #!/bin/sh
-# builds the sync databases the alpm tests resolve against. packages are
-# tiny: a .PKGINFO and one doc file each. run from the repo root; the
-# resulting core.db and extra.db are committed, the packages aren't.
+# builds the sync databases and packages the alpm tests resolve against and
+# install. packages are tiny: a .PKGINFO and one doc file each. run from the
+# repo root; everything under tests/alpm/repos is committed.
 set -eu
 
 out=tests/alpm/repos
@@ -56,9 +56,15 @@ pkg extra jre17-openjdk 17.0.16-1 provides=java-runtime=17 depend=glibc
 pkg extra jdk-tool 1.0-1 depend=java-runtime
 pkg extra broken 1.0-1 depend=no-such-package
 pkg extra vim 9.1-1 depend=glibc conflict=neovim
+# like curl's ca-certificates: a name a package has, that another provides.
+pkg core certs 1-1
+pkg core certs-utils 1-1 provides=certs
+pkg extra fetcher 1.0-1 depend=certs-utils depend=certs
 
 for repo in core extra; do
     repo-add -q "$work/$repo/$repo.db.tar.gz" "$work/$repo"/*.pkg.tar.gz
     cp "$work/$repo/$repo.db.tar.gz" "$out/$repo.db"
+    mkdir -p "$out/$repo"
+    cp "$work/$repo"/*.pkg.tar.gz "$out/$repo/"
 done
 ls -l "$out"

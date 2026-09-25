@@ -23,40 +23,61 @@ pub const arch = switch (builtin.cpu.arch) {
     else => @tagName(builtin.cpu.arch),
 };
 
-/// the repositories in the machine's pacman.conf, in order, with their
-/// servers. `Include =` files are read under `root` too. with no
-/// pacman.conf, core and extra from arch's main mirror.
-pub fn repos(a: Allocator, files: compose.Files, root: []const u8) ![]const Repo {
-    const conf = try readUnder(a, files, root, "/etc/pacman.conf") orelse return &.{
+/// what `os` takes from the machine's pacman.conf: its repositories, in
+/// order, with their servers, and how pacman downloads.
+pub const Pacman = struct {
+    repos: []const Repo,
+    /// `DownloadUser`: the user libalpm's downloader runs as.
+    download_user: ?[]const u8 = null,
+    /// the parts of libalpm's download sandbox pacman.conf turns off, as
+    /// some containers need: `DisableSandbox` is both.
+    sandbox: alpm.Sandbox = .{},
+};
+
+/// reads pacman.conf under `root`, following `Include =` files there too.
+/// with no pacman.conf, core and extra from arch's main mirror.
+pub fn pacmanConf(a: Allocator, files: compose.Files, root: []const u8) !Pacman {
+    const conf = try readUnder(a, files, root, "/etc/pacman.conf") orelse return .{ .repos = &.{
         .{ .name = "core", .servers = &.{} },
         .{ .name = "extra", .servers = &.{} },
-    };
+    } };
+    var p: Pacman = .{ .repos = &.{} };
     var out: std.ArrayList(Repo) = .empty;
     var servers: std.ArrayList([]const u8) = .empty;
-    var current: ?[]const u8 = null;
+    var section: []const u8 = "";
     var lines = std.mem.splitScalar(u8, conf, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
         if (line.len == 0 or line[0] == '#') continue;
         if (line[0] == '[' and line[line.len - 1] == ']') {
-            if (current) |name| try out.append(a, .{ .name = name, .servers = try servers.toOwnedSlice(a) });
-            const name = line[1 .. line.len - 1];
-            current = if (std.mem.eql(u8, name, "options")) null else name;
+            if (isRepo(section)) try out.append(a, .{ .name = section, .servers = try servers.toOwnedSlice(a) });
+            section = line[1 .. line.len - 1];
             continue;
         }
-        if (current == null) continue;
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        const key = std.mem.trim(u8, line[0..eq], " \t");
-        const value = std.mem.trim(u8, line[eq + 1 ..], " \t");
-        if (std.mem.eql(u8, key, "Server")) {
-            try servers.append(a, value);
-        } else if (std.mem.eql(u8, key, "Include")) {
-            const text = try readUnder(a, files, root, value) orelse continue;
-            try mirrorlist(a, text, &servers);
+        const eq = std.mem.indexOfScalar(u8, line, '=');
+        const key = std.mem.trim(u8, line[0 .. eq orelse line.len], " \t");
+        const value = if (eq) |i| std.mem.trim(u8, line[i + 1 ..], " \t") else "";
+        if (std.mem.eql(u8, section, "options")) {
+            if (std.mem.eql(u8, key, "DownloadUser")) p.download_user = value;
+            if (std.mem.eql(u8, key, "DisableSandbox")) p.sandbox = .{ .no_filesystem = true, .no_syscalls = true };
+            if (std.mem.eql(u8, key, "DisableSandboxFilesystem")) p.sandbox.no_filesystem = true;
+            if (std.mem.eql(u8, key, "DisableSandboxSyscalls")) p.sandbox.no_syscalls = true;
+        } else if (isRepo(section)) {
+            if (std.mem.eql(u8, key, "Server")) {
+                try servers.append(a, value);
+            } else if (std.mem.eql(u8, key, "Include")) {
+                const text = try readUnder(a, files, root, value) orelse continue;
+                try mirrorlist(a, text, &servers);
+            }
         }
     }
-    if (current) |name| try out.append(a, .{ .name = name, .servers = try servers.toOwnedSlice(a) });
-    return out.items;
+    if (isRepo(section)) try out.append(a, .{ .name = section, .servers = try servers.toOwnedSlice(a) });
+    p.repos = out.items;
+    return p;
+}
+
+fn isRepo(section: []const u8) bool {
+    return section.len > 0 and !std.mem.eql(u8, section, "options");
 }
 
 fn readUnder(a: Allocator, files: compose.Files, root: []const u8, path: []const u8) !?[]const u8 {
@@ -78,12 +99,17 @@ fn mirrorlist(a: Allocator, text: []const u8, out: *std.ArrayList([]const u8)) !
     }
 }
 
-/// a server url with `$repo` and `$arch` filled in, pointing at the
-/// repository's database.
-pub fn dbUrl(a: Allocator, server: []const u8, repo: []const u8) ![]const u8 {
+/// a server url with `$repo` and `$arch` filled in: the repository's
+/// directory.
+pub fn serverUrl(a: Allocator, server: []const u8, repo: []const u8) ![]const u8 {
     const with_repo = try std.mem.replaceOwned(u8, a, server, "$repo", repo);
     const with_arch = try std.mem.replaceOwned(u8, a, with_repo, "$arch", arch);
-    return std.fmt.allocPrint(a, "{s}/{s}.db", .{ std.mem.trimEnd(u8, with_arch, "/"), repo });
+    return std.mem.trimEnd(u8, with_arch, "/");
+}
+
+/// the repository's database on a server.
+pub fn dbUrl(a: Allocator, server: []const u8, repo: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(a, "{s}/{s}.db", .{ try serverUrl(a, server, repo), repo });
 }
 
 /// downloads a url. returns null if the server can't be reached or doesn't
@@ -150,6 +176,22 @@ pub fn databases(a: Allocator, io: std.Io, fetcher: Fetcher, rs: []const Repo, c
     return out;
 }
 
+/// `dbs` with each repository's servers from `rs` filled in, as the
+/// repository directories packages download from.
+pub fn withServers(a: Allocator, dbs: []const alpm.SyncDb, rs: []const Repo) ![]const alpm.SyncDb {
+    const out = try a.dupe(alpm.SyncDb, dbs);
+    for (out) |*db| {
+        for (rs) |r| {
+            if (!std.mem.eql(u8, r.name, db.name)) continue;
+            const templates: []const []const u8 = if (r.servers.len > 0) r.servers else &.{fallback_server};
+            const urls = try a.alloc([]const u8, templates.len);
+            for (templates, urls) |t, *u| u.* = try serverUrl(a, t, r.name);
+            db.servers = urls;
+        }
+    }
+    return out;
+}
+
 /// the cached databases for `date`, or null if any is missing. never
 /// downloads.
 pub fn cached(a: Allocator, io: std.Io, rs: []const Repo, cache: []const u8, date: []const u8) !?[]const alpm.SyncDb {
@@ -188,6 +230,8 @@ test "repositories and servers from pacman.conf" {
         \\[options]
         \\HoldPkg = pacman glibc
         \\Architecture = auto
+        \\DownloadUser = alpm
+        \\DisableSandbox
         \\
         \\[core]
         \\Include = /etc/pacman.d/mirrorlist
@@ -203,7 +247,10 @@ test "repositories and servers from pacman.conf" {
         \\Server = https://pkgs.omarchy.org/$arch
         \\
     );
-    const rs = try repos(arena.allocator(), fs.files(), "/root");
+    const pc = try pacmanConf(arena.allocator(), fs.files(), "/root");
+    const rs = pc.repos;
+    try testing.expectEqualStrings("alpm", pc.download_user.?);
+    try testing.expect(pc.sandbox.no_filesystem and pc.sandbox.no_syscalls);
     try testing.expectEqual(3, rs.len);
     try testing.expectEqualStrings("core", rs[0].name);
     try testing.expectEqual(2, rs[0].servers.len);
@@ -215,7 +262,7 @@ test "repositories and servers from pacman.conf" {
     try testing.expectEqualStrings("https://pkgs.omarchy.org/" ++ arch ++ "/omarchy.db", try dbUrl(a, rs[2].servers[0], "omarchy"));
 
     // no pacman.conf: core and extra, from the fallback server.
-    const bare = try repos(a, fs.files(), "/elsewhere");
+    const bare = (try pacmanConf(a, fs.files(), "/elsewhere")).repos;
     try testing.expectEqualStrings("extra", bare[1].name);
     try testing.expectEqual(0, bare[1].servers.len);
 }
