@@ -15,10 +15,16 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "update_golden", b.option(bool, "update-golden", "rewrite golden test outputs") orelse false);
     const alpm = b.option(bool, "alpm", "link libalpm for reading and resolving arch packages") orelse false;
     options.addOption(bool, "alpm", alpm);
+    const systemd = b.option(bool, "systemd", "link libsystemd for reading unit state") orelse false;
+    options.addOption(bool, "systemd", systemd);
     root.addOptions("build_options", options);
     if (alpm) {
         root.link_libc = true;
         root.linkSystemLibrary("alpm", .{});
+    }
+    if (systemd) {
+        root.link_libc = true;
+        root.linkSystemLibrary("systemd", .{});
     }
 
     const exe = b.addExecutable(.{ .name = "os", .root_module = root });

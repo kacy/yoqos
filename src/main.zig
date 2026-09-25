@@ -61,5 +61,6 @@ test {
     _ = @import("alpm.zig");
     _ = @import("observe.zig");
     _ = @import("sync.zig");
+    _ = @import("systemd.zig");
     _ = disk;
 }

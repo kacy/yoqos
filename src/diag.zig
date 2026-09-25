@@ -23,6 +23,7 @@ pub const Code = enum {
     unresolvable,
     provider_choice,
     alpm_failed,
+    systemd_failed,
     unknown_service,
 };
 
@@ -138,6 +139,13 @@ pub const table = [_]Entry{
         .title = "package database error",
         .explanation = "libalpm couldn't open or read a package database. the message has libalpm's own " ++
             "reason. a stale lock file (db.lck) left by a crashed pacman is a common cause.",
+    },
+    .{
+        .code = .systemd_failed,
+        .id = "E0125",
+        .title = "can't read systemd",
+        .explanation = "os asks systemd over the system bus which units are enabled and running. that " ++
+            "failed, usually because systemd isn't running, as in a container or chroot.",
     },
     .{
         .code = .unknown_service,

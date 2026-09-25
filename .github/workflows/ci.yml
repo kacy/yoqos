@@ -16,14 +16,15 @@ jobs:
       - run: zig build fmt
       - run: zig build test --summary all
 
-  alpm:
-    # debian trixie ships libalpm 15, the same as arch.
+  native:
+    # debian trixie ships libalpm 15, the same as arch, and libsystemd.
+    # the container has no running systemd, so the bus test skips.
     runs-on: ubuntu-latest
     container: debian:trixie
     steps:
-      - run: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl xz-utils git libalpm-dev libarchive-dev
+      - run: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl xz-utils git libalpm-dev libarchive-dev libsystemd-dev
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - run: zig build test -Dalpm --summary all
+      - run: zig build test -Dalpm -Dsystemd --summary all

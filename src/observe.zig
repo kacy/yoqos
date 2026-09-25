@@ -7,6 +7,7 @@
 const std = @import("std");
 const facts = @import("facts.zig");
 const alpm = @import("alpm.zig");
+const systemd = @import("systemd.zig");
 const diag = @import("diag.zig");
 const Allocator = std.mem.Allocator;
 
@@ -15,6 +16,9 @@ pub const Options = struct {
     root: []const u8 = "/",
     /// read packages through libalpm. off in builds without it.
     packages: bool = alpm.available,
+    /// read units from the running systemd. only for the running machine,
+    /// and off in builds without libsystemd.
+    units: bool = systemd.available,
 };
 
 pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error{OutOfMemory}!facts.Facts {
@@ -35,6 +39,13 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
             error.AlpmUnavailable, error.AlpmFailed => null,
         };
         f.packages = pkgs orelse &.{};
+    }
+    if (opts.units and std.mem.eql(u8, opts.root, "/")) {
+        const us = systemd.units(a, diags) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.SystemdUnavailable => null,
+        };
+        f.units = us orelse &.{};
     }
     f.normalize();
     return f;

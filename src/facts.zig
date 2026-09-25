@@ -22,6 +22,8 @@ pub const Unit = struct {
     name: []const u8,
     enabled: bool = false,
     active: bool = false,
+    /// the unit tried to run and failed.
+    failed: bool = false,
 };
 
 pub const User = struct {
