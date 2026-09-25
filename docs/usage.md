@@ -18,6 +18,8 @@ every other command only reads the machine or edits the config.
 | `os status` | what matches the config, what changed, what's failing |
 | `os plan` | every change applying would make |
 | `os apply` | makes those changes, after asking |
+| `os history` | the config's generations |
+| `os rollback` | goes back to an earlier generation |
 | `os update` | resolves the config against today's arch packages into the lock |
 | `os add`, `os remove` | edit the package list, and the lock with it |
 | `os enable`, `os disable` | turn services on or off in the config |
@@ -251,12 +253,33 @@ git: in packages  (/etc/yoq/machine.toml:2)
 brings a package in. it exits with 1 when nothing in the config needs the
 package.
 
-## history
+## history and rollback
 
 `/etc/yoq` is a git repository. every change `os` makes there, from `init`,
-`add`, `remove`, `enable`, `disable`, `adopt`, and `update`, is a commit with
-a short message, like `add fd`. `git -C /etc/yoq log` is the history of the
-machine's config. edits you make by hand aren't committed for you.
+`add`, `remove`, `enable`, `disable`, `adopt`, `update`, and `rollback`, is a
+commit with a short message, like `add fd`. each commit is a generation of
+the machine's config, numbered from the first:
+
+```
+$ os history
+    1  init: atlas as found on 2026-09-25
+    2  update packages to 2026-09-25
+    3  add fd
+*   4  enable tailscale
+```
+
+`os rollback` goes back one generation, and `os rollback 2` goes back to
+generation 2. it applies that generation's config and lock like `os apply`
+does, with the plan and a question first, installing the older package
+versions from the local cache. once the machine matches, it writes those
+files back to `/etc/yoq` as a new generation, `rollback to 2: ...`, so
+nothing is lost and `os rollback` again undoes the rollback.
+
+this rolls back packages, settings, services, and users, not files that
+package scripts changed, or anything else `os` doesn't manage. whole-system
+rollback, with snapshots and boot entries, comes later on btrfs.
+
+edits you make to the config by hand aren't committed for you.
 
 ## the config
 

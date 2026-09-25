@@ -58,6 +58,16 @@ id -nG yoqtest | grep -qw video
 if id -nG yoqtest | grep -qw wheel; then echo "yoqtest is still in wheel"; exit 1; fi
 "$os" --config "$cfg" plan | grep -q "nothing to do"
 
+# rollback: back past an add, then forward again, with history to match.
+"$os" --config "$cfg" add --yes tree
+"$os" --config "$cfg" rollback --yes
+if pacman -Q tree 2>/dev/null; then echo "tree is still installed after rollback"; exit 1; fi
+if grep -q tree "$cfg"; then echo "the config still has tree after rollback"; exit 1; fi
+"$os" --config "$cfg" rollback --yes
+pacman -Q tree
+"$os" --config "$cfg" history
+"$os" --config "$cfg" remove --yes tree
+
 # a service through the whole loop, where systemd runs the machine: the
 # package goes in and the unit starts, then the unit stops and the package
 # goes.

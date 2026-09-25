@@ -37,3 +37,31 @@ pub fn cacheFixtureDbs(a: std.mem.Allocator, root: []const u8) ![:0]const u8 {
     }
     return cache;
 }
+
+/// an empty machine under `tmp` for real transactions: a pacman database
+/// with nothing installed, the fixture databases cached for 2026-09-25,
+/// and a pacman.conf, for the test's files, serving the fixture packages.
+pub const FixtureMachine = struct {
+    root: [:0]const u8,
+    cache: [:0]const u8,
+    conf_path: []const u8,
+    conf: []const u8,
+
+    pub fn init(a: std.mem.Allocator, tmp: std.testing.TmpDir) !FixtureMachine {
+        const io = std.testing.io;
+        const cwd = std.Io.Dir.cwd();
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const here = buf[0..try std.process.currentPath(io, &buf)];
+        const root = try std.fmt.allocPrintSentinel(a, "{s}/.zig-cache/tmp/{s}", .{ here, tmp.sub_path }, 0);
+        const local = try std.fs.path.join(a, &.{ root, "var/lib/pacman/local" });
+        try cwd.createDirPath(io, local);
+        try cwd.writeFile(io, .{ .sub_path = try std.fs.path.join(a, &.{ local, "ALPM_DB_VERSION" }), .data = "9\n" });
+        const server = try std.fmt.allocPrint(a, "file://{s}/tests/alpm/repos/$repo", .{here});
+        return .{
+            .root = root,
+            .cache = try cacheFixtureDbs(a, root),
+            .conf_path = try std.fs.path.join(a, &.{ root, "etc/pacman.conf" }),
+            .conf = try std.fmt.allocPrint(a, "[core]\nServer = {s}\n[extra]\nServer = {s}\n", .{ server, server }),
+        };
+    }
+};

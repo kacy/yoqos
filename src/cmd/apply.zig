@@ -196,19 +196,13 @@ test "apply installs, sets, and removes, and the plan comes back empty" {
     const a = arena.allocator();
     const io = std.testing.io;
     const cwd = std.Io.Dir.cwd();
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const here = buf[0..try std.process.currentPath(io, &buf)];
-    const root = try std.fmt.allocPrintSentinel(a, "{s}/.zig-cache/tmp/{s}", .{ here, tmp.sub_path }, 0);
-    const local = try std.fs.path.join(a, &.{ root, "var/lib/pacman/local" });
-    try cwd.createDirPath(io, local);
-    try cwd.writeFile(io, .{ .sub_path = try std.fs.path.join(a, &.{ local, "ALPM_DB_VERSION" }), .data = "9\n" });
-    const cache = try @import("../test_helpers.zig").cacheFixtureDbs(a, root);
+    const m = try @import("../test_helpers.zig").FixtureMachine.init(a, tmp);
+    const root = m.root;
+    const cache = m.cache;
 
     var t: TestRun = .{};
     defer t.deinit();
-    const server = try std.fmt.allocPrint(a, "file://{s}/tests/alpm/repos/$repo", .{here});
-    try t.fs.put(try std.fs.path.join(a, &.{ root, "etc/pacman.conf" }), try std.fmt.allocPrint(a, "[core]\nServer = {s}\n[extra]\nServer = {s}\n", .{ server, server }));
+    try t.fs.put(m.conf_path, m.conf);
     try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n[system]\nhostname = \"atlas\"\n");
     try t.exec(&.{ "--root", root, "update", "--dbs", cache, "--date", "2026-09-25" });
     try std.testing.expectEqual(0, t.code);

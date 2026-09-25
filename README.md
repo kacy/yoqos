@@ -8,8 +8,8 @@ it's still arch underneath: same packages, same wiki, and you can stop using it
 whenever you want.
 
 it's early. `os apply` installs and removes packages, sets the system
-settings, turns services on and off, and manages users. rollback comes
-next.
+settings, turns services on and off, manages users, and rolls packages and
+config back. whole-system rollback on btrfs comes next.
 
 ```
 os init       # write a config that describes this machine
@@ -18,6 +18,7 @@ os add fd     # edit the config (and the lock) for you
 os update     # resolve against today's arch packages into machine.lock
 os plan       # what applying would change
 os apply      # show the plan, ask, apply it
+os rollback   # go back to the previous generation
 os why perl   # which config line brings a package in
 ```
 
