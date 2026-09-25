@@ -12,6 +12,7 @@ pub const Code = enum {
     toml_syntax,
     toml_unsupported,
     toml_duplicate_key,
+    config_missing,
     unknown_key,
     wrong_type,
     bad_value,
@@ -51,6 +52,13 @@ pub const table = [_]Entry{
         .explanation = "toml doesn't allow setting the same key or table twice in one file. remove one of " ++
             "the two definitions. to change a value that an include sets, set it in the including file; " ++
             "the including file always wins.",
+    },
+    .{
+        .code = .config_missing,
+        .id = "E0100",
+        .title = "no config file",
+        .explanation = "os couldn't read the config file. by default it's /etc/yoq/machine.toml, and " ++
+            "`--config <path>` points somewhere else. `os init` writes one that describes this machine.",
     },
     .{
         .code = .unknown_key,

@@ -5,6 +5,10 @@ const std = @import("std");
 const build_options = @import("build_options");
 const output = @import("output.zig");
 const diag = @import("diag.zig");
+const compose = @import("compose.zig");
+const show = @import("show.zig");
+
+pub const default_config = "/etc/yoq/machine.toml";
 
 pub const Context = struct {
     gpa: std.mem.Allocator,
@@ -15,6 +19,9 @@ pub const Context = struct {
     /// stdout is a terminal and NO_COLOR isn't set. text output may use
     /// color and progress lines only when this is true.
     color: bool = false,
+    /// set by `--config <path>`.
+    config_path: []const u8 = default_config,
+    files: compose.Files,
 };
 
 const Handler = *const fn (ctx: *Context, args: []const [:0]const u8) anyerror!u8;
@@ -28,13 +35,20 @@ const Command = struct {
 const commands = [_]Command{
     .{ .name = "help", .summary = "show this help", .handler = help },
     .{ .name = "version", .summary = "print the version", .handler = version },
+    .{ .name = "config", .summary = "show the merged config (config show [--resolved])", .handler = configCmd },
     .{ .name = "explain", .summary = "explain an error code, like E0213", .handler = explain },
 };
 
 /// runs one command line (without the program name) and returns the exit
 /// code: 0 ok, 1 failed, 2 bad usage.
 pub fn run(ctx: *Context, raw: []const [:0]const u8) !u8 {
-    const args = try takeGlobalFlags(ctx, raw);
+    const args = takeGlobalFlags(ctx, raw) catch |e| switch (e) {
+        error.MissingConfigPath => {
+            try ctx.err.writeAll("os: --config needs a path\n");
+            return 2;
+        },
+        else => return e,
+    };
     defer ctx.gpa.free(args);
 
     if (args.len == 0) return help(ctx, args);
@@ -58,11 +72,23 @@ fn takeGlobalFlags(ctx: *Context, raw: []const [:0]const u8) ![]const [:0]const 
     var rest: std.ArrayList([:0]const u8) = .empty;
     errdefer rest.deinit(ctx.gpa);
     var passthrough = false;
-    for (raw) |arg| {
+    var i: usize = 0;
+    while (i < raw.len) : (i += 1) {
+        const arg = raw[i];
         if (!passthrough) {
             if (std.mem.eql(u8, arg, "--")) passthrough = true;
             if (std.mem.eql(u8, arg, "--json")) {
                 ctx.json = true;
+                continue;
+            }
+            if (std.mem.eql(u8, arg, "--config")) {
+                if (i + 1 == raw.len) return error.MissingConfigPath;
+                i += 1;
+                ctx.config_path = raw[i];
+                continue;
+            }
+            if (std.mem.startsWith(u8, arg, "--config=")) {
+                ctx.config_path = arg["--config=".len..];
                 continue;
             }
         }
@@ -74,7 +100,13 @@ fn takeGlobalFlags(ctx: *Context, raw: []const [:0]const u8) ![]const [:0]const 
 fn usage(w: *std.Io.Writer) !void {
     try w.writeAll("usage: os <command> [args]\n\ncommands:\n");
     for (commands) |c| try w.print("  {s:<10}{s}\n", .{ c.name, c.summary });
-    try w.writeAll("\nevery command takes --json for machine-readable output.\n");
+    try w.writeAll(
+        \\
+        \\global flags:
+        \\  --json           machine-readable output
+        \\  --config <path>  config file (default /etc/yoq/machine.toml)
+        \\
+    );
 }
 
 fn help(ctx: *Context, _: []const [:0]const u8) !u8 {
@@ -96,6 +128,54 @@ fn version(ctx: *Context, _: []const [:0]const u8) !u8 {
     }
     try ctx.out.print("os {s}\n", .{build_options.version});
     return 0;
+}
+
+fn configCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    if (args.len == 0 or !std.mem.eql(u8, args[0], "show")) {
+        try ctx.err.writeAll("usage: os config show [--resolved]\n");
+        return 2;
+    }
+    var sources = false;
+    for (args[1..]) |a| {
+        if (!std.mem.eql(u8, a, "--resolved")) {
+            try ctx.err.print("os: unknown flag '{s}' for config show\n", .{a});
+            return 2;
+        }
+        sources = true;
+    }
+
+    var diags: diag.List = .init(ctx.gpa);
+    defer diags.deinit();
+    var loaded = try compose.load(ctx.gpa, ctx.files, ctx.config_path, &diags);
+    defer loaded.deinit();
+    if (diags.items.items.len > 0) return reportDiags(ctx, &diags);
+
+    if (ctx.json) {
+        var s: std.json.Stringify = .{ .writer = ctx.out, .options = .{ .whitespace = .indent_2 } };
+        try s.beginObject();
+        try s.objectField("schema");
+        try s.write("yoq.config/1");
+        try s.objectField("files");
+        try s.write(loaded.files.items);
+        try s.objectField("config");
+        try show.writeJson(&s, &loaded.config);
+        try s.endObject();
+        try ctx.out.writeByte('\n');
+        return 0;
+    }
+    try show.writeToml(ctx.out, &loaded.config, sources);
+    return 0;
+}
+
+/// prints collected problems to stderr, or as a json document on stdout
+/// with --json. returns the exit code for a failed command.
+fn reportDiags(ctx: *Context, diags: *const diag.List) !u8 {
+    if (ctx.json) {
+        try diags.writeJson(ctx.out);
+    } else {
+        try diags.render(ctx.err);
+    }
+    return 1;
 }
 
 fn explain(ctx: *Context, args: []const [:0]const u8) !u8 {
@@ -126,17 +206,22 @@ fn explain(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 const TestRun = struct {
-    out_buf: [2048]u8 = undefined,
-    err_buf: [2048]u8 = undefined,
+    out_buf: [8192]u8 = undefined,
+    err_buf: [4096]u8 = undefined,
     out: std.Io.Writer = undefined,
     err: std.Io.Writer = undefined,
     ctx: Context = undefined,
+    fs: compose.MemFiles = .{},
     code: u8 = 0,
+
+    fn deinit(t: *TestRun) void {
+        t.fs.deinit();
+    }
 
     fn exec(t: *TestRun, args: []const [:0]const u8) !void {
         t.out = .fixed(&t.out_buf);
         t.err = .fixed(&t.err_buf);
-        t.ctx = .{ .gpa = std.testing.allocator, .out = &t.out, .err = &t.err };
+        t.ctx = .{ .gpa = std.testing.allocator, .out = &t.out, .err = &t.err, .files = t.fs.files() };
         t.code = try run(&t.ctx, args);
     }
 };
@@ -221,4 +306,64 @@ test "explain --json" {
     try std.testing.expectEqualStrings("unknown key", codes[0].object.get("title").?.string);
     try std.testing.expectEqualStrings("E0101", codes[0].object.get("code").?.string);
     try std.testing.expectEqualStrings("unknown_key", codes[0].object.get("name").?.string);
+}
+
+test "config show prints the merged config" {
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/base.toml", "packages = [\"git\"]\n");
+    try t.fs.put("/etc/yoq/machine.toml", "include = [\"base.toml\"]\npackages = [\"neovim\"]\n");
+    try t.exec(&.{ "config", "show" });
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expectEqualStrings("packages = [\n  \"git\",\n  \"neovim\",\n]\n", t.out.buffered());
+
+    try t.exec(&.{ "config", "show", "--resolved" });
+    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "\"git\",  # /etc/yoq/base.toml:1") != null);
+}
+
+test "config show takes --config and reports problems" {
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/tmp/m.toml", "[services]\nsshd = true\n");
+    try t.exec(&.{ "--config", "/tmp/m.toml", "config", "show" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expectEqualStrings(
+        \\error[E0213]: unknown service "sshd"
+        \\  --> /tmp/m.toml:2:1
+        \\   | did you mean "ssh"?  (os explain E0213)
+        \\
+    , t.err.buffered());
+
+    try t.exec(&.{ "config", "show", "--config=/tmp/m.toml", "--json" });
+    try std.testing.expectEqual(1, t.code);
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, t.out.buffered(), .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("E0213", parsed.value.object.get("errors").?.array.items[0].object.get("code").?.string);
+}
+
+test "config show with no config file" {
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.exec(&.{ "config", "show" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0100]: /etc/yoq/machine.toml doesn't exist"));
+}
+
+test "config show --json" {
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "[system]\nhostname = \"atlas\"\n");
+    try t.exec(&.{ "--json", "config", "show" });
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, t.out.buffered(), .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("yoq.config/1", obj.get("schema").?.string);
+    try std.testing.expectEqualStrings("/etc/yoq/machine.toml", obj.get("files").?.array.items[0].string);
+    try std.testing.expectEqualStrings("atlas", obj.get("config").?.object.get("system").?.object.get("hostname").?.object.get("value").?.string);
+}
+
+test "--config without a path is a usage error" {
+    var t: TestRun = .{};
+    try t.exec(&.{ "config", "show", "--config" });
+    try std.testing.expectEqual(2, t.code);
 }

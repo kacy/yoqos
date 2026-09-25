@@ -1,5 +1,6 @@
 const std = @import("std");
 const cli = @import("cli.zig");
+const disk = @import("disk.zig");
 
 pub fn main(init: std.process.Init) !void {
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
@@ -10,7 +11,9 @@ pub fn main(init: std.process.Init) !void {
     var out = stdout.writer(init.io, &out_buf);
     var err = std.Io.File.stderr().writer(init.io, &err_buf);
 
+    var disk_files: disk.Files = .{ .io = init.io };
     var ctx: cli.Context = .{
+        .files = disk_files.files(),
         .gpa = init.gpa,
         .out = &out.interface,
         .err = &err.interface,
@@ -33,4 +36,7 @@ test {
     _ = @import("toml.zig");
     _ = @import("catalog.zig");
     _ = @import("config.zig");
+    _ = @import("compose.zig");
+    _ = @import("show.zig");
+    _ = disk;
 }
