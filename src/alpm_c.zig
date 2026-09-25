@@ -146,21 +146,8 @@ pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Er
     var targets: std.ArrayList([]const u8) = .empty;
     try targets.appendSlice(a, in.wants);
     while (true) {
-        if (c.alpm_trans_init(h.h, 0) != 0) {
-            try diags.add(.alpm_failed, null, "can't start resolving: {s}", .{h.lastError()}, null);
-            return .failed;
-        }
         questions = .{ .a = a, .providers = in.providers };
-        if (!try addWants(a, h, targets.items, &questions, diags)) {
-            _ = c.alpm_trans_release(h.h);
-            return .failed;
-        }
-        var data: ?*c.alpm_list_t = null;
-        if (c.alpm_trans_prepare(h.h, &data) != 0) {
-            try reportPrepare(h, data, diags);
-            _ = c.alpm_trans_release(h.h);
-            return .failed;
-        }
+        if (!try prepare(a, h, targets.items, &questions, diags)) return .failed;
         const before = targets.items.len;
         try namedDepends(a, h, &targets);
         if (targets.items.len == before) break;
@@ -177,6 +164,27 @@ pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Er
     };
     try lock.normalize(a, &l);
     return .{ .lock = l };
+}
+
+/// starts a transaction for `targets` and resolves it. on success the
+/// transaction stays open for the caller to release.
+fn prepare(a: Allocator, h: Handle, targets: []const []const u8, questions: *Questions, diags: *diag.List) Error!bool {
+    if (c.alpm_trans_init(h.h, 0) != 0) {
+        try diags.add(.alpm_failed, null, "can't start resolving: {s}", .{h.lastError()}, null);
+        return false;
+    }
+    var ok = false;
+    defer if (!ok) {
+        _ = c.alpm_trans_release(h.h);
+    };
+    if (!try addWants(a, h, targets, questions, diags)) return false;
+    var data: ?*c.alpm_list_t = null;
+    if (c.alpm_trans_prepare(h.h, &data) != 0) {
+        try reportPrepare(h, data, diags);
+        return false;
+    }
+    ok = true;
+    return true;
 }
 
 /// an empty root with an empty local database and copies of the sync ones,
@@ -314,16 +322,16 @@ fn reportPrepare(h: Handle, data: ?*c.alpm_list_t, diags: *diag.List) !void {
 pub fn transact(a: Allocator, io: std.Io, t: api.Transaction, diags: *diag.List) Error!bool {
     const cwd = std.Io.Dir.cwd();
     // the lock's databases, where libalpm will look for sync databases.
-    const sync_dir = try std.fs.path.join(a, &.{ t.dbpath, "sync" });
+    const sync_dir = try std.fs.path.join(a, &.{ t.target.dbpath, "sync" });
     cwd.createDirPath(io, sync_dir) catch return fail(diags, "can't create {s}", .{sync_dir});
-    for (t.dbs) |db| {
+    for (t.target.dbs) |db| {
         const bytes = cwd.readFileAlloc(io, db.path, a, .limited(256 << 20)) catch return fail(diags, "can't read {s}", .{db.path});
         const dest = try std.fmt.allocPrint(a, "{s}/{s}.db", .{ sync_dir, db.name });
         cwd.writeFile(io, .{ .sub_path = dest, .data = bytes }) catch return fail(diags, "can't write {s}", .{dest});
     }
-    cwd.createDirPath(io, t.cachedir) catch return fail(diags, "can't create {s}", .{t.cachedir});
+    cwd.createDirPath(io, t.target.cachedir) catch return fail(diags, "can't create {s}", .{t.target.cachedir});
 
-    const h = try Handle.open(a, t.root, t.dbpath, diags) orelse return false;
+    const h = try Handle.open(a, t.target.root, t.target.dbpath, diags) orelse return false;
     defer h.close();
     if (!try h.configure(a, t, diags)) return false;
     var questions: Questions = .{ .a = a, .providers = &.{} };
@@ -385,25 +393,25 @@ fn dirZ(a: Allocator, parts: []const []const u8) ![*:0]const u8 {
 const Step = enum { remove, install };
 
 fn configureImpl(h: Handle, a: Allocator, t: api.Transaction, diags: *diag.List) Error!bool {
-    if (c.alpm_option_add_cachedir(h.h, try dirZ(a, &.{t.cachedir})) != 0 or
-        c.alpm_option_add_hookdir(h.h, try dirZ(a, &.{ t.root, "usr/share/libalpm/hooks" })) != 0 or
-        c.alpm_option_add_hookdir(h.h, try dirZ(a, &.{ t.root, "etc/pacman.d/hooks" })) != 0 or
+    if (c.alpm_option_add_cachedir(h.h, try dirZ(a, &.{t.target.cachedir})) != 0 or
+        c.alpm_option_add_hookdir(h.h, try dirZ(a, &.{ t.target.root, "usr/share/libalpm/hooks" })) != 0 or
+        c.alpm_option_add_hookdir(h.h, try dirZ(a, &.{ t.target.root, "etc/pacman.d/hooks" })) != 0 or
         c.alpm_option_add_architecture(h.h, @import("sync.zig").arch) != 0 or
-        c.alpm_option_set_logfile(h.h, (try a.dupeZ(u8, try std.fs.path.join(a, &.{ t.root, "var/log/pacman.log" }))).ptr) != 0)
+        c.alpm_option_set_logfile(h.h, (try a.dupeZ(u8, try std.fs.path.join(a, &.{ t.target.root, "var/log/pacman.log" }))).ptr) != 0)
     {
         return fail(diags, "can't set up libalpm: {s}", .{h.lastError()});
     }
-    if (!setSandbox(h, t.sandbox)) return fail(diags, "can't turn off the download sandbox: {s}", .{h.lastError()});
-    if (t.download_user) |user| {
+    if (!setSandbox(h, t.target.sandbox)) return fail(diags, "can't turn off the download sandbox: {s}", .{h.lastError()});
+    if (t.target.download_user) |user| {
         if (c.alpm_option_set_sandboxuser(h.h, (try a.dupeZ(u8, user)).ptr) != 0) return fail(diags, "can't download as {s}: {s}", .{ user, h.lastError() });
     }
     // arch's default: packages must be signed, databases may be.
     var level: c_int = 0;
-    if (t.gpgdir) |g| {
+    if (t.target.gpgdir) |g| {
         if (c.alpm_option_set_gpgdir(h.h, try dirZ(a, &.{g})) != 0) return fail(diags, "can't use the keyring at {s}: {s}", .{ g, h.lastError() });
         level = c.ALPM_SIG_PACKAGE | c.ALPM_SIG_DATABASE | c.ALPM_SIG_DATABASE_OPTIONAL;
     }
-    for (t.dbs) |db| {
+    for (t.target.dbs) |db| {
         const d = c.alpm_register_syncdb(h.h, (try a.dupeZ(u8, db.name)).ptr, level) orelse return fail(diags, "can't load the {s} database: {s}", .{ db.name, h.lastError() });
         for (db.servers) |server| {
             if (c.alpm_db_add_server(d, (try a.dupeZ(u8, server)).ptr) != 0) return fail(diags, "bad server {s}", .{server});

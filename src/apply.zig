@@ -13,18 +13,12 @@ const planner = @import("planner.zig");
 const settings = @import("settings.zig");
 const Allocator = std.mem.Allocator;
 
-/// the machine to change and where its packages come from.
-pub const Target = struct {
-    root: []const u8,
-    dbpath: []const u8,
-    /// the databases for the lock's date, with their servers.
-    dbs: []const alpm.SyncDb,
-    cachedir: []const u8,
-    /// null skips signature checks, which only tests should do.
-    gpgdir: ?[]const u8,
-    download_user: ?[]const u8 = null,
-    sandbox: alpm.Sandbox = .{},
-};
+pub const Target = alpm.Target;
+
+/// whether `run` changes this kind of thing yet. services and users wait.
+pub fn applies(k: planner.Kind) bool {
+    return k != .unit and k != .user;
+}
 
 pub const Result = struct {
     /// changes that aren't applied yet: services and users.
@@ -50,13 +44,7 @@ pub fn transaction(a: Allocator, p: *const planner.Plan, l: *const lock.Lock, t:
         .setting, .unit, .user => {},
     };
     return .{
-        .root = t.root,
-        .dbpath = t.dbpath,
-        .dbs = t.dbs,
-        .cachedir = t.cachedir,
-        .gpgdir = t.gpgdir,
-        .download_user = t.download_user,
-        .sandbox = t.sandbox,
+        .target = t,
         .install = install.items,
         .remove = remove.items,
         .explicit = explicit.items,
@@ -72,11 +60,10 @@ pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock
         if (!try alpm.transact(a, io, tx, diags)) return null;
     }
     var skipped: std.ArrayList(planner.Change) = .empty;
-    for (p.changes) |c| switch (c.kind) {
-        .setting => if (!try settings.apply(a, io, t.root, c.subject, c.to.?, diags)) return null,
-        .unit, .user => try skipped.append(a, c),
-        else => {},
-    };
+    for (p.changes) |c| {
+        if (!applies(c.kind)) try skipped.append(a, c);
+        if (c.kind == .setting and !try settings.apply(a, io, t.root, c.subject, c.to.?, diags)) return null;
+    }
     return .{ .skipped = skipped.items };
 }
 

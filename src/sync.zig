@@ -48,15 +48,12 @@ pub fn pacmanConf(a: Allocator, files: compose.Files, root: []const u8) !Pacman 
     var lines = std.mem.splitScalar(u8, conf, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        if (line[0] == '[' and line[line.len - 1] == ']') {
+        if (line.len > 1 and line[0] == '[' and line[line.len - 1] == ']') {
             if (isRepo(section)) try out.append(a, .{ .name = section, .servers = try servers.toOwnedSlice(a) });
             section = line[1 .. line.len - 1];
             continue;
         }
-        const eq = std.mem.indexOfScalar(u8, line, '=');
-        const key = std.mem.trim(u8, line[0 .. eq orelse line.len], " \t");
-        const value = if (eq) |i| std.mem.trim(u8, line[i + 1 ..], " \t") else "";
+        const key, const value = setting(line) orelse continue;
         if (std.mem.eql(u8, section, "options")) {
             if (std.mem.eql(u8, key, "DownloadUser")) p.download_user = value;
             if (std.mem.eql(u8, key, "DisableSandbox")) p.sandbox = .{ .no_filesystem = true, .no_syscalls = true };
@@ -87,15 +84,21 @@ fn readUnder(a: Allocator, files: compose.Files, root: []const u8, path: []const
     };
 }
 
+/// a pacman.conf line as key and value: `Key = value`, or a bare `Key`
+/// with an empty value. null for blank lines and comments.
+fn setting(raw: []const u8) ?struct { []const u8, []const u8 } {
+    const line = std.mem.trim(u8, raw, " \t\r");
+    if (line.len == 0 or line[0] == '#') return null;
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return .{ line, "" };
+    return .{ std.mem.trim(u8, line[0..eq], " \t"), std.mem.trim(u8, line[eq + 1 ..], " \t") };
+}
+
 /// the `Server =` lines of a mirrorlist file.
 fn mirrorlist(a: Allocator, text: []const u8, out: *std.ArrayList([]const u8)) !void {
     var lines = std.mem.splitScalar(u8, text, '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (!std.mem.startsWith(u8, line, "Server")) continue;
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        if (!std.mem.eql(u8, std.mem.trim(u8, line[0..eq], " \t"), "Server")) continue;
-        try out.append(a, std.mem.trim(u8, line[eq + 1 ..], " \t"));
+    while (lines.next()) |line| {
+        const key, const value = setting(line) orelse continue;
+        if (std.mem.eql(u8, key, "Server")) try out.append(a, value);
     }
 }
 

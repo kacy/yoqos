@@ -70,7 +70,8 @@ pub const Sandbox = struct {
 };
 
 /// a change to the packages installed in a root: what `os apply` does.
-pub const Transaction = struct {
+/// the machine a transaction changes, and where its packages come from.
+pub const Target = struct {
     root: []const u8,
     /// pacman's database directory for `root`.
     dbpath: []const u8,
@@ -85,6 +86,10 @@ pub const Transaction = struct {
     /// how libalpm downloads, from pacman.conf.
     download_user: ?[]const u8 = null,
     sandbox: Sandbox = .{},
+};
+
+pub const Transaction = struct {
+    target: Target,
     /// packages to install or upgrade, at exactly these versions.
     install: []const lock.Package = &.{},
     remove: []const []const u8 = &.{},
@@ -93,7 +98,7 @@ pub const Transaction = struct {
     dependency: []const []const u8 = &.{},
 };
 
-/// runs `t`: removals first, then installs and upgrades, then reasons.
+/// runs `t`: installs and upgrades first, then removals, then reasons.
 /// returns false, with reasons in `diags`, if any step failed; steps
 /// already committed stay committed.
 pub fn transact(a: Allocator, io: std.Io, t: Transaction, diags: *diag.List) Error!bool {
@@ -305,13 +310,13 @@ test "install a locked closure into a root, then remove part of it" {
     for (l.packages) |p| {
         if (!std.mem.eql(u8, p.name, "git")) try deps.append(a, p.name);
     }
-    const base: Transaction = .{
+    const base: Transaction = .{ .target = .{
         .root = root,
         .dbpath = dbpath,
         .dbs = &dbs,
         .cachedir = try std.fs.path.join(a, &.{ root, "var/cache/pkg" }),
         .gpgdir = null,
-    };
+    } };
 
     var install = base;
     install.install = l.packages;

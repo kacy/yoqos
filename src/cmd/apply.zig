@@ -72,27 +72,24 @@ pub fn applyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 fn verify(ctx: *Context, applied: usize, skipped: []const planner.Change) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
+    const a = w.allocator();
     const result = try w.plan(cli.inputs(ctx)) orelse return w.fail();
     var left: std.ArrayList([]const u8) = .empty;
     for (result.plan.changes) |c| {
-        if (c.kind != .unit and c.kind != .user) try left.append(w.allocator(), c.subject);
+        if (apply.applies(c.kind)) try left.append(a, c.subject);
     }
     if (ctx.json) {
         try output.writeDoc(ctx.out, "yoq.apply/1", .{ .applied = applied, .skipped = skipped, .left = left.items });
     } else {
         try ctx.out.print("\napplied {d} {s}.\n", .{ applied, if (applied == 1) "change" else "changes" });
         if (skipped.len > 0) {
-            try ctx.out.writeAll("not applied yet, since os can't change services or users yet: ");
-            for (skipped, 0..) |c, i| try ctx.out.print("{s}{s}", .{ if (i > 0) ", " else "", c.subject });
-            try ctx.out.writeAll(".\n");
+            var names: std.ArrayList([]const u8) = .empty;
+            for (skipped) |c| try names.append(a, c.subject);
+            try ctx.out.print("not applied yet, since os can't change services or users yet: {s}.\n", .{try std.mem.join(a, ", ", names.items)});
         }
     }
     if (left.items.len == 0) return 0;
-    if (!ctx.json) {
-        try ctx.err.writeAll("os: applied, but these still differ from the config: ");
-        for (left.items, 0..) |s, i| try ctx.err.print("{s}{s}", .{ if (i > 0) ", " else "", s });
-        try ctx.err.writeAll("\n");
-    }
+    if (!ctx.json) try ctx.err.print("os: applied, but these still differ from the config: {s}\n", .{try std.mem.join(a, ", ", left.items)});
     return 1;
 }
 
