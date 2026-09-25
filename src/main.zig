@@ -31,4 +31,6 @@ test {
     _ = @import("output.zig");
     _ = @import("diag.zig");
     _ = @import("toml.zig");
+    _ = @import("catalog.zig");
+    _ = @import("config.zig");
 }
