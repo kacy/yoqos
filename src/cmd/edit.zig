@@ -37,11 +37,7 @@ fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
     var rest: std.ArrayList([:0]const u8) = .empty;
     defer rest.deinit(ctx.gpa);
     for (args) |arg| {
-        if (applying.isYes(arg)) {
-            then.yes = true;
-        } else if (cli.eql(arg, "--no-apply")) {
-            then.apply = false;
-        } else try rest.append(ctx.gpa, arg);
+        if (!then.flag(arg)) try rest.append(ctx.gpa, arg);
     }
     if (rest.items.len == 0) return cli.usageError(ctx, usage_text);
     const names = try namesOf(ctx, ctx.gpa, rest.items, usage_text) orelse return 2;
@@ -49,17 +45,7 @@ fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
     return editConfig(ctx, op, names, then);
 }
 
-/// what follows an edit.
-const Then = struct {
-    apply: bool = false,
-    yes: bool = false,
-
-    /// whether applying can follow here: it's wanted, someone can say yes
-    /// to it, and the output stays one json document.
-    fn applies(t: Then, ctx: *Context) bool {
-        return t.apply and !ctx.json and (t.yes or ctx.interactive) and applying.blocker(ctx) == null;
-    }
-};
+const Then = applying.Then;
 
 /// the arguments as names. returns null after a usage error if one looks
 /// like a flag.
@@ -151,7 +137,7 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
     if (!now) return 0;
     // a name already in the config applies too: the machine may be behind.
     try ctx.out.writeByte('\n');
-    return applying.run(ctx, then.yes);
+    return (try applying.run(ctx, then.yes, cli.inputs(ctx))).code;
 }
 
 /// "add fd, bat": what the change did, in the words of the command.

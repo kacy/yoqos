@@ -210,11 +210,21 @@ os update
 ```
 
 downloads today's package databases, using the repositories and mirrors in
-`/etc/pacman.conf`, resolves the config against them, and writes the lock.
+`/etc/pacman.conf`, and resolves the config against them. then it applies
+the result like `os apply`: the plan, a question, and the change.
+`machine.lock` moves to the new packages only once the machine has, so
+saying no, or an apply that fails, leaves the lock as it was. `--yes` skips
+the question. with `--no-apply`, without a terminal, or with `--json`, it
+only writes the new lock, and `os apply` makes the change later.
+
 when a package depends on something several packages provide, like
 `initramfs` (mkinitcpio, booster, or dracut), `os update` asks which one you
 want and saves the answer in `[providers]`, so it only asks once. without a
 terminal, it stops and says which choices to make.
+
+before the plan, `update` lists the arch news posted since the lock's
+last date. arch posts there when an update needs a hand, so read those
+items before saying yes.
 
 databases are cached in `/var/cache/yoq/sync/<date>/`, so running it again
 the same day doesn't download anything.

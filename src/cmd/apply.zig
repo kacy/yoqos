@@ -9,6 +9,7 @@ const lock = @import("../lock.zig");
 const observe = @import("../observe.zig");
 const output = @import("../output.zig");
 const planner = @import("../planner.zig");
+const pipeline = @import("../pipeline.zig");
 const sync = @import("../sync.zig");
 const systemd = @import("../systemd.zig");
 const locking = @import("lock.zig");
@@ -24,12 +25,39 @@ pub fn applyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.err.print("os: {s}.\n", .{why});
         return 1;
     }
-    return run(ctx, yes);
+    return (try run(ctx, yes, cli.inputs(ctx))).code;
 }
+
+/// how a run went: its exit code, and whether the machine now matches
+/// the plan's inputs, because the plan was empty or every step worked.
+pub const Outcome = struct { code: u8, matches: bool };
 
 pub fn isYes(arg: []const u8) bool {
     return cli.eql(arg, "--yes") or cli.eql(arg, "-y");
 }
+
+/// whether a command that changes the config or lock applies the change
+/// after, from its `--yes` and `--no-apply` flags.
+pub const Then = struct {
+    apply: bool = false,
+    yes: bool = false,
+
+    /// takes `arg` if it's one of the flags.
+    pub fn flag(t: *Then, arg: []const u8) bool {
+        if (isYes(arg)) {
+            t.yes = true;
+        } else if (cli.eql(arg, "--no-apply")) {
+            t.apply = false;
+        } else return false;
+        return true;
+    }
+
+    /// whether applying can follow here: it's wanted, someone can say yes
+    /// to it, and the output stays one json document.
+    pub fn applies(t: Then, ctx: *Context) bool {
+        return t.apply and !ctx.json and (t.yes or ctx.interactive) and blocker(ctx) == null;
+    }
+};
 
 /// why apply can't run here at all, if it can't.
 pub fn blocker(ctx: *Context) ?[]const u8 {
@@ -38,13 +66,14 @@ pub fn blocker(ctx: *Context) ?[]const u8 {
     return null;
 }
 
-/// shows the plan, asks unless `yes`, applies it, and checks the result.
-/// the caller has checked `blocker`.
-pub fn run(ctx: *Context, yes: bool) !u8 {
+/// plans from `in`, shows the plan, asks unless `yes`, applies it, and
+/// checks the result. the caller has checked `blocker`.
+pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs) !Outcome {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    const result = try w.plan(cli.inputs(ctx)) orelse return w.fail();
+    const failed: Outcome = .{ .code = 1, .matches = false };
+    const result = try w.plan(in) orelse return .{ .code = try w.fail(), .matches = false };
     const p = &result.plan;
     if (try apply.unfinished(a, ctx.io, ctx.root)) |hash| {
         try ctx.err.print("os: the last apply (plan {s}) didn't finish. this one starts from the machine as it is now.\n", .{hash[0..@min(12, hash.len)]});
@@ -52,33 +81,37 @@ pub fn run(ctx: *Context, yes: bool) !u8 {
     if (p.empty()) {
         if (!ctx.json) try ctx.out.writeAll("nothing to do. this machine matches its config.\n");
         if (ctx.json) try output.writeDoc(ctx.out, "yoq.apply/1", .{ .applied = 0, .skipped = p.changes });
-        return 0;
+        return .{ .code = 0, .matches = true };
     }
 
     if (!ctx.json) try planner.writeText(ctx.out, a, p, .{});
     if (!yes) {
         if (!ctx.interactive) {
             try ctx.err.writeAll("os: pass --yes to apply without a terminal.\n");
-            return 2;
+            return .{ .code = 2, .matches = false };
         }
         try ctx.out.writeByte('\n');
         if (!try cli.confirm(ctx, "apply this?")) {
             try ctx.out.writeAll("nothing changed.\n");
-            return 0;
+            return .{ .code = 0, .matches = false };
         }
     }
 
-    const target = try targetFor(ctx, &w, &result.state.lock) orelse return w.fail();
+    const target = try targetFor(ctx, &w, &result.state.lock) orelse {
+        _ = try w.fail();
+        return failed;
+    };
     const units = liveUnits(ctx);
     const hash = try p.hash();
     const now = std.Io.Timestamp.now(ctx.io, .real).toSeconds();
     try apply.record(a, ctx.io, ctx.root, now, "begin", &hash);
     const done = try apply.run(a, ctx.io, p, &result.state.lock, target, units, &w.diags) orelse {
         try apply.record(a, ctx.io, ctx.root, now, "failed", &hash);
-        return w.fail();
+        _ = try w.fail();
+        return failed;
     };
     try apply.record(a, ctx.io, ctx.root, now, "done", &hash);
-    return verify(ctx, p.changes.len - done.skipped.len, done.skipped, units);
+    return .{ .code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units), .matches = true };
 }
 
 /// units change only on the running machine, and only when systemd runs
@@ -89,11 +122,11 @@ fn liveUnits(ctx: *Context) bool {
 
 /// plans again after applying. anything left besides what apply skipped
 /// means something didn't take.
-fn verify(ctx: *Context, applied: usize, skipped: []const planner.Change, units: bool) !u8 {
+fn verify(ctx: *Context, in: pipeline.Inputs, applied: usize, skipped: []const planner.Change, units: bool) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    const result = try w.plan(cli.inputs(ctx)) orelse return w.fail();
+    const result = try w.plan(in) orelse return w.fail();
     var left: std.ArrayList([]const u8) = .empty;
     for (result.plan.changes) |c| {
         if (apply.applies(c.kind, units)) try left.append(a, c.subject);
@@ -205,6 +238,20 @@ test "apply installs, sets, and removes, and the plan comes back empty" {
     try std.testing.expectEqualStrings("", t.err.buffered());
     try t.exec(&.{ "--root", root, "plan" });
     try std.testing.expectEqualStrings("nothing to do. this machine matches its config.\n", t.out.buffered());
-    cwd.access(io, try std.fs.path.join(a, &.{ root, "usr/share/doc/git/README" }), .{}) catch return;
-    return error.TestUnexpectedResult;
+    if (cwd.access(io, try std.fs.path.join(a, &.{ root, "usr/share/doc/git/README" }), .{})) |_| return error.TestUnexpectedResult else |_| {}
+
+    // update applies before it writes the lock: saying no leaves the lock
+    // as it was, and --yes moves both.
+    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n[system]\nhostname = \"atlas\"\n");
+    const update = [_][:0]const u8{ "--root", root, "update", "--dbs", cache, "--date", "2026-09-25" };
+    t.input = "n\n";
+    try t.exec(&update);
+    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "nothing changed.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.git]") == null);
+    t.input = null;
+    try t.exec(&(update ++ .{"--yes"}));
+    try std.testing.expectEqualStrings("", t.err.buffered());
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.git]") != null);
+    try cwd.access(io, try std.fs.path.join(a, &.{ root, "usr/share/doc/git/README" }), .{});
 }

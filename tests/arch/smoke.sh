@@ -72,6 +72,9 @@ if [ -d /run/systemd/system ]; then
     "$os" --config "$cfg" plan | grep -q "nothing to do"
 fi
 
+# update applies what it resolved; on the same day there's nothing to do.
+"$os" --config "$cfg" update --yes | grep -q "nothing to do"
+
 # a config that leaves out base doesn't get to remove it.
 bare=$dir/bare.toml
 printf 'version = 1\n[boot]\nkernel = "none"\n' > "$bare"

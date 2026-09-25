@@ -126,9 +126,13 @@ pub fn readLock(ctx: *Context, a: Allocator, top: []const u8) !?lock.Lock {
 
 /// writes `l` next to `top`. returns the path, or null after saying why.
 pub fn writeLock(ctx: *Context, a: Allocator, top: []const u8, l: *const lock.Lock) !?[]const u8 {
+    return writeLockTo(ctx, a, try lock.pathFor(a, top), l);
+}
+
+/// writes `l` to `path`. returns the path, or null after saying why.
+pub fn writeLockTo(ctx: *Context, a: Allocator, path: []const u8, l: *const lock.Lock) !?[]const u8 {
     var out: std.Io.Writer.Allocating = .init(a);
     try lock.write(&out.writer, l);
-    const path = try lock.pathFor(a, top);
     ctx.files.write(path, out.written()) catch {
         try ctx.err.print("os: can't write {s}\n", .{path});
         return null;
@@ -136,9 +140,8 @@ pub fn writeLock(ctx: *Context, a: Allocator, top: []const u8, l: *const lock.Lo
     return path;
 }
 
-/// "<what>: +2 -1. next: os plan, then os apply" after the lock changes.
-/// says how the lock changed, and what's next unless `next` is false
-/// because applying follows right away.
+/// "<what>: +2 -1." after the lock changes, then what's next unless
+/// applying follows right away.
 pub fn reportLock(ctx: *Context, what: []const u8, d: lock.Diff, next: bool) !void {
     try ctx.out.print("{s}: ", .{what});
     try d.write(ctx.out);
