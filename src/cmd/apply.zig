@@ -90,15 +90,10 @@ fn verify(ctx: *Context, applied: usize, skipped: []const planner.Change, units:
         try output.writeDoc(ctx.out, "yoq.apply/1", .{ .applied = applied, .skipped = skipped, .left = left.items });
     } else {
         try ctx.out.print("\napplied {d} {s}.\n", .{ applied, if (applied == 1) "change" else "changes" });
-        for ([_]struct { planner.Kind, []const u8 }{
-            .{ .unit, "services not changed, since systemd isn't running this machine" },
-            .{ .user, "users not changed, since os can't change users yet" },
-        }) |kind| {
+        if (skipped.len > 0) {
             var names: std.ArrayList([]const u8) = .empty;
-            for (skipped) |c| {
-                if (c.kind == kind[0]) try names.append(a, c.subject);
-            }
-            if (names.items.len > 0) try ctx.out.print("{s}: {s}.\n", .{ kind[1], try std.mem.join(a, ", ", names.items) });
+            for (skipped) |c| try names.append(a, c.subject);
+            try ctx.out.print("services not changed, since systemd isn't running this machine: {s}.\n", .{try std.mem.join(a, ", ", names.items)});
         }
     }
     if (left.items.len == 0) return 0;

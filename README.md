@@ -8,7 +8,8 @@ it's still arch underneath: same packages, same wiki, and you can stop using it
 whenever you want.
 
 it's early. `os apply` installs and removes packages, sets the system
-settings, and turns services on and off. users and rollback come next.
+settings, turns services on and off, and manages users. rollback comes
+next.
 
 ```
 os init       # write a config that describes this machine

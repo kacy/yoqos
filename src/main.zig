@@ -53,6 +53,7 @@ test {
     _ = @import("show.zig");
     _ = @import("facts.zig");
     _ = @import("lock.zig");
+    _ = @import("users.zig");
     _ = @import("planner.zig");
     _ = @import("pipeline.zig");
     _ = @import("golden.zig");

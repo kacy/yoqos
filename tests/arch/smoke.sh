@@ -46,6 +46,18 @@ pacman -Q tree
 if pacman -Q tree 2>/dev/null; then echo "tree is still installed"; exit 1; fi
 "$os" --config "$cfg" plan | grep -q "nothing to do"
 
+# a user: created with its shell and groups, then moved between groups.
+printf '\n[users.yoqtest]\nshell = "bash"\ngroups = ["wheel"]\n' >> "$cfg"
+"$os" --config "$cfg" apply --yes
+getent passwd yoqtest | grep -q ':/usr/bin/bash$'
+id -nG yoqtest | grep -qw wheel
+"$os" --config "$cfg" plan | grep -q "nothing to do"
+sed -i 's/^groups = \["wheel"\]$/groups = ["video"]/' "$cfg"
+"$os" --config "$cfg" apply --yes
+id -nG yoqtest | grep -qw video
+if id -nG yoqtest | grep -qw wheel; then echo "yoqtest is still in wheel"; exit 1; fi
+"$os" --config "$cfg" plan | grep -q "nothing to do"
+
 # a service through the whole loop, where systemd runs the machine: the
 # package goes in and the unit starts, then the unit stops and the package
 # goes.

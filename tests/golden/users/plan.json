@@ -1,9 +1,9 @@
 {
   "schema": "yoq.plan/1",
-  "hash": "533d072d7b7fc630228605b89f878d5b1b1a586c027890e763ba0f59d3e382f4",
+  "hash": "37f073b6364466e6d37cadf9b0cf49abed73c1b531a8c49d4916c9833bacb795",
   "summary": {
     "add": 2,
-    "change": 1,
+    "change": 2,
     "remove": 1
   },
   "reboot": {
@@ -43,7 +43,16 @@
       "kind": "user",
       "subject": "guest",
       "from": null,
-      "to": "new user, shell bash",
+      "to": "new user",
+      "cause": "users.guest",
+      "reboot": null
+    },
+    {
+      "op": "change",
+      "kind": "user",
+      "subject": "guest",
+      "from": null,
+      "to": "shell bash",
       "cause": "users.guest",
       "reboot": null
     }

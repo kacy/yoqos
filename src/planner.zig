@@ -250,30 +250,26 @@ fn planUsers(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
         const name = e.name;
         const want_groups = e.value.groups.items.items;
         const cause = try std.fmt.allocPrint(a, "users.{s}", .{name});
-        const have = for (f.users) |*u| {
+        // each change is one step `apply` can take: a new user is created,
+        // then gets its shell and groups like any other.
+        const found = for (f.users) |*u| {
             if (std.mem.eql(u8, u.name, name)) break u;
-        } else {
-            var desc: std.ArrayList(u8) = .empty;
-            try desc.appendSlice(a, "new user");
-            if (e.value.shell) |sh| try desc.print(a, ", shell {s}", .{sh.v});
-            for (want_groups, 0..) |g, i| try desc.print(a, "{s}{s}", .{ if (i == 0) ", groups " else ", ", g.name });
-            try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = desc.items, .cause = cause });
-            continue;
-        };
+        } else null;
+        if (found == null) try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = "new user", .cause = cause });
         if (e.value.shell) |sh| {
-            const current = have.shell orelse "";
+            const current = if (found) |u| u.shell orelse "" else "";
             const same = std.mem.eql(u8, current, sh.v) or
                 (std.mem.indexOfScalar(u8, sh.v, '/') == null and std.mem.eql(u8, std.fs.path.basename(current), sh.v));
             if (!same) try changes.append(a, .{
                 .op = .change,
                 .kind = .user,
                 .subject = name,
-                .from = try std.fmt.allocPrint(a, "shell {s}", .{std.fs.path.basename(current)}),
+                .from = if (found != null) try std.fmt.allocPrint(a, "shell {s}", .{std.fs.path.basename(current)}) else null,
                 .to = try std.fmt.allocPrint(a, "shell {s}", .{sh.v}),
                 .cause = cause,
             });
         }
-        const have_groups = have.groups;
+        const have_groups: []const []const u8 = if (found) |u| u.groups else &.{};
         for (want_groups) |g| {
             if (!lists.contains(have_groups, g.name)) try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = try std.fmt.allocPrint(a, "join {s}", .{g.name}), .cause = cause });
         }

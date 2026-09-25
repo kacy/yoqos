@@ -1,7 +1,7 @@
 //! carries out a plan on a machine: packages through a libalpm
-//! transaction, `[system]` settings through their files, and units through
-//! systemd when it runs the machine. users aren't changed yet; `run` hands
-//! those back as skipped, and units too when systemd isn't there.
+//! transaction, `[system]` settings through their files, users through
+//! shadow's tools, and units through systemd when it runs the machine.
+//! without systemd, `run` hands the units back as skipped.
 //!
 //! every run is journaled: a line when it starts and one when it ends, so a
 //! run that never finished shows up next time.
@@ -13,22 +13,19 @@ const lock = @import("lock.zig");
 const planner = @import("planner.zig");
 const settings = @import("settings.zig");
 const systemd = @import("systemd.zig");
+const users = @import("users.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Target = alpm.Target;
 
 /// whether `run` changes this kind of thing. units need systemd running
-/// the machine; users wait.
+/// the machine.
 pub fn applies(k: planner.Kind, units: bool) bool {
-    return switch (k) {
-        .unit => units,
-        .user => false,
-        else => true,
-    };
+    return k != .unit or units;
 }
 
 pub const Result = struct {
-    /// changes that weren't applied: users, and units without systemd.
+    /// changes that weren't applied: units without systemd.
     skipped: []const planner.Change,
 };
 
@@ -74,7 +71,12 @@ pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock
         if (!try alpm.transact(a, io, tx, diags)) return null;
     }
     for (p.changes) |c| {
-        if (c.kind == .setting and !try settings.apply(a, io, t.root, c.subject, c.to.?, diags)) return null;
+        const ok = switch (c.kind) {
+            .setting => try settings.apply(a, io, t.root, c.subject, c.to.?, diags),
+            .user => try users.apply(a, io, t.root, c, diags),
+            else => true,
+        };
+        if (!ok) return null;
     }
     if (units and !try changeUnits(a, p, false, diags)) return null;
     return .{ .skipped = skipped.items };

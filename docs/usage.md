@@ -8,9 +8,8 @@ to use it today.
 
 `os` reads a machine, writes a config for it, keeps that config and its lock
 up to date, tells you what's different, and applies the difference. `os
-apply` installs and removes packages, sets the `[system]` settings, and
-enables, starts, stops, and disables services. users show up in the plan,
-but `apply` doesn't change them yet.
+apply` installs and removes packages, sets the `[system]` settings, turns
+services on and off, and creates users and sets their shells and groups.
 every other command only reads the machine or edits the config.
 
 | command | what it does |
@@ -326,6 +325,25 @@ package = "syncthing"
 ```
 
 services the config doesn't mention are left alone, and so are users.
+
+### users
+
+```toml
+[users.kacy]
+shell = "zsh"
+groups = ["wheel", "video"]
+```
+
+`apply` creates a user that doesn't exist yet, with its own group and a
+home directory, then sets its shell and groups. `shell` is a name like
+`zsh`, found under `/usr/bin`, or a full path; the shell's package has to
+be installed, so add it to `packages`. `groups` is the whole list: `apply`
+adds the user to the groups missing and takes it out of the others. with
+no `groups` at all, its groups are left alone.
+
+`os` never deletes a user, and passwords stay yours to set with `passwd`.
+every uid `os` gives out is kept in `/var/lib/yoq/ids`, so a user created
+again gets its old uid back, and its files in `/home` are still its own.
 
 ### includes
 
