@@ -7,21 +7,12 @@ const cli = @import("../cli.zig");
 const alpm = @import("../alpm.zig");
 const compose = @import("../compose.zig");
 const generate = @import("../generate.zig");
-const pipeline = @import("../pipeline.zig");
 const sync = @import("../sync.zig");
 const update = @import("update.zig");
 const Context = cli.Context;
 
 pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os init [--facts <file>]";
-    var facts_path: ?[]const u8 = null;
-    var it: cli.ArgIter = .{ .args = args };
-    while (it.next()) |arg| {
-        if (cli.eql(arg, "--facts")) {
-            facts_path = it.next() orelse return cli.usageError(ctx, usage_text);
-        } else return cli.usageError(ctx, usage_text);
-    }
-
+    if (try cli.noArgs(ctx, args, "os init")) |code| return code;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
@@ -31,7 +22,7 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         return 1;
     } else |e| if (e == error.OutOfMemory) return error.OutOfMemory;
 
-    const f = pipeline.getFacts(ctx.files, ctx.io, a, facts_path, ctx.root, &w.diags) catch |e| return cli.factsError(ctx, e, facts_path);
+    const f = try cli.facts(&w) orelse return 1;
     if (w.failed()) return w.report();
 
     const date = try update.today(ctx.io, a);
@@ -111,7 +102,7 @@ test "init writes a config that loads, and refuses to overwrite one" {
         \\ "units":[{"name":"sshd.service","enabled":true,"active":true}],
         \\ "users":[{"name":"kacy","uid":1000,"shell":"/bin/bash","groups":["kacy","wheel"]}]}
     );
-    try t.exec(&.{ "init", "--facts", "f.json" });
+    try t.exec(&.{ "--facts", "f.json", "init" });
     // with libalpm, init also tries to lock, and this test is offline.
     if (!alpm.available) try std.testing.expectEqualStrings("", t.err.buffered());
     try std.testing.expectEqual(0, t.code);
@@ -123,7 +114,7 @@ test "init writes a config that loads, and refuses to overwrite one" {
     try std.testing.expect(std.mem.indexOf(u8, machine, "[services.ssh]\nenabled = true\n") != null);
     try std.testing.expect(std.mem.startsWith(u8, t.recorder.messages.items[0], "init: atlas as found on "));
 
-    try t.exec(&.{ "init", "--facts", "f.json" });
+    try t.exec(&.{ "--facts", "f.json", "init" });
     try std.testing.expectEqual(1, t.code);
     try std.testing.expectEqualStrings("os: /etc/yoq/machine.toml already exists. edit it, or move it away to start over.\n", t.err.buffered());
 }
@@ -145,7 +136,7 @@ test "init locks against today's databases" {
         \\{"schema":"yoq.facts/1","hostname":"atlas",
         \\ "packages":[{"name":"linux","version":"6.16.8.arch1-1"},{"name":"git","version":"2.51.0-1"}]}
     );
-    try t.exec(&.{ "--root", root, "init", "--facts", "f.json" });
+    try t.exec(&.{ "--root", root, "--facts", "f.json", "init" });
     try std.testing.expectEqualStrings("", t.err.buffered());
     try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "wrote /etc/yoq/machine.lock\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.perl-error]") != null);

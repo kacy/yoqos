@@ -31,6 +31,9 @@ pub const Context = struct {
     /// set by `--root <dir>`: where the machine's own files are, like
     /// /etc/pacman.conf and /var/cache/yoq. "/" for the running machine.
     root: []const u8 = "/",
+    /// set by `--facts <file>`: read facts from a file instead of observing
+    /// the machine.
+    facts_path: ?[]const u8 = null,
     /// downloads package databases.
     fetcher: sync.Fetcher,
     /// records config changes, as git commits.
@@ -89,7 +92,7 @@ pub fn eql(a: []const u8, b: []const u8) bool {
 pub fn run(ctx: *Context, raw: []const [:0]const u8) !u8 {
     const args = takeGlobalFlags(ctx, raw) catch |e| switch (e) {
         error.MissingConfigPath => {
-            try ctx.err.writeAll("os: --config and --root need a path\n");
+            try ctx.err.writeAll("os: --config, --root, and --facts need a path\n");
             return 2;
         },
         else => return e,
@@ -128,6 +131,8 @@ fn takeGlobalFlags(ctx: *Context, raw: []const [:0]const u8) ![]const [:0]const 
             ctx.config_path = it.next() orelse return error.MissingConfigPath;
         } else if (eql(arg, "--root")) {
             ctx.root = it.next() orelse return error.MissingConfigPath;
+        } else if (eql(arg, "--facts")) {
+            ctx.facts_path = it.next() orelse return error.MissingConfigPath;
         } else if (std.mem.startsWith(u8, arg, "--config=")) {
             ctx.config_path = arg["--config=".len..];
         } else {
@@ -146,6 +151,7 @@ fn usage(w: *std.Io.Writer) !void {
         \\  --json           machine-readable output
         \\  --config <path>  config file (default /etc/yoq/machine.toml)
         \\  --root <dir>     the machine's files live under dir (default /)
+        \\  --facts <file>   read the machine from a facts file instead
         \\
     );
 }
@@ -234,6 +240,21 @@ pub fn record(ctx: *Context, a: std.mem.Allocator, top: []const u8, message: []c
     }
 }
 
+/// facts from --facts, or observed from the machine. observer problems go
+/// to `w.diags`; a bad facts file is reported here and returns null.
+pub fn facts(w: *Work) !?@import("facts.zig").Facts {
+    const ctx = w.ctx;
+    return pipeline.getFacts(ctx.files, ctx.io, w.allocator(), ctx.facts_path, ctx.root, &w.diags) catch |e| {
+        _ = try factsError(ctx, e, ctx.facts_path);
+        return null;
+    };
+}
+
+/// fails a command that takes no arguments of its own if it got some.
+pub fn noArgs(ctx: *Context, args: []const [:0]const u8, comptime usage_text: []const u8) !?u8 {
+    return if (args.len == 0) null else try usageError(ctx, usage_text);
+}
+
 /// says why facts couldn't be read. returns the exit code.
 pub fn factsError(ctx: *Context, e: pipeline.Error, path: ?[]const u8) !u8 {
     const from = path orelse "this machine";
@@ -248,7 +269,7 @@ pub fn factsError(ctx: *Context, e: pipeline.Error, path: ?[]const u8) !u8 {
 /// the planner inputs for a command: the config path and machine root from
 /// the global flags.
 pub fn inputs(ctx: *const Context) pipeline.Inputs {
-    return .{ .config_path = ctx.config_path, .root = ctx.root };
+    return .{ .config_path = ctx.config_path, .root = ctx.root, .facts_path = ctx.facts_path };
 }
 
 /// asks the user to pick one of `options` and returns its index. empty

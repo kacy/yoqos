@@ -9,7 +9,6 @@ const alpm = @import("../alpm.zig");
 const lock = @import("../lock.zig");
 const sync = @import("../sync.zig");
 const update = @import("update.zig");
-const pipeline = @import("../pipeline.zig");
 const planner = @import("../planner.zig");
 const Context = cli.Context;
 
@@ -49,27 +48,18 @@ fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
 /// `os adopt [package...]`: puts packages installed outside the config into
 /// it, all of them or the ones named.
 pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    var facts_path: ?[]const u8 = null;
-    var wanted: std.ArrayList([]const u8) = .empty;
-    defer wanted.deinit(ctx.gpa);
-    var it: cli.ArgIter = .{ .args = args };
-    while (it.next()) |a| {
-        if (cli.eql(a, "--facts")) {
-            facts_path = it.next() orelse return cli.usageError(ctx, "os adopt [--facts <file>] [package...]");
-        } else if (a[0] == '-') {
-            return cli.usageError(ctx, "os adopt [--facts <file>] [package...]");
-        } else try wanted.append(ctx.gpa, a);
+    for (args) |a| {
+        if (a[0] == '-') return cli.usageError(ctx, "os adopt [package...]");
     }
-
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
     const state = try w.state() orelse return w.report();
-    const f = pipeline.getFacts(ctx.files, ctx.io, a, facts_path, ctx.root, &w.diags) catch |e| return cli.factsError(ctx, e, facts_path);
+    const f = try cli.facts(&w) orelse return 1;
     if (w.failed()) return w.report();
 
     const extra = try planner.extraPackages(a, state.config(), &state.lock, &f);
-    for (wanted.items) |name| {
+    for (args) |name| {
         for (extra) |e| {
             if (cli.eql(e, name)) break;
         } else {
@@ -77,11 +67,13 @@ pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             return 1;
         }
     }
-    const names = if (wanted.items.len > 0) wanted.items else extra;
-    if (names.len == 0) {
+    if (args.len == 0 and extra.len == 0) {
         try ctx.out.writeAll("nothing to adopt: every installed package is in the config.\n");
         return 0;
     }
+    if (args.len == 0) return apply(ctx, .add, extra);
+    const names = try a.alloc([]const u8, args.len);
+    for (args, names) |arg, *n| n.* = arg;
     return apply(ctx, .add, names);
 }
 
@@ -277,14 +269,14 @@ test "adopt puts extra packages into the config" {
         \\ {"name":"htop","version":"3.4-1"},{"name":"btop","version":"1.4-1"},
         \\ {"name":"ncurses","version":"6.5","reason":"dependency"}]}
     );
-    try t.exec(&.{ "adopt", "--facts", "f.json", "nano" });
+    try t.exec(&.{ "--facts", "f.json", "adopt", "nano" });
     try std.testing.expectEqual(1, t.code);
     try std.testing.expectEqualStrings("os: nano isn't installed outside the config\n", t.err.buffered());
 
-    try t.exec(&.{ "adopt", "--facts", "f.json", "htop" });
+    try t.exec(&.{ "--facts", "f.json", "adopt", "htop" });
     try std.testing.expectEqual(0, t.code);
     try std.testing.expectEqualStrings("packages = [\"git\", \"htop\"]\n", t.fs.get("/etc/yoq/machine.toml").?);
 
-    try t.exec(&.{ "adopt", "--facts", "f.json" });
+    try t.exec(&.{ "--facts", "f.json", "adopt" });
     try std.testing.expectEqualStrings("packages = [\"git\", \"htop\", \"btop\"]\n", t.fs.get("/etc/yoq/machine.toml").?);
 }

@@ -44,18 +44,10 @@ pub fn configCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 pub fn factsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os facts [--from <file>]";
-    var from: ?[]const u8 = null;
-    var it: cli.ArgIter = .{ .args = args };
-    while (it.next()) |a| {
-        if (eql(a, "--from")) {
-            from = it.next() orelse return cli.usageError(ctx, usage_text);
-        } else return cli.usageError(ctx, usage_text);
-    }
-
+    if (try cli.noArgs(ctx, args, "os facts")) |code| return code;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
-    const f = pipeline.getFacts(ctx.files, ctx.io, w.allocator(), from, ctx.root, &w.diags) catch |e| return cli.factsError(ctx, e, from);
+    const f = try cli.facts(&w) orelse return 1;
     if (w.failed()) return w.report();
 
     if (ctx.json) {
@@ -74,15 +66,13 @@ pub fn factsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 pub fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os plan [--facts <file>] [--lock <file>] [-v]";
+    const usage_text = "os plan [--lock <file>] [-v]";
     var in = cli.inputs(ctx);
     var verbose = false;
     var it: cli.ArgIter = .{ .args = args };
     while (it.next()) |a| {
         if (eql(a, "-v") or eql(a, "--verbose")) {
             verbose = true;
-        } else if (eql(a, "--facts")) {
-            in.facts_path = it.next() orelse return cli.usageError(ctx, usage_text);
         } else if (eql(a, "--lock")) {
             in.lock_path = it.next() orelse return cli.usageError(ctx, usage_text);
         } else return cli.usageError(ctx, usage_text);
@@ -103,15 +93,8 @@ pub fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 pub fn statusCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os status [--facts <file>]";
-    var in = cli.inputs(ctx);
-    var it: cli.ArgIter = .{ .args = args };
-    while (it.next()) |a| {
-        if (eql(a, "--facts")) {
-            in.facts_path = it.next() orelse return cli.usageError(ctx, usage_text);
-        } else return cli.usageError(ctx, usage_text);
-    }
-
+    if (try cli.noArgs(ctx, args, "os status")) |code| return code;
+    const in = cli.inputs(ctx);
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const built = pipeline.buildPlan(ctx.gpa, ctx.io, ctx.files, in, &w.diags) catch |e| return cli.factsError(ctx, e, in.facts_path);
@@ -198,13 +181,13 @@ test "facts --from reads a fixture" {
     try t.fs.put("f.json",
         \\{"schema":"yoq.facts/1","hostname":"atlas","packages":[{"name":"git","version":"2.51.0-1"}]}
     );
-    try t.exec(&.{ "facts", "--from", "f.json" });
+    try t.exec(&.{ "--facts", "f.json", "facts" });
     try std.testing.expectEqual(0, t.code);
     try std.testing.expect(std.mem.startsWith(u8, t.out.buffered(), "hostname  atlas\n"));
     try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "packages  1\n") != null);
 
     try t.fs.put("bad.json", "{}");
-    try t.exec(&.{ "facts", "--from", "bad.json" });
+    try t.exec(&.{ "--facts", "bad.json", "facts" });
     try std.testing.expectEqual(1, t.code);
 }
 
@@ -233,7 +216,7 @@ test "plan from fixture files" {
     try t.fs.put("f.json",
         \\{"schema":"yoq.facts/1","packages":[{"name":"linux","version":"6.16.8-1"},{"name":"nano","version":"8.6-1"}]}
     );
-    try t.exec(&.{ "plan", "--facts", "f.json" });
+    try t.exec(&.{ "--facts", "f.json", "plan" });
     try std.testing.expectEqual(0, t.code);
     try std.testing.expectEqualStrings(
         \\packages
@@ -244,7 +227,7 @@ test "plan from fixture files" {
         \\
     , t.out.buffered());
 
-    try t.exec(&.{ "plan", "--facts", "missing.json" });
+    try t.exec(&.{ "--facts", "missing.json", "plan" });
     try std.testing.expectEqual(1, t.code);
     try t.exec(&.{ "plan", "--bogus" });
     try std.testing.expectEqual(2, t.code);

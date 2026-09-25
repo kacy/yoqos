@@ -7,14 +7,26 @@ going to change, and every change becomes a generation you can boot back into.
 it's still arch underneath: same packages, same wiki, and you can stop using it
 whenever you want.
 
-it's early. nothing touches a real machine yet, but the config side works:
-`os config show` merges and checks a config, and `os plan` shows what would
-change, given a lock and a facts file. try it on the test fixtures:
+it's early. nothing installs or removes packages yet, but the rest of the
+loop is there:
+
+```
+os init       # write a config that describes this machine
+os status     # what matches the config, what changed, what's failing
+os add fd     # edit the config (and the lock) for you
+os update     # resolve against today's arch packages into machine.lock
+os plan       # what applying would change
+os why perl   # which config line brings a package in
+```
+
+reading packages and resolving need libalpm, and reading services needs
+libsystemd. build with `-Dalpm -Dsystemd` to link them. without a real arch
+machine, the test fixtures work too:
 
 ```
 zig build
 ./zig-out/bin/os --config tests/golden/fresh-install/machine.toml \
-    plan --facts tests/golden/fresh-install/facts.json
+    --facts tests/golden/fresh-install/facts.json plan
 ```
 
 ## the idea
@@ -44,6 +56,7 @@ needs zig 0.16.
 ```
 zig build
 zig build test
+zig build test -Dalpm -Dsystemd   # needs libalpm and libsystemd
 ./zig-out/bin/os help
 ```
 

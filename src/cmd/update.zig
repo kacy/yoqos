@@ -267,7 +267,7 @@ test "update resolves the fixture repos into a lock" {
 
     // the new lock covers the config, so planning works.
     try t.fs.put("f.json", "{\"schema\":\"yoq.facts/1\"}");
-    try t.exec(&.{ "plan", "--facts", "f.json" });
+    try t.exec(&.{ "--facts", "f.json", "plan" });
     try std.testing.expectEqual(0, t.code);
     try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "+ git 2.51.0-1") != null);
 }
