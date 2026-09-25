@@ -28,3 +28,19 @@ jobs:
         with:
           version: 0.16.0
       - run: zig build test -Dalpm -Dsystemd --summary all
+
+  arch:
+    # real arch: its own libalpm and a real pacman database, as root.
+    # no running systemd, so the bus test skips.
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - run: pacman -Syu --noconfirm --needed git libarchive systemd-libs
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig build test -Dalpm -Dsystemd --summary all
+      - run: zig build -Dalpm -Dsystemd
+      - name: init, lock, status, and plan against this machine
+        run: tests/arch/smoke.sh ./zig-out/bin/os
