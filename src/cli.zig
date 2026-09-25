@@ -4,6 +4,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const output = @import("output.zig");
+const diag = @import("diag.zig");
 
 pub const Context = struct {
     gpa: std.mem.Allocator,
@@ -27,6 +28,7 @@ const Command = struct {
 const commands = [_]Command{
     .{ .name = "help", .summary = "show this help", .handler = help },
     .{ .name = "version", .summary = "print the version", .handler = version },
+    .{ .name = "explain", .summary = "explain an error code, like E0213", .handler = explain },
 };
 
 /// runs one command line (without the program name) and returns the exit
@@ -93,6 +95,33 @@ fn version(ctx: *Context, _: []const [:0]const u8) !u8 {
         return 0;
     }
     try ctx.out.print("os {s}\n", .{build_options.version});
+    return 0;
+}
+
+fn explain(ctx: *Context, args: []const [:0]const u8) !u8 {
+    if (args.len == 0) {
+        if (ctx.json) {
+            var all: [diag.table.len]diag.EntryJson = undefined;
+            for (diag.table, &all) |e, *j| j.* = diag.entryJson(e);
+            try output.writeDoc(ctx.out, "yoq.explain/1", .{ .codes = all });
+            return 0;
+        }
+        for (diag.table) |e| try ctx.out.print("{s}  {s}\n", .{ e.id, e.title });
+        return 0;
+    }
+    if (args.len > 1) {
+        try ctx.err.writeAll("usage: os explain [code]\n");
+        return 2;
+    }
+    const e = diag.byId(args[0]) orelse {
+        try ctx.err.print("os: no error code '{s}'. `os explain` lists them all.\n", .{args[0]});
+        return 2;
+    };
+    if (ctx.json) {
+        try output.writeDoc(ctx.out, "yoq.explain/1", .{ .codes = [_]diag.EntryJson{diag.entryJson(e)} });
+        return 0;
+    }
+    try ctx.out.print("{s}: {s}\n\n{s}\n", .{ e.id, e.title, e.explanation });
     return 0;
 }
 
@@ -167,4 +196,29 @@ test "help --json lists every command" {
     const obj = parsed.value.object;
     try std.testing.expectEqualStrings("yoq.help/1", obj.get("schema").?.string);
     try std.testing.expectEqual(commands.len, obj.get("commands").?.array.items.len);
+}
+
+test "explain prints one code or lists them all" {
+    var t: TestRun = .{};
+    try t.exec(&.{ "explain", "e0213" });
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expect(std.mem.startsWith(u8, t.out.buffered(), "E0213: unknown service\n\n"));
+
+    try t.exec(&.{"explain"});
+    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "E0001  toml syntax error\n") != null);
+
+    try t.exec(&.{ "explain", "E9999" });
+    try std.testing.expectEqual(2, t.code);
+}
+
+test "explain --json" {
+    var t: TestRun = .{};
+    try t.exec(&.{ "explain", "E0101", "--json" });
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, t.out.buffered(), .{});
+    defer parsed.deinit();
+    const codes = parsed.value.object.get("codes").?.array.items;
+    try std.testing.expectEqual(1, codes.len);
+    try std.testing.expectEqualStrings("unknown key", codes[0].object.get("title").?.string);
+    try std.testing.expectEqualStrings("E0101", codes[0].object.get("code").?.string);
+    try std.testing.expectEqualStrings("unknown_key", codes[0].object.get("name").?.string);
 }

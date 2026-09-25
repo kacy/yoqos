@@ -29,4 +29,5 @@ pub fn main(init: std.process.Init) !void {
 test {
     _ = cli;
     _ = @import("output.zig");
+    _ = @import("diag.zig");
 }
