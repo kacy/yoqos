@@ -45,3 +45,7 @@ zig build test
 - whole-system generations and rollback on btrfs, with the bootloader you
   already have (grub, systemd-boot, limine, refind)
 - an installer that builds a machine straight from its config
+
+## license
+
+mit. see `LICENSE`.
