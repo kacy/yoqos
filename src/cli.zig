@@ -8,6 +8,8 @@ const diag = @import("diag.zig");
 const compose = @import("compose.zig");
 const show = @import("show.zig");
 const facts = @import("facts.zig");
+const planner = @import("planner.zig");
+const pipeline = @import("pipeline.zig");
 
 pub const default_config = "/etc/yoq/machine.toml";
 
@@ -36,6 +38,7 @@ const Command = struct {
 const commands = [_]Command{
     .{ .name = "help", .summary = "show this help", .handler = help },
     .{ .name = "version", .summary = "print the version", .handler = version },
+    .{ .name = "plan", .summary = "show what apply would change (plan --facts <file>)", .handler = planCmd },
     .{ .name = "config", .summary = "show the merged config (config show [--resolved])", .handler = configCmd },
     .{ .name = "facts", .summary = "show what os knows about this machine (facts --from <file>)", .handler = factsCmd },
     .{ .name = "explain", .summary = "explain an error code, like E0213", .handler = explain },
@@ -193,6 +196,50 @@ fn factsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         f.units.len,
         f.users.len,
     });
+    return 0;
+}
+
+fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    var in: pipeline.Inputs = .{ .config_path = ctx.config_path, .facts_path = "" };
+    var verbose = false;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (std.mem.eql(u8, a, "-v") or std.mem.eql(u8, a, "--verbose")) {
+            verbose = true;
+        } else if ((std.mem.eql(u8, a, "--facts") or std.mem.eql(u8, a, "--lock")) and i + 1 < args.len) {
+            i += 1;
+            if (a[2] == 'f') in.facts_path = args[i] else in.lock_path = args[i];
+        } else {
+            try ctx.err.writeAll("usage: os plan --facts <file> [--lock <file>] [-v]\n");
+            return 2;
+        }
+    }
+    if (in.facts_path.len == 0) {
+        try ctx.err.writeAll("os: reading facts from this machine isn't built yet. pass --facts <file>.\n");
+        return 1;
+    }
+
+    var diags: diag.List = .init(ctx.gpa);
+    defer diags.deinit();
+    var result = pipeline.buildPlan(ctx.gpa, ctx.files, in, &diags) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.FactsUnreadable => {
+            try ctx.err.print("os: can't read facts from {s}\n", .{in.facts_path});
+            return 1;
+        },
+        error.BadFacts => {
+            try ctx.err.print("os: {s} isn't a facts document ({s})\n", .{ in.facts_path, facts.schema });
+            return 1;
+        },
+    } orelse return reportDiags(ctx, &diags);
+    defer result.deinit();
+
+    if (ctx.json) {
+        try planner.writeJson(ctx.out, result.arena.allocator(), &result.plan);
+    } else {
+        try planner.writeText(ctx.out, result.arena.allocator(), &result.plan, .{ .verbose = verbose });
+    }
     return 0;
 }
 
@@ -429,4 +476,48 @@ test "facts --from reads a fixture" {
     try t.fs.put("bad.json", "{}");
     try t.exec(&.{ "facts", "--from", "bad.json" });
     try std.testing.expectEqual(1, t.code);
+}
+
+test "plan from fixture files" {
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
+    try t.fs.put("/etc/yoq/machine.lock",
+        \\version = 1
+        \\sync_date = "2026-09-25"
+        \\keyring = "1"
+        \\[packages.git]
+        \\version = "2.51.0-1"
+        \\repo = "extra"
+        \\sha256 = "
+    ++ "a" ** 64 ++
+        \\"
+        \\[packages.linux]
+        \\version = "6.16.8-1"
+        \\repo = "core"
+        \\sha256 = "
+    ++ "a" ** 64 ++
+        \\"
+        \\
+    );
+    try t.fs.put("f.json",
+        \\{"schema":"yoq.facts/1","packages":[{"name":"linux","version":"6.16.8-1"},{"name":"nano","version":"8.6-1"}]}
+    );
+    try t.exec(&.{ "plan", "--facts", "f.json" });
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expectEqualStrings(
+        \\packages
+        \\  + git 2.51.0-1
+        \\  - nano 8.6-1
+        \\
+        \\plan: 1 to add, 0 to change, 1 to remove · no reboot
+        \\
+    , t.out.buffered());
+
+    try t.exec(&.{ "plan", "--facts", "missing.json" });
+    try std.testing.expectEqual(1, t.code);
+    try t.exec(&.{"plan"});
+    try std.testing.expectEqual(1, t.code);
+    try t.exec(&.{ "plan", "--bogus" });
+    try std.testing.expectEqual(2, t.code);
 }

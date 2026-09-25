@@ -1,0 +1,4 @@
+packages = ["git", "neovim"]
+
+[services]
+tailscale = true

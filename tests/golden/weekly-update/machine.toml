@@ -1,0 +1,14 @@
+version = 1
+packages = ["base", "linux-firmware", "git", "neovim", "ripgrep", "zsh"]
+
+[system]
+hostname = "atlas"
+timezone = "America/New_York"
+locale = "en_US.UTF-8"
+
+[hardware]
+cpu = "amd"
+
+[services]
+ssh = true
+tailscale = true

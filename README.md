@@ -7,7 +7,15 @@ going to change, and every change becomes a generation you can boot back into.
 it's still arch underneath: same packages, same wiki, and you can stop using it
 whenever you want.
 
-nothing works yet. this is day one.
+it's early. nothing touches a real machine yet, but the config side works:
+`os config show` merges and checks a config, and `os plan` shows what would
+change, given a lock and a facts file. try it on the test fixtures:
+
+```
+zig build
+./zig-out/bin/os --config tests/golden/fresh-install/machine.toml \
+    plan --facts tests/golden/fresh-install/facts.json
+```
 
 ## the idea
 

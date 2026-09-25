@@ -120,7 +120,7 @@ pub fn parse(a: Allocator, path: []const u8, bytes: []const u8, diags: *diag.Lis
     var doc = toml.parse(a, bytes, &info) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Syntax => {
-            try diags.add(.lock_invalid, .{ .file = path, .line = info.pos.line, .column = info.pos.column }, "{s}", .{info.message()}, null);
+            try diags.add(.lock_invalid, .{ .file = path, .line = info.pos.line, .column = info.pos.column }, "{s}", .{info.message()}, "restore it from git or run `os update`");
             return null;
         },
     };

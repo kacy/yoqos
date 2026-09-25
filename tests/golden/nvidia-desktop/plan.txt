@@ -1,0 +1,13 @@
+packages
+  + ghostty 1.2.0-1
+  + hyprland 0.51.0-1  (desktop.session)
+  + intel-ucode 20250812-1  (hardware.cpu)
+  + nvidia-open 580.82.09-2  (hardware.gpu)
+  + nvidia-utils 580.82.09-1  (hardware.gpu)
+  + pipewire 1:1.4.8-1  (desktop.audio)
+  + pipewire-pulse 1:1.4.8-1  (desktop.audio)
+  + wireplumber 0.5.11-1  (desktop.audio)
+  + xdg-desktop-portal-hyprland 1.3.10-1  (desktop.session)
+  + mesa 1:25.2.3-1 (dependency)
+
+plan: 10 to add, 0 to change, 0 to remove · reboot needed: microcode, gpu driver

@@ -1,0 +1,15 @@
+error[E0102]: packages should be a list of strings, not a string
+  --> tests/golden/config-errors/machine.toml:2:12
+   | os explain E0102
+
+error[E0101]: unknown key "system.hostnme"
+  --> tests/golden/config-errors/machine.toml:5:1
+   | did you mean "hostname"?  (os explain E0101)
+
+error[E0103]: hardware.gpu can't be "geforce"
+  --> tests/golden/config-errors/machine.toml:8:7
+   | use one of "amd", "intel", "nvidia", "none"  (os explain E0103)
+
+error[E0213]: unknown service "sshd"
+  --> tests/golden/config-errors/machine.toml:11:1
+   | did you mean "ssh"?  (os explain E0213)

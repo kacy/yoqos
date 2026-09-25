@@ -54,3 +54,64 @@ test "lookup" {
     try std.testing.expectEqualStrings("sshd.service", service("ssh").?.unit);
     try std.testing.expectEqual(null, service("sshd"));
 }
+
+/// packages a `[hardware]` or `[desktop]` choice implies.
+pub fn cpuPackages(cpu: anytype) []const []const u8 {
+    return switch (cpu) {
+        .amd => &.{"amd-ucode"},
+        .intel => &.{"intel-ucode"},
+    };
+}
+
+pub fn gpuPackages(gpu: anytype) []const []const u8 {
+    return switch (gpu) {
+        .amd => &.{ "mesa", "vulkan-radeon" },
+        .intel => &.{ "mesa", "vulkan-intel" },
+        .nvidia => &.{ "nvidia-open", "nvidia-utils" },
+        .none => &.{},
+    };
+}
+
+pub fn sessionPackages(session: anytype) []const []const u8 {
+    return switch (session) {
+        .hyprland => &.{ "hyprland", "xdg-desktop-portal-hyprland" },
+    };
+}
+
+pub fn audioPackages(audio: anytype) []const []const u8 {
+    return switch (audio) {
+        .pipewire => &.{ "pipewire", "pipewire-pulse", "wireplumber" },
+    };
+}
+
+pub const default_kernel = "linux";
+
+/// why changing this package needs a reboot, or null if it can apply live.
+/// these are the packages the running system can't swap out safely.
+pub fn rebootReason(pkg: []const u8) ?[]const u8 {
+    const exact = [_]struct { []const u8, []const u8 }{
+        .{ "linux", "kernel" },
+        .{ "linux-lts", "kernel" },
+        .{ "linux-zen", "kernel" },
+        .{ "linux-hardened", "kernel" },
+        .{ "amd-ucode", "microcode" },
+        .{ "intel-ucode", "microcode" },
+        .{ "linux-firmware", "firmware" },
+        .{ "glibc", "glibc" },
+        .{ "systemd", "systemd" },
+        .{ "dbus", "d-bus" },
+        .{ "dbus-broker", "d-bus" },
+        .{ "mkinitcpio", "initramfs" },
+    };
+    for (exact) |e| {
+        if (std.mem.eql(u8, e[0], pkg)) return e[1];
+    }
+    if (std.mem.startsWith(u8, pkg, "nvidia")) return "gpu driver";
+    return null;
+}
+
+test "reboot reasons" {
+    try std.testing.expectEqualStrings("kernel", rebootReason("linux").?);
+    try std.testing.expectEqualStrings("gpu driver", rebootReason("nvidia-utils").?);
+    try std.testing.expectEqual(null, rebootReason("neovim"));
+}

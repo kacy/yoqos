@@ -1,0 +1,9 @@
+packages
+  ~ amd-ucode 20250808-1 -> 20250917-1  (hardware.cpu)
+  ~ git 2.50.1-1 -> 2.51.0-1
+  ~ linux 6.16.7.arch1-1 -> 6.16.8.arch1-1  (boot.kernel)
+  ~ neovim 0.11.3-1 -> 0.11.4-1
+  ~ curl 8.15.0-1 -> 8.16.0-1 (dependency)
+  ~ systemd 257.9-1 -> 258-1 (dependency)
+
+plan: 0 to add, 6 to change, 0 to remove · reboot needed: microcode, kernel, systemd

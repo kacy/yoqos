@@ -1,0 +1,17 @@
+packages
+  + git 2.51.0-1
+  + neovim 0.11.4-1
+  + openssh 10.0p1-4  (services.ssh)
+  + ripgrep 14.1.1-1
+  - nano 8.6-1
+  + curl 8.16.0-1 (dependency)
+  + libuv 1.51.0-1 (dependency)
+  + luajit 2.1.1753364724-1 (dependency)
+  + openssl 3.5.3-1 (dependency)
+  + pcre2 10.45-1 (dependency)
+  + perl 5.42.0-1 (dependency)
+  + perl-error 0.17030-2 (dependency)
+services
+  + sshd.service: enable, start  (services.ssh)
+
+plan: 12 to add, 0 to change, 1 to remove · no reboot

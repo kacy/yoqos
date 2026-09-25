@@ -1,0 +1,69 @@
+# machine.lock: written by os. don't edit it by hand.
+version = 1
+sync_date = "2026-09-25"
+keyring = "20260901-1"
+
+[packages.base]
+version = "3-2"
+repo = "core"
+sha256 = "89a57b3c3f382dadd18357306d798cac2a5a8b1a6fce00d03dc8d84ab8906f8d"
+depends = ["bash", "coreutils", "filesystem", "glibc", "pacman", "systemd"]
+
+[packages.bash]
+version = "5.3.3-2"
+repo = "core"
+sha256 = "8235eb9f1a0579fcce3aa2ba5c8284032eba69d3e891c1c1a56189929cf579f8"
+depends = ["glibc", "readline"]
+
+[packages.coreutils]
+version = "9.8-2"
+repo = "core"
+sha256 = "632a142b314f65fa404b8f3a1ca77dfc4ebd462624363ec304c0e61dd36f0a1f"
+depends = ["glibc"]
+
+[packages.filesystem]
+version = "2025.05.03-1"
+repo = "core"
+sha256 = "0c96834b3603fd77c1a97176d9b5fa45cbb3a008b8edeb3f89f7655e17823c0d"
+
+<<<<<<< HEAD
+[packages.glibc]
+version = "2.42+r17-1"
+repo = "core"
+sha256 = "bc793d43778c82d30cbf01c4133990c8b9d4461df6dbb81f1fce3c5f6aa0227b"
+depends = ["filesystem"]
+
+[packages.linux]
+version = "6.16.8.arch1-1"
+repo = "core"
+sha256 = "67a1696356eb6faf651ccd2e09ebdf2ee831b93f9e3b39ecd386f23fc13e387a"
+depends = ["mkinitcpio"]
+
+[packages.linux-firmware]
+version = "20250917-1"
+repo = "core"
+sha256 = "88e8f60cff089f81309a161d1271b724eb449ed785ef599bf4253bea03c37096"
+
+[packages.mkinitcpio]
+version = "40-2"
+repo = "core"
+sha256 = "12f8064037f79ddbc90725d25504e582ec99b5ff49ccd5ceb7d8f6e50487c513"
+depends = ["bash", "systemd"]
+
+[packages.pacman]
+version = "7.0.0.r7.g1f38429-1"
+repo = "core"
+sha256 = "0ee99d3bd06e4404df0052d6ea3619fa51cc8eebd0cf1bde84b5201a855a2bfe"
+depends = ["bash", "glibc"]
+
+[packages.readline]
+version = "8.3.001-1"
+repo = "core"
+sha256 = "1f44ab3f9229837f97cc528e18de6ab45e626f89c40f2c03971a2f6068d3fe1b"
+depends = ["glibc"]
+
+[packages.systemd]
+version = "258-1"
+repo = "core"
+sha256 = "f35012a3010340a9939b4bcc394a78fb440918c5a7960468afd41c2a8174e1fb"
+depends = ["glibc"]

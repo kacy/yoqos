@@ -1,0 +1,134 @@
+# machine.lock: written by os. don't edit it by hand.
+version = 1
+sync_date = "2026-09-25"
+keyring = "20260901-1"
+
+[packages.base]
+version = "3-2"
+repo = "core"
+sha256 = "89a57b3c3f382dadd18357306d798cac2a5a8b1a6fce00d03dc8d84ab8906f8d"
+depends = ["bash", "coreutils", "filesystem", "glibc", "pacman", "systemd"]
+
+[packages.bash]
+version = "5.3.3-2"
+repo = "core"
+sha256 = "8235eb9f1a0579fcce3aa2ba5c8284032eba69d3e891c1c1a56189929cf579f8"
+depends = ["glibc", "readline"]
+
+[packages.coreutils]
+version = "9.8-2"
+repo = "core"
+sha256 = "632a142b314f65fa404b8f3a1ca77dfc4ebd462624363ec304c0e61dd36f0a1f"
+depends = ["glibc"]
+
+[packages.curl]
+version = "8.16.0-1"
+repo = "core"
+sha256 = "597d68c7bb757ba09a59a53a2d05ab7168ddf7bffc3f9ed6195d483f0cd8e6ba"
+depends = ["glibc", "openssl"]
+
+[packages.filesystem]
+version = "2025.05.03-1"
+repo = "core"
+sha256 = "0c96834b3603fd77c1a97176d9b5fa45cbb3a008b8edeb3f89f7655e17823c0d"
+
+[packages.git]
+version = "2.51.0-1"
+repo = "extra"
+sha256 = "c9ae5e8994c8d96a21ee38d4d4b0d3e4cd3eea1976172f47dc0119b071b1911a"
+depends = ["curl", "glibc", "perl-error"]
+
+[packages.glibc]
+version = "2.42+r17-1"
+repo = "core"
+sha256 = "bc793d43778c82d30cbf01c4133990c8b9d4461df6dbb81f1fce3c5f6aa0227b"
+depends = ["filesystem"]
+
+[packages.libuv]
+version = "1.51.0-1"
+repo = "extra"
+sha256 = "83facd48df3686e011b5f3554573ab6ec6e016a87478e804988de81911dfc37e"
+depends = ["glibc"]
+
+[packages.linux]
+version = "6.16.8.arch1-1"
+repo = "core"
+sha256 = "67a1696356eb6faf651ccd2e09ebdf2ee831b93f9e3b39ecd386f23fc13e387a"
+depends = ["mkinitcpio"]
+
+[packages.linux-firmware]
+version = "20250917-1"
+repo = "core"
+sha256 = "88e8f60cff089f81309a161d1271b724eb449ed785ef599bf4253bea03c37096"
+
+[packages.luajit]
+version = "2.1.1753364724-1"
+repo = "extra"
+sha256 = "1eed7674f065f9f8954e31534f93c5066fb545f56f572d82bc49f26a9672c80a"
+depends = ["glibc"]
+
+[packages.mkinitcpio]
+version = "40-2"
+repo = "core"
+sha256 = "12f8064037f79ddbc90725d25504e582ec99b5ff49ccd5ceb7d8f6e50487c513"
+depends = ["bash", "systemd"]
+
+[packages.neovim]
+version = "0.11.4-1"
+repo = "extra"
+sha256 = "9660f457421189f14ad0e38148a3279edaf717e26e9969f7ff123b34e92a6697"
+depends = ["libuv", "luajit"]
+
+[packages.openssh]
+version = "10.0p1-4"
+repo = "core"
+sha256 = "05819f388c023bab31346ed161ae8d04a3398219747e42222d8dd8446713a687"
+depends = ["openssl"]
+
+[packages.openssl]
+version = "3.5.3-1"
+repo = "core"
+sha256 = "bb9c7f7c4003d802bc2a665bb0d8118a30f14a2421a0d05964471a5736cbeba2"
+depends = ["glibc"]
+
+[packages.pacman]
+version = "7.0.0.r7.g1f38429-1"
+repo = "core"
+sha256 = "0ee99d3bd06e4404df0052d6ea3619fa51cc8eebd0cf1bde84b5201a855a2bfe"
+depends = ["bash", "glibc"]
+
+[packages.pcre2]
+version = "10.45-1"
+repo = "core"
+sha256 = "8bc818b3bbaaef55a2b9db41db4da0bfb331693afadcb9efcf6c3a2ea65b769d"
+depends = ["readline"]
+
+[packages.perl]
+version = "5.42.0-1"
+repo = "core"
+sha256 = "8054a44317e40800334874a63fd842665655728eb5929363c8d5ee922daa72ab"
+depends = ["glibc"]
+
+[packages.perl-error]
+version = "0.17030-2"
+repo = "extra"
+sha256 = "1244253aba1727edf570ca7b6c231095824978edfe414bfebc23062b3dca315b"
+depends = ["perl"]
+
+[packages.readline]
+version = "8.3.001-1"
+repo = "core"
+sha256 = "1f44ab3f9229837f97cc528e18de6ab45e626f89c40f2c03971a2f6068d3fe1b"
+depends = ["glibc"]
+
+[packages.ripgrep]
+version = "14.1.1-1"
+repo = "extra"
+sha256 = "ab6eb9929598f38cf327768aeafe2bf3d93260223e95e825ea4b31cac586aa1a"
+depends = ["pcre2"]
+
+[packages.systemd]
+version = "258-1"
+repo = "core"
+sha256 = "f35012a3010340a9939b4bcc394a78fb440918c5a7960468afd41c2a8174e1fb"
+depends = ["glibc"]

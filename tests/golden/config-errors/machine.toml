@@ -1,0 +1,11 @@
+version = 1
+packages = "git"
+
+[system]
+hostnme = "atlas"
+
+[hardware]
+gpu = "geforce"
+
+[services]
+sshd = true

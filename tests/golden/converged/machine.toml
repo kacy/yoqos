@@ -1,0 +1,6 @@
+version = 1
+packages = ["base", "linux-firmware"]
+
+[system]
+hostname = "atlas"
+timezone = "America/New_York"

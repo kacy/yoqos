@@ -1,0 +1,42 @@
+{
+  "schema": "yoq.plan/1",
+  "hash": "57e87cc62659665cd7f08c927d582dcbe10280d8539f1c9052ef7e03701244c3",
+  "summary": {
+    "add": 0,
+    "change": 0,
+    "remove": 3
+  },
+  "reboot": {
+    "needed": false,
+    "because": []
+  },
+  "changes": [
+    {
+      "op": "remove",
+      "kind": "dependency",
+      "subject": "libuv",
+      "from": "1.51.0-1",
+      "to": null,
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "remove",
+      "kind": "dependency",
+      "subject": "luajit",
+      "from": "2.1.1753364724-1",
+      "to": null,
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "remove",
+      "kind": "package",
+      "subject": "neovim",
+      "from": "0.11.4-1",
+      "to": null,
+      "cause": null,
+      "reboot": null
+    }
+  ]
+}

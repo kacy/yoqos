@@ -1,0 +1,151 @@
+{
+  "schema": "yoq.facts/1",
+  "time": 1790294400,
+  "hostname": "atlas",
+  "timezone": "America/New_York",
+  "locale": "en_US.UTF-8",
+  "packages": [
+    {
+      "name": "amd-ucode",
+      "version": "20250917-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "base",
+      "version": "3-2",
+      "reason": "explicit"
+    },
+    {
+      "name": "bash",
+      "version": "5.3.3-2",
+      "reason": "dependency"
+    },
+    {
+      "name": "coreutils",
+      "version": "9.8-2",
+      "reason": "dependency"
+    },
+    {
+      "name": "curl",
+      "version": "8.16.0-1",
+      "reason": "dependency"
+    },
+    {
+      "name": "filesystem",
+      "version": "2025.05.03-1",
+      "reason": "dependency"
+    },
+    {
+      "name": "git",
+      "version": "2.51.0-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "glibc",
+      "version": "2.42+r17-1",
+      "reason": "dependency"
+    },
+    {
+      "name": "libuv",
+      "version": "1.51.0-1",
+      "reason": "dependency"
+    },
+    {
+      "name": "linux",
+      "version": "6.16.8.arch1-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "linux-firmware",
+      "version": "20250917-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "luajit",
+      "version": "2.1.1753364724-1",
+      "reason": "dependency"
+    },
+    {
+      "name": "mkinitcpio",
+      "version": "40-2",
+      "reason": "dependency"
+    },
+    {
+      "name": "neovim",
+      "version": "0.11.4-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "openssh",
+      "version": "10.0p1-4",
+      "reason": "explicit"
+    },
+    {
+      "name": "openssl",
+      "version": "3.5.3-1",
+      "reason": "dependency"
+    },
+    {
+      "name": "pacman",
+      "version": "7.0.0.r7.g1f38429-1",
+      "reason": "dependency"
+    },
+    {
+      "name": "pcre2",
+      "version": "10.45-1",
+      "reason": "dependency"
+    },
+    {
+      "name": "perl",
+      "version": "5.42.0-1",
+      "reason": "dependency"
+    },
+    {
+      "name": "perl-error",
+      "version": "0.17030-2",
+      "reason": "dependency"
+    },
+    {
+      "name": "readline",
+      "version": "8.3.001-1",
+      "reason": "dependency"
+    },
+    {
+      "name": "ripgrep",
+      "version": "14.1.1-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "systemd",
+      "version": "258-1",
+      "reason": "dependency"
+    },
+    {
+      "name": "tailscale",
+      "version": "1.88.1-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "zsh",
+      "version": "5.9-5",
+      "reason": "explicit"
+    }
+  ],
+  "units": [
+    {
+      "name": "systemd-timesyncd.service",
+      "enabled": true,
+      "active": true
+    },
+    {
+      "name": "sshd.service",
+      "enabled": true,
+      "active": true
+    },
+    {
+      "name": "tailscaled.service",
+      "enabled": true,
+      "active": true
+    }
+  ]
+}

@@ -12,6 +12,7 @@ pub fn build(b: *std.Build) void {
 
     const options = b.addOptions();
     options.addOption([]const u8, "version", @import("build.zig.zon").version);
+    options.addOption(bool, "update_golden", b.option(bool, "update-golden", "rewrite golden test outputs") orelse false);
     root.addOptions("build_options", options);
 
     const exe = b.addExecutable(.{ .name = "os", .root_module = root });
@@ -23,7 +24,9 @@ pub fn build(b: *std.Build) void {
     b.step("run", "run os").dependOn(&run.step);
 
     const tests = b.addTest(.{ .root_module = root });
-    b.step("test", "run unit tests").dependOn(&b.addRunArtifact(tests).step);
+    const run_tests = b.addRunArtifact(tests);
+    run_tests.setCwd(b.path("."));
+    b.step("test", "run unit and golden tests").dependOn(&run_tests.step);
 
     const fmt = b.addFmt(.{ .paths = &.{ "build.zig", "build.zig.zon", "src" }, .check = true });
     b.step("fmt", "check formatting").dependOn(&fmt.step);

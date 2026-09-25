@@ -1,0 +1,8 @@
+packages = ["base", "linux-firmware", "nano"]
+
+[system]
+timezone = "UTC"
+locale = "en_US.UTF-8"
+
+[services]
+ssh = true

@@ -1,0 +1,73 @@
+{
+  "schema": "yoq.plan/1",
+  "hash": "e4bd7044a0ec73f35b89428535741dc0e555029bbddede38934389dbd7e2e0a7",
+  "summary": {
+    "add": 0,
+    "change": 6,
+    "remove": 0
+  },
+  "reboot": {
+    "needed": true,
+    "because": [
+      "microcode",
+      "kernel",
+      "systemd"
+    ]
+  },
+  "changes": [
+    {
+      "op": "change",
+      "kind": "package",
+      "subject": "amd-ucode",
+      "from": "20250808-1",
+      "to": "20250917-1",
+      "cause": "hardware.cpu",
+      "reboot": "microcode"
+    },
+    {
+      "op": "change",
+      "kind": "dependency",
+      "subject": "curl",
+      "from": "8.15.0-1",
+      "to": "8.16.0-1",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "change",
+      "kind": "package",
+      "subject": "git",
+      "from": "2.50.1-1",
+      "to": "2.51.0-1",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "change",
+      "kind": "package",
+      "subject": "linux",
+      "from": "6.16.7.arch1-1",
+      "to": "6.16.8.arch1-1",
+      "cause": "boot.kernel",
+      "reboot": "kernel"
+    },
+    {
+      "op": "change",
+      "kind": "package",
+      "subject": "neovim",
+      "from": "0.11.3-1",
+      "to": "0.11.4-1",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "change",
+      "kind": "dependency",
+      "subject": "systemd",
+      "from": "257.9-1",
+      "to": "258-1",
+      "cause": null,
+      "reboot": "systemd"
+    }
+  ]
+}

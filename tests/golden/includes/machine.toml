@@ -1,0 +1,11 @@
+version = 1
+include = ["base.toml", "profiles/dev.toml"]
+packages = ["ripgrep"]
+unset = ["services.tailscale"]
+
+[remove]
+packages = ["nano"]
+
+[system]
+hostname = "atlas"
+timezone = "America/New_York"

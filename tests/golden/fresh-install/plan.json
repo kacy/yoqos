@@ -1,0 +1,197 @@
+{
+  "schema": "yoq.plan/1",
+  "hash": "bbea84402a1fa4c71a91587151aee07a479c8f4d45a271a1c047de8610292564",
+  "summary": {
+    "add": 16,
+    "change": 3,
+    "remove": 1
+  },
+  "reboot": {
+    "needed": true,
+    "because": [
+      "microcode"
+    ]
+  },
+  "changes": [
+    {
+      "op": "add",
+      "kind": "package",
+      "subject": "amd-ucode",
+      "from": null,
+      "to": "20250917-1",
+      "cause": "hardware.cpu",
+      "reboot": "microcode"
+    },
+    {
+      "op": "add",
+      "kind": "dependency",
+      "subject": "curl",
+      "from": null,
+      "to": "8.16.0-1",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "add",
+      "kind": "package",
+      "subject": "git",
+      "from": null,
+      "to": "2.51.0-1",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "add",
+      "kind": "dependency",
+      "subject": "libuv",
+      "from": null,
+      "to": "1.51.0-1",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "add",
+      "kind": "dependency",
+      "subject": "luajit",
+      "from": null,
+      "to": "2.1.1753364724-1",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "add",
+      "kind": "package",
+      "subject": "neovim",
+      "from": null,
+      "to": "0.11.4-1",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "add",
+      "kind": "package",
+      "subject": "openssh",
+      "from": null,
+      "to": "10.0p1-4",
+      "cause": "services.ssh",
+      "reboot": null
+    },
+    {
+      "op": "add",
+      "kind": "dependency",
+      "subject": "openssl",
+      "from": null,
+      "to": "3.5.3-1",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "add",
+      "kind": "dependency",
+      "subject": "pcre2",
+      "from": null,
+      "to": "10.45-1",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "add",
+      "kind": "dependency",
+      "subject": "perl",
+      "from": null,
+      "to": "5.42.0-1",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "add",
+      "kind": "dependency",
+      "subject": "perl-error",
+      "from": null,
+      "to": "0.17030-2",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "add",
+      "kind": "package",
+      "subject": "ripgrep",
+      "from": null,
+      "to": "14.1.1-1",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "add",
+      "kind": "package",
+      "subject": "tailscale",
+      "from": null,
+      "to": "1.88.1-1",
+      "cause": "services.tailscale",
+      "reboot": null
+    },
+    {
+      "op": "add",
+      "kind": "package",
+      "subject": "zsh",
+      "from": null,
+      "to": "5.9-5",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "remove",
+      "kind": "package",
+      "subject": "nano",
+      "from": "8.6-1",
+      "to": null,
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "change",
+      "kind": "setting",
+      "subject": "system.hostname",
+      "from": "archlinux",
+      "to": "atlas",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "change",
+      "kind": "setting",
+      "subject": "system.timezone",
+      "from": "UTC",
+      "to": "America/New_York",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "change",
+      "kind": "setting",
+      "subject": "system.locale",
+      "from": null,
+      "to": "en_US.UTF-8",
+      "cause": null,
+      "reboot": null
+    },
+    {
+      "op": "add",
+      "kind": "unit",
+      "subject": "sshd.service",
+      "from": null,
+      "to": "enable, start",
+      "cause": "services.ssh",
+      "reboot": null
+    },
+    {
+      "op": "add",
+      "kind": "unit",
+      "subject": "tailscaled.service",
+      "from": null,
+      "to": "enable, start",
+      "cause": "services.tailscale",
+      "reboot": null
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+version = 1
+packages = ["base", "linux-firmware", "ghostty"]
+
+[hardware]
+cpu = "intel"
+gpu = "nvidia"
+
+[desktop]
+session = "hyprland"
+audio = "pipewire"
