@@ -29,6 +29,8 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
     f.timezone = try r.timezone();
     if (try r.file("etc/locale.conf")) |text| f.locale = shellVar(text, "LANG");
     if (try r.file("etc/vconsole.conf")) |text| f.keymap = shellVar(text, "KEYMAP");
+    if (try r.file("proc/cpuinfo")) |text| f.cpu = cpuVendor(text);
+    f.gpus = try r.gpus();
     if (try r.file("etc/passwd")) |passwd| {
         f.users = try users(a, passwd, try r.file("etc/group") orelse "");
     }
@@ -60,9 +62,15 @@ const Reader = struct {
         return std.fs.path.join(r.a, &.{ r.root, rel });
     }
 
-    /// a file's contents, or null if it doesn't exist or can't be read.
+    /// a file's contents, or null if it doesn't exist or can't be read. it
+    /// reads to the end instead of trusting the file's size, since files
+    /// under /proc and /sys say they're empty.
     fn file(r: Reader, rel: []const u8) !?[]const u8 {
-        return std.Io.Dir.cwd().readFileAlloc(r.io, try r.path(rel), r.a, .limited(4 << 20)) catch |e| switch (e) {
+        const f = std.Io.Dir.cwd().openFile(r.io, try r.path(rel), .{}) catch return null;
+        defer f.close(r.io);
+        var buf: [4096]u8 = undefined;
+        var fr = f.readerStreaming(r.io, &buf);
+        return fr.interface.allocRemaining(r.a, .limited(4 << 20)) catch |e| switch (e) {
             error.OutOfMemory => error.OutOfMemory,
             else => null,
         };
@@ -76,6 +84,25 @@ const Reader = struct {
         return zoneFromLink(r.a, buf[0..n]);
     }
 
+    /// display controllers on the pci bus: devices whose class starts with
+    /// 0x03, by vendor.
+    fn gpus(r: Reader) ![]const []const u8 {
+        var out: std.ArrayList([]const u8) = .empty;
+        var dir = std.Io.Dir.cwd().openDir(r.io, try r.path("sys/bus/pci/devices"), .{ .iterate = true }) catch return out.items;
+        defer dir.close(r.io);
+        var names: std.ArrayList([]const u8) = .empty;
+        var it = dir.iterate();
+        while (it.next(r.io) catch null) |e| try names.append(r.a, try r.a.dupe(u8, e.name));
+        @import("sort.zig").strings(names.items);
+        for (names.items) |n| {
+            const class = try r.file(try std.fmt.allocPrint(r.a, "sys/bus/pci/devices/{s}/class", .{n})) orelse continue;
+            if (!std.mem.startsWith(u8, std.mem.trim(u8, class, " \n"), "0x03")) continue;
+            const vendor = try r.file(try std.fmt.allocPrint(r.a, "sys/bus/pci/devices/{s}/vendor", .{n})) orelse continue;
+            if (gpuVendor(std.mem.trim(u8, vendor, " \n"))) |v| try out.append(r.a, v);
+        }
+        return out.items;
+    }
+
     /// pacman's database lives in /usr on the rollback rung and in /var
     /// otherwise.
     fn dbpath(r: Reader) ![]const u8 {
@@ -84,6 +111,28 @@ const Reader = struct {
         return moved;
     }
 };
+
+/// "amd" or "intel" from /proc/cpuinfo's vendor_id, or the raw vendor.
+pub fn cpuVendor(text: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "vendor_id")) continue;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const v = std.mem.trim(u8, line[colon + 1 ..], " \t");
+        if (std.mem.eql(u8, v, "AuthenticAMD")) return "amd";
+        if (std.mem.eql(u8, v, "GenuineIntel")) return "intel";
+        return v;
+    }
+    return null;
+}
+
+/// a pci vendor id as a gpu vendor name.
+pub fn gpuVendor(id: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, id, "0x1002")) return "amd";
+    if (std.mem.eql(u8, id, "0x8086")) return "intel";
+    if (std.mem.eql(u8, id, "0x10de")) return "nvidia";
+    return null;
+}
 
 pub fn zoneFromLink(a: Allocator, target: []const u8) !?[]const u8 {
     const marker = "zoneinfo/";
@@ -219,6 +268,21 @@ test "observe a machine laid out in a directory" {
     try tmp.dir.writeFile(io, .{ .sub_path = "etc/passwd", .data = "kacy:x:1000:1000::/home/kacy:/usr/bin/zsh\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = "etc/group", .data = "kacy:x:1000:\nwheel:x:998:kacy\n" });
     try tmp.dir.symLink(io, "../usr/share/zoneinfo/Europe/Berlin", "etc/localtime", .{});
+    try tmp.dir.createDirPath(io, "proc");
+    try tmp.dir.writeFile(io, .{ .sub_path = "proc/cpuinfo", .data = "processor\t: 0\nvendor_id\t: AuthenticAMD\ncpu family\t: 25\n" });
+    for ([_][3][]const u8{
+        .{ "0000:00:02.0", "0x030000", "0x8086" }, // intel igpu
+        .{ "0000:01:00.0", "0x030000", "0x10de" }, // nvidia dgpu
+        .{ "0000:02:00.0", "0x020000", "0x10ec" }, // a network card
+    }) |dev| {
+        const dir = try std.fmt.allocPrint(testing.allocator, "sys/bus/pci/devices/{s}", .{dev[0]});
+        defer testing.allocator.free(dir);
+        try tmp.dir.createDirPath(io, dir);
+        var sub = try tmp.dir.openDir(io, dir, .{});
+        defer sub.close(io);
+        try sub.writeFile(io, .{ .sub_path = "class", .data = dev[1] });
+        try sub.writeFile(io, .{ .sub_path = "vendor", .data = dev[2] });
+    }
 
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -231,5 +295,9 @@ test "observe a machine laid out in a directory" {
     try testing.expectEqualStrings("en_US.UTF-8", f.locale.?);
     try testing.expectEqual(null, f.keymap);
     try testing.expectEqualStrings("wheel", f.users[0].groups[1]);
+    try testing.expectEqualStrings("amd", f.cpu.?);
+    try testing.expectEqual(2, f.gpus.len);
+    try testing.expectEqualStrings("intel", f.gpus[0]);
+    try testing.expectEqualStrings("nvidia", f.gpus[1]);
     try testing.expect(f.time > 1_700_000_000);
 }

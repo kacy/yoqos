@@ -48,6 +48,7 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const l = try resolveLock(ctx, &w, &loaded.config, top, dbs, sync_date) orelse return w.report();
     const path = try writeLock(ctx, a, top, &l) orelse return 1;
     const d = try lock.diff(a, if (old) |*o| o else null, &l);
+    try cli.record(ctx, a, top, try std.fmt.allocPrint(a, "update packages to {s}", .{l.sync_date}));
     if (ctx.json) {
         try output.writeDoc(ctx.out, "yoq.update/1", .{ .lock = path, .sync_date = l.sync_date, .packages = l.packages.len, .diff = d });
         return 0;
@@ -230,7 +231,7 @@ fn sortRepos(dbs: []alpm.SyncDb) void {
 }
 
 /// today's date as yyyy-mm-dd, in utc.
-fn today(io: std.Io, a: Allocator) ![]const u8 {
+pub fn today(io: std.Io, a: Allocator) ![]const u8 {
     const secs: u64 = @intCast(std.Io.Timestamp.now(io, .real).toSeconds());
     const day = std.time.epoch.EpochSeconds{ .secs = secs };
     const yd = day.getEpochDay().calculateYearDay();
@@ -302,23 +303,6 @@ test "update without a terminal says which choices to make" {
     try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0123]: java-runtime has more than one provider: jre-openjdk, jre17-openjdk"));
 }
 
-/// serves the fixture databases the way a mirror would.
-const FixtureMirror = struct {
-    fetched: usize = 0,
-
-    fn fetcher(m: *FixtureMirror) sync.Fetcher {
-        return .{ .ctx = m, .fetchFn = fetch };
-    }
-
-    fn fetch(ctx: *anyopaque, a: Allocator, url: []const u8) error{OutOfMemory}!?[]const u8 {
-        const m: *FixtureMirror = @ptrCast(@alignCast(ctx));
-        const name = std.fs.path.basename(url);
-        const path = try std.fmt.allocPrint(a, "tests/alpm/repos/{s}", .{name});
-        m.fetched += 1;
-        return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, a, .limited(1 << 20)) catch null;
-    }
-};
-
 test "update downloads the databases pacman.conf names, once per date" {
     if (!alpm.available) return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
@@ -327,7 +311,7 @@ test "update downloads the databases pacman.conf names, once per date" {
     defer arena.deinit();
     const root = try std.fmt.allocPrintSentinel(arena.allocator(), ".zig-cache/tmp/{s}", .{tmp.sub_path}, 0);
 
-    var mirror: FixtureMirror = .{};
+    var mirror: cli.FixtureMirror = .{};
     var t: TestRun = .{ .fetcher = mirror.fetcher() };
     defer t.deinit();
     try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");

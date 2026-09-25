@@ -124,8 +124,18 @@ fn apply(ctx: *Context, op: change.Op, names: []const []const u8) !u8 {
     }
     if (!outcome.changed()) return 0;
     try ctx.out.print("\nsaved {s}.\n", .{top});
-    if (op == .add or op == .remove) return relock(ctx, top);
-    return 0;
+    const code = if (op == .add or op == .remove) try relock(ctx, top) else 0;
+    try cli.record(ctx, a, top, try commitMessage(a, op, outcome.notes));
+    return code;
+}
+
+/// "add fd, bat": what the change did, in the words of the command.
+fn commitMessage(a: std.mem.Allocator, op: change.Op, notes: []const change.Note) ![]const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    for (notes) |n| {
+        if (n.what != .unchanged) try names.append(a, n.name);
+    }
+    return std.fmt.allocPrint(a, "{s} {s}", .{ @tagName(op), try std.mem.join(a, ", ", names.items) });
 }
 
 /// brings the lock in line with a changed package list, using the
@@ -180,6 +190,9 @@ test "add, remove, enable, and disable edit the config file" {
     try t.exec(&.{ "enable", "tailscale" });
     try t.exec(&.{ "disable", "ssh" });
     try std.testing.expectEqual(0, t.code);
+    try std.testing.expectEqualStrings("add ripgrep", t.recorder.messages.items[0]);
+    try std.testing.expectEqualStrings("remove nano, git", t.recorder.messages.items[1]);
+    try std.testing.expectEqual(4, t.recorder.messages.items.len);
     try std.testing.expectEqualStrings(
         \\# my laptop
         \\include = ["base.toml"]

@@ -2,6 +2,7 @@ const std = @import("std");
 const cli = @import("cli.zig");
 const disk = @import("disk.zig");
 const sync = @import("sync.zig");
+const history = @import("history.zig");
 
 pub fn main(init: std.process.Init) !void {
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
@@ -17,12 +18,14 @@ pub fn main(init: std.process.Init) !void {
     const tty = (stdout.isTty(init.io) catch false) and (stdin.isTty(init.io) catch false);
 
     var disk_files: disk.Files = .{ .io = init.io };
+    var git: history.Git = .{ .io = init.io };
     var http: sync.HttpFetcher = .init(init.gpa, init.io);
     defer http.deinit();
     var ctx: cli.Context = .{
         .io = init.io,
         .files = disk_files.files(),
         .fetcher = http.fetcher(),
+        .history = git.history(),
         .in = &in.interface,
         .interactive = tty,
         .gpa = init.gpa,
@@ -63,5 +66,7 @@ test {
     _ = @import("sync.zig");
     _ = @import("systemd.zig");
     _ = @import("status.zig");
+    _ = @import("history.zig");
+    _ = @import("generate.zig");
     _ = disk;
 }

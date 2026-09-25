@@ -8,6 +8,8 @@ const diag = @import("diag.zig");
 const compose = @import("compose.zig");
 const pipeline = @import("pipeline.zig");
 const sync = @import("sync.zig");
+const history = @import("history.zig");
+const init_cmd = @import("cmd/init.zig");
 const inspect = @import("cmd/inspect.zig");
 const edit = @import("cmd/edit.zig");
 const update = @import("cmd/update.zig");
@@ -31,6 +33,8 @@ pub const Context = struct {
     root: []const u8 = "/",
     /// downloads package databases.
     fetcher: sync.Fetcher,
+    /// records config changes, as git commits.
+    history: history.History,
     files: compose.Files,
     /// answers to questions. commands ask only when `interactive` is set:
     /// stdin and stdout are terminals and --json is off.
@@ -49,6 +53,7 @@ const Command = struct {
 const commands = [_]Command{
     .{ .name = "help", .summary = "show this help", .handler = help },
     .{ .name = "version", .summary = "print the version", .handler = version },
+    .{ .name = "init", .summary = "write a config that describes this machine", .handler = init_cmd.initCmd },
     .{ .name = "status", .summary = "what matches the config, what changed, what's failing", .handler = inspect.statusCmd },
     .{ .name = "plan", .summary = "show what apply would change", .handler = inspect.planCmd },
     .{ .name = "update", .summary = "resolve the config into machine.lock (update --dbs <dir>)", .handler = update.updateCmd },
@@ -219,6 +224,16 @@ pub const Work = struct {
     }
 };
 
+/// commits the config directory holding `top`. a failure is worth a
+/// warning, not a failed command: the change itself is saved.
+pub fn record(ctx: *Context, a: std.mem.Allocator, top: []const u8, message: []const u8) !void {
+    const dir = std.fs.path.dirnamePosix(top) orelse ".";
+    var why: []const u8 = "";
+    if (!try ctx.history.commit(a, dir, message, &why)) {
+        try ctx.err.print("os: saved, but couldn't record it in git: {s}\n", .{why});
+    }
+}
+
 /// says why facts couldn't be read. returns the exit code.
 pub fn factsError(ctx: *Context, e: pipeline.Error, path: ?[]const u8) !u8 {
     const from = path orelse "this machine";
@@ -302,11 +317,14 @@ pub const TestRun = struct {
     /// answers downloads. by default every download fails, so no test
     /// touches the network by accident.
     fetcher: ?sync.Fetcher = null,
+    /// the commits commands made.
+    recorder: history.Recorder = .{ .gpa = std.testing.allocator },
     reader: std.Io.Reader = undefined,
     code: u8 = 0,
 
     pub fn deinit(t: *TestRun) void {
         t.fs.deinit();
+        t.recorder.deinit();
     }
 
     pub fn exec(t: *TestRun, args: []const [:0]const u8) !void {
@@ -319,6 +337,7 @@ pub const TestRun = struct {
             .err = &t.err,
             .files = t.fs.files(),
             .fetcher = t.fetcher orelse offline,
+            .history = t.recorder.history(),
         };
         if (t.input) |text| {
             t.reader = .fixed(text);
@@ -326,6 +345,23 @@ pub const TestRun = struct {
             t.ctx.interactive = true;
         }
         t.code = try run(&t.ctx, args);
+    }
+};
+
+/// serves the fixture databases the way a mirror would.
+pub const FixtureMirror = struct {
+    fetched: usize = 0,
+
+    pub fn fetcher(m: *FixtureMirror) sync.Fetcher {
+        return .{ .ctx = m, .fetchFn = fetch };
+    }
+
+    fn fetch(ctx: *anyopaque, a: std.mem.Allocator, url: []const u8) error{OutOfMemory}!?[]const u8 {
+        const m: *FixtureMirror = @ptrCast(@alignCast(ctx));
+        const name = std.fs.path.basename(url);
+        const path = try std.fmt.allocPrint(a, "tests/alpm/repos/{s}", .{name});
+        m.fetched += 1;
+        return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, a, .limited(1 << 20)) catch null;
     }
 };
 
@@ -341,6 +377,7 @@ pub fn machinePath(ctx: *const Context, a: std.mem.Allocator, path: []const u8) 
 }
 
 test {
+    _ = init_cmd;
     _ = inspect;
     _ = edit;
     _ = update;

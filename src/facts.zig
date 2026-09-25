@@ -40,6 +40,10 @@ pub const Facts = struct {
     timezone: ?[]const u8 = null,
     locale: ?[]const u8 = null,
     keymap: ?[]const u8 = null,
+    /// the cpu vendor: "amd", "intel", or what /proc/cpuinfo says.
+    cpu: ?[]const u8 = null,
+    /// display controller vendors: "amd", "intel", "nvidia", in pci order.
+    gpus: []const []const u8 = &.{},
     packages: []Package = &.{},
     units: []Unit = &.{},
     users: []User = &.{},
@@ -80,6 +84,8 @@ const Doc = struct {
     timezone: ?[]const u8 = null,
     locale: ?[]const u8 = null,
     keymap: ?[]const u8 = null,
+    cpu: ?[]const u8 = null,
+    gpus: []const []const u8 = &.{},
     packages: []Package = &.{},
     units: []Unit = &.{},
     users: []User = &.{},
@@ -99,6 +105,8 @@ pub fn parse(a: Allocator, bytes: []const u8) ParseError!Facts {
         .timezone = doc.timezone,
         .locale = doc.locale,
         .keymap = doc.keymap,
+        .cpu = doc.cpu,
+        .gpus = doc.gpus,
         .packages = doc.packages,
         .units = doc.units,
         .users = doc.users,

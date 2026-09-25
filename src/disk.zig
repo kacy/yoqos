@@ -18,6 +18,7 @@ pub const Files = struct {
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         const tmp = std.fmt.bufPrint(&buf, "{s}.os-tmp", .{path}) catch return error.WriteFailed;
         const cwd = std.Io.Dir.cwd();
+        if (std.fs.path.dirnamePosix(path)) |dir| cwd.createDirPath(d.io, dir) catch return error.WriteFailed;
         cwd.writeFile(d.io, .{ .sub_path = tmp, .data = bytes }) catch return error.WriteFailed;
         cwd.rename(tmp, cwd, path, d.io) catch {
             cwd.deleteFile(d.io, tmp) catch {};
