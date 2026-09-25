@@ -3,7 +3,6 @@
 
 const std = @import("std");
 const cli = @import("../cli.zig");
-const compose = @import("../compose.zig");
 const facts = @import("../facts.zig");
 const observe = @import("../observe.zig");
 const pipeline = @import("../pipeline.zig");

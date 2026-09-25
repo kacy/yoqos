@@ -102,6 +102,49 @@ pub fn normalize(a: Allocator, l: *Lock) !void {
     l.providers = provs;
 }
 
+/// how two locks differ, by package name. every list is sorted.
+pub const Diff = struct {
+    added: []const []const u8,
+    removed: []const []const u8,
+    changed: []const []const u8,
+
+    pub fn empty(d: Diff) bool {
+        return d.added.len + d.removed.len + d.changed.len == 0;
+    }
+
+    /// "+2 -1 ~3", or "no changes".
+    pub fn write(d: Diff, w: *std.Io.Writer) !void {
+        if (d.empty()) return w.writeAll("no changes");
+        var first = true;
+        inline for (.{ .{ '+', d.added }, .{ '-', d.removed }, .{ '~', d.changed } }) |part| {
+            if (part[1].len > 0) {
+                if (!first) try w.writeByte(' ');
+                first = false;
+                try w.print("{c}{d}", .{ part[0], part[1].len });
+            }
+        }
+    }
+};
+
+/// what changed from `old` to `new`. with no old lock, everything is added.
+pub fn diff(a: Allocator, old: ?*const Lock, new: *const Lock) !Diff {
+    var added: std.ArrayList([]const u8) = .empty;
+    var removed: std.ArrayList([]const u8) = .empty;
+    var changed: std.ArrayList([]const u8) = .empty;
+    for (new.packages) |p| {
+        const before = if (old) |o| o.package(p.name) else null;
+        if (before == null) {
+            try added.append(a, p.name);
+        } else if (!std.mem.eql(u8, before.?.version, p.version)) {
+            try changed.append(a, p.name);
+        }
+    }
+    if (old) |o| for (o.packages) |p| {
+        if (new.package(p.name) == null) try removed.append(a, p.name);
+    };
+    return .{ .added = added.items, .removed = removed.items, .changed = changed.items };
+}
+
 /// reads a lock file. problems go to `diags` as E0120 and the result is
 /// null. strings are allocated in `a`, which should be an arena.
 pub fn parse(a: Allocator, path: []const u8, bytes: []const u8, diags: *diag.List) !?Lock {
@@ -341,4 +384,27 @@ test "damaged locks are rejected with a reason" {
     try expectBad(head ++ "[packages.git]\nversion = \"1\"\nrepo = \"core\"\nsha256 = \"" ++ hash_a ++ "\"\ndepends = [\"gone\"]\n", "git depends on gone, which isn't in the lock");
     try expectBad(head ++ "<<<<<<< HEAD\n", "expected a key, found '<'");
     try expectBad(head ++ "extra = 1\n", "unknown key extra");
+}
+
+test "diff between locks" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const old: Lock = .{ .sync_date = "1", .keyring = "1", .packages = &.{
+        .{ .name = "git", .version = "1", .repo = "x", .sha256 = hash_a },
+        .{ .name = "nano", .version = "1", .repo = "x", .sha256 = hash_a },
+    } };
+    const new: Lock = .{ .sync_date = "2", .keyring = "1", .packages = &.{
+        .{ .name = "git", .version = "2", .repo = "x", .sha256 = hash_a },
+        .{ .name = "vim", .version = "1", .repo = "x", .sha256 = hash_a },
+    } };
+    const d = try diff(a, &old, &new);
+    try testing.expectEqualStrings("vim", d.added[0]);
+    try testing.expectEqualStrings("nano", d.removed[0]);
+    try testing.expectEqualStrings("git", d.changed[0]);
+    var out: std.Io.Writer.Allocating = .init(a);
+    try d.write(&out.writer);
+    try testing.expectEqualStrings("+1 -1 ~1", out.written());
+    try testing.expectEqual(2, (try diff(a, null, &new)).added.len);
+    try testing.expect((try diff(a, &new, &new)).empty());
 }

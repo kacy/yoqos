@@ -12,7 +12,6 @@ const output = @import("../output.zig");
 const planner = @import("../planner.zig");
 const sort = @import("../sort.zig");
 const sync = @import("../sync.zig");
-const compose = @import("../compose.zig");
 const Context = cli.Context;
 const eql = cli.eql;
 const Allocator = std.mem.Allocator;
@@ -38,49 +37,86 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer w.deinit();
     const a = w.allocator();
     const loaded = try w.config() orelse return w.report();
+    const top = loaded.files.items[0];
     const sync_date = date orelse try today(ctx.io, a);
     const dbs = if (dbs_dir) |dir|
         try syncDbs(ctx, a, dir) orelse return 1
     else
         try sync.databases(a, ctx.io, ctx.fetcher, try repos(ctx, a), try cacheDir(ctx, a), sync_date, &w.diags) orelse return w.report();
+
+    const old = try readLock(ctx, a, top);
+    const l = try resolveLock(ctx, &w, &loaded.config, top, dbs, sync_date) orelse return w.report();
+    const path = try writeLock(ctx, a, top, &l) orelse return 1;
+    const d = try lock.diff(a, if (old) |*o| o else null, &l);
+    if (ctx.json) {
+        try output.writeDoc(ctx.out, "yoq.update/1", .{ .lock = path, .sync_date = l.sync_date, .packages = l.packages.len, .diff = d });
+        return 0;
+    }
+    try reportLock(ctx, try std.fmt.allocPrint(a, "resolved {d} packages as of {s}", .{ l.packages.len, l.sync_date }), d);
+    return 0;
+}
+
+/// "<what>: +2 -1. applying isn't built yet; ..." after the lock changes.
+pub fn reportLock(ctx: *Context, what: []const u8, d: lock.Diff) !void {
+    try ctx.out.print("{s}: ", .{what});
+    try d.write(ctx.out);
+    try ctx.out.writeAll(". applying isn't built yet; `os plan` shows what would change.\n");
+}
+
+/// resolves the config into a lock against `dbs`, asking for provider
+/// choices when someone is there to answer and saving them to `top`.
+/// returns null, with reasons in `w.diags`, when it can't.
+pub fn resolveLock(ctx: *Context, w: *cli.Work, c: *const config.Config, top: []const u8, dbs: []const alpm.SyncDb, sync_date: []const u8) !?lock.Lock {
+    const a = w.allocator();
     const scratch = try std.fmt.allocPrint(a, "/tmp/os-resolve-{d}", .{std.Io.Timestamp.now(ctx.io, .real).toNanoseconds()});
     defer std.Io.Dir.cwd().deleteTree(ctx.io, scratch) catch {};
 
-    var in = try resolveInput(a, &loaded.config);
+    var in = try resolveInput(a, c);
     in.dbs = dbs;
     in.sync_date = sync_date;
     in.scratch = scratch;
 
     // each round of choices can surface new ones, since a picked provider
     // brings its own dependencies.
-    const l = while (true) {
+    while (true) {
         const choices = switch (try alpm.resolve(a, ctx.io, in, &w.diags)) {
-            .lock => |l| break l,
-            .failed => return w.report(),
+            .lock => |l| return l,
+            .failed => return null,
             .choose => |choices| choices,
         };
         if (!ctx.interactive) {
             try alpm.reportChoices(a, choices, &w.diags);
-            return w.report();
+            return null;
         }
-        const picked = try askProviders(ctx, a, choices) orelse return 1;
-        if (!try saveProviders(ctx, &w, loaded.files.items[0], picked)) return w.report();
+        const picked = try askProviders(ctx, a, choices) orelse return null;
+        if (!try saveProviders(ctx, w, top, picked)) return null;
         in.providers = try std.mem.concat(a, lock.Provider, &.{ in.providers, picked });
-    };
-
-    var out: std.Io.Writer.Allocating = .init(a);
-    try lock.write(&out.writer, &l);
-    const lock_path = try std.fs.path.join(a, &.{ std.fs.path.dirnamePosix(loaded.files.items[0]) orelse ".", "machine.lock" });
-    ctx.files.write(lock_path, out.written()) catch {
-        try ctx.err.print("os: can't write {s}\n", .{lock_path});
-        return 1;
-    };
-    if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.update/1", .{ .lock = lock_path, .sync_date = l.sync_date, .packages = l.packages.len });
-    } else {
-        try ctx.out.print("resolved {d} packages as of {s} into {s}.\n", .{ l.packages.len, l.sync_date, lock_path });
     }
-    return 0;
+}
+
+/// machine.lock next to the top config file.
+pub fn lockPath(a: Allocator, top: []const u8) ![]const u8 {
+    return std.fs.path.join(a, &.{ std.fs.path.dirnamePosix(top) orelse ".", "machine.lock" });
+}
+
+/// the current lock, or null if there isn't a readable one.
+pub fn readLock(ctx: *Context, a: Allocator, top: []const u8) !?lock.Lock {
+    const path = try lockPath(a, top);
+    const bytes = ctx.files.read(a, path) catch return null;
+    var ignored: @import("../diag.zig").List = .init(a);
+    return lock.parse(a, path, bytes, &ignored);
+}
+
+/// writes `l` next to `top`. returns the path, or null after saying why.
+pub fn writeLock(ctx: *Context, a: Allocator, top: []const u8, l: *const lock.Lock) !?[]const u8 {
+    var out: std.Io.Writer.Allocating = .init(a);
+    try lock.write(&out.writer, l);
+    const path = try lockPath(a, top);
+    ctx.files.write(path, out.written()) catch {
+        try ctx.err.print("os: can't write {s}\n", .{path});
+        return null;
+    };
+    return path;
 }
 
 fn askProviders(ctx: *Context, a: Allocator, choices: []const alpm.Choice) !?[]const lock.Provider {
@@ -249,7 +285,7 @@ test "update asks for providers and saves the answer" {
         \\  2) jre17-openjdk
         \\pick one [1]: pick a number from 1 to 2.
         \\pick one [1]: + providers.java-runtime = "jre17-openjdk"
-        \\resolved 8 packages as of 2026-09-25 into /etc/yoq/machine.lock.
+        \\resolved 8 packages as of 2026-09-25: +8. applying isn't built yet; `os plan` shows what would change.
         \\
     , t.out.buffered());
     try std.testing.expectEqualStrings("packages = [\"jdk-tool\"]\n\n[providers]\njava-runtime = \"jre17-openjdk\"\n", t.fs.get("/etc/yoq/machine.toml").?);
