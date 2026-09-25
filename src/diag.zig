@@ -18,6 +18,8 @@ pub const Code = enum {
     bad_value,
     include_missing,
     include_cycle,
+    lock_invalid,
+    lock_stale,
     unknown_service,
 };
 
@@ -94,6 +96,22 @@ pub const table = [_]Entry{
         .title = "include cycle",
         .explanation = "two or more files include each other, directly or through other files. the message " ++
             "shows the chain. break it by moving the shared settings into a file that neither includes.",
+    },
+    .{
+        .code = .lock_invalid,
+        .id = "E0120",
+        .title = "damaged lock file",
+        .explanation = "machine.lock is written by os and read back exactly. this one doesn't match the " ++
+            "format, usually because it was edited by hand or a merge left conflict markers in it. restore " ++
+            "it from git (`git -C /etc/yoq checkout machine.lock`) or write a fresh one with `os update`.",
+    },
+    .{
+        .code = .lock_stale,
+        .id = "E0121",
+        .title = "lock doesn't cover the config",
+        .explanation = "the config asks for a package that machine.lock doesn't have, so os doesn't know which " ++
+            "version to install. `os add <package>` resolves one package against the lock's current package " ++
+            "date; `os update` resolves everything against today's.",
     },
     .{
         .code = .unknown_service,

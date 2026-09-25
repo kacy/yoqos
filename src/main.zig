@@ -39,5 +39,6 @@ test {
     _ = @import("compose.zig");
     _ = @import("show.zig");
     _ = @import("facts.zig");
+    _ = @import("lock.zig");
     _ = disk;
 }
