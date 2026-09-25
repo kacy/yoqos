@@ -10,6 +10,7 @@ const observe = @import("../observe.zig");
 const output = @import("../output.zig");
 const planner = @import("../planner.zig");
 const sync = @import("../sync.zig");
+const systemd = @import("../systemd.zig");
 const locking = @import("lock.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
@@ -56,36 +57,48 @@ pub fn applyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     }
 
     const target = try targetFor(ctx, &w, &result.state.lock) orelse return w.fail();
+    const units = liveUnits(ctx);
     const hash = try p.hash();
     const now = std.Io.Timestamp.now(ctx.io, .real).toSeconds();
     try apply.record(a, ctx.io, ctx.root, now, "begin", &hash);
-    const done = try apply.run(a, ctx.io, p, &result.state.lock, target, &w.diags) orelse {
+    const done = try apply.run(a, ctx.io, p, &result.state.lock, target, units, &w.diags) orelse {
         try apply.record(a, ctx.io, ctx.root, now, "failed", &hash);
         return w.fail();
     };
     try apply.record(a, ctx.io, ctx.root, now, "done", &hash);
-    return verify(ctx, p.changes.len - done.skipped.len, done.skipped);
+    return verify(ctx, p.changes.len - done.skipped.len, done.skipped, units);
+}
+
+/// units change only on the running machine, and only when systemd runs
+/// it: not under another --root, and not in a container.
+fn liveUnits(ctx: *Context) bool {
+    return systemd.available and cli.eql(ctx.root, "/") and systemd.running();
 }
 
 /// plans again after applying. anything left besides what apply skipped
 /// means something didn't take.
-fn verify(ctx: *Context, applied: usize, skipped: []const planner.Change) !u8 {
+fn verify(ctx: *Context, applied: usize, skipped: []const planner.Change, units: bool) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
     const result = try w.plan(cli.inputs(ctx)) orelse return w.fail();
     var left: std.ArrayList([]const u8) = .empty;
     for (result.plan.changes) |c| {
-        if (apply.applies(c.kind)) try left.append(a, c.subject);
+        if (apply.applies(c.kind, units)) try left.append(a, c.subject);
     }
     if (ctx.json) {
         try output.writeDoc(ctx.out, "yoq.apply/1", .{ .applied = applied, .skipped = skipped, .left = left.items });
     } else {
         try ctx.out.print("\napplied {d} {s}.\n", .{ applied, if (applied == 1) "change" else "changes" });
-        if (skipped.len > 0) {
+        for ([_]struct { planner.Kind, []const u8 }{
+            .{ .unit, "services not changed, since systemd isn't running this machine" },
+            .{ .user, "users not changed, since os can't change users yet" },
+        }) |kind| {
             var names: std.ArrayList([]const u8) = .empty;
-            for (skipped) |c| try names.append(a, c.subject);
-            try ctx.out.print("not applied yet, since os can't change services or users yet: {s}.\n", .{try std.mem.join(a, ", ", names.items)});
+            for (skipped) |c| {
+                if (c.kind == kind[0]) try names.append(a, c.subject);
+            }
+            if (names.items.len > 0) try ctx.out.print("{s}: {s}.\n", .{ kind[1], try std.mem.join(a, ", ", names.items) });
         }
     }
     if (left.items.len == 0) return 0;

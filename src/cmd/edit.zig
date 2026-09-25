@@ -118,7 +118,8 @@ fn apply(ctx: *Context, op: change.Op, names: []const []const u8) !u8 {
     }
     if (!outcome.changed()) return 0;
     if (!ctx.json) try ctx.out.print("\nsaved {s}.\n", .{top});
-    const code = if (op == .add or op == .remove) try relock(ctx, top) else 0;
+    // services and packages both change what's wanted.
+    const code = try relock(ctx, top);
     try cli.record(ctx, a, top, try commitMessage(a, op, outcome.notes));
     return code;
 }
@@ -132,7 +133,7 @@ fn commitMessage(a: std.mem.Allocator, op: change.Op, notes: []const change.Note
     return std.fmt.allocPrint(a, "{s} {s}", .{ @tagName(op), try std.mem.join(a, ", ", names.items) });
 }
 
-/// brings the lock in line with a changed package list, using the
+/// brings the lock in line with a changed config, using the
 /// databases cached for the lock's own date, so nothing else moves. with
 /// no cache for that date, it says to run `os update` instead.
 fn relock(ctx: *Context, top: []const u8) !u8 {
@@ -221,7 +222,7 @@ test "change refuses what it can't do" {
     try std.testing.expectEqualStrings("packages = [\"git\"]\n[services]\nssh = true\n", t.fs.get("/etc/yoq/machine.toml").?);
 }
 
-test "add and remove update the lock from the cached databases" {
+test "edits update the lock from the cached databases" {
     if (!alpm.available) return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -255,6 +256,13 @@ test "add and remove update the lock from the cached databases" {
     try t.exec(&.{ "--root", root, "remove", "git" });
     try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: -5. next: os plan, then os apply\n"));
     try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "perl-error") == null);
+
+    // a service brings its package into the lock, and takes it out again.
+    try t.exec(&.{ "--root", root, "enable", "ssh" });
+    try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: +2. next: os plan, then os apply\n"));
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.openssh]") != null);
+    try t.exec(&.{ "--root", root, "disable", "ssh" });
+    try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: -2. next: os plan, then os apply\n"));
 }
 
 test "adopt puts extra packages into the config" {

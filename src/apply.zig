@@ -1,6 +1,7 @@
 //! carries out a plan on a machine: packages through a libalpm
-//! transaction, `[system]` settings through their files. services and users
-//! aren't changed yet; `run` hands those back as skipped.
+//! transaction, `[system]` settings through their files, and units through
+//! systemd when it runs the machine. users aren't changed yet; `run` hands
+//! those back as skipped, and units too when systemd isn't there.
 //!
 //! every run is journaled: a line when it starts and one when it ends, so a
 //! run that never finished shows up next time.
@@ -11,17 +12,23 @@ const diag = @import("diag.zig");
 const lock = @import("lock.zig");
 const planner = @import("planner.zig");
 const settings = @import("settings.zig");
+const systemd = @import("systemd.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Target = alpm.Target;
 
-/// whether `run` changes this kind of thing yet. services and users wait.
-pub fn applies(k: planner.Kind) bool {
-    return k != .unit and k != .user;
+/// whether `run` changes this kind of thing. units need systemd running
+/// the machine; users wait.
+pub fn applies(k: planner.Kind, units: bool) bool {
+    return switch (k) {
+        .unit => units,
+        .user => false,
+        else => true,
+    };
 }
 
 pub const Result = struct {
-    /// changes that aren't applied yet: services and users.
+    /// changes that weren't applied: users, and units without systemd.
     skipped: []const planner.Change,
 };
 
@@ -52,19 +59,34 @@ pub fn transaction(a: Allocator, p: *const planner.Plan, l: *const lock.Lock, t:
     };
 }
 
-/// applies `p`. returns null, with reasons in `diags`, if a step failed;
-/// steps before it stay done.
-pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock, t: Target, diags: *diag.List) !?Result {
+/// applies `p`, with units only when `units` says systemd runs the
+/// machine. units going away stop before their packages are removed, and
+/// new ones start after theirs are installed. returns null, with reasons
+/// in `diags`, if a step failed; steps before it stay done.
+pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock, t: Target, units: bool, diags: *diag.List) !?Result {
+    var skipped: std.ArrayList(planner.Change) = .empty;
+    for (p.changes) |c| {
+        if (!applies(c.kind, units)) try skipped.append(a, c);
+    }
+    if (units and !try changeUnits(a, p, true, diags)) return null;
     const tx = try transaction(a, p, l, t);
     if (tx.install.len + tx.remove.len + tx.explicit.len + tx.dependency.len > 0) {
         if (!try alpm.transact(a, io, tx, diags)) return null;
     }
-    var skipped: std.ArrayList(planner.Change) = .empty;
     for (p.changes) |c| {
-        if (!applies(c.kind)) try skipped.append(a, c);
         if (c.kind == .setting and !try settings.apply(a, io, t.root, c.subject, c.to.?, diags)) return null;
     }
+    if (units and !try changeUnits(a, p, false, diags)) return null;
     return .{ .skipped = skipped.items };
+}
+
+/// the unit changes that turn units off, or the ones that turn them on.
+fn changeUnits(a: Allocator, p: *const planner.Plan, off: bool, diags: *diag.List) !bool {
+    for (p.changes) |c| {
+        if (c.kind != .unit or (c.op == .remove) != off) continue;
+        if (!try systemd.change(a, c.subject, try systemd.parseVerbs(a, c.to.?), diags)) return false;
+    }
+    return true;
 }
 
 /// where the journal lives under a root.

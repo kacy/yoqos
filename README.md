@@ -7,8 +7,8 @@ going to change, and every change becomes a generation you can boot back into.
 it's still arch underneath: same packages, same wiki, and you can stop using it
 whenever you want.
 
-it's early. `os apply` installs and removes packages and sets the system
-settings. services, users, and rollback come next.
+it's early. `os apply` installs and removes packages, sets the system
+settings, and turns services on and off. users and rollback come next.
 
 ```
 os init       # write a config that describes this machine

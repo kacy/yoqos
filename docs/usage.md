@@ -8,8 +8,9 @@ to use it today.
 
 `os` reads a machine, writes a config for it, keeps that config and its lock
 up to date, tells you what's different, and applies the difference. `os
-apply` installs and removes packages and sets the `[system]` settings.
-services and users show up in the plan, but `apply` doesn't change them yet.
+apply` installs and removes packages, sets the `[system]` settings, and
+enables, starts, stops, and disables services. users show up in the plan,
+but `apply` doesn't change them yet.
 every other command only reads the machine or edits the config.
 
 | command | what it does |
@@ -143,8 +144,13 @@ apply this? [y/N] y
 applied 1 change.
 ```
 
-`apply` shows the plan, asks, and then makes the changes: one pacman
-transaction for the packages, then the settings. it installs exactly the
+`apply` shows the plan, asks, and then makes the changes. services being
+turned off stop first, then one pacman transaction installs and removes
+packages, then the settings change, then new services are enabled and
+started. `apply` waits for each start and stop to finish, and a service
+that fails to start stops the apply with the unit's name. services change
+only when systemd runs the machine: not under `--root`, and not in a
+container. it installs exactly the
 versions in the lock, checks each package against the lock's checksum and
 arch's signatures, and marks packages as explicit or dependencies to match
 the config. it uses the machine's own pacman.conf for mirrors and download
@@ -173,9 +179,10 @@ saved /etc/yoq/machine.toml.
 updated machine.lock: +1. next: os plan, then os apply
 ```
 
-these edit `machine.toml` for you and keep its comments and formatting. `add`
-and `remove` also update the lock, resolving against the same package date
-the lock already has, so adding one package never upgrades anything else.
+these edit `machine.toml` for you and keep its comments and formatting.
+they also update the lock, since a service brings its package, resolving
+against the same package date the lock already has, so adding one package
+never upgrades anything else.
 that needs the package databases for that date, which `os update` downloads.
 if they aren't there, `add` says so, and `os update` catches the lock up.
 

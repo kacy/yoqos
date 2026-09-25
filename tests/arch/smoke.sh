@@ -46,6 +46,22 @@ pacman -Q tree
 if pacman -Q tree 2>/dev/null; then echo "tree is still installed"; exit 1; fi
 "$os" --config "$cfg" plan | grep -q "nothing to do"
 
+# a service through the whole loop, where systemd runs the machine: the
+# package goes in and the unit starts, then the unit stops and the package
+# goes.
+if [ -d /run/systemd/system ]; then
+    "$os" --config "$cfg" enable tailscale
+    "$os" --config "$cfg" apply --yes
+    systemctl is-enabled tailscaled.service
+    systemctl is-active tailscaled.service
+    "$os" --config "$cfg" plan | grep -q "nothing to do"
+    "$os" --config "$cfg" disable tailscale
+    "$os" --config "$cfg" apply --yes
+    if systemctl is-active tailscaled.service; then echo "tailscaled is still running"; exit 1; fi
+    if pacman -Q tailscale 2>/dev/null; then echo "tailscale is still installed"; exit 1; fi
+    "$os" --config "$cfg" plan | grep -q "nothing to do"
+fi
+
 # a config that leaves out base doesn't get to remove it.
 bare=$dir/bare.toml
 printf 'version = 1\n[boot]\nkernel = "none"\n' > "$bare"
