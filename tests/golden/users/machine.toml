@@ -1,0 +1,18 @@
+version = 1
+packages = ["base", "linux-firmware"]
+
+[system]
+hostname = "atlas"
+timezone = "America/New_York"
+
+# kacy exists with bash and the docker group; the config wants zsh, video,
+# and wheel, and no docker.
+[users.kacy]
+shell = "zsh"
+groups = ["wheel", "video"]
+
+# guest doesn't exist yet.
+[users.guest]
+shell = "bash"
+
+# bob isn't declared, so he's left alone.

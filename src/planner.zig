@@ -33,6 +33,8 @@ pub const Kind = enum {
     setting,
     /// a systemd unit being enabled or disabled.
     unit,
+    /// a user being created or changed. `from` and `to` say how.
+    user,
 };
 
 pub const Change = struct {
@@ -222,8 +224,60 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
     }
     sort.byField(Change, "subject", units.items);
     try changes.appendSlice(a, units.items);
+    try planUsers(a, c, f, &changes);
 
     return .{ .changes = changes.items };
+}
+
+/// users the config declares get created, or brought to its shell and
+/// groups. the groups listed are all of them: others are left. users the
+/// config doesn't mention are left alone, since removing an account by
+/// accident costs too much.
+fn planUsers(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
+    for (c.users.entries.items) |e| {
+        const name = e.name;
+        const want_groups = e.value.groups.items.items;
+        const cause = try std.fmt.allocPrint(a, "users.{s}", .{name});
+        const have = for (f.users) |*u| {
+            if (std.mem.eql(u8, u.name, name)) break u;
+        } else {
+            var desc: std.ArrayList(u8) = .empty;
+            try desc.appendSlice(a, "new user");
+            if (e.value.shell) |sh| try desc.print(a, ", shell {s}", .{sh.v});
+            for (want_groups, 0..) |g, i| try desc.print(a, "{s}{s}", .{ if (i == 0) ", groups " else ", ", g.name });
+            try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = desc.items, .cause = cause });
+            continue;
+        };
+        if (e.value.shell) |sh| {
+            const current = have.shell orelse "";
+            const same = std.mem.eql(u8, current, sh.v) or
+                (std.mem.indexOfScalar(u8, sh.v, '/') == null and std.mem.eql(u8, std.fs.path.basename(current), sh.v));
+            if (!same) try changes.append(a, .{
+                .op = .change,
+                .kind = .user,
+                .subject = name,
+                .from = try std.fmt.allocPrint(a, "shell {s}", .{std.fs.path.basename(current)}),
+                .to = try std.fmt.allocPrint(a, "shell {s}", .{sh.v}),
+                .cause = cause,
+            });
+        }
+        // the first group is the user's own; it isn't part of the list.
+        const have_groups = if (have.groups.len > 0) have.groups[1..] else have.groups;
+        for (want_groups) |g| {
+            if (!contains(have_groups, g.name)) try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = try std.fmt.allocPrint(a, "join {s}", .{g.name}), .cause = cause });
+        }
+        if (e.value.groups.items.items.len == 0) continue;
+        for (have_groups) |g| {
+            if (!e.value.groups.contains(g)) try changes.append(a, .{ .op = .remove, .kind = .user, .subject = name, .from = try std.fmt.allocPrint(a, "leave {s}", .{g}), .cause = cause });
+        }
+    }
+}
+
+fn contains(list: []const []const u8, s: []const u8) bool {
+    for (list) |x| {
+        if (std.mem.eql(u8, x, s)) return true;
+    }
+    return false;
 }
 
 fn addWant(a: Allocator, list: *std.ArrayList(Want), name: []const u8, cause: ?[]const u8, src: ?config.Src) !void {
@@ -277,16 +331,12 @@ pub fn writeText(w: *std.Io.Writer, a: Allocator, p: *const Plan, opts: RenderOp
             try depSummary(w, p);
         }
     }
-    if (has(p, .setting)) {
-        try w.writeAll("system\n");
-        for (p.changes) |c| {
-            if (c.kind == .setting) try line(w, c);
-        }
-    }
-    if (has(p, .unit)) {
-        try w.writeAll("services\n");
-        for (p.changes) |c| {
-            if (c.kind == .unit) try line(w, c);
+    inline for (.{ .{ "system", Kind.setting }, .{ "users", Kind.user }, .{ "services", Kind.unit } }) |section| {
+        if (has(p, section[1])) {
+            try w.writeAll(section[0] ++ "\n");
+            for (p.changes) |c| {
+                if (c.kind == section[1]) try line(w, c);
+            }
         }
     }
 
@@ -341,8 +391,18 @@ fn line(w: *std.Io.Writer, c: Change) !void {
             }
         },
         .unit => try w.print("{s}: {s}", .{ c.subject, c.to.? }),
+        .user => if (c.from != null and c.to != null) {
+            // "shell bash -> shell zsh" reads better as "shell bash -> zsh".
+            const from = c.from.?;
+            const to = c.to.?;
+            const space = std.mem.indexOfScalar(u8, to, ' ');
+            const shared = space != null and std.mem.startsWith(u8, from, to[0 .. space.? + 1]);
+            try w.print("{s}: {s} -> {s}", .{ c.subject, from, if (shared) to[space.? + 1 ..] else to });
+        } else try w.print("{s}: {s}", .{ c.subject, c.to orelse c.from.? }),
     }
-    if (c.cause) |cause| try w.print("  ({s})", .{cause});
+    if (c.cause) |cause| {
+        if (c.kind != .user) try w.print("  ({s})", .{cause});
+    }
     try w.writeByte('\n');
 }
 

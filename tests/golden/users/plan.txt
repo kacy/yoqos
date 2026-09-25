@@ -1,0 +1,7 @@
+users
+  ~ kacy: shell bash -> zsh
+  + kacy: join video
+  - kacy: leave docker
+  + guest: new user, shell bash
+
+plan: 2 to add, 1 to change, 1 to remove · no reboot

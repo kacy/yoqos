@@ -1,0 +1,90 @@
+{
+  "schema": "yoq.facts/1",
+  "time": 1790294400,
+  "hostname": "atlas",
+  "timezone": "America/New_York",
+  "packages": [
+    {
+      "name": "base",
+      "version": "3-2",
+      "reason": "explicit"
+    },
+    {
+      "name": "bash",
+      "version": "5.3.3-2",
+      "reason": "dependency"
+    },
+    {
+      "name": "coreutils",
+      "version": "9.8-2",
+      "reason": "dependency"
+    },
+    {
+      "name": "filesystem",
+      "version": "2025.05.03-1",
+      "reason": "dependency"
+    },
+    {
+      "name": "glibc",
+      "version": "2.42+r17-1",
+      "reason": "dependency"
+    },
+    {
+      "name": "linux",
+      "version": "6.16.8.arch1-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "linux-firmware",
+      "version": "20250917-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "mkinitcpio",
+      "version": "40-2",
+      "reason": "dependency"
+    },
+    {
+      "name": "pacman",
+      "version": "7.0.0.r7.g1f38429-1",
+      "reason": "dependency"
+    },
+    {
+      "name": "readline",
+      "version": "8.3.001-1",
+      "reason": "dependency"
+    },
+    {
+      "name": "systemd",
+      "version": "258-1",
+      "reason": "dependency"
+    }
+  ],
+  "units": [
+    {
+      "name": "systemd-timesyncd.service",
+      "enabled": true,
+      "active": true
+    }
+  ],
+  "users": [
+    {
+      "name": "bob",
+      "uid": 1002,
+      "shell": "/usr/bin/fish",
+      "groups": [
+        "bob"
+      ]
+    },
+    {
+      "name": "kacy",
+      "uid": 1000,
+      "shell": "/usr/bin/bash",
+      "groups": [
+        "kacy",
+        "docker",
+        "wheel"
+      ]
+    }
+  ]
+}

@@ -35,13 +35,15 @@ pub const Status = struct {
         settings: []const []const u8,
         /// configured services not enabled or running as configured.
         units: []const []const u8,
+        /// declared users that are missing or differ.
+        users: []const []const u8,
     },
     /// configured services whose units failed.
     failing: []const []const u8,
 
     pub fn clean(s: *const Status) bool {
         const ch = s.changed;
-        return ch.extra.len + ch.orphans + ch.missing.len + ch.versions.len + ch.settings.len + ch.units.len + s.failing.len == 0;
+        return ch.extra.len + ch.orphans + ch.missing.len + ch.versions.len + ch.settings.len + ch.units.len + ch.users.len + s.failing.len == 0;
     }
 };
 
@@ -51,6 +53,7 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
     var versions: std.ArrayList([]const u8) = .empty;
     var settings: std.ArrayList([]const u8) = .empty;
     var units: std.ArrayList([]const u8) = .empty;
+    var users: std.ArrayList([]const u8) = .empty;
     var orphans: usize = 0;
     for (p.changes) |ch| switch (ch.kind) {
         .package, .dependency => switch (ch.op) {
@@ -63,6 +66,7 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
         .reason => try versions.append(a, ch.subject),
         .setting => try settings.append(a, ch.subject),
         .unit => try units.append(a, ch.subject),
+        .user => if (!contains(users.items, ch.subject)) try users.append(a, ch.subject),
     };
 
     var failing: std.ArrayList([]const u8) = .empty;
@@ -91,6 +95,7 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
             .versions = versions.items,
             .settings = settings.items,
             .units = units.items,
+            .users = users.items,
         },
         .failing = failing.items,
     };
@@ -142,6 +147,7 @@ pub fn writeText(w: *std.Io.Writer, s: *const Status) !void {
     if (ch.orphans > 0) try rows.count(ch.orphans, .{ "is", "are" }, "no longer needed", "os plan");
     if (ch.settings.len > 0) try rows.list("settings differ", ch.settings, "os plan");
     if (ch.units.len > 0) try rows.list("services not as configured", ch.units, "os plan");
+    if (ch.users.len > 0) try rows.list("users not as configured", ch.users, "os plan");
     if (rows.first) try w.writeAll("changed   none\n");
 
     try w.writeAll("failing   ");
@@ -209,7 +215,7 @@ test "status text" {
         .lock_date = "2026-09-01",
         .lock_age_days = 24,
         .ok = .{ .packages = 400, .services = 2 },
-        .changed = .{ .extra = &.{ "htop", "btop" }, .orphans = 0, .missing = &.{}, .versions = &.{"git"}, .settings = &.{}, .units = &.{} },
+        .changed = .{ .extra = &.{ "htop", "btop" }, .orphans = 0, .missing = &.{}, .versions = &.{"git"}, .settings = &.{}, .units = &.{}, .users = &.{} },
         .failing = &.{"tailscaled.service"},
     };
     var out: std.Io.Writer.Allocating = .init(arena.allocator());
