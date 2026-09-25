@@ -56,7 +56,7 @@ const commands = [_]Command{
     .{ .name = "init", .summary = "write a config that describes this machine", .handler = init_cmd.initCmd },
     .{ .name = "status", .summary = "what matches the config, what changed, what's failing", .handler = inspect.statusCmd },
     .{ .name = "plan", .summary = "show what apply would change", .handler = inspect.planCmd },
-    .{ .name = "update", .summary = "resolve the config into machine.lock (update --dbs <dir>)", .handler = update.updateCmd },
+    .{ .name = "update", .summary = "resolve the config against today's arch packages", .handler = update.updateCmd },
     .{ .name = "add", .summary = "add packages to the config", .handler = edit.addCmd },
     .{ .name = "remove", .summary = "remove packages from the config", .handler = edit.removeCmd },
     .{ .name = "enable", .summary = "turn services on in the config", .handler = edit.enableCmd },

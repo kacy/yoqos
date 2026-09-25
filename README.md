@@ -19,6 +19,9 @@ os plan       # what applying would change
 os why perl   # which config line brings a package in
 ```
 
+[docs/usage.md](docs/usage.md) walks through all of it: getting started,
+every command, and the config format.
+
 reading packages and resolving need libalpm, and reading services needs
 libsystemd. build with `-Dalpm -Dsystemd` to link them. without a real arch
 machine, the test fixtures work too:
