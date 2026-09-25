@@ -30,4 +30,5 @@ test {
     _ = cli;
     _ = @import("output.zig");
     _ = @import("diag.zig");
+    _ = @import("toml.zig");
 }
