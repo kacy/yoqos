@@ -20,6 +20,9 @@ pub const Code = enum {
     include_cycle,
     lock_invalid,
     lock_stale,
+    unresolvable,
+    provider_choice,
+    alpm_failed,
     unknown_service,
 };
 
@@ -112,6 +115,29 @@ pub const table = [_]Entry{
         .explanation = "the config asks for a package that machine.lock doesn't have, so os doesn't know which " ++
             "version to install. `os add <package>` resolves one package against the lock's current package " ++
             "date; `os update` resolves everything against today's.",
+    },
+    .{
+        .code = .unresolvable,
+        .id = "E0122",
+        .title = "can't resolve packages",
+        .explanation = "resolving the config against the arch package databases failed: a package doesn't " ++
+            "exist, needs something no repository has, or conflicts with another package the config asks " ++
+            "for. the message names the packages involved.",
+    },
+    .{
+        .code = .provider_choice,
+        .id = "E0123",
+        .title = "choose a provider",
+        .explanation = "a package depends on something several packages provide, like java-runtime, and os " ++
+            "won't pick one for you. add the choice to the config under [providers], for example " ++
+            "`java-runtime = \"jre-openjdk\"`.",
+    },
+    .{
+        .code = .alpm_failed,
+        .id = "E0124",
+        .title = "package database error",
+        .explanation = "libalpm couldn't open or read a package database. the message has libalpm's own " ++
+            "reason. a stale lock file (db.lck) left by a crashed pacman is a common cause.",
     },
     .{
         .code = .unknown_service,

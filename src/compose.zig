@@ -192,7 +192,7 @@ const testing = std.testing;
 pub const MemFiles = struct {
     map: std.StringHashMapUnmanaged([]const u8) = .empty,
 
-    /// files written through `files()`, owned by the map.
+    /// paths and contents written through `files()`, owned by the map.
     written: std.ArrayList([]u8) = .empty,
 
     pub fn put(m: *MemFiles, path: []const u8, content: []const u8) !void {
@@ -215,9 +215,12 @@ pub const MemFiles = struct {
 
     fn write(ctx: *anyopaque, path: []const u8, bytes: []const u8) Files.WriteError!void {
         const m: *MemFiles = @ptrCast(@alignCast(ctx));
+        // the caller's path may not outlive the call, so the map keeps a copy.
+        const key = try testing.allocator.dupe(u8, path);
+        try m.written.append(testing.allocator, key);
         const copy = try testing.allocator.dupe(u8, bytes);
         try m.written.append(testing.allocator, copy);
-        try m.map.put(testing.allocator, path, copy);
+        try m.map.put(testing.allocator, key, copy);
     }
 
     fn read(ctx: *anyopaque, gpa: Allocator, path: []const u8) Files.ReadError![]u8 {

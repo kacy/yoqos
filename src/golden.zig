@@ -61,7 +61,7 @@ fn runCase(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8
     };
 
     var outputs: std.ArrayList(struct { []const u8, []const u8 }) = .empty;
-    if (try pipeline.buildPlan(gpa, files.files(), in, &diags)) |r| {
+    if (try pipeline.buildPlan(gpa, io, files.files(), in, &diags)) |r| {
         var result = r;
         defer result.deinit();
         var text: std.Io.Writer.Allocating = .init(a);

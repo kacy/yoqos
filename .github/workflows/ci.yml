@@ -15,3 +15,15 @@ jobs:
           version: 0.16.0
       - run: zig build fmt
       - run: zig build test --summary all
+
+  alpm:
+    # debian trixie ships libalpm 15, the same as arch.
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl xz-utils git libalpm-dev libarchive-dev
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig build test -Dalpm --summary all

@@ -13,7 +13,13 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     options.addOption([]const u8, "version", @import("build.zig.zon").version);
     options.addOption(bool, "update_golden", b.option(bool, "update-golden", "rewrite golden test outputs") orelse false);
+    const alpm = b.option(bool, "alpm", "link libalpm for reading and resolving arch packages") orelse false;
+    options.addOption(bool, "alpm", alpm);
     root.addOptions("build_options", options);
+    if (alpm) {
+        root.link_libc = true;
+        root.linkSystemLibrary("alpm", .{});
+    }
 
     const exe = b.addExecutable(.{ .name = "os", .root_module = root });
     b.installArtifact(exe);

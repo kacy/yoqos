@@ -13,6 +13,7 @@ pub fn main(init: std.process.Init) !void {
 
     var disk_files: disk.Files = .{ .io = init.io };
     var ctx: cli.Context = .{
+        .io = init.io,
         .files = disk_files.files(),
         .gpa = init.gpa,
         .out = &out.interface,
@@ -47,5 +48,7 @@ test {
     _ = @import("why.zig");
     _ = @import("edit.zig");
     _ = @import("change.zig");
+    _ = @import("alpm.zig");
+    _ = @import("observe.zig");
     _ = disk;
 }

@@ -12,11 +12,15 @@ const planner = @import("planner.zig");
 const pipeline = @import("pipeline.zig");
 const why = @import("why.zig");
 const change = @import("change.zig");
+const alpm = @import("alpm.zig");
+const lock = @import("lock.zig");
+const observe = @import("observe.zig");
 
 pub const default_config = "/etc/yoq/machine.toml";
 
 pub const Context = struct {
     gpa: std.mem.Allocator,
+    io: std.Io,
     out: *std.Io.Writer,
     err: *std.Io.Writer,
     /// set by `--json`. commands print one json document instead of text.
@@ -41,6 +45,7 @@ const commands = [_]Command{
     .{ .name = "help", .summary = "show this help", .handler = help },
     .{ .name = "version", .summary = "print the version", .handler = version },
     .{ .name = "plan", .summary = "show what apply would change (plan --facts <file>)", .handler = planCmd },
+    .{ .name = "update", .summary = "resolve the config into machine.lock (update --dbs <dir>)", .handler = updateCmd },
     .{ .name = "add", .summary = "add packages to the config", .handler = addCmd },
     .{ .name = "remove", .summary = "remove packages from the config", .handler = removeCmd },
     .{ .name = "enable", .summary = "turn services on in the config", .handler = enableCmd },
@@ -189,18 +194,27 @@ fn configCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 fn factsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os facts --from <file>";
+    const usage_text = "os facts [--from <file> | --root <dir>]";
     var from: ?[]const u8 = null;
+    var root: []const u8 = "/";
     var it: ArgIter = .{ .args = args };
     while (it.next()) |a| {
-        if (!eql(a, "--from")) return usageError(ctx, usage_text);
-        from = it.next() orelse return usageError(ctx, usage_text);
+        if (eql(a, "--from")) {
+            from = it.next() orelse return usageError(ctx, usage_text);
+        } else if (eql(a, "--root")) {
+            root = it.next() orelse return usageError(ctx, usage_text);
+        } else return usageError(ctx, usage_text);
     }
-    const path = from orelse return noObserver(ctx, "--from");
 
     var arena: std.heap.ArenaAllocator = .init(ctx.gpa);
     defer arena.deinit();
-    const f = pipeline.readFacts(ctx.files, arena.allocator(), path) catch |e| return factsError(ctx, e, path);
+    var diags: diag.List = .init(ctx.gpa);
+    defer diags.deinit();
+    const f = if (from) |path|
+        pipeline.readFacts(ctx.files, arena.allocator(), path) catch |e| return factsError(ctx, e, path)
+    else
+        try observe.observe(arena.allocator(), ctx.io, .{ .root = root }, &diags);
+    if (diags.items.items.len > 0) return reportDiags(ctx, &diags);
     if (ctx.json) {
         try facts.write(ctx.out, &f);
         return 0;
@@ -234,12 +248,12 @@ fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const in: pipeline.Inputs = .{
         .config_path = ctx.config_path,
         .lock_path = lock_path,
-        .facts_path = facts_path orelse return noObserver(ctx, "--facts"),
+        .facts_path = facts_path,
     };
 
     var diags: diag.List = .init(ctx.gpa);
     defer diags.deinit();
-    const built = pipeline.buildPlan(ctx.gpa, ctx.files, in, &diags) catch |e| return factsError(ctx, e, in.facts_path);
+    const built = pipeline.buildPlan(ctx.gpa, ctx.io, ctx.files, in, &diags) catch |e| return factsError(ctx, e, in.facts_path orelse "this machine");
     var result = built orelse return reportDiags(ctx, &diags);
     defer result.deinit();
 
@@ -325,6 +339,110 @@ fn changeCmd(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
     return 0;
 }
 
+fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    const usage_text = "os update --dbs <dir> [--date yyyy-mm-dd]";
+    var dbs_dir: ?[]const u8 = null;
+    var date: ?[]const u8 = null;
+    var it: ArgIter = .{ .args = args };
+    while (it.next()) |a| {
+        if (eql(a, "--dbs")) {
+            dbs_dir = it.next() orelse return usageError(ctx, usage_text);
+        } else if (eql(a, "--date")) {
+            date = it.next() orelse return usageError(ctx, usage_text);
+        } else return usageError(ctx, usage_text);
+    }
+    if (!alpm.available) {
+        try ctx.err.writeAll("os: this build can't resolve packages. build with -Dalpm.\n");
+        return 1;
+    }
+    const dir = dbs_dir orelse {
+        try ctx.err.writeAll("os: downloading package databases isn't built yet. pass --dbs <dir> with core.db and friends.\n");
+        return 1;
+    };
+
+    var arena: std.heap.ArenaAllocator = .init(ctx.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var diags: diag.List = .init(ctx.gpa);
+    defer diags.deinit();
+    var loaded = try compose.load(ctx.gpa, ctx.files, ctx.config_path, &diags);
+    defer loaded.deinit();
+    if (diags.items.items.len > 0) return reportDiags(ctx, &diags);
+
+    const dbs = try syncDbs(ctx, a, dir) orelse return 1;
+    const scratch = try std.fmt.allocPrint(a, "/tmp/os-resolve-{d}", .{std.Io.Timestamp.now(ctx.io, .real).toNanoseconds()});
+    defer std.Io.Dir.cwd().deleteTree(ctx.io, scratch) catch {};
+
+    const ws = try planner.wants(a, &loaded.config);
+    const names = try a.alloc([]const u8, ws.len);
+    for (ws, names) |w, *n| n.* = w.name;
+    var providers: std.ArrayList(lock.Provider) = .empty;
+    for (loaded.config.providers.entries.items) |e| try providers.append(a, .{ .name = e.name, .chosen = e.value.v });
+
+    const l = try alpm.resolve(a, ctx.io, .{
+        .dbs = dbs,
+        .wants = names,
+        .providers = providers.items,
+        .sync_date = date orelse try today(ctx.io, a),
+        .scratch = scratch,
+    }, &diags) orelse return reportDiags(ctx, &diags);
+
+    var out: std.Io.Writer.Allocating = .init(a);
+    try lock.write(&out.writer, &l);
+    const lock_path = try std.fs.path.join(a, &.{ std.fs.path.dirnamePosix(loaded.files.items[0]) orelse ".", "machine.lock" });
+    ctx.files.write(lock_path, out.written()) catch {
+        try ctx.err.print("os: can't write {s}\n", .{lock_path});
+        return 1;
+    };
+    if (ctx.json) {
+        try output.writeDoc(ctx.out, "yoq.update/1", .{ .lock = lock_path, .sync_date = l.sync_date, .packages = l.packages.len });
+    } else {
+        try ctx.out.print("resolved {d} packages as of {s} into {s}.\n", .{ l.packages.len, l.sync_date, lock_path });
+    }
+    return 0;
+}
+
+/// every `<repo>.db` file in `dir`, in the order pacman.conf lists arch's
+/// repositories, then the rest by name.
+fn syncDbs(ctx: *Context, a: std.mem.Allocator, dir: []const u8) !?[]const alpm.SyncDb {
+    var d = std.Io.Dir.cwd().openDir(ctx.io, dir, .{ .iterate = true }) catch {
+        try ctx.err.print("os: can't open {s}\n", .{dir});
+        return null;
+    };
+    defer d.close(ctx.io);
+    var names: std.ArrayList([]const u8) = .empty;
+    var iter = d.iterate();
+    while (try iter.next(ctx.io)) |e| {
+        if (std.mem.endsWith(u8, e.name, ".db")) try names.append(a, try a.dupe(u8, e.name[0 .. e.name.len - 3]));
+    }
+    @import("sort.zig").strings(names.items);
+    const order = [_][]const u8{ "core-testing", "core", "extra-testing", "extra", "multilib-testing", "multilib" };
+    var dbs: std.ArrayList(alpm.SyncDb) = .empty;
+    for (order) |o| {
+        for (names.items) |n| {
+            if (eql(n, o)) try dbs.append(a, .{ .name = n, .path = try std.fmt.allocPrint(a, "{s}/{s}.db", .{ dir, n }) });
+        }
+    }
+    for (names.items) |n| {
+        for (order) |o| {
+            if (eql(n, o)) break;
+        } else try dbs.append(a, .{ .name = n, .path = try std.fmt.allocPrint(a, "{s}/{s}.db", .{ dir, n }) });
+    }
+    if (dbs.items.len == 0) {
+        try ctx.err.print("os: no .db files in {s}\n", .{dir});
+        return null;
+    }
+    return dbs.items;
+}
+
+fn today(io: std.Io, a: std.mem.Allocator) ![]const u8 {
+    const secs: u64 = @intCast(std.Io.Timestamp.now(io, .real).toSeconds());
+    const day = std.time.epoch.EpochSeconds{ .secs = secs };
+    const yd = day.getEpochDay().calculateYearDay();
+    const md = yd.calculateMonthDay();
+    return std.fmt.allocPrint(a, "{d:0>4}-{d:0>2}-{d:0>2}", .{ yd.year, md.month.numeric(), md.day_index + 1 });
+}
+
 fn whyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (args.len != 1 or args[0][0] == '-') return usageError(ctx, "os why <package>");
     var diags: diag.List = .init(ctx.gpa);
@@ -335,12 +453,6 @@ fn whyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const ans = try why.explain(state.arena.allocator(), state.config(), &state.lock, args[0]);
     if (ctx.json) try why.writeJson(ctx.out, &ans) else try why.writeText(ctx.out, &ans);
     return if (ans.root == null) 1 else 0;
-}
-
-/// until the observer exists, facts have to come from a file.
-fn noObserver(ctx: *Context, comptime flag: []const u8) !u8 {
-    try ctx.err.writeAll("os: reading facts from this machine isn't built yet. pass " ++ flag ++ " <file>.\n");
-    return 1;
 }
 
 /// says why a facts file couldn't be used. returns the exit code.
@@ -404,7 +516,7 @@ const TestRun = struct {
     fn exec(t: *TestRun, args: []const [:0]const u8) !void {
         t.out = .fixed(&t.out_buf);
         t.err = .fixed(&t.err_buf);
-        t.ctx = .{ .gpa = std.testing.allocator, .out = &t.out, .err = &t.err, .files = t.fs.files() };
+        t.ctx = .{ .gpa = std.testing.allocator, .io = std.testing.io, .out = &t.out, .err = &t.err, .files = t.fs.files() };
         t.code = try run(&t.ctx, args);
     }
 };
@@ -605,8 +717,6 @@ test "plan from fixture files" {
 
     try t.exec(&.{ "plan", "--facts", "missing.json" });
     try std.testing.expectEqual(1, t.code);
-    try t.exec(&.{"plan"});
-    try std.testing.expectEqual(1, t.code);
     try t.exec(&.{ "plan", "--bogus" });
     try std.testing.expectEqual(2, t.code);
 }
@@ -687,4 +797,23 @@ test "change refuses what it can't do" {
     try t.exec(&.{"add"});
     try std.testing.expectEqual(2, t.code);
     try std.testing.expectEqualStrings("packages = [\"git\"]\n[services]\nssh = true\n", t.fs.get("/etc/yoq/machine.toml").?);
+}
+
+test "update resolves the fixture repos into a lock" {
+    if (!alpm.available) return error.SkipZigTest;
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
+    try t.exec(&.{ "update", "--dbs", "tests/alpm/repos", "--date", "2026-09-25" });
+    try std.testing.expectEqualStrings("", t.err.buffered());
+    try std.testing.expectEqual(0, t.code);
+    const written = t.fs.get("/etc/yoq/machine.lock").?;
+    try std.testing.expect(std.mem.indexOf(u8, written, "sync_date = \"2026-09-25\"\nkeyring = \"none\"\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "[packages.perl-error]") != null);
+
+    // the new lock covers the config, so planning works.
+    try t.fs.put("f.json", "{\"schema\":\"yoq.facts/1\"}");
+    try t.exec(&.{ "plan", "--facts", "f.json" });
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "+ git 2.51.0-1") != null);
 }

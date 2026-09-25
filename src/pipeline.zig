@@ -9,6 +9,7 @@ const lock = @import("lock.zig");
 const facts = @import("facts.zig");
 const planner = @import("planner.zig");
 const diag = @import("diag.zig");
+const observe = @import("observe.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Error = error{ OutOfMemory, BadFacts, FactsUnreadable };
@@ -69,7 +70,8 @@ pub fn readFacts(files: compose.Files, a: Allocator, path: []const u8) Error!fac
 pub const Inputs = struct {
     config_path: []const u8,
     lock_path: ?[]const u8 = null,
-    facts_path: []const u8,
+    /// read facts from this file instead of observing the machine.
+    facts_path: ?[]const u8 = null,
 };
 
 pub const Result = struct {
@@ -86,11 +88,15 @@ pub const Result = struct {
 };
 
 /// builds the plan, or returns null with the reasons in `diags`.
-pub fn buildPlan(gpa: Allocator, files: compose.Files, in: Inputs, diags: *diag.List) Error!?Result {
+pub fn buildPlan(gpa: Allocator, io: std.Io, files: compose.Files, in: Inputs, diags: *diag.List) Error!?Result {
     var state = try load(gpa, files, in.config_path, in.lock_path, diags) orelse return null;
     errdefer state.deinit();
     const a = state.arena.allocator();
-    const f = try readFacts(files, a, in.facts_path);
+    const f = if (in.facts_path) |path| try readFacts(files, a, path) else try observe.observe(a, io, .{}, diags);
+    if (diags.items.items.len > 0) {
+        state.deinit();
+        return null;
+    }
     const p = try planner.plan(a, state.config(), &state.lock, &f, diags) orelse {
         state.deinit();
         return null;
