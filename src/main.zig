@@ -57,7 +57,7 @@ test {
     _ = @import("planner.zig");
     _ = @import("pipeline.zig");
     _ = @import("golden.zig");
-    _ = @import("sort.zig");
+    _ = @import("lists.zig");
     _ = @import("why.zig");
     _ = @import("edit.zig");
     _ = @import("change.zig");

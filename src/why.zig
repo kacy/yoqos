@@ -8,7 +8,7 @@ const config = @import("config.zig");
 const lock = @import("lock.zig");
 const planner = @import("planner.zig");
 const output = @import("output.zig");
-const sort = @import("sort.zig");
+const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 
 pub const schema = "yoq.why/1";
@@ -40,7 +40,7 @@ pub fn explain(a: Allocator, c: *const config.Config, l: *const lock.Lock, name:
             if (std.mem.eql(u8, d, name)) try parents.append(a, n);
         }
     }
-    sort.strings(parents.items);
+    lists.sortStrings(parents.items);
     answer.needed_by = parents.items;
     if (answer.root != null) return answer;
 

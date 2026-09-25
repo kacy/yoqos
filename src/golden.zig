@@ -13,7 +13,7 @@ const diag = @import("diag.zig");
 const pipeline = @import("pipeline.zig");
 const planner = @import("planner.zig");
 const status = @import("status.zig");
-const sort = @import("sort.zig");
+const lists = @import("lists.zig");
 
 const root = "tests/golden";
 
@@ -35,7 +35,7 @@ test "golden plans" {
     while (try it.next(io)) |entry| {
         if (entry.kind == .directory) try names.append(gpa, try gpa.dupe(u8, entry.name));
     }
-    sort.strings(names.items);
+    lists.sortStrings(names.items);
     try std.testing.expect(names.items.len > 0);
 
     var failed: usize = 0;

@@ -15,7 +15,7 @@ const facts = @import("facts.zig");
 const catalog = @import("catalog.zig");
 const diag = @import("diag.zig");
 const output = @import("output.zig");
-const sort = @import("sort.zig");
+const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 
 pub const schema = "yoq.plan/1";
@@ -152,7 +152,7 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
 
     // packages: install, upgrade, or re-mark what's needed.
     const need_names = try a.dupe([]const u8, needed.keys());
-    sort.strings(need_names);
+    lists.sortStrings(need_names);
     for (need_names) |name| {
         const lp = l.package(name).?;
         const want = findWant(ws, name);
@@ -222,7 +222,7 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
             }
         }
     }
-    sort.byField(Change, "subject", units.items);
+    lists.sortByField(Change, "subject", units.items);
     try changes.appendSlice(a, units.items);
     try planUsers(a, c, f, &changes);
 
@@ -264,20 +264,13 @@ fn planUsers(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
         // the first group is the user's own; it isn't part of the list.
         const have_groups = if (have.groups.len > 0) have.groups[1..] else have.groups;
         for (want_groups) |g| {
-            if (!contains(have_groups, g.name)) try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = try std.fmt.allocPrint(a, "join {s}", .{g.name}), .cause = cause });
+            if (!lists.contains(have_groups, g.name)) try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = try std.fmt.allocPrint(a, "join {s}", .{g.name}), .cause = cause });
         }
         if (e.value.groups.items.items.len == 0) continue;
         for (have_groups) |g| {
             if (!e.value.groups.contains(g)) try changes.append(a, .{ .op = .remove, .kind = .user, .subject = name, .from = try std.fmt.allocPrint(a, "leave {s}", .{g}), .cause = cause });
         }
     }
-}
-
-fn contains(list: []const []const u8, s: []const u8) bool {
-    for (list) |x| {
-        if (std.mem.eql(u8, x, s)) return true;
-    }
-    return false;
 }
 
 fn addWant(a: Allocator, list: *std.ArrayList(Want), name: []const u8, cause: ?[]const u8, src: ?config.Src) !void {

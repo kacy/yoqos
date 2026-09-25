@@ -2,6 +2,7 @@
 //! config, what changed outside os, and what's failing.
 
 const std = @import("std");
+const lists = @import("lists.zig");
 const config = @import("config.zig");
 const lock = @import("lock.zig");
 const facts = @import("facts.zig");
@@ -66,7 +67,7 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
         .reason => try versions.append(a, ch.subject),
         .setting => try settings.append(a, ch.subject),
         .unit => try units.append(a, ch.subject),
-        .user => if (!contains(users.items, ch.subject)) try users.append(a, ch.subject),
+        .user => if (!lists.contains(users.items, ch.subject)) try users.append(a, ch.subject),
     };
 
     var failing: std.ArrayList([]const u8) = .empty;
@@ -79,7 +80,7 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
                 continue;
             }
         }
-        if (!contains(units.items, unit)) services += 1;
+        if (!lists.contains(units.items, unit)) services += 1;
     }
 
     const needed = (try planner.closure(a, l, try planner.wants(a, c))).count();
@@ -99,13 +100,6 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
         },
         .failing = failing.items,
     };
-}
-
-fn contains(list: []const []const u8, s: []const u8) bool {
-    for (list) |x| {
-        if (std.mem.eql(u8, x, s)) return true;
-    }
-    return false;
 }
 
 /// days since 1970-01-01 for a "yyyy-mm-dd" date.

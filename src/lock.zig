@@ -8,7 +8,7 @@
 const std = @import("std");
 const toml = @import("toml.zig");
 const diag = @import("diag.zig");
-const sort = @import("sort.zig");
+const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 
 pub const format_version = 1;
@@ -90,15 +90,15 @@ pub fn write(w: *std.Io.Writer, l: *const Lock) !void {
 /// write identical files.
 pub fn normalize(a: Allocator, l: *Lock) !void {
     const pkgs = try a.dupe(Package, l.packages);
-    sort.byField(Package, "name", pkgs);
+    lists.sortByField(Package, "name", pkgs);
     for (pkgs) |*p| {
         const deps = try a.dupe([]const u8, p.depends);
-        sort.strings(deps);
+        lists.sortStrings(deps);
         p.depends = deps;
     }
     l.packages = pkgs;
     const provs = try a.dupe(Provider, l.providers);
-    sort.byField(Provider, "name", provs);
+    lists.sortByField(Provider, "name", provs);
     l.providers = provs;
 }
 

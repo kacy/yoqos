@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const output = @import("output.zig");
-const sort = @import("sort.zig");
+const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 
 pub const schema = "yoq.facts/1";
@@ -65,9 +65,9 @@ pub const Facts = struct {
     /// sorts every list by name so output and hashes don't depend on the
     /// order things were observed in.
     pub fn normalize(f: *Facts) void {
-        sort.byField(Package, "name", f.packages);
-        sort.byField(Unit, "name", f.units);
-        sort.byField(User, "name", f.users);
+        lists.sortByField(Package, "name", f.packages);
+        lists.sortByField(Unit, "name", f.units);
+        lists.sortByField(User, "name", f.users);
     }
 };
 

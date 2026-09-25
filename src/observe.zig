@@ -93,7 +93,7 @@ const Reader = struct {
         var names: std.ArrayList([]const u8) = .empty;
         var it = dir.iterate();
         while (it.next(r.io) catch null) |e| try names.append(r.a, try r.a.dupe(u8, e.name));
-        @import("sort.zig").strings(names.items);
+        @import("lists.zig").sortStrings(names.items);
         for (names.items) |n| {
             const class = try r.file(try std.fmt.allocPrint(r.a, "sys/bus/pci/devices/{s}/class", .{n})) orelse continue;
             if (!std.mem.startsWith(u8, std.mem.trim(u8, class, " \n"), "0x03")) continue;
@@ -205,7 +205,7 @@ fn groupsOf(a: Allocator, user: []const u8, gid: []const u8, group: []const u8) 
             if (std.mem.eql(u8, member, user)) try rest.append(a, name);
         }
     }
-    @import("sort.zig").strings(rest.items);
+    @import("lists.zig").sortStrings(rest.items);
     if (primary) |p| try rest.insert(a, 0, p);
     return rest.items;
 }

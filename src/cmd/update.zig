@@ -10,7 +10,7 @@ const change = @import("../change.zig");
 const edit = @import("../edit.zig");
 const output = @import("../output.zig");
 const planner = @import("../planner.zig");
-const sort = @import("../sort.zig");
+const lists = @import("../lists.zig");
 const sync = @import("../sync.zig");
 const Context = cli.Context;
 const eql = cli.eql;
@@ -222,7 +222,7 @@ fn syncDbs(ctx: *Context, a: Allocator, dir: []const u8) !?[]const alpm.SyncDb {
 fn sortRepos(dbs: []alpm.SyncDb) void {
     // by name first; the sort is stable, so repositories of equal rank
     // stay in name order.
-    sort.byField(alpm.SyncDb, "name", dbs);
+    lists.sortByField(alpm.SyncDb, "name", dbs);
     std.mem.sort(alpm.SyncDb, dbs, {}, struct {
         fn lt(_: void, x: alpm.SyncDb, y: alpm.SyncDb) bool {
             return repoRank(x.name) < repoRank(y.name);
