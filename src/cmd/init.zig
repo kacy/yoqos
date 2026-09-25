@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const cli = @import("../cli.zig");
+const facts = @import("../facts.zig");
 const alpm = @import("../alpm.zig");
 const compose = @import("../compose.zig");
 const generate = @import("../generate.zig");
@@ -51,7 +52,7 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.out.print(".\n\nwrote {s}\nwrote {s}  ({d} packages)\n", .{ top, imported_path, imported.len });
     }
 
-    const locked = try lockNew(ctx, &w, loaded, date);
+    const locked = try lockNew(ctx, &w, loaded, date, f.packages);
     try cli.record(ctx, a, top, try std.fmt.allocPrint(a, "init: {s} as found on {s}", .{ f.hostname orelse "this machine", date }));
     if (ctx.json) {
         try output.writeDoc(ctx.out, "yoq.init/1", .{
@@ -69,7 +70,7 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
 /// resolves a first lock against today's databases when this build can.
 /// returns the lock's path, or null after saying why there isn't one.
-fn lockNew(ctx: *Context, w: *cli.Work, loaded: *const compose.Loaded, date: []const u8) !?[]const u8 {
+fn lockNew(ctx: *Context, w: *cli.Work, loaded: *const compose.Loaded, date: []const u8, installed: []const facts.Package) !?[]const u8 {
     const a = w.allocator();
     if (!alpm.available) {
         if (!ctx.json) try ctx.out.writeAll("this build can't resolve packages, so there's no machine.lock yet.\n");
@@ -77,7 +78,7 @@ fn lockNew(ctx: *Context, w: *cli.Work, loaded: *const compose.Loaded, date: []c
     }
     const top = loaded.files.items[0];
     const dbs = try sync.databases(a, ctx.io, ctx.fetcher, try locking.repos(ctx, a), try locking.cacheDir(ctx, a), date, &w.diags) orelse return reportLater(ctx, w);
-    const l = try locking.resolveLock(ctx, w, &loaded.config, top, dbs, date) orelse return reportLater(ctx, w);
+    const l = try locking.resolveLock(ctx, w, &loaded.config, top, dbs, date, installed) orelse return reportLater(ctx, w);
     return locking.writeLock(ctx, a, top, &l);
 }
 
@@ -90,7 +91,7 @@ fn reportLater(ctx: *Context, w: *cli.Work) !?[]const u8 {
     return null;
 }
 
-fn explicitCount(f: *const @import("../facts.zig").Facts) usize {
+fn explicitCount(f: *const facts.Facts) usize {
     var n: usize = 0;
     for (f.packages) |p| n += @intFromBool(p.reason == .explicit);
     return n;

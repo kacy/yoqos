@@ -53,12 +53,16 @@ os init
 `init` reads the machine and writes its config to `/etc/yoq`:
 
 - `machine.toml` holds the machine's own settings: hostname, timezone,
-  locale, cpu and gpu, users, and enabled services.
+  locale, users, and enabled services. it names the cpu and gpu only when
+  their microcode or driver is already installed, so reading the config
+  back doesn't plan a driver install.
 - `imported.toml` lists every package that was installed on purpose.
   `machine.toml` includes it.
 - `machine.lock` records the exact version of every package, resolved
   against today's arch packages. `init` writes it when it can reach the
-  package mirrors; otherwise `os update` does it later.
+  package mirrors; otherwise `os update` does it later. when a package
+  depends on something several packages provide, and one of them is
+  installed, `init` records that one in `[providers]`.
 
 `init` changes nothing else on the machine. then:
 

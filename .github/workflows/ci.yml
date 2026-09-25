@@ -42,3 +42,27 @@ jobs:
       - run: zig build -Dalpm -Dsystemd
       - name: init, lock, status, and plan against this machine
         run: tests/arch/smoke.sh ./zig-out/bin/os
+
+  vm:
+    # a booted arch vm under kvm: systemd running and a real bootloader.
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      options: --device /dev/kvm
+    steps:
+      - run: pacman -Syu --noconfirm --needed git libarchive systemd-libs qemu-base edk2-ovmf libisoburn openssh
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig build -Dalpm -Dsystemd
+      - id: week
+        run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/yoq-vm/base.qcow2
+          key: arch-cloudimg-${{ steps.week.outputs.week }}
+      - run: tests/vm/vm.sh image
+      - run: tests/vm/test.sh ./zig-out/bin/os
+      - if: failure()
+        run: tail -n 60 ~/.cache/yoq-vm/console.log || true

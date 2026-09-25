@@ -8,14 +8,30 @@ os=$1
 dir=$(mktemp -d)
 cfg=$dir/machine.toml
 
-"$os" --config "$cfg" init
-# init can't answer provider questions without a terminal; record the usual
-# answers, the way `os update` would after asking.
-printf '\n[providers]\ninitramfs = "mkinitcpio"\n"libxtables.so" = "iptables"\n' >> "$cfg"
+"$os" --config "$cfg" init 2> "$dir/init.err"
+cat "$dir/init.err" >&2
+# init answers provider choices from what's installed. for the rest, take
+# the suggested option, as pressing enter at `os update`'s prompt would.
+sed -n 's/.*like \(.*\) = "\(.*\)".*/"\1" = "\2"/p' "$dir/init.err" > "$dir/answers"
+if [ -s "$dir/answers" ]; then
+    if grep -q '^\[providers\]' "$cfg"; then
+        sed -i "/^\[providers\]/r $dir/answers" "$cfg"
+    else
+        printf '\n[providers]\n' >> "$cfg"
+        cat "$dir/answers" >> "$cfg"
+    fi
+fi
 "$os" --config "$cfg" update
 "$os" --config "$cfg" status || true
 "$os" --config "$cfg" plan -v
 "$os" --config "$cfg" --json plan > "$dir/plan.json"
+
+# the try gate: a config read from this machine plans nothing, unless a
+# provider had to be picked above.
+if [ ! -s "$dir/answers" ] && ! "$os" --config "$cfg" plan | grep -q "nothing to do"; then
+    echo "try gate: the plan right after init isn't empty"
+    exit 1
+fi
 
 # apply what the config says, then check nothing's left.
 "$os" --config "$cfg" apply --yes

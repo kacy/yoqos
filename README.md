@@ -64,6 +64,10 @@ zig build test -Dalpm -Dsystemd   # needs libalpm and libsystemd
 ./zig-out/bin/os help
 ```
 
+`tests/vm/test.sh zig-out/bin/os` boots arch's cloud image under kvm and
+runs the whole loop in it. `tests/vm/vm.sh` starts, reaches, and stops that
+vm by hand. ci runs the vm test on every push.
+
 ## rough plan
 
 - manage packages, services, users, and files on any arch install

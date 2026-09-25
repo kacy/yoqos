@@ -7,6 +7,7 @@ const std = @import("std");
 const config = @import("config.zig");
 const facts = @import("facts.zig");
 const catalog = @import("catalog.zig");
+const lists = @import("lists.zig");
 const planner = @import("planner.zig");
 const show = @import("show.zig");
 const Allocator = std.mem.Allocator;
@@ -25,18 +26,19 @@ pub fn fromFacts(a: Allocator, f: *const facts.Facts) !config.Config {
         c.boot.kernel = if (std.mem.eql(u8, k, catalog.default_kernel)) null else .{ .v = k, .src = at };
         break;
     }
+    // hardware is written only when its packages are already installed:
+    // init describes the machine, and mustn't plan a driver install.
     if (f.cpu) |cpu| {
-        if (std.meta.stringToEnum(config.Cpu, cpu)) |v| c.hardware.cpu = .{ .v = v, .src = at };
+        if (std.meta.stringToEnum(config.Cpu, cpu)) |v| {
+            if (installed(f, catalog.cpuPackages(v))) c.hardware.cpu = .{ .v = v, .src = at };
+        }
     }
     // with a discrete gpu next to an integrated one, the discrete one needs
     // the driver.
-    for ([_][]const u8{ "nvidia", "amd", "intel" }) |vendor| {
-        for (f.gpus) |g| {
-            if (!std.mem.eql(u8, g, vendor)) continue;
-            c.hardware.gpu = .{ .v = std.meta.stringToEnum(config.Gpu, vendor).?, .src = at };
-            break;
-        }
-        if (c.hardware.gpu != null) break;
+    for ([_]config.Gpu{ .nvidia, .amd, .intel }) |vendor| {
+        if (!lists.contains(f.gpus, @tagName(vendor)) or !installed(f, catalog.gpuPackages(vendor))) continue;
+        c.hardware.gpu = .{ .v = vendor, .src = at };
+        break;
     }
     for (f.users) |u| {
         var user: config.User = .{ .src = at };
@@ -50,6 +52,13 @@ pub fn fromFacts(a: Allocator, f: *const facts.Facts) !config.Config {
         try c.services.entries.append(a, .{ .name = s.name, .value = .{ .src = at, .enabled = .{ .v = true, .src = at } } });
     }
     return c;
+}
+
+fn installed(f: *const facts.Facts, names: []const []const u8) bool {
+    for (names) |n| {
+        if (f.package(n) == null) return false;
+    }
+    return true;
 }
 
 /// explicitly installed packages the config doesn't already imply, in
@@ -106,6 +115,8 @@ test "a config from facts" {
         .{ .name = "glibc", .version = "2.42-1", .reason = .dependency },
         .{ .name = "linux-zen", .version = "6.16.8-1" },
         .{ .name = "neovim", .version = "0.11.4-1" },
+        .{ .name = "nvidia-open", .version = "580.82.09-1" },
+        .{ .name = "nvidia-utils", .version = "580.82.09-1" },
         .{ .name = "openssh", .version = "10.0p1-4" },
     };
     var units = [_]facts.Unit{
@@ -171,4 +182,14 @@ test "a config from facts" {
         \\]
         \\
     , try importedToml(a, imported, "2026-09-25"));
+}
+
+test "hardware without its packages installed stays out of the config" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var pkgs = [_]facts.Package{.{ .name = "mesa", .version = "1", .reason = .dependency }};
+    const f: facts.Facts = .{ .cpu = "amd", .gpus = &.{"nvidia"}, .packages = &pkgs };
+    const c = try fromFacts(arena.allocator(), &f);
+    try testing.expectEqual(null, c.hardware.cpu);
+    try testing.expectEqual(null, c.hardware.gpu);
 }

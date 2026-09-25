@@ -43,6 +43,10 @@ pub const Git = struct {
     fn run(g: *Git, a: Allocator, argv: []const []const u8, why: *[]const u8) !bool {
         const r = std.process.run(a, g.io, .{ .argv = argv }) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
+            error.FileNotFound => {
+                why.* = "can't run git: it isn't installed (pacman -S git)";
+                return false;
+            },
             else => {
                 why.* = try std.fmt.allocPrint(a, "can't run git: {s}", .{@errorName(e)});
                 return false;

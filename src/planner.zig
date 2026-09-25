@@ -164,6 +164,9 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
         if (!std.mem.eql(u8, have.version, lp.version)) {
             try changes.append(a, .{ .op = .change, .kind = kind, .subject = name, .from = have.version, .to = lp.version, .cause = cause, .reboot = reboot });
         }
+        // packages that come from another key, like a service's, keep the
+        // reason they were installed with.
+        if (want != null and want.?.cause != null) continue;
         const want_reason: facts.Package.Reason = if (want != null) .explicit else .dependency;
         if (have.reason != want_reason) {
             try changes.append(a, .{ .op = .change, .kind = .reason, .subject = name, .from = @tagName(have.reason), .to = @tagName(want_reason) });
@@ -614,6 +617,19 @@ test "the same inputs give the same plan and hash" {
     defer parsed.deinit();
     try testing.expectEqualStrings(&first.?, parsed.value.object.get("hash").?.string);
     try testing.expectEqual(2, parsed.value.object.get("summary").?.object.get("remove").?.integer);
+}
+
+test "a package from a service keeps its install reason" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("[boot]\nkernel = \"none\"\n[services]\nresolved = true\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{
+        lockPkg("systemd", "258-1", &.{}),
+    } };
+    var have = [_]facts.Package{.{ .name = "systemd", .version = "258-1", .reason = .dependency }};
+    var units = [_]facts.Unit{.{ .name = "systemd-resolved.service", .enabled = true, .active = true }};
+    const f: facts.Facts = .{ .packages = &have, .units = &units };
+    try testing.expect((try plan(t.a(), &c, &l, &f, &t.diags)).?.empty());
 }
 
 test "core packages are removed only when [remove] names them" {

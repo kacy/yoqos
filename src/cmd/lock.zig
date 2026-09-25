@@ -10,15 +10,18 @@ const config = @import("../config.zig");
 const lock = @import("../lock.zig");
 const change = @import("../change.zig");
 const edit = @import("../edit.zig");
+const facts = @import("../facts.zig");
 const planner = @import("../planner.zig");
 const sync = @import("../sync.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
 /// resolves the config into a lock against `dbs`, asking for provider
-/// choices when someone is there to answer and saving them to `top`.
-/// returns null, with reasons in `w.diags`, when it can't.
-pub fn resolveLock(ctx: *Context, w: *cli.Work, c: *const config.Config, top: []const u8, dbs: []const alpm.SyncDb, sync_date: []const u8) !?lock.Lock {
+/// choices when someone is there to answer and saving them to `top`. a
+/// choice with exactly one option in `installed` is the machine's own
+/// answer, and is saved without asking. returns null, with reasons in
+/// `w.diags`, when it can't.
+pub fn resolveLock(ctx: *Context, w: *cli.Work, c: *const config.Config, top: []const u8, dbs: []const alpm.SyncDb, sync_date: []const u8, installed: []const facts.Package) !?lock.Lock {
     const a = w.allocator();
     const scratch = try std.fmt.allocPrint(a, "/tmp/os-resolve-{d}", .{std.Io.Timestamp.now(ctx.io, .real).toNanoseconds()});
     defer std.Io.Dir.cwd().deleteTree(ctx.io, scratch) catch {};
@@ -36,6 +39,12 @@ pub fn resolveLock(ctx: *Context, w: *cli.Work, c: *const config.Config, top: []
             .failed => return null,
             .choose => |choices| choices,
         };
+        const settled = try installedChoices(a, choices, installed);
+        if (settled.len > 0) {
+            if (!try saveProviders(ctx, w, top, settled)) return null;
+            in.providers = try std.mem.concat(a, lock.Provider, &.{ in.providers, settled });
+            continue;
+        }
         if (!ctx.interactive) {
             try alpm.reportChoices(a, choices, &w.diags);
             return null;
@@ -55,6 +64,24 @@ fn resolveInput(a: Allocator, c: *const config.Config) !alpm.ResolveInput {
     const providers = try a.alloc(lock.Provider, c.providers.entries.items.len);
     for (c.providers.entries.items, providers) |e, *p| p.* = .{ .name = e.name, .chosen = e.value.v };
     return .{ .dbs = &.{}, .wants = names, .providers = providers, .sync_date = "", .scratch = "" };
+}
+
+/// the choices that exactly one installed package answers.
+fn installedChoices(a: Allocator, choices: []const alpm.Choice, installed: []const facts.Package) ![]const lock.Provider {
+    var out: std.ArrayList(lock.Provider) = .empty;
+    for (choices) |ch| {
+        var found: ?[]const u8 = null;
+        var count: usize = 0;
+        for (ch.options) |o| {
+            for (installed) |p| {
+                if (!std.mem.eql(u8, p.name, o)) continue;
+                found = o;
+                count += 1;
+            }
+        }
+        if (count == 1) try out.append(a, .{ .name = ch.name, .chosen = found.? });
+    }
+    return out.items;
 }
 
 fn askProviders(ctx: *Context, a: Allocator, choices: []const alpm.Choice) !?[]const lock.Provider {
@@ -85,7 +112,7 @@ fn saveProviders(ctx: *Context, w: *cli.Work, top: []const u8, picked: []const l
         try ctx.err.print("os: can't write {s}\n", .{top});
         return false;
     };
-    for (picked) |p| try ctx.out.print("+ providers.{s} = \"{s}\"\n", .{ p.name, p.chosen });
+    if (!ctx.json) for (picked) |p| try ctx.out.print("+ providers.{s} = \"{s}\"\n", .{ p.name, p.chosen });
     return true;
 }
 
@@ -139,4 +166,26 @@ pub fn today(io: std.Io, a: Allocator) ![]const u8 {
     const yd = day.getEpochDay().calculateYearDay();
     const md = yd.calculateMonthDay();
     return std.fmt.allocPrint(a, "{d:0>4}-{d:0>2}-{d:0>2}", .{ yd.year, md.month.numeric(), md.day_index + 1 });
+}
+
+// -- tests --
+
+test "a choice with one installed option is already answered" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const choices = [_]alpm.Choice{
+        .{ .name = "initramfs", .options = &.{ "mkinitcpio", "booster", "dracut" } },
+        .{ .name = "java-runtime", .options = &.{ "jre-openjdk", "jre17-openjdk" } },
+        .{ .name = "dhcp-client", .options = &.{ "dhclient", "dhcpcd" } },
+    };
+    const installed = [_]facts.Package{
+        .{ .name = "booster", .version = "1" },
+        .{ .name = "jre-openjdk", .version = "24" },
+        .{ .name = "jre17-openjdk", .version = "17" },
+    };
+    const got = try installedChoices(arena.allocator(), &choices, &installed);
+    // java-runtime has two installed, so it still needs asking.
+    try std.testing.expectEqual(1, got.len);
+    try std.testing.expectEqualStrings("initramfs", got[0].name);
+    try std.testing.expectEqualStrings("booster", got[0].chosen);
 }

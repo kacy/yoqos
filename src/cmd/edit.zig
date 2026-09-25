@@ -152,7 +152,7 @@ fn relock(ctx: *Context, top: []const u8) !u8 {
         return 0;
     };
     const loaded = try w.config() orelse return w.fail();
-    const l = try locking.resolveLock(ctx, &w, &loaded.config, top, dbs, old.sync_date) orelse return w.fail();
+    const l = try locking.resolveLock(ctx, &w, &loaded.config, top, dbs, old.sync_date, &.{}) orelse return w.fail();
     _ = try locking.writeLock(ctx, a, top, &l) orelse return w.fail();
     try locking.reportLock(ctx, "updated machine.lock", try lock.diff(a, &old, &l));
     return 0;

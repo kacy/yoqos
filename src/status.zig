@@ -230,11 +230,11 @@ test "a package differing in version and reason counts once" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const c: config.Config = .{};
+    const c = try @import("test_helpers.zig").configFrom(a, "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n");
     const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{
-        .{ .name = "linux", .version = "2", .repo = "core", .sha256 = "a" ** 64 },
+        .{ .name = "git", .version = "2", .repo = "extra", .sha256 = "a" ** 64 },
     } };
-    var have = [_]facts.Package{.{ .name = "linux", .version = "1", .reason = .dependency }};
+    var have = [_]facts.Package{.{ .name = "git", .version = "1", .reason = .dependency }};
     const f: facts.Facts = .{ .packages = &have };
     var diags: @import("diag.zig").List = .init(testing.allocator);
     defer diags.deinit();

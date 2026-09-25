@@ -44,7 +44,7 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try sync.databases(a, ctx.io, ctx.fetcher, try locking.repos(ctx, a), try locking.cacheDir(ctx, a), sync_date, &w.diags) orelse return w.fail();
 
     const old = try locking.readLock(ctx, a, top);
-    const l = try locking.resolveLock(ctx, &w, &loaded.config, top, dbs, sync_date) orelse return w.fail();
+    const l = try locking.resolveLock(ctx, &w, &loaded.config, top, dbs, sync_date, &.{}) orelse return w.fail();
     const path = try locking.writeLock(ctx, a, top, &l) orelse return w.fail();
     const d = try lock.diff(a, if (old) |*o| o else null, &l);
     try cli.record(ctx, a, top, try std.fmt.allocPrint(a, "update packages to {s}", .{l.sync_date}));
