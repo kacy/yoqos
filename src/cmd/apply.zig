@@ -21,16 +21,9 @@ pub fn applyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     for (args) |arg| {
         if (isYes(arg)) yes = true else return cli.usageError(ctx, "os apply [--yes]");
     }
-    if (blocker(ctx)) |why| {
-        try ctx.err.print("os: {s}.\n", .{why});
-        return 1;
-    }
+    if (try refused(ctx)) return 1;
     return (try run(ctx, yes, cli.inputs(ctx))).code;
 }
-
-/// how a run went: its exit code, and whether the machine now matches
-/// the plan's inputs, because the plan was empty or every step worked.
-pub const Outcome = struct { code: u8, matches: bool };
 
 pub fn isYes(arg: []const u8) bool {
     return cli.eql(arg, "--yes") or cli.eql(arg, "-y");
@@ -66,14 +59,31 @@ pub fn blocker(ctx: *Context) ?[]const u8 {
     return null;
 }
 
+/// says why apply can't run here, for commands that only apply.
+pub fn refused(ctx: *Context) !bool {
+    const why = blocker(ctx) orelse return false;
+    try ctx.err.print("os: {s}.\n", .{why});
+    return true;
+}
+
+/// how a run went: its exit code, and whether the machine now matches
+/// the plan's inputs, because the plan was empty or every step worked.
+pub const Outcome = struct {
+    code: u8,
+    matches: bool,
+
+    fn failed(w: *cli.Work) !Outcome {
+        return .{ .code = try w.fail(), .matches = false };
+    }
+};
+
 /// plans from `in`, shows the plan, asks unless `yes`, applies it, and
 /// checks the result. the caller has checked `blocker`.
 pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs) !Outcome {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    const failed: Outcome = .{ .code = 1, .matches = false };
-    const result = try w.plan(in) orelse return .{ .code = try w.fail(), .matches = false };
+    const result = try w.plan(in) orelse return Outcome.failed(&w);
     const p = &result.plan;
     if (try apply.unfinished(a, ctx.io, ctx.root)) |hash| {
         try ctx.err.print("os: the last apply (plan {s}) didn't finish. this one starts from the machine as it is now.\n", .{hash[0..@min(12, hash.len)]});
@@ -97,18 +107,14 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs) !Outcome {
         }
     }
 
-    const target = try targetFor(ctx, &w, &result.state.lock) orelse {
-        _ = try w.fail();
-        return failed;
-    };
+    const target = try targetFor(ctx, &w, &result.state.lock) orelse return Outcome.failed(&w);
     const units = liveUnits(ctx);
     const hash = try p.hash();
     const now = std.Io.Timestamp.now(ctx.io, .real).toSeconds();
     try apply.record(a, ctx.io, ctx.root, now, "begin", &hash);
     const done = try apply.run(a, ctx.io, p, &result.state.lock, target, units, &w.diags) orelse {
         try apply.record(a, ctx.io, ctx.root, now, "failed", &hash);
-        _ = try w.fail();
-        return failed;
+        return Outcome.failed(&w);
     };
     try apply.record(a, ctx.io, ctx.root, now, "done", &hash);
     return .{ .code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units), .matches = true };

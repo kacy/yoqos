@@ -98,20 +98,14 @@ fn askProviders(ctx: *Context, a: Allocator, choices: []const alpm.Choice) !?[]c
 /// question isn't asked again.
 fn saveProviders(ctx: *Context, w: *cli.Work, top: []const u8, picked: []const lock.Provider) !bool {
     const a = w.allocator();
-    var text: []const u8 = ctx.files.read(a, top) catch {
-        try ctx.err.print("os: can't read {s}\n", .{top});
-        return false;
-    };
+    var text: []const u8 = try cli.readFile(ctx, a, top) orelse return false;
     const notes = try a.alloc(change.Note, picked.len);
     for (picked, notes) |p, *n| {
         text = try edit.setProvider(a, text, p.name, p.chosen) orelse text;
         n.* = .{ .name = p.name, .what = .chosen, .detail = p.chosen };
     }
     if (!try change.check(ctx.gpa, ctx.files, top, text, notes, &w.diags)) return false;
-    ctx.files.write(top, text) catch {
-        try ctx.err.print("os: can't write {s}\n", .{top});
-        return false;
-    };
+    if (!try cli.writeFile(ctx, top, text)) return false;
     if (!ctx.json) for (picked) |p| try ctx.out.print("+ providers.{s} = \"{s}\"\n", .{ p.name, p.chosen });
     return true;
 }
@@ -133,11 +127,7 @@ pub fn writeLock(ctx: *Context, a: Allocator, top: []const u8, l: *const lock.Lo
 pub fn writeLockTo(ctx: *Context, a: Allocator, path: []const u8, l: *const lock.Lock) !?[]const u8 {
     var out: std.Io.Writer.Allocating = .init(a);
     try lock.write(&out.writer, l);
-    ctx.files.write(path, out.written()) catch {
-        try ctx.err.print("os: can't write {s}\n", .{path});
-        return null;
-    };
-    return path;
+    return if (try cli.writeFile(ctx, path, out.written())) path else null;
 }
 
 /// "<what>: +2 -1." after the lock changes, then what's next unless

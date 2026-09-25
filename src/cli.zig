@@ -282,6 +282,30 @@ pub fn facts(w: *Work) !?@import("facts.zig").Facts {
     };
 }
 
+/// writes a file through `ctx.files`. returns false after saying it
+/// couldn't.
+pub fn writeFile(ctx: *Context, path: []const u8, bytes: []const u8) !bool {
+    ctx.files.write(path, bytes) catch |e| switch (e) {
+        error.OutOfMemory => return e,
+        error.WriteFailed => {
+            try ctx.err.print("os: can't write {s}\n", .{path});
+            return false;
+        },
+    };
+    return true;
+}
+
+/// reads a file through `ctx.files`, or null after saying it couldn't.
+pub fn readFile(ctx: *Context, a: std.mem.Allocator, path: []const u8) !?[]const u8 {
+    return ctx.files.read(a, path) catch |e| switch (e) {
+        error.OutOfMemory => return e,
+        else => {
+            try ctx.err.print("os: can't read {s}\n", .{path});
+            return null;
+        },
+    };
+}
+
 /// fails a command that takes no arguments of its own if it got some.
 pub fn noArgs(ctx: *Context, args: []const [:0]const u8, usage_text: []const u8) !?u8 {
     return if (args.len == 0) null else try usageError(ctx, usage_text);

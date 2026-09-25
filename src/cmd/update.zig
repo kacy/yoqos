@@ -7,7 +7,6 @@ const cli = @import("../cli.zig");
 const alpm = @import("../alpm.zig");
 const config = @import("../config.zig");
 const lock = @import("../lock.zig");
-const change = @import("../change.zig");
 const output = @import("../output.zig");
 const lists = @import("../lists.zig");
 const sync = @import("../sync.zig");
@@ -59,6 +58,7 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         if (old) |o| try writeNews(ctx, o.sync_date, posted);
     }
 
+    var code: u8 = 0;
     if (now) {
         // apply against the new lock first. machine.lock moves only once
         // the machine does, so saying no, or a failure, changes nothing.
@@ -69,15 +69,13 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.out.writeByte('\n');
         const done = try applying.run(ctx, then.yes, in);
         if (!done.matches) return done.code;
-        _ = try locking.writeLock(ctx, a, top, &l) orelse return w.fail();
-        try cli.record(ctx, a, top, try std.fmt.allocPrint(a, "update packages to {s}", .{l.sync_date}));
-        return done.code;
+        code = done.code;
     }
 
     const path = try locking.writeLock(ctx, a, top, &l) orelse return w.fail();
     try cli.record(ctx, a, top, try std.fmt.allocPrint(a, "update packages to {s}", .{l.sync_date}));
     if (ctx.json) try output.writeDoc(ctx.out, "yoq.update/1", .{ .lock = path, .sync_date = l.sync_date, .packages = l.packages.len, .diff = d, .news = posted });
-    return 0;
+    return code;
 }
 
 /// arch news posted after the old lock's date, up to the new one. a feed

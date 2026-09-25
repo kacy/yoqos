@@ -99,19 +99,13 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
     const a = w.allocator();
     const loaded = try w.config() orelse return w.fail();
     const top = loaded.files.items[0];
-    const text = ctx.files.read(a, top) catch {
-        try ctx.err.print("os: can't read {s}\n", .{top});
-        return 1;
-    };
+    const text = try cli.readFile(ctx, a, top) orelse return 1;
 
     const outcome = try change.plan(a, &loaded.config, top, text, op, names, &w.diags);
     if (w.failed()) return w.fail();
     if (outcome.changed()) {
         if (!try change.check(ctx.gpa, ctx.files, top, outcome.text, outcome.notes, &w.diags)) return w.fail();
-        ctx.files.write(top, outcome.text) catch {
-            try ctx.err.print("os: can't write {s}\n", .{top});
-            return 1;
-        };
+        if (!try cli.writeFile(ctx, top, outcome.text)) return 1;
     }
 
     if (ctx.json) {

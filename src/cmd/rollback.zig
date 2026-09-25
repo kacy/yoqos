@@ -36,10 +36,7 @@ pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             yes = true;
         } else wanted = std.fmt.parseInt(usize, arg, 10) catch return cli.usageError(ctx, usage_text);
     }
-    if (applying.blocker(ctx)) |why| {
-        try ctx.err.print("os: {s}.\n", .{why});
-        return 1;
-    }
+    if (try applying.refused(ctx)) return 1;
 
     var w: cli.Work = .init(ctx);
     defer w.deinit();
@@ -71,14 +68,18 @@ pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     // stage that generation's files, and apply them from there. the config
     // directory changes only once the machine has.
     const staging = try cli.machinePath(ctx, a, "/var/lib/yoq/rollback");
-    for (files) |f| try write(ctx, try std.fs.path.join(a, &.{ staging, f.path }), f.bytes) orelse return 1;
+    for (files) |f| {
+        if (!try cli.writeFile(ctx, try std.fs.path.join(a, &.{ staging, f.path }), f.bytes)) return 1;
+    }
     var in = cli.inputs(ctx);
     in.config_path = try std.fs.path.join(a, &.{ staging, top[dir.len + 1 ..] });
     try ctx.out.print("rolling back to {d}: {s}\n\n", .{ target.n, target.message });
     const done = try applying.run(ctx, yes, in);
     if (!done.matches) return done.code;
 
-    for (files) |f| try write(ctx, try std.fs.path.join(a, &.{ dir, f.path }), f.bytes) orelse return 1;
+    for (files) |f| {
+        if (!try cli.writeFile(ctx, try std.fs.path.join(a, &.{ dir, f.path }), f.bytes)) return 1;
+    }
     try cli.record(ctx, a, top, try std.fmt.allocPrint(a, "rollback to {d}: {s}", .{ target.n, target.message }));
     return done.code;
 }
@@ -95,16 +96,6 @@ fn logOf(ctx: *Context, a: std.mem.Allocator, top: []const u8) !?[]const history
         return null;
     }
     return entries;
-}
-
-fn write(ctx: *Context, path: []const u8, bytes: []const u8) !?void {
-    ctx.files.write(path, bytes) catch |e| switch (e) {
-        error.OutOfMemory => return e,
-        error.WriteFailed => {
-            try ctx.err.print("os: can't write {s}\n", .{path});
-            return null;
-        },
-    };
 }
 
 // -- tests --

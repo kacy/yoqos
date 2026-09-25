@@ -34,10 +34,7 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const imported_path = try std.fs.path.join(a, &.{ dir, "imported.toml" });
     const machine = try generate.machineToml(a, &c, date);
     for ([_][2][]const u8{ .{ imported_path, try generate.importedToml(a, imported, date) }, .{ top, machine } }) |file| {
-        ctx.files.write(file[0], file[1]) catch {
-            try ctx.err.print("os: can't write {s}\n", .{file[0]});
-            return 1;
-        };
+        if (!try cli.writeFile(ctx, file[0], file[1])) return 1;
     }
 
     // the generated config has to load cleanly, or it's a bug here.
