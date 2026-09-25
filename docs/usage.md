@@ -150,8 +150,11 @@ move to today's.
 afterwards it plans again and says if anything still differs. `--yes` skips
 the question; without a terminal, `apply` needs it. it needs root.
 
-read the plan before you say yes. `apply` removes every package the config
-doesn't ask for, so a config that leaves out `base` removes `base`.
+read the plan before you say yes: `apply` removes every package the config
+doesn't ask for. the exception is a few core packages (`base`,
+`filesystem`, `glibc`, `pacman`, and `systemd`). if the config leaves one
+out, `plan` and `apply` stop with E0126, since that's almost always a
+mistake. to remove one on purpose, name it in `[remove]`.
 
 `apply` keeps a journal in `/var/lib/yoq/journal`. if one is cut off
 halfway, the next `apply` says so and starts from the machine as it is.

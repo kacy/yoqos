@@ -182,8 +182,14 @@ test "apply installs, sets, and removes, and the plan comes back empty" {
     try t.exec(&.{ "--root", root, "plan" });
     try std.testing.expectEqualStrings("nothing to do. this machine matches its config.\n", t.out.buffered());
 
+    // removing git orphans glibc and filesystem, which apply keeps until
+    // [remove] names them.
     try t.exec(&.{ "--root", root, "remove", "git" });
     try std.testing.expectEqual(0, t.code);
+    try t.exec(&.{ "--root", root, "apply", "--yes" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0126]: applying would remove filesystem, glibc,"));
+    try t.fs.put("/etc/yoq/machine.toml", "[boot]\nkernel = \"none\"\n[system]\nhostname = \"atlas\"\n[remove]\npackages = [\"filesystem\", \"glibc\"]\n");
     try t.exec(&.{ "--root", root, "apply", "--yes" });
     try std.testing.expectEqualStrings("", t.err.buffered());
     try t.exec(&.{ "--root", root, "plan" });

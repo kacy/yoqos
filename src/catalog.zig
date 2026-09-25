@@ -93,6 +93,10 @@ pub const no_kernel = "none";
 /// arch's kernel packages.
 pub const kernels = [_][]const u8{ "linux", "linux-lts", "linux-zen", "linux-hardened" };
 
+/// packages `os` won't remove unless a `[remove]` names them: without
+/// them the machine can't boot or can't manage packages.
+pub const protected = [_][]const u8{ "base", "filesystem", "glibc", "pacman", "systemd" };
+
 /// why changing this package needs a reboot, or null if it can apply live.
 /// these are the packages the running system can't swap out safely.
 pub fn rebootReason(pkg: []const u8) ?[]const u8 {

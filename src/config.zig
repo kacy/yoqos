@@ -104,7 +104,7 @@ pub fn keysOf(comptime T: type) []const []const u8 {
     comptime {
         var keys: []const []const u8 = &.{};
         for (std.meta.fieldNames(T)) |n| {
-            if (!std.mem.eql(u8, n, "src")) keys = keys ++ .{n};
+            if (!std.mem.eql(u8, n, "src") and !std.mem.eql(u8, n, "removed")) keys = keys ++ .{n};
         }
         return keys;
     }
@@ -184,6 +184,9 @@ pub const Config = struct {
     users: Named(User) = .{},
     services: Named(Service) = .{},
     state: State = .{},
+    /// every package a `[remove]` names, in this file or an include. not a
+    /// key: it's what lets the plan remove a protected package.
+    removed: Set = .{},
 };
 
 pub const Remove = struct {
@@ -221,6 +224,7 @@ pub fn decode(a: Allocator, file: []const u8, root: *const toml.Table, diags: *d
             try d.unknownKey(e, "", root_keys);
         }
     }
+    part.config.removed = part.remove.packages;
     if (part.config.version) |v| {
         if (v.v != supported_version) {
             try diags.add(.bad_value, v.src, "config version {d} isn't supported", .{v.v}, "this os reads version 1");

@@ -30,5 +30,11 @@ pacman -Q tree
 if pacman -Q tree 2>/dev/null; then echo "tree is still installed"; exit 1; fi
 "$os" --config "$cfg" plan | grep -q "nothing to do"
 
+# a config that leaves out base doesn't get to remove it.
+bare=$dir/bare.toml
+printf 'version = 1\n[boot]\nkernel = "none"\n' > "$bare"
+if "$os" --config "$bare" plan 2> "$dir/bare.err"; then echo "planned removing base"; exit 1; fi
+grep -q E0126 "$dir/bare.err"
+
 git -C "$dir" log --format=%s
 echo "smoke ok"

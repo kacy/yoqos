@@ -25,6 +25,7 @@ pub const Code = enum {
     provider_choice,
     alpm_failed,
     systemd_failed,
+    protected_package,
     unknown_service,
 };
 
@@ -147,6 +148,14 @@ pub const table = [_]Entry{
         .title = "can't read systemd",
         .explanation = "os asks systemd over the system bus which units are enabled and running. that " ++
             "failed, usually because systemd isn't running, as in a container or chroot.",
+    },
+    .{
+        .code = .protected_package,
+        .id = "E0126",
+        .title = "won't remove a core package",
+        .explanation = "the config leaves out a package the machine needs to boot or to manage packages, like " ++
+            "base or pacman, so applying it would remove that package. usually the package was left out by " ++
+            "mistake: add it to `packages`. to remove it anyway, say so with `[remove] packages = [\"base\"]`.",
     },
     .{
         .code = .unknown_service,

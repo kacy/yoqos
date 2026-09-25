@@ -107,11 +107,13 @@ const Loader = struct {
             const child = try std.fs.path.resolvePosix(l.a, &.{ dir, inc.v });
             const c = try l.loadFile(child, inc.src) orelse continue;
             try mergeInto(l.a, &merged, &c);
+            for (c.removed.items.items) |it| try merged.removed.add(l.a, it);
         }
         for (part.unset.items) |u| try l.unset(&merged, u);
         for (part.remove.packages.items.items) |it| _ = merged.packages.remove(it.name);
         for (part.remove.aur.items.items) |it| _ = merged.aur.remove(it.name);
         try mergeInto(l.a, &merged, &part.config);
+        for (part.remove.packages.items.items) |it| try merged.removed.add(l.a, it);
         return merged;
     }
 
@@ -236,6 +238,7 @@ const Run = struct {
     loaded: ?Loaded = null,
 
     fn load(r: *Run, path: []const u8) !*Config {
+        if (r.loaded) |*l| l.deinit();
         r.loaded = try compose.load(testing.allocator, r.fs.files(), path, &r.diags);
         return &r.loaded.?.config;
     }
@@ -336,6 +339,11 @@ test "remove and unset act on what includes set" {
     try testing.expect(c.desktop.audio == null);
     try testing.expect(c.desktop.session != null);
     try testing.expectEqual(null, c.users.get("guest"));
+
+    // a [remove] counts from any file, for the planner's core packages.
+    try testing.expect(c.removed.contains("nano"));
+    try r.fs.put("host.toml", "include = [\"machine.toml\"]\n");
+    try testing.expect((try r.load("host.toml")).removed.contains("nano"));
 }
 
 test "unset that names nothing is an error" {

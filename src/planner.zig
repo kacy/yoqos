@@ -170,9 +170,15 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
         }
     }
 
-    // packages: remove what nothing needs. facts are sorted by name.
+    // packages: remove what nothing needs, except core packages the config
+    // doesn't remove on purpose. facts are sorted by name.
+    var blocked: std.ArrayList([]const u8) = .empty;
     for (f.packages) |have| {
         if (needed.contains(have.name)) continue;
+        if (lists.contains(&catalog.protected, have.name) and !c.removed.contains(have.name)) {
+            try blocked.append(a, have.name);
+            continue;
+        }
         try changes.append(a, .{
             .op = .remove,
             .kind = if (have.reason == .explicit) .package else .dependency,
@@ -180,6 +186,11 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
             .from = have.version,
             .reboot = catalog.rebootReason(have.name),
         });
+    }
+    if (blocked.items.len > 0) {
+        const names = try std.mem.join(a, ", ", blocked.items);
+        try diags.add(.protected_package, null, "applying would remove {s}, which the machine needs", .{names}, "add them to packages, or name them in [remove] to remove them anyway");
+        return null;
     }
 
     // system settings. facts carry a field for every one of them.
@@ -603,6 +614,29 @@ test "the same inputs give the same plan and hash" {
     defer parsed.deinit();
     try testing.expectEqualStrings(&first.?, parsed.value.object.get("hash").?.string);
     try testing.expectEqual(2, parsed.value.object.get("summary").?.object.get("remove").?.integer);
+}
+
+test "core packages are removed only when [remove] names them" {
+    var t: T = .{};
+    defer t.deinit();
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{
+        lockPkg("tree", "2.3.2-1", &.{}),
+    } };
+    var have = [_]facts.Package{
+        .{ .name = "base", .version = "3-3" },
+        .{ .name = "tree", .version = "2.3.2-1" },
+    };
+    const f: facts.Facts = .{ .packages = &have };
+
+    const c = try t.cfg("packages = [\"tree\"]\n[boot]\nkernel = \"none\"\n");
+    try testing.expectEqual(null, try plan(t.a(), &c, &l, &f, &t.diags));
+    try testing.expectEqual(diag.Code.protected_package, t.diags.items.items[0].code);
+    try testing.expectEqualStrings("applying would remove base, which the machine needs", t.diags.items.items[0].message);
+
+    const ok = try t.cfg("packages = [\"tree\"]\n[boot]\nkernel = \"none\"\n[remove]\npackages = [\"base\"]\n");
+    const p = (try plan(t.a(), &ok, &l, &f, &t.diags)).?;
+    try testing.expectEqual(1, p.changes.len);
+    try testing.expectEqualStrings("base", p.changes[0].subject);
 }
 
 test "a machine without a kernel" {
