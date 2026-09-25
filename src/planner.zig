@@ -139,7 +139,7 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
         if (l.package(w.name) != null) continue;
         stale = true;
         const at: ?diag.Span = if (w.src) |s| s.span() else null;
-        try diags.addHint(.lock_stale, at, "{s} isn't in machine.lock yet", .{w.name}, "run `os add {s}` or `os update`", .{w.name});
+        try diags.add(.lock_stale, at, "{s} isn't in machine.lock yet", .{w.name}, "run `os update` to resolve it into the lock");
     }
     if (stale) return null;
 

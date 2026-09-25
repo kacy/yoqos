@@ -45,5 +45,7 @@ test {
     _ = @import("golden.zig");
     _ = @import("sort.zig");
     _ = @import("why.zig");
+    _ = @import("edit.zig");
+    _ = @import("change.zig");
     _ = disk;
 }

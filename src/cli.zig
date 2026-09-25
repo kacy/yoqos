@@ -11,6 +11,7 @@ const facts = @import("facts.zig");
 const planner = @import("planner.zig");
 const pipeline = @import("pipeline.zig");
 const why = @import("why.zig");
+const change = @import("change.zig");
 
 pub const default_config = "/etc/yoq/machine.toml";
 
@@ -40,6 +41,10 @@ const commands = [_]Command{
     .{ .name = "help", .summary = "show this help", .handler = help },
     .{ .name = "version", .summary = "print the version", .handler = version },
     .{ .name = "plan", .summary = "show what apply would change (plan --facts <file>)", .handler = planCmd },
+    .{ .name = "add", .summary = "add packages to the config", .handler = addCmd },
+    .{ .name = "remove", .summary = "remove packages from the config", .handler = removeCmd },
+    .{ .name = "enable", .summary = "turn services on in the config", .handler = enableCmd },
+    .{ .name = "disable", .summary = "turn services off in the config", .handler = disableCmd },
     .{ .name = "why", .summary = "say which config line brings in a package", .handler = whyCmd },
     .{ .name = "config", .summary = "show the merged config (config show [--resolved])", .handler = configCmd },
     .{ .name = "facts", .summary = "show what os knows about this machine (facts --from <file>)", .handler = factsCmd },
@@ -242,6 +247,80 @@ fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try planner.writeJson(ctx.out, result.allocator(), &result.plan);
     } else {
         try planner.writeText(ctx.out, result.allocator(), &result.plan, .{ .verbose = verbose });
+    }
+    return 0;
+}
+
+fn addCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    return changeCmd(ctx, args, .add);
+}
+
+fn removeCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    return changeCmd(ctx, args, .remove);
+}
+
+fn enableCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    return changeCmd(ctx, args, .enable);
+}
+
+fn disableCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    return changeCmd(ctx, args, .disable);
+}
+
+fn changeCmd(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
+    if (args.len == 0) {
+        try ctx.err.print("usage: os {s} <{s}>...\n", .{ @tagName(op), if (op == .add or op == .remove) "package" else "service" });
+        return 2;
+    }
+    for (args) |a| {
+        if (a[0] == '-') {
+            try ctx.err.print("os: unknown flag '{s}'\n", .{a});
+            return 2;
+        }
+    }
+
+    var arena: std.heap.ArenaAllocator = .init(ctx.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var diags: diag.List = .init(ctx.gpa);
+    defer diags.deinit();
+
+    var loaded = try compose.load(ctx.gpa, ctx.files, ctx.config_path, &diags);
+    defer loaded.deinit();
+    if (diags.items.items.len > 0) return reportDiags(ctx, &diags);
+    const top = loaded.files.items[0];
+    const text = ctx.files.read(a, top) catch {
+        try ctx.err.print("os: can't read {s}\n", .{top});
+        return 1;
+    };
+
+    const names = try a.alloc([]const u8, args.len);
+    for (args, names) |arg, *n| n.* = arg;
+    const outcome = try change.plan(a, &loaded.config, top, text, op, names, &diags);
+    if (diags.items.items.len > 0) return reportDiags(ctx, &diags);
+    if (outcome.changed()) {
+        if (!try change.check(ctx.gpa, ctx.files, top, outcome.text, op, outcome.notes, &diags)) return reportDiags(ctx, &diags);
+        ctx.files.write(top, outcome.text) catch {
+            try ctx.err.print("os: can't write {s}\n", .{top});
+            return 1;
+        };
+    }
+
+    if (ctx.json) {
+        try output.writeDoc(ctx.out, "yoq.change/1", .{ .file = top, .changed = outcome.changed(), .notes = outcome.notes });
+        return 0;
+    }
+    for (outcome.notes) |n| {
+        switch (n.what) {
+            .added => try ctx.out.print("+ packages \"{s}\"\n", .{n.name}),
+            .removed => try ctx.out.print("- packages \"{s}\"\n", .{n.name}),
+            .excluded => try ctx.out.print("+ remove.packages \"{s}\"  (set in {s})\n", .{ n.name, n.detail.? }),
+            .enabled, .disabled => try ctx.out.print("~ services.{s} = {}\n", .{ n.name, n.what == .enabled }),
+            .unchanged => try ctx.out.print("  {s} is already set that way  ({s})\n", .{ n.name, n.detail.? }),
+        }
+    }
+    if (outcome.changed()) {
+        try ctx.out.print("\nsaved {s}. applying isn't built yet; `os plan` shows what would change.\n", .{top});
     }
     return 0;
 }
@@ -552,4 +631,60 @@ test "why reads the config and lock" {
 
     try t.exec(&.{"why"});
     try std.testing.expectEqual(2, t.code);
+}
+
+test "add, remove, enable, and disable edit the config file" {
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/base.toml", "packages = [\"nano\", \"git\"]\n");
+    try t.fs.put("/etc/yoq/machine.toml",
+        \\# my laptop
+        \\include = ["base.toml"]
+        \\packages = ["git", "neovim"]  # editors
+        \\
+        \\[services]
+        \\ssh = true
+        \\
+    );
+    try t.exec(&.{ "add", "ripgrep", "neovim" });
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expect(std.mem.startsWith(u8, t.out.buffered(), "+ packages \"ripgrep\"\n  neovim is already set that way  (/etc/yoq/machine.toml:3)\n"));
+
+    try t.exec(&.{ "remove", "nano", "git" });
+    try std.testing.expectEqual(0, t.code);
+    try t.exec(&.{ "enable", "tailscale" });
+    try t.exec(&.{ "disable", "ssh" });
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expectEqualStrings(
+        \\# my laptop
+        \\include = ["base.toml"]
+        \\packages = ["neovim", "ripgrep"]  # editors
+        \\
+        \\[services]
+        \\ssh = false
+        \\tailscale = true
+        \\
+        \\[remove]
+        \\packages = ["nano", "git"]
+        \\
+    , t.fs.get("/etc/yoq/machine.toml").?);
+}
+
+test "change refuses what it can't do" {
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n[services]\nssh = true\n");
+    try t.exec(&.{ "remove", "openssh" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "openssh comes from services.ssh") != null);
+    try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "run `os disable ssh`") != null);
+
+    try t.exec(&.{ "remove", "vim" });
+    try std.testing.expectEqual(1, t.code);
+    try t.exec(&.{ "enable", "sshd" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "did you mean \"ssh\"?") != null);
+    try t.exec(&.{"add"});
+    try std.testing.expectEqual(2, t.code);
+    try std.testing.expectEqualStrings("packages = [\"git\"]\n[services]\nssh = true\n", t.fs.get("/etc/yoq/machine.toml").?);
 }

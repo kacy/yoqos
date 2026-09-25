@@ -1,7 +1,7 @@
 error[E0121]: ripgrep isn't in machine.lock yet
   --> tests/golden/stale-lock/machine.toml:2:39
-   | run `os add ripgrep` or `os update`  (os explain E0121)
+   | run `os update` to resolve it into the lock  (os explain E0121)
 
 error[E0121]: fd isn't in machine.lock yet
   --> tests/golden/stale-lock/machine.toml:2:50
-   | run `os add fd` or `os update`  (os explain E0121)
+   | run `os update` to resolve it into the lock  (os explain E0121)

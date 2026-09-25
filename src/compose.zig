@@ -14,15 +14,23 @@ const Allocator = std.mem.Allocator;
 const Config = config.Config;
 const Src = config.Src;
 
-/// where config files come from. tests use a map; the cli reads the disk.
+/// where config files live. tests use a map; the cli uses the disk.
 pub const Files = struct {
     ctx: *anyopaque,
     readFn: *const fn (ctx: *anyopaque, gpa: Allocator, path: []const u8) ReadError![]u8,
+    /// replaces the file in one step, so a crash leaves the old or the new
+    /// content, never half of each.
+    writeFn: *const fn (ctx: *anyopaque, path: []const u8, bytes: []const u8) WriteError!void,
 
     pub const ReadError = error{ FileNotFound, ReadFailed, OutOfMemory };
+    pub const WriteError = error{ WriteFailed, OutOfMemory };
 
-    fn read(f: Files, gpa: Allocator, path: []const u8) ReadError![]u8 {
+    pub fn read(f: Files, gpa: Allocator, path: []const u8) ReadError![]u8 {
         return f.readFn(f.ctx, gpa, path);
+    }
+
+    pub fn write(f: Files, path: []const u8, bytes: []const u8) WriteError!void {
+        return f.writeFn(f.ctx, path, bytes);
     }
 };
 
@@ -184,16 +192,32 @@ const testing = std.testing;
 pub const MemFiles = struct {
     map: std.StringHashMapUnmanaged([]const u8) = .empty,
 
+    /// files written through `files()`, owned by the map.
+    written: std.ArrayList([]u8) = .empty,
+
     pub fn put(m: *MemFiles, path: []const u8, content: []const u8) !void {
         try m.map.put(testing.allocator, path, content);
     }
 
+    pub fn get(m: *MemFiles, path: []const u8) ?[]const u8 {
+        return m.map.get(path);
+    }
+
     pub fn deinit(m: *MemFiles) void {
+        for (m.written.items) |w| testing.allocator.free(w);
+        m.written.deinit(testing.allocator);
         m.map.deinit(testing.allocator);
     }
 
     pub fn files(m: *MemFiles) Files {
-        return .{ .ctx = m, .readFn = read };
+        return .{ .ctx = m, .readFn = read, .writeFn = write };
+    }
+
+    fn write(ctx: *anyopaque, path: []const u8, bytes: []const u8) Files.WriteError!void {
+        const m: *MemFiles = @ptrCast(@alignCast(ctx));
+        const copy = try testing.allocator.dupe(u8, bytes);
+        try m.written.append(testing.allocator, copy);
+        try m.map.put(testing.allocator, path, copy);
     }
 
     fn read(ctx: *anyopaque, gpa: Allocator, path: []const u8) Files.ReadError![]u8 {
