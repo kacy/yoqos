@@ -8,7 +8,7 @@ const output = @import("../output.zig");
 const alpm = @import("../alpm.zig");
 const lock = @import("../lock.zig");
 const sync = @import("../sync.zig");
-const update = @import("update.zig");
+const locking = @import("lock.zig");
 const planner = @import("../planner.zig");
 const Context = cli.Context;
 
@@ -29,37 +29,43 @@ pub fn disableCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
-    if (args.len == 0) {
-        try ctx.err.print("usage: os {s} <{s}>...\n", .{ @tagName(op), if (op == .add or op == .remove) "package" else "service" });
-        return 2;
-    }
-    for (args) |a| {
-        if (a[0] == '-') {
-            try ctx.err.print("os: unknown flag '{s}'\n", .{a});
-            return 2;
-        }
-    }
-    const names = try ctx.gpa.alloc([]const u8, args.len);
+    const usage_text = switch (op) {
+        inline else => |o| "os " ++ @tagName(o) ++ if (o == .add or o == .remove) " <package>..." else " <service>...",
+    };
+    if (args.len == 0) return cli.usageError(ctx, usage_text);
+    const names = try namesOf(ctx, ctx.gpa, args, usage_text) orelse return 2;
     defer ctx.gpa.free(names);
-    for (args, names) |arg, *n| n.* = arg;
     return apply(ctx, op, names);
+}
+
+/// the arguments as names. returns null after a usage error if one looks
+/// like a flag.
+fn namesOf(ctx: *Context, a: std.mem.Allocator, args: []const [:0]const u8, usage_text: []const u8) !?[]const []const u8 {
+    const out = try a.alloc([]const u8, args.len);
+    for (args, out) |arg, *n| {
+        if (std.mem.startsWith(u8, arg, "-")) {
+            a.free(out);
+            _ = try cli.usageError(ctx, usage_text);
+            return null;
+        }
+        n.* = arg;
+    }
+    return out;
 }
 
 /// `os adopt [package...]`: puts packages installed outside the config into
 /// it, all of them or the ones named.
 pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    for (args) |a| {
-        if (a[0] == '-') return cli.usageError(ctx, "os adopt [package...]");
-    }
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    const state = try w.state() orelse return w.report();
-    const f = try cli.facts(&w) orelse return 1;
-    if (w.failed()) return w.report();
+    const wanted = try namesOf(ctx, a, args, "os adopt [package...]") orelse return 2;
+    const state = try w.state() orelse return w.fail();
+    const f = try cli.facts(&w) orelse return w.fail();
+    if (w.failed()) return w.fail();
 
     const extra = try planner.extraPackages(a, state.config(), &state.lock, &f);
-    for (args) |name| {
+    for (wanted) |name| {
         for (extra) |e| {
             if (cli.eql(e, name)) break;
         } else {
@@ -67,14 +73,12 @@ pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             return 1;
         }
     }
-    if (args.len == 0 and extra.len == 0) {
+    if (wanted.len > 0) return apply(ctx, .add, wanted);
+    if (extra.len == 0) {
         try ctx.out.writeAll("nothing to adopt: every installed package is in the config.\n");
         return 0;
     }
-    if (args.len == 0) return apply(ctx, .add, extra);
-    const names = try a.alloc([]const u8, args.len);
-    for (args, names) |arg, *n| n.* = arg;
-    return apply(ctx, .add, names);
+    return apply(ctx, .add, extra);
 }
 
 /// edits the config for `op` on each name, writes it, and brings the lock
@@ -83,7 +87,7 @@ fn apply(ctx: *Context, op: change.Op, names: []const []const u8) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    const loaded = try w.config() orelse return w.report();
+    const loaded = try w.config() orelse return w.fail();
     const top = loaded.files.items[0];
     const text = ctx.files.read(a, top) catch {
         try ctx.err.print("os: can't read {s}\n", .{top});
@@ -91,9 +95,9 @@ fn apply(ctx: *Context, op: change.Op, names: []const []const u8) !u8 {
     };
 
     const outcome = try change.plan(a, &loaded.config, top, text, op, names, &w.diags);
-    if (w.failed()) return w.report();
+    if (w.failed()) return w.fail();
     if (outcome.changed()) {
-        if (!try change.check(ctx.gpa, ctx.files, top, outcome.text, outcome.notes, &w.diags)) return w.report();
+        if (!try change.check(ctx.gpa, ctx.files, top, outcome.text, outcome.notes, &w.diags)) return w.fail();
         ctx.files.write(top, outcome.text) catch {
             try ctx.err.print("os: can't write {s}\n", .{top});
             return 1;
@@ -102,9 +106,7 @@ fn apply(ctx: *Context, op: change.Op, names: []const []const u8) !u8 {
 
     if (ctx.json) {
         try output.writeDoc(ctx.out, "yoq.change/1", .{ .file = top, .changed = outcome.changed(), .notes = outcome.notes });
-        return 0;
-    }
-    for (outcome.notes) |n| {
+    } else for (outcome.notes) |n| {
         switch (n.what) {
             .added => try ctx.out.print("+ packages \"{s}\"\n", .{n.name}),
             .removed => try ctx.out.print("- packages \"{s}\"\n", .{n.name}),
@@ -115,7 +117,7 @@ fn apply(ctx: *Context, op: change.Op, names: []const []const u8) !u8 {
         }
     }
     if (!outcome.changed()) return 0;
-    try ctx.out.print("\nsaved {s}.\n", .{top});
+    if (!ctx.json) try ctx.out.print("\nsaved {s}.\n", .{top});
     const code = if (op == .add or op == .remove) try relock(ctx, top) else 0;
     try cli.record(ctx, a, top, try commitMessage(a, op, outcome.notes));
     return code;
@@ -137,7 +139,7 @@ fn relock(ctx: *Context, top: []const u8) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    const old = try update.readLock(ctx, a, top) orelse {
+    const old = try locking.readLock(ctx, a, top) orelse {
         try ctx.out.writeAll("no machine.lock yet: `os update` resolves one.\n");
         return 0;
     };
@@ -145,14 +147,14 @@ fn relock(ctx: *Context, top: []const u8) !u8 {
         try ctx.out.writeAll("this build can't resolve packages, so machine.lock wasn't updated.\n");
         return 0;
     }
-    const dbs = try sync.cached(a, ctx.io, try update.repos(ctx, a), try update.cacheDir(ctx, a), old.sync_date) orelse {
+    const dbs = try sync.cached(a, ctx.io, try locking.repos(ctx, a), try locking.cacheDir(ctx, a), old.sync_date) orelse {
         try ctx.out.print("no package databases cached for {s}: `os update` resolves against today's.\n", .{old.sync_date});
         return 0;
     };
-    const loaded = try w.config() orelse return w.report();
-    const l = try update.resolveLock(ctx, &w, &loaded.config, top, dbs, old.sync_date) orelse return w.report();
-    _ = try update.writeLock(ctx, a, top, &l) orelse return 1;
-    try update.reportLock(ctx, "updated machine.lock", try lock.diff(a, &old, &l));
+    const loaded = try w.config() orelse return w.fail();
+    const l = try locking.resolveLock(ctx, &w, &loaded.config, top, dbs, old.sync_date) orelse return w.fail();
+    _ = try locking.writeLock(ctx, a, top, &l) orelse return w.fail();
+    try locking.reportLock(ctx, "updated machine.lock", try lock.diff(a, &old, &l));
     return 0;
 }
 
@@ -279,4 +281,16 @@ test "adopt puts extra packages into the config" {
 
     try t.exec(&.{ "--facts", "f.json", "adopt" });
     try std.testing.expectEqualStrings("packages = [\"git\", \"htop\", \"btop\"]\n", t.fs.get("/etc/yoq/machine.toml").?);
+}
+
+test "empty and flag-like names are usage errors, not crashes" {
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "packages = []\n");
+    try t.exec(&.{ "add", "" });
+    try std.testing.expect(t.code != 0);
+    try t.exec(&.{ "why", "" });
+    try std.testing.expectEqual(2, t.code);
+    try t.exec(&.{ "adopt", "-x" });
+    try std.testing.expectEqual(2, t.code);
 }

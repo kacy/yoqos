@@ -121,20 +121,11 @@ pub fn addToList(a: Allocator, text_in: []const u8, path: []const []const u8, ke
     var d = try Doc.init(a, text);
     defer d.deinit();
     const q = try quoted(a, item);
+    const list = try std.fmt.allocPrint(a, "[{s}]", .{q});
 
-    const t = d.table(path) orelse {
-        var header: std.Io.Writer.Allocating = .init(a);
-        const w = &header.writer;
-        w.writeAll(if (text.len > 0) "\n[" else "[") catch return error.OutOfMemory;
-        for (path, 0..) |p, i| {
-            if (i > 0) w.writeByte('.') catch return error.OutOfMemory;
-            toml.writeKey(w, p) catch return error.OutOfMemory;
-        }
-        w.print("]\n{s} = [{s}]\n", .{ key, q }) catch return error.OutOfMemory;
-        return try splice(a, text, text.len, 0, header.written());
-    };
+    const t = d.table(path) orelse return try appendSection(a, text, path, key, list);
     const v = t.get(key) orelse {
-        const line = try std.fmt.allocPrint(a, "{s} = [{s}]\n", .{ key, q });
+        const line = try std.fmt.allocPrint(a, "{s} = {s}\n", .{ try keyText(a, key), list });
         return try splice(a, text, d.newKeyLine(t), 0, line);
     };
     if (v.data != .array) return error.BadToml;
@@ -229,10 +220,7 @@ pub fn setKey(a: Allocator, text_in: []const u8, path: []const []const u8, key: 
     defer d.deinit();
     const k = try keyText(a, key);
 
-    const found = d.find(path) orelse {
-        const header = try pathText(a, path);
-        return try splice(a, text, text.len, 0, try std.fmt.allocPrint(a, "{s}[{s}]\n{s} = {s}\n", .{ if (text.len > 0) "\n" else "", header, k, value }));
-    };
+    const found = d.find(path) orelse return try appendSection(a, text, path, key, value);
     const t = found.table;
     if (t.get(key)) |v| {
         const old = text[v.span.start.offset..v.span.end];
@@ -251,11 +239,8 @@ pub fn setKey(a: Allocator, text_in: []const u8, path: []const []const u8, key: 
             const prefix = try pathText(a, found.dotted);
             return try splice(a, text, d.lineEnd(lastEnd(t)), 0, try std.fmt.allocPrint(a, "{s}.{s} = {s}\n", .{ prefix, k, value }));
         },
-        .implicit => {
-            // only sub-tables define it so far, so give it its own header.
-            const header = try pathText(a, path);
-            return try splice(a, text, text.len, 0, try std.fmt.allocPrint(a, "\n[{s}]\n{s} = {s}\n", .{ header, k, value }));
-        },
+        // only sub-tables define it so far, so give it its own header.
+        .implicit => return try appendSection(a, text, path, key, value),
         .root, .header, .array_element => return try splice(a, text, d.newKeyLine(t), 0, try std.fmt.allocPrint(a, "{s} = {s}\n", .{ k, value })),
     }
 }
@@ -278,6 +263,12 @@ pub fn setService(a: Allocator, text: []const u8, name: []const u8, enabled: boo
 /// sets `[providers] <name> = "<chosen>"`.
 pub fn setProvider(a: Allocator, text: []const u8, name: []const u8, chosen: []const u8) Error!?[]u8 {
     return setKey(a, text, &.{"providers"}, name, try quoted(a, chosen));
+}
+
+/// adds `[path]` with `key = value` at the end of the file.
+fn appendSection(a: Allocator, text: []const u8, path: []const []const u8, key: []const u8, value: []const u8) ![]u8 {
+    const section = try std.fmt.allocPrint(a, "{s}[{s}]\n{s} = {s}\n", .{ if (text.len > 0) "\n" else "", try pathText(a, path), try keyText(a, key), value });
+    return splice(a, text, text.len, 0, section);
 }
 
 /// a dotted key path, each part quoted if it needs to be.

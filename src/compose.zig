@@ -77,7 +77,7 @@ const Loader = struct {
             else => {
                 const why = if (e == error.FileNotFound) "doesn't exist" else "can't be read";
                 if (from) |f| {
-                    try l.diags.add(.include_missing, f.span(), "included file {s} {s}", .{ path, why }, null);
+                    try l.diags.add(.include_missing, f, "included file {s} {s}", .{ path, why }, null);
                 } else {
                     try l.diags.add(.config_missing, null, "{s} {s}", .{ path, why }, "run `os init`, or point at a config with --config");
                 }
@@ -119,7 +119,7 @@ const Loader = struct {
         var chain: std.Io.Writer.Allocating = .init(l.a);
         for (l.stack.items[start..]) |p| chain.writer.print("{s} -> ", .{p}) catch return error.OutOfMemory;
         chain.writer.writeAll(path) catch return error.OutOfMemory;
-        try l.diags.add(.include_cycle, from.span(), "include cycle: {s}", .{chain.written()}, null);
+        try l.diags.add(.include_cycle, from, "include cycle: {s}", .{chain.written()}, null);
         return null;
     }
 
@@ -130,7 +130,7 @@ const Loader = struct {
         var it = std.mem.splitScalar(u8, u.v, '.');
         while (it.next()) |seg| try segs.append(l.a, seg);
         if (!clear(Config, c, segs.items)) {
-            try l.diags.add(.bad_value, u.src.span(), "\"{s}\" isn't a key that unset can clear", .{u.v}, "name a key like \"desktop.audio\" or \"users.guest\"");
+            try l.diags.add(.bad_value, u.src, "\"{s}\" isn't a key that unset can clear", .{u.v}, "name a key like \"desktop.audio\" or \"users.guest\"");
         }
     }
 };
@@ -293,12 +293,11 @@ test "includes merge with the including file winning" {
     const c = try r.load("/etc/yoq/machine.toml");
     try r.expectClean();
 
-    const names = try c.packages.names(testing.allocator);
-    defer testing.allocator.free(names);
-    try testing.expectEqual(4, names.len);
-    try testing.expectEqualStrings("git", names[0]);
-    try testing.expectEqualStrings("/etc/yoq/base.toml", c.packages.items.items[0].src.file);
-    try testing.expectEqualStrings("neovim", names[3]);
+    const pkgs = c.packages.items.items;
+    try testing.expectEqual(4, pkgs.len);
+    try testing.expectEqualStrings("git", pkgs[0].name);
+    try testing.expectEqualStrings("/etc/yoq/base.toml", pkgs[0].src.file);
+    try testing.expectEqualStrings("neovim", pkgs[3].name);
 
     try testing.expectEqualStrings("America/New_York", c.system.timezone.?.v);
     try testing.expectEqualStrings("/etc/yoq/machine.toml", c.system.timezone.?.src.file);

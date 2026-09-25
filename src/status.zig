@@ -7,7 +7,6 @@ const config = @import("config.zig");
 const lock = @import("lock.zig");
 const facts = @import("facts.zig");
 const planner = @import("planner.zig");
-const catalog = @import("catalog.zig");
 const output = @import("output.zig");
 const Allocator = std.mem.Allocator;
 
@@ -62,9 +61,11 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
                 orphans += 1;
             },
             .add => try missing.append(a, ch.subject),
-            .change => try versions.append(a, ch.subject),
+            .change => if (!lists.contains(versions.items, ch.subject)) try versions.append(a, ch.subject),
         },
-        .reason => try versions.append(a, ch.subject),
+        // a package can differ in version and install reason at once; count
+        // it once.
+        .reason => if (!lists.contains(versions.items, ch.subject)) try versions.append(a, ch.subject),
         .setting => try settings.append(a, ch.subject),
         .unit => try units.append(a, ch.subject),
         .user => if (!lists.contains(users.items, ch.subject)) try users.append(a, ch.subject),
@@ -73,7 +74,7 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
     var failing: std.ArrayList([]const u8) = .empty;
     var services: usize = 0;
     for (c.services.entries.items) |e| {
-        const unit = if (e.value.unit) |u| u.v else catalog.service(e.name).?.unit;
+        const unit = e.value.unitFor(e.name);
         if (f.unit(unit)) |u| {
             if (u.failed) {
                 try failing.append(a, unit);
@@ -223,4 +224,23 @@ test "status text" {
         \\failing   tailscaled.service
         \\
     , out.written());
+}
+
+test "a package differing in version and reason counts once" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const c: config.Config = .{};
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{
+        .{ .name = "linux", .version = "2", .repo = "core", .sha256 = "a" ** 64 },
+    } };
+    var have = [_]facts.Package{.{ .name = "linux", .version = "1", .reason = .dependency }};
+    const f: facts.Facts = .{ .packages = &have };
+    var diags: @import("diag.zig").List = .init(testing.allocator);
+    defer diags.deinit();
+    const p = (try planner.plan(a, &c, &l, &f, &diags)).?;
+    try testing.expectEqual(2, p.changes.len);
+    const s = try summarize(a, &c, &l, &f, &p);
+    try testing.expectEqual(1, s.changed.versions.len);
+    try testing.expectEqual(0, s.ok.packages);
 }

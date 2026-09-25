@@ -6,6 +6,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const alpm = @import("alpm.zig");
 const diag = @import("diag.zig");
+const compose = @import("compose.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Repo = struct {
@@ -22,12 +23,14 @@ pub const arch = switch (builtin.cpu.arch) {
     else => @tagName(builtin.cpu.arch),
 };
 
-/// reads a file under the machine's root. returns null if it's missing.
-pub const ReadFn = *const fn (ctx: *anyopaque, a: Allocator, path: []const u8) error{OutOfMemory}!?[]const u8;
-
-/// the repositories in pacman.conf, in order, with their servers. `read`
-/// resolves `Include =` files.
-pub fn repos(a: Allocator, conf: []const u8, ctx: *anyopaque, read: ReadFn) ![]const Repo {
+/// the repositories in the machine's pacman.conf, in order, with their
+/// servers. `Include =` files are read under `root` too. with no
+/// pacman.conf, core and extra from arch's main mirror.
+pub fn repos(a: Allocator, files: compose.Files, root: []const u8) ![]const Repo {
+    const conf = try readUnder(a, files, root, "/etc/pacman.conf") orelse return &.{
+        .{ .name = "core", .servers = &.{} },
+        .{ .name = "extra", .servers = &.{} },
+    };
     var out: std.ArrayList(Repo) = .empty;
     var servers: std.ArrayList([]const u8) = .empty;
     var current: ?[]const u8 = null;
@@ -48,12 +51,19 @@ pub fn repos(a: Allocator, conf: []const u8, ctx: *anyopaque, read: ReadFn) ![]c
         if (std.mem.eql(u8, key, "Server")) {
             try servers.append(a, value);
         } else if (std.mem.eql(u8, key, "Include")) {
-            const text = try read(ctx, a, value) orelse continue;
+            const text = try readUnder(a, files, root, value) orelse continue;
             try mirrorlist(a, text, &servers);
         }
     }
     if (current) |name| try out.append(a, .{ .name = name, .servers = try servers.toOwnedSlice(a) });
     return out.items;
+}
+
+fn readUnder(a: Allocator, files: compose.Files, root: []const u8, path: []const u8) !?[]const u8 {
+    return files.read(a, try std.fs.path.join(a, &.{ root, path })) catch |e| switch (e) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => null,
+    };
 }
 
 /// the `Server =` lines of a mirrorlist file.
@@ -76,8 +86,8 @@ pub fn dbUrl(a: Allocator, server: []const u8, repo: []const u8) ![]const u8 {
     return std.fmt.allocPrint(a, "{s}/{s}.db", .{ std.mem.trimEnd(u8, with_arch, "/"), repo });
 }
 
-/// downloads a url. returns null, after saying why in `diags`, if the
-/// server can't be reached or doesn't have it.
+/// downloads a url. returns null if the server can't be reached or doesn't
+/// have it.
 pub const Fetcher = struct {
     ctx: *anyopaque,
     fetchFn: *const fn (ctx: *anyopaque, a: Allocator, url: []const u8) error{OutOfMemory}!?[]const u8,
@@ -168,23 +178,13 @@ fn writeFailed(diags: *diag.List, path: []const u8) !?[]const alpm.SyncDb {
 
 const testing = std.testing;
 
-const FakeFiles = struct {
-    files: []const struct { []const u8, []const u8 },
-
-    fn read(ctx: *anyopaque, a: Allocator, path: []const u8) error{OutOfMemory}!?[]const u8 {
-        const f: *FakeFiles = @ptrCast(@alignCast(ctx));
-        for (f.files) |kv| {
-            if (std.mem.eql(u8, kv[0], path)) return try a.dupe(u8, kv[1]);
-        }
-        return null;
-    }
-};
-
 test "repositories and servers from pacman.conf" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    var fake: FakeFiles = .{ .files = &.{.{ "/etc/pacman.d/mirrorlist", "## worldwide\n#Server = https://off.example/$repo/os/$arch\nServer = https://geo.mirror.pkgbuild.com/$repo/os/$arch\nServer=https://two.example/$repo/os/$arch/\n" }} };
-    const rs = try repos(arena.allocator(),
+    var fs: compose.MemFiles = .{};
+    defer fs.deinit();
+    try fs.put("/root/etc/pacman.d/mirrorlist", "## worldwide\n#Server = https://off.example/$repo/os/$arch\nServer = https://geo.mirror.pkgbuild.com/$repo/os/$arch\nServer=https://two.example/$repo/os/$arch/\n");
+    try fs.put("/root/etc/pacman.conf",
         \\[options]
         \\HoldPkg = pacman glibc
         \\Architecture = auto
@@ -202,7 +202,8 @@ test "repositories and servers from pacman.conf" {
         \\SigLevel = Optional TrustAll
         \\Server = https://pkgs.omarchy.org/$arch
         \\
-    , &fake, FakeFiles.read);
+    );
+    const rs = try repos(arena.allocator(), fs.files(), "/root");
     try testing.expectEqual(3, rs.len);
     try testing.expectEqualStrings("core", rs[0].name);
     try testing.expectEqual(2, rs[0].servers.len);
@@ -212,6 +213,11 @@ test "repositories and servers from pacman.conf" {
     const a = arena.allocator();
     try testing.expectEqualStrings("https://two.example/extra/os/" ++ arch ++ "/extra.db", try dbUrl(a, rs[1].servers[1], "extra"));
     try testing.expectEqualStrings("https://pkgs.omarchy.org/" ++ arch ++ "/omarchy.db", try dbUrl(a, rs[2].servers[0], "omarchy"));
+
+    // no pacman.conf: core and extra, from the fallback server.
+    const bare = try repos(a, fs.files(), "/elsewhere");
+    try testing.expectEqualStrings("extra", bare[1].name);
+    try testing.expectEqual(0, bare[1].servers.len);
 }
 
 const FakeFetcher = struct {

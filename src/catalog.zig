@@ -86,14 +86,16 @@ pub fn audioPackages(audio: anytype) []const []const u8 {
 
 pub const default_kernel = "linux";
 
+/// arch's kernel packages.
+pub const kernels = [_][]const u8{ "linux", "linux-lts", "linux-zen", "linux-hardened" };
+
 /// why changing this package needs a reboot, or null if it can apply live.
 /// these are the packages the running system can't swap out safely.
 pub fn rebootReason(pkg: []const u8) ?[]const u8 {
+    for (kernels) |k| {
+        if (std.mem.eql(u8, k, pkg)) return "kernel";
+    }
     const exact = [_]struct { []const u8, []const u8 }{
-        .{ "linux", "kernel" },
-        .{ "linux-lts", "kernel" },
-        .{ "linux-zen", "kernel" },
-        .{ "linux-hardened", "kernel" },
         .{ "amd-ucode", "microcode" },
         .{ "intel-ucode", "microcode" },
         .{ "linux-firmware", "firmware" },

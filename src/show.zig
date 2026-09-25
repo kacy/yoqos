@@ -116,11 +116,16 @@ fn isEmpty(comptime T: type, v: *const T) bool {
     return true;
 }
 
-/// the config as one json value. every setting is an object with `value`,
-/// `file`, `line`, and `column`; sets are lists of those.
-pub fn writeJson(s: *std.json.Stringify, c: *const Config) !void {
-    try jsonValue(s, c.*);
-}
+/// the config as one json value, for embedding in a json document. every
+/// setting is an object with `value`, `file`, `line`, and `column`; sets
+/// are lists of those.
+pub const Json = struct {
+    config: *const Config,
+
+    pub fn jsonStringify(j: Json, s: *std.json.Stringify) !void {
+        try jsonValue(s, j.config.*);
+    }
+};
 
 fn jsonSrc(s: *std.json.Stringify, src: Src) !void {
     try s.objectField("file");
@@ -270,8 +275,7 @@ test "json carries values and sources" {
 
     var out: Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
-    var s: std.json.Stringify = .{ .writer = &out.writer };
-    try writeJson(&s, &loaded.config);
+    try std.json.Stringify.value(Json{ .config = &loaded.config }, .{}, &out.writer);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, out.written(), .{});
     defer parsed.deinit();

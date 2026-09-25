@@ -8,7 +8,8 @@ const alpm = @import("../alpm.zig");
 const compose = @import("../compose.zig");
 const generate = @import("../generate.zig");
 const sync = @import("../sync.zig");
-const update = @import("update.zig");
+const locking = @import("lock.zig");
+const output = @import("../output.zig");
 const Context = cli.Context;
 
 pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
@@ -22,10 +23,10 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         return 1;
     } else |e| if (e == error.OutOfMemory) return error.OutOfMemory;
 
-    const f = try cli.facts(&w) orelse return 1;
-    if (w.failed()) return w.report();
+    const f = try cli.facts(&w) orelse return w.fail();
+    if (w.failed()) return w.fail();
 
-    const date = try update.today(ctx.io, a);
+    const date = try locking.today(ctx.io, a);
     const c = try generate.fromFacts(a, &f);
     const imported = try generate.importedPackages(a, &c, &f);
     const dir = std.fs.path.dirnamePosix(top) orelse ".";
@@ -39,7 +40,7 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     }
 
     // the generated config has to load cleanly, or it's a bug here.
-    const loaded = try w.config() orelse return w.report();
+    const loaded = try w.config() orelse return w.fail();
 
     var enabled: usize = 0;
     for (f.units) |u| enabled += @intFromBool(u.enabled);
@@ -52,10 +53,17 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
     const locked = try lockNew(ctx, &w, loaded, date);
     try cli.record(ctx, a, top, try std.fmt.allocPrint(a, "init: {s} as found on {s}", .{ f.hostname orelse "this machine", date }));
-    if (!ctx.json) {
-        if (locked) |path| try ctx.out.print("wrote {s}\n", .{path});
-        try ctx.out.writeAll("\nnothing on this machine changed. next: os plan\n");
+    if (ctx.json) {
+        try output.writeDoc(ctx.out, "yoq.init/1", .{
+            .config = top,
+            .imported = imported_path,
+            .imported_packages = imported.len,
+            .lock = locked,
+        });
+        return 0;
     }
+    if (locked) |path| try ctx.out.print("wrote {s}\n", .{path});
+    try ctx.out.writeAll("\nnothing on this machine changed. next: os plan\n");
     return 0;
 }
 
@@ -68,15 +76,15 @@ fn lockNew(ctx: *Context, w: *cli.Work, loaded: *const compose.Loaded, date: []c
         return null;
     }
     const top = loaded.files.items[0];
-    const dbs = try sync.databases(a, ctx.io, ctx.fetcher, try update.repos(ctx, a), try update.cacheDir(ctx, a), date, &w.diags) orelse return reportLater(ctx, w);
-    const l = try update.resolveLock(ctx, w, &loaded.config, top, dbs, date) orelse return reportLater(ctx, w);
-    return update.writeLock(ctx, a, top, &l);
+    const dbs = try sync.databases(a, ctx.io, ctx.fetcher, try locking.repos(ctx, a), try locking.cacheDir(ctx, a), date, &w.diags) orelse return reportLater(ctx, w);
+    const l = try locking.resolveLock(ctx, w, &loaded.config, top, dbs, date) orelse return reportLater(ctx, w);
+    return locking.writeLock(ctx, a, top, &l);
 }
 
 /// the lock is a separate step; its problems are worth showing, but the
 /// config is written and init still worked.
 fn reportLater(ctx: *Context, w: *cli.Work) !?[]const u8 {
-    _ = try w.report();
+    _ = try w.fail();
     w.diags.items.clearRetainingCapacity();
     if (!ctx.json) try ctx.out.writeAll("no machine.lock yet: fix the above, then `os update`.\n");
     return null;
@@ -100,7 +108,7 @@ test "init writes a config that loads, and refuses to overwrite one" {
         \\ "packages":[{"name":"base","version":"3"},{"name":"linux","version":"6"},{"name":"intel-ucode","version":"1"},
         \\             {"name":"git","version":"2"},{"name":"glibc","version":"2","reason":"dependency"}],
         \\ "units":[{"name":"sshd.service","enabled":true,"active":true}],
-        \\ "users":[{"name":"kacy","uid":1000,"shell":"/bin/bash","groups":["kacy","wheel"]}]}
+        \\ "users":[{"name":"kacy","uid":1000,"shell":"/bin/bash","primary_group":"kacy","groups":["wheel"]}]}
     );
     try t.exec(&.{ "--facts", "f.json", "init" });
     // with libalpm, init also tries to lock, and this test is offline.

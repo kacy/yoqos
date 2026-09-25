@@ -2,8 +2,9 @@
 //! where it happened, and usually a hint. `os explain <code>` prints the long
 //! form from `table`.
 //!
-//! codes are grouped by area: E00xx toml, E01xx config, E02xx services and
-//! packages. once a code ships it keeps its number and meaning.
+//! codes are grouped by area: E000x toml, E010x-E011x config and includes,
+//! E012x the lock and the package and service backends, E02xx services.
+//! once a code ships it keeps its number and meaning.
 
 const std = @import("std");
 const output = @import("output.zig");

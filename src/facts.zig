@@ -3,7 +3,6 @@
 //! `time`, so the same facts always give the same plan.
 
 const std = @import("std");
-const output = @import("output.zig");
 const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 
@@ -30,10 +29,16 @@ pub const User = struct {
     name: []const u8,
     uid: u32,
     shell: ?[]const u8 = null,
+    /// the group from the user's own passwd entry.
+    primary_group: ?[]const u8 = null,
+    /// the other groups the user is a member of, by name.
     groups: []const []const u8 = &.{},
 };
 
 pub const Facts = struct {
+    /// the document's schema tag, first in the json like every document os
+    /// writes.
+    schema: []const u8 = schema,
     /// unix seconds when the facts were read.
     time: i64 = 0,
     hostname: ?[]const u8 = null,
@@ -72,44 +77,24 @@ pub const Facts = struct {
 };
 
 pub fn write(w: *std.Io.Writer, f: *const Facts) !void {
-    try output.writeDoc(w, schema, f.*);
+    try std.json.Stringify.value(f.*, .{ .whitespace = .indent_2 }, w);
+    try w.writeByte('\n');
 }
 
 pub const ParseError = error{ BadFacts, OutOfMemory };
 
-const Doc = struct {
-    schema: []const u8,
-    time: i64 = 0,
-    hostname: ?[]const u8 = null,
-    timezone: ?[]const u8 = null,
-    locale: ?[]const u8 = null,
-    keymap: ?[]const u8 = null,
-    cpu: ?[]const u8 = null,
-    gpus: []const []const u8 = &.{},
-    packages: []Package = &.{},
-    units: []Unit = &.{},
-    users: []User = &.{},
-};
-
 /// reads a facts document. everything is allocated in `a`, which should be
 /// an arena. the result is normalized.
 pub fn parse(a: Allocator, bytes: []const u8) ParseError!Facts {
-    const doc = std.json.parseFromSliceLeaky(Doc, a, bytes, .{ .allocate = .alloc_always }) catch |e| switch (e) {
+    // the tag has to be there, not just defaulted, so check it on its own.
+    const tag = std.json.parseFromSliceLeaky(struct { schema: []const u8 }, a, bytes, .{ .ignore_unknown_fields = true }) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.BadFacts,
     };
-    if (!std.mem.eql(u8, doc.schema, schema)) return error.BadFacts;
-    var f: Facts = .{
-        .time = doc.time,
-        .hostname = doc.hostname,
-        .timezone = doc.timezone,
-        .locale = doc.locale,
-        .keymap = doc.keymap,
-        .cpu = doc.cpu,
-        .gpus = doc.gpus,
-        .packages = doc.packages,
-        .units = doc.units,
-        .users = doc.users,
+    if (!std.mem.eql(u8, tag.schema, schema)) return error.BadFacts;
+    var f = std.json.parseFromSliceLeaky(Facts, a, bytes, .{ .allocate = .alloc_always }) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.BadFacts,
     };
     f.normalize();
     return f;

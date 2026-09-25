@@ -15,7 +15,7 @@ const Allocator = std.mem.Allocator;
 pub const available = build_options.alpm;
 const impl = if (available) @import("alpm_c.zig") else struct {};
 
-pub const Error = error{ AlpmUnavailable, AlpmFailed, OutOfMemory };
+pub const Error = error{ AlpmUnavailable, OutOfMemory };
 
 pub const SyncDb = struct {
     /// the repository name, like "core".
@@ -30,9 +30,6 @@ pub const ResolveInput = struct {
     /// choices for virtual packages, from `[providers]` in the config.
     providers: []const lock.Provider = &.{},
     sync_date: []const u8,
-    /// the archlinux-keyring version to record. empty means look it up in
-    /// the sync databases.
-    keyring: []const u8 = "",
     /// an empty directory libalpm can use as a scratch root.
     scratch: []const u8,
 };
@@ -103,7 +100,6 @@ const Fixture = struct {
             .wants = wants,
             .providers = providers,
             .sync_date = "2026-09-25",
-            .keyring = "20260901-1",
             .scratch = t.scratch,
         }, &t.diags);
     }

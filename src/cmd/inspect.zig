@@ -1,12 +1,12 @@
-//! commands that read and report: `config show`, `facts`, `plan`, and `why`.
-//! none of them change anything.
+//! commands that read and report: `config show`, `facts`, `status`, `plan`,
+//! and `why`. none of them change anything.
 
 const std = @import("std");
 const cli = @import("../cli.zig");
 const facts = @import("../facts.zig");
-const pipeline = @import("../pipeline.zig");
 const planner = @import("../planner.zig");
 const show = @import("../show.zig");
+const output = @import("../output.zig");
 const why = @import("../why.zig");
 const status = @import("../status.zig");
 const Context = cli.Context;
@@ -24,19 +24,10 @@ pub fn configCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
     var w: cli.Work = .init(ctx);
     defer w.deinit();
-    const loaded = try w.config() orelse return w.report();
+    const loaded = try w.config() orelse return w.fail();
 
     if (ctx.json) {
-        var s: std.json.Stringify = .{ .writer = ctx.out, .options = .{ .whitespace = .indent_2 } };
-        try s.beginObject();
-        try s.objectField("schema");
-        try s.write("yoq.config/1");
-        try s.objectField("files");
-        try s.write(loaded.files.items);
-        try s.objectField("config");
-        try show.writeJson(&s, &loaded.config);
-        try s.endObject();
-        try ctx.out.writeByte('\n');
+        try output.writeDoc(ctx.out, "yoq.config/1", .{ .files = loaded.files.items, .config = show.Json{ .config = &loaded.config } });
         return 0;
     }
     try show.writeToml(ctx.out, &loaded.config, sources);
@@ -47,8 +38,8 @@ pub fn factsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (try cli.noArgs(ctx, args, "os facts")) |code| return code;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
-    const f = try cli.facts(&w) orelse return 1;
-    if (w.failed()) return w.report();
+    const f = try cli.facts(&w) orelse return w.fail();
+    if (w.failed()) return w.fail();
 
     if (ctx.json) {
         try facts.write(ctx.out, &f);
@@ -80,9 +71,7 @@ pub fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
     var w: cli.Work = .init(ctx);
     defer w.deinit();
-    const built = pipeline.buildPlan(ctx.gpa, ctx.io, ctx.files, in, &w.diags) catch |e| return cli.factsError(ctx, e, in.facts_path);
-    var result = built orelse return w.report();
-    defer result.deinit();
+    const result = try w.plan(in) orelse return w.fail();
 
     if (ctx.json) {
         try planner.writeJson(ctx.out, result.allocator(), &result.plan);
@@ -97,9 +86,7 @@ pub fn statusCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const in = cli.inputs(ctx);
     var w: cli.Work = .init(ctx);
     defer w.deinit();
-    const built = pipeline.buildPlan(ctx.gpa, ctx.io, ctx.files, in, &w.diags) catch |e| return cli.factsError(ctx, e, in.facts_path);
-    var result = built orelse return w.report();
-    defer result.deinit();
+    const result = try w.plan(in) orelse return w.fail();
 
     const s = try status.summarize(result.allocator(), result.state.config(), &result.state.lock, &result.facts, &result.plan);
     if (ctx.json) try status.writeJson(ctx.out, &s) else try status.writeText(ctx.out, &s);
@@ -107,10 +94,10 @@ pub fn statusCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 pub fn whyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (args.len != 1 or args[0][0] == '-') return cli.usageError(ctx, "os why <package>");
+    if (args.len != 1 or args[0].len == 0 or args[0][0] == '-') return cli.usageError(ctx, "os why <package>");
     var w: cli.Work = .init(ctx);
     defer w.deinit();
-    const state = try w.state() orelse return w.report();
+    const state = try w.state() orelse return w.fail();
 
     const ans = try why.explain(w.allocator(), state.config(), &state.lock, args[0]);
     if (ctx.json) try why.writeJson(ctx.out, &ans) else try why.writeText(ctx.out, &ans);
@@ -175,7 +162,7 @@ test "config show --json" {
     try std.testing.expectEqualStrings("atlas", obj.get("config").?.object.get("system").?.object.get("hostname").?.object.get("value").?.string);
 }
 
-test "facts --from reads a fixture" {
+test "facts reads a fixture" {
     var t: TestRun = .{};
     defer t.deinit();
     try t.fs.put("f.json",

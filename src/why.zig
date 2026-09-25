@@ -91,11 +91,15 @@ pub fn writeText(w: *std.Io.Writer, ans: *const Answer) !void {
     } else {
         try w.writeAll("  (the default)\n");
     }
-    if (ans.needed_by.len > 1) {
-        try w.print("also needed by {d} more: ", .{ans.needed_by.len - 1});
+    // the chain already names the package's parent, so list the others.
+    const parent: ?[]const u8 = if (ans.chain.len > 1) ans.chain[ans.chain.len - 2] else null;
+    var others: usize = 0;
+    for (ans.needed_by) |n| others += @intFromBool(parent == null or !std.mem.eql(u8, n, parent.?));
+    if (others > 0) {
+        try w.print("also needed by {d} more: ", .{others});
         var first = true;
         for (ans.needed_by) |n| {
-            if (ans.chain.len > 1 and std.mem.eql(u8, n, ans.chain[ans.chain.len - 2])) continue;
+            if (parent != null and std.mem.eql(u8, n, parent.?)) continue;
             if (!first) try w.writeAll(", ");
             first = false;
             try w.writeAll(n);
@@ -125,8 +129,10 @@ pub fn writeJson(w: *std.Io.Writer, ans: *const Answer) !void {
 
 const testing = std.testing;
 
+const helpers = @import("test_helpers.zig");
+
 fn lockPkg(name: []const u8, depends: []const []const u8) lock.Package {
-    return .{ .name = name, .version = "1", .repo = "core", .sha256 = "a" ** 64, .depends = depends };
+    return helpers.lockPackage(name, "1", depends);
 }
 
 const test_lock: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{
@@ -144,13 +150,8 @@ fn run(src: []const u8, name: []const u8) ![]const u8 {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var diags: @import("diag.zig").List = .init(testing.allocator);
-    defer diags.deinit();
-    var info: @import("toml.zig").ErrorInfo = .{};
-    var doc = try @import("toml.zig").parse(testing.allocator, src, &info);
-    defer doc.deinit();
-    const part = try config.decode(a, "machine.toml", doc.root, &diags);
-    const ans = try explain(a, &part.config, &test_lock, name);
+    const c = try helpers.configFrom(a, src);
+    const ans = try explain(a, &c, &test_lock, name);
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     try writeText(&out.writer, &ans);
     return out.toOwnedSlice();
@@ -193,4 +194,12 @@ test "shared dependencies list their other dependents" {
 test "nothing needs it" {
     try expectWhy(cfg, "nano", "nano: nothing in the config needs it\n");
     try expectWhy("packages = [\"git\"]\n", "openssh", "openssh: nothing in the config needs it\n");
+}
+
+test "a directly wanted package lists every dependent" {
+    try expectWhy("packages = [\"openssl\", \"curl\"]\n", "openssl",
+        \\openssl: in packages  (machine.toml:1)
+        \\also needed by 1 more: curl
+        \\
+    );
 }

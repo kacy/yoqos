@@ -9,10 +9,7 @@ const facts = @import("facts.zig");
 const catalog = @import("catalog.zig");
 const planner = @import("planner.zig");
 const show = @import("show.zig");
-const toml = @import("toml.zig");
 const Allocator = std.mem.Allocator;
-
-const kernels = [_][]const u8{ "linux", "linux-lts", "linux-zen", "linux-hardened" };
 
 /// the config for what `f` describes, without its packages.
 pub fn fromFacts(a: Allocator, f: *const facts.Facts) !config.Config {
@@ -21,7 +18,7 @@ pub fn fromFacts(a: Allocator, f: *const facts.Facts) !config.Config {
     inline for (comptime config.keysOf(config.System)) |field| {
         if (@field(f, field)) |v| @field(c.system, field) = .{ .v = v, .src = at };
     }
-    for (kernels) |k| {
+    for (catalog.kernels) |k| {
         const p = f.package(k) orelse continue;
         if (p.reason != .explicit) continue;
         if (!std.mem.eql(u8, k, catalog.default_kernel)) c.boot.kernel = .{ .v = k, .src = at };
@@ -43,9 +40,7 @@ pub fn fromFacts(a: Allocator, f: *const facts.Facts) !config.Config {
     for (f.users) |u| {
         var user: config.User = .{ .src = at };
         if (u.shell) |sh| user.shell = .{ .v = std.fs.path.basename(sh), .src = at };
-        for (u.groups) |g| {
-            if (!std.mem.eql(u8, g, u.name)) try user.groups.add(a, .{ .name = g, .src = at });
-        }
+        for (u.groups) |g| try user.groups.add(a, .{ .name = g, .src = at });
         try c.users.entries.append(a, .{ .name = u.name, .value = user });
     }
     for (catalog.services) |s| {
@@ -88,15 +83,11 @@ pub fn importedToml(a: Allocator, packages: []const []const u8, date: []const u8
         \\# packages that were installed on purpose when `os init` ran on {s}.
         \\# their dependencies aren't listed; the lock records those. anything
         \\# deleted from here gets removed by the next apply.
-        \\packages = [
         \\
     , .{date}) catch return error.OutOfMemory;
-    for (packages) |p| {
-        w.writeAll("  ") catch return error.OutOfMemory;
-        toml.writeString(w, p) catch return error.OutOfMemory;
-        w.writeAll(",\n") catch return error.OutOfMemory;
-    }
-    w.writeAll("]\n") catch return error.OutOfMemory;
+    var c: config.Config = .{};
+    for (packages) |p| try c.packages.add(a, .{ .name = p, .src = .{ .file = "imported.toml", .line = 0, .column = 0 } });
+    show.writeToml(w, &c, false) catch return error.OutOfMemory;
     return out.written();
 }
 
@@ -120,7 +111,7 @@ test "a config from facts" {
         .{ .name = "sshd.service", .enabled = true, .active = true },
         .{ .name = "bluetooth.service", .enabled = false },
     };
-    var users = [_]facts.User{.{ .name = "kacy", .uid = 1000, .shell = "/usr/bin/zsh", .groups = &.{ "kacy", "video", "wheel" } }};
+    var users = [_]facts.User{.{ .name = "kacy", .uid = 1000, .shell = "/usr/bin/zsh", .primary_group = "kacy", .groups = &.{ "video", "wheel" } }};
     const f: facts.Facts = .{
         .hostname = "atlas",
         .timezone = "America/New_York",

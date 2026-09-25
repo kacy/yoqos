@@ -148,7 +148,7 @@ pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Er
 
     var l: lock.Lock = .{
         .sync_date = in.sync_date,
-        .keyring = if (in.keyring.len > 0) in.keyring else try keyringVersion(a, h),
+        .keyring = try keyringVersion(a, h),
         .providers = questions.chosen.items,
         .packages = try lockPackages(a, c.alpm_trans_get_add(h.h)),
     };
@@ -170,17 +170,23 @@ const Scratch = struct {
         };
         const sync_dir = try std.fs.path.join(a, &.{ s.dbpath, "sync" });
         const local_dir = try std.fs.path.join(a, &.{ s.dbpath, "local" });
-        for ([_][]const u8{ s.root, sync_dir, local_dir }) |d| cwd.createDirPath(io, d) catch return error.AlpmFailed;
-        cwd.writeFile(io, .{ .sub_path = try std.fs.path.join(a, &.{ local_dir, "ALPM_DB_VERSION" }), .data = "9\n" }) catch return error.AlpmFailed;
+        for ([_][]const u8{ s.root, sync_dir, local_dir }) |d| cwd.createDirPath(io, d) catch return scratchFailed(diags, d);
+        const version = try std.fs.path.join(a, &.{ local_dir, "ALPM_DB_VERSION" });
+        cwd.writeFile(io, .{ .sub_path = version, .data = "9\n" }) catch return scratchFailed(diags, version);
         for (in.dbs) |db| {
             const bytes = cwd.readFileAlloc(io, db.path, a, .limited(256 << 20)) catch {
                 try diags.add(.alpm_failed, null, "can't read the {s} database at {s}", .{ db.name, db.path }, null);
                 return null;
             };
             const dest = try std.fmt.allocPrint(a, "{s}/{s}.db", .{ sync_dir, db.name });
-            cwd.writeFile(io, .{ .sub_path = dest, .data = bytes }) catch return error.AlpmFailed;
+            cwd.writeFile(io, .{ .sub_path = dest, .data = bytes }) catch return scratchFailed(diags, dest);
         }
         return s;
+    }
+
+    fn scratchFailed(diags: *diag.List, path: []const u8) Error!?Scratch {
+        try diags.add(.alpm_failed, null, "can't set up a scratch root for resolving at {s}", .{path}, null);
+        return null;
     }
 };
 

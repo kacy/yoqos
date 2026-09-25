@@ -23,9 +23,6 @@ pub const Context = struct {
     err: *std.Io.Writer,
     /// set by `--json`. commands print one json document instead of text.
     json: bool = false,
-    /// stdout is a terminal and NO_COLOR isn't set. text output may use
-    /// color and progress lines only when this is true.
-    color: bool = false,
     /// set by `--config <path>`.
     config_path: []const u8 = default_config,
     /// set by `--root <dir>`: where the machine's own files are, like
@@ -91,7 +88,7 @@ pub fn eql(a: []const u8, b: []const u8) bool {
 /// code: 0 ok, 1 failed, 2 bad usage.
 pub fn run(ctx: *Context, raw: []const [:0]const u8) !u8 {
     const args = takeGlobalFlags(ctx, raw) catch |e| switch (e) {
-        error.MissingConfigPath => {
+        error.MissingFlagValue => {
             try ctx.err.writeAll("os: --config, --root, and --facts need a path\n");
             return 2;
         },
@@ -127,19 +124,36 @@ fn takeGlobalFlags(ctx: *Context, raw: []const [:0]const u8) ![]const [:0]const 
             break;
         } else if (eql(arg, "--json")) {
             ctx.json = true;
-        } else if (eql(arg, "--config")) {
-            ctx.config_path = it.next() orelse return error.MissingConfigPath;
-        } else if (eql(arg, "--root")) {
-            ctx.root = it.next() orelse return error.MissingConfigPath;
-        } else if (eql(arg, "--facts")) {
-            ctx.facts_path = it.next() orelse return error.MissingConfigPath;
-        } else if (std.mem.startsWith(u8, arg, "--config=")) {
-            ctx.config_path = arg["--config=".len..];
+        } else if (try valueFlag(ctx, arg, &it)) |_| {
+            continue;
         } else {
             try rest.append(ctx.gpa, raw[it.i - 1]);
         }
     }
     return rest.toOwnedSlice(ctx.gpa);
+}
+
+/// the global flags that take a path, as `--flag path` or `--flag=path`.
+const value_flags = .{
+    .{ "--config", "config_path" },
+    .{ "--root", "root" },
+    .{ "--facts", "facts_path" },
+};
+
+/// sets the context field for a global flag with a value. returns null if
+/// `arg` isn't one.
+fn valueFlag(ctx: *Context, arg: []const u8, it: *ArgIter) !?void {
+    inline for (value_flags) |f| {
+        if (eql(arg, f[0])) {
+            @field(ctx, f[1]) = it.next() orelse return error.MissingFlagValue;
+            return {};
+        }
+        if (std.mem.startsWith(u8, arg, f[0] ++ "=")) {
+            @field(ctx, f[1]) = arg[f[0].len + 1 ..];
+            return {};
+        }
+    }
+    return null;
 }
 
 fn usage(w: *std.Io.Writer) !void {
@@ -177,8 +191,8 @@ fn version(ctx: *Context, _: []const [:0]const u8) !u8 {
     return 0;
 }
 
-pub fn usageError(ctx: *Context, comptime text: []const u8) !u8 {
-    try ctx.err.writeAll("usage: " ++ text ++ "\n");
+pub fn usageError(ctx: *Context, text: []const u8) !u8 {
+    try ctx.err.print("usage: {s}\n", .{text});
     return 2;
 }
 
@@ -191,6 +205,7 @@ pub const Work = struct {
     diags: diag.List,
     loaded: ?compose.Loaded = null,
     loaded_state: ?pipeline.State = null,
+    result: ?pipeline.Result = null,
 
     pub fn init(ctx: *Context) Work {
         return .{ .ctx = ctx, .arena = .init(ctx.gpa), .diags = .init(ctx.gpa) };
@@ -199,6 +214,7 @@ pub const Work = struct {
     pub fn deinit(w: *Work) void {
         if (w.loaded) |*l| l.deinit();
         if (w.loaded_state) |*s| s.deinit();
+        if (w.result) |*r| r.deinit();
         w.diags.deinit();
         w.arena.deinit();
     }
@@ -211,10 +227,10 @@ pub const Work = struct {
         return w.diags.items.items.len > 0;
     }
 
-    /// prints the problems found and returns the exit code for a failed
-    /// command.
-    pub fn report(w: *const Work) !u8 {
-        return reportDiags(w.ctx, &w.diags);
+    /// the exit code for a command that couldn't go on: the problems
+    /// found are printed now, or already were.
+    pub fn fail(w: *const Work) !u8 {
+        return if (w.failed()) reportDiags(w.ctx, &w.diags) else 1;
     }
 
     /// the merged config, or null if it has problems.
@@ -227,6 +243,17 @@ pub const Work = struct {
     pub fn state(w: *Work) !?*pipeline.State {
         w.loaded_state = try pipeline.load(w.ctx.gpa, w.ctx.files, w.ctx.config_path, null, &w.diags) orelse return null;
         return &w.loaded_state.?;
+    }
+
+    /// the plan for `in`, with the config, lock, and facts it came from,
+    /// or null if any of them has problems.
+    pub fn plan(w: *Work, in: pipeline.Inputs) !?*pipeline.Result {
+        const built = pipeline.buildPlan(w.ctx.gpa, w.ctx.io, w.ctx.files, in, &w.diags) catch |e| {
+            try factsError(w.ctx, e, in.facts_path);
+            return null;
+        };
+        w.result = built orelse return null;
+        return &w.result.?;
     }
 };
 
@@ -245,29 +272,28 @@ pub fn record(ctx: *Context, a: std.mem.Allocator, top: []const u8, message: []c
 pub fn facts(w: *Work) !?@import("facts.zig").Facts {
     const ctx = w.ctx;
     return pipeline.getFacts(ctx.files, ctx.io, w.allocator(), ctx.facts_path, ctx.root, &w.diags) catch |e| {
-        _ = try factsError(ctx, e, ctx.facts_path);
+        try factsError(ctx, e, ctx.facts_path);
         return null;
     };
 }
 
 /// fails a command that takes no arguments of its own if it got some.
-pub fn noArgs(ctx: *Context, args: []const [:0]const u8, comptime usage_text: []const u8) !?u8 {
+pub fn noArgs(ctx: *Context, args: []const [:0]const u8, usage_text: []const u8) !?u8 {
     return if (args.len == 0) null else try usageError(ctx, usage_text);
 }
 
-/// says why facts couldn't be read. returns the exit code.
-pub fn factsError(ctx: *Context, e: pipeline.Error, path: ?[]const u8) !u8 {
+/// says why facts couldn't be read.
+fn factsError(ctx: *Context, e: pipeline.Error, path: ?[]const u8) !void {
     const from = path orelse "this machine";
     switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.FactsUnreadable => try ctx.err.print("os: can't read facts from {s}\n", .{from}),
         error.BadFacts => try ctx.err.print("os: {s} isn't a facts document (yoq.facts/1)\n", .{from}),
     }
-    return 1;
 }
 
-/// the planner inputs for a command: the config path and machine root from
-/// the global flags.
+/// the planner inputs for a command, from the global flags: the config
+/// path, the machine root, and the facts file if there is one.
 pub fn inputs(ctx: *const Context) pipeline.Inputs {
     return .{ .config_path = ctx.config_path, .root = ctx.root, .facts_path = ctx.facts_path };
 }
@@ -292,7 +318,7 @@ pub fn choose(ctx: *Context, question: []const u8, options: []const []const u8) 
 
 /// prints collected problems to stderr, or as a json document on stdout
 /// with --json. returns the exit code for a failed command.
-pub fn reportDiags(ctx: *Context, diags: *const diag.List) !u8 {
+fn reportDiags(ctx: *Context, diags: *const diag.List) !u8 {
     if (ctx.json) {
         try diags.writeJson(ctx.out);
     } else {
@@ -402,6 +428,7 @@ test {
     _ = inspect;
     _ = edit;
     _ = update;
+    _ = @import("cmd/lock.zig");
 }
 
 test "no args prints usage" {
@@ -489,5 +516,17 @@ test "explain --json" {
 test "--config without a path is a usage error" {
     var t: TestRun = .{};
     try t.exec(&.{ "config", "show", "--config" });
+    try std.testing.expectEqual(2, t.code);
+}
+
+test "global flags take a value either way" {
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.exec(&.{ "--root=/r", "--facts", "f.json", "version", "--config=/c.toml" });
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expectEqualStrings("/r", t.ctx.root);
+    try std.testing.expectEqualStrings("f.json", t.ctx.facts_path.?);
+    try std.testing.expectEqualStrings("/c.toml", t.ctx.config_path);
+    try t.exec(&.{ "version", "--root" });
     try std.testing.expectEqual(2, t.code);
 }

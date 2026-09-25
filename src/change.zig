@@ -50,6 +50,10 @@ pub fn plan(a: Allocator, c: *const config.Config, top: []const u8, text: []cons
     var out = text;
     var notes: std.ArrayList(Note) = .empty;
     for (names) |name| {
+        if ((op == .add or op == .remove) and !config.validPackageName(name)) {
+            try config.badPackageName(diags, name, null);
+            continue;
+        }
         const note: ?Note = switch (op) {
             .add => try add(a, c, &out, name),
             .remove => try remove(a, c, top, &out, name, diags),

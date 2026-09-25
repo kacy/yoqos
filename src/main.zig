@@ -31,7 +31,6 @@ pub fn main(init: std.process.Init) !void {
         .gpa = init.gpa,
         .out = &out.interface,
         .err = &err.interface,
-        .color = (stdout.isTty(init.io) catch false) and init.environ_map.get("NO_COLOR") == null,
     };
     const code = cli.run(&ctx, argv[1..]) catch |e| blk: {
         err.interface.print("os: {s}\n", .{@errorName(e)}) catch {};

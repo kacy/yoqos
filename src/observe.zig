@@ -9,6 +9,7 @@ const facts = @import("facts.zig");
 const alpm = @import("alpm.zig");
 const systemd = @import("systemd.zig");
 const diag = @import("diag.zig");
+const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Options = struct {
@@ -38,7 +39,7 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
         const dbpath = try r.dbpath();
         const pkgs = alpm.localPackages(a, opts.root, dbpath, diags) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
-            error.AlpmUnavailable, error.AlpmFailed => null,
+            error.AlpmUnavailable => null,
         };
         f.packages = pkgs orelse &.{};
     }
@@ -93,7 +94,7 @@ const Reader = struct {
         var names: std.ArrayList([]const u8) = .empty;
         var it = dir.iterate();
         while (it.next(r.io) catch null) |e| try names.append(r.a, try r.a.dupe(u8, e.name));
-        @import("lists.zig").sortStrings(names.items);
+        lists.sortStrings(names.items);
         for (names.items) |n| {
             const class = try r.file(try std.fmt.allocPrint(r.a, "sys/bus/pci/devices/{s}/class", .{n})) orelse continue;
             if (!std.mem.startsWith(u8, std.mem.trim(u8, class, " \n"), "0x03")) continue;
@@ -113,7 +114,7 @@ const Reader = struct {
 };
 
 /// "amd" or "intel" from /proc/cpuinfo's vendor_id, or the raw vendor.
-pub fn cpuVendor(text: []const u8) ?[]const u8 {
+fn cpuVendor(text: []const u8) ?[]const u8 {
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |line| {
         if (!std.mem.startsWith(u8, line, "vendor_id")) continue;
@@ -127,7 +128,7 @@ pub fn cpuVendor(text: []const u8) ?[]const u8 {
 }
 
 /// a pci vendor id as a gpu vendor name.
-pub fn gpuVendor(id: []const u8) ?[]const u8 {
+fn gpuVendor(id: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, id, "0x1002")) return "amd";
     if (std.mem.eql(u8, id, "0x8086")) return "intel";
     if (std.mem.eql(u8, id, "0x10de")) return "nvidia";
@@ -166,8 +167,7 @@ pub fn shellVar(text: []const u8, key: []const u8) ?[]const u8 {
 const first_uid = 1000;
 const last_uid = 60000;
 
-/// users from /etc/passwd with their groups from /etc/group. the primary
-/// group comes first, then the rest by name.
+/// users from /etc/passwd with their groups from /etc/group.
 pub fn users(a: Allocator, passwd: []const u8, group: []const u8) ![]facts.User {
     var out: std.ArrayList(facts.User) = .empty;
     var lines = std.mem.splitScalar(u8, passwd, '\n');
@@ -181,13 +181,17 @@ pub fn users(a: Allocator, passwd: []const u8, group: []const u8) ![]facts.User 
         _ = f.next();
         const shell = f.next() orelse continue;
         if (uid < first_uid or uid > last_uid) continue;
-        try out.append(a, .{ .name = name, .uid = uid, .shell = shell, .groups = try groupsOf(a, name, gid, group) });
+        var u: facts.User = .{ .name = name, .uid = uid, .shell = shell };
+        try groupsOf(a, &u, gid, group);
+        try out.append(a, u);
     }
     return out.items;
 }
 
-fn groupsOf(a: Allocator, user: []const u8, gid: []const u8, group: []const u8) ![]const []const u8 {
-    var primary: ?[]const u8 = null;
+/// fills in the user's primary group, by gid, and the groups that list the
+/// user as a member.
+fn groupsOf(a: Allocator, u: *facts.User, gid: []const u8, group: []const u8) !void {
+    const user = u.name;
     var rest: std.ArrayList([]const u8) = .empty;
     var lines = std.mem.splitScalar(u8, group, '\n');
     while (lines.next()) |line| {
@@ -197,7 +201,7 @@ fn groupsOf(a: Allocator, user: []const u8, gid: []const u8, group: []const u8) 
         const id = f.next() orelse continue;
         const members = f.next() orelse "";
         if (std.mem.eql(u8, id, gid)) {
-            primary = name;
+            u.primary_group = name;
             continue;
         }
         var m = std.mem.splitScalar(u8, std.mem.trim(u8, members, " \r"), ',');
@@ -205,9 +209,8 @@ fn groupsOf(a: Allocator, user: []const u8, gid: []const u8, group: []const u8) 
             if (std.mem.eql(u8, member, user)) try rest.append(a, name);
         }
     }
-    @import("lists.zig").sortStrings(rest.items);
-    if (primary) |p| try rest.insert(a, 0, p);
-    return rest.items;
+    lists.sortStrings(rest.items);
+    u.groups = rest.items;
 }
 
 // -- tests --
@@ -251,11 +254,11 @@ test "users and their groups" {
     try testing.expectEqual(2, us.len);
     try testing.expectEqualStrings("kacy", us[0].name);
     try testing.expectEqualStrings("/usr/bin/zsh", us[0].shell.?);
-    try testing.expectEqual(3, us[0].groups.len);
-    try testing.expectEqualStrings("kacy", us[0].groups[0]);
-    try testing.expectEqualStrings("video", us[0].groups[1]);
-    try testing.expectEqualStrings("wheel", us[0].groups[2]);
-    try testing.expectEqual(2, us[1].groups.len);
+    try testing.expectEqualStrings("kacy", us[0].primary_group.?);
+    try testing.expectEqual(2, us[0].groups.len);
+    try testing.expectEqualStrings("video", us[0].groups[0]);
+    try testing.expectEqualStrings("wheel", us[0].groups[1]);
+    try testing.expectEqual(1, us[1].groups.len);
 }
 
 test "observe a machine laid out in a directory" {
@@ -294,7 +297,7 @@ test "observe a machine laid out in a directory" {
     try testing.expectEqualStrings("Europe/Berlin", f.timezone.?);
     try testing.expectEqualStrings("en_US.UTF-8", f.locale.?);
     try testing.expectEqual(null, f.keymap);
-    try testing.expectEqualStrings("wheel", f.users[0].groups[1]);
+    try testing.expectEqualStrings("wheel", f.users[0].groups[0]);
     try testing.expectEqualStrings("amd", f.cpu.?);
     try testing.expectEqual(2, f.gpus.len);
     try testing.expectEqualStrings("intel", f.gpus[0]);

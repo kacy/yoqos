@@ -1,6 +1,6 @@
-//! reads the planner inputs from disk (or wherever `Files` points). `os
-//! plan`, `os why`, and the golden tests all go through here, so the tests
-//! cover the same path users run.
+//! reads the planner inputs from disk (or wherever `Files` points). the
+//! commands that plan or inspect, and the golden tests, all go through
+//! here, so the tests cover the same path users run.
 
 const std = @import("std");
 const compose = @import("compose.zig");
@@ -40,11 +40,12 @@ pub fn load(gpa: Allocator, files: compose.Files, config_path: []const u8, lock_
     errdefer arena.deinit();
     const a = arena.allocator();
 
-    const path = lock_path orelse try std.fs.path.join(a, &.{ std.fs.path.dirnamePosix(config_path) orelse ".", "machine.lock" });
-    const bytes = files.readFn(files.ctx, a, path) catch |e| switch (e) {
+    const path = lock_path orelse try lock.pathFor(a, config_path);
+    const bytes = files.read(a, path) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => blk: {
-            try diags.add(.lock_stale, null, "{s} can't be read", .{path}, "run `os update` to resolve the config into a lock");
+            const why = if (e == error.FileNotFound) "doesn't exist yet" else "can't be read";
+            try diags.add(.lock_stale, null, "{s} {s}", .{ path, why }, "run `os update` to resolve the config into a lock");
             break :blk null;
         },
     };
@@ -59,8 +60,8 @@ pub fn load(gpa: Allocator, files: compose.Files, config_path: []const u8, lock_
 }
 
 /// reads and parses a facts file into `a`.
-pub fn readFacts(files: compose.Files, a: Allocator, path: []const u8) Error!facts.Facts {
-    const bytes = files.readFn(files.ctx, a, path) catch |e| switch (e) {
+fn readFacts(files: compose.Files, a: Allocator, path: []const u8) Error!facts.Facts {
+    const bytes = files.read(a, path) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.FactsUnreadable,
     };

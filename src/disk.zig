@@ -3,7 +3,7 @@
 const std = @import("std");
 const compose = @import("compose.zig");
 
-pub const max_config_bytes = 1 << 20;
+const max_config_bytes = 1 << 20;
 
 pub const Files = struct {
     io: std.Io,

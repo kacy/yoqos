@@ -13,15 +13,8 @@ const Allocator = std.mem.Allocator;
 
 pub const supported_version = 1;
 
-pub const Src = struct {
-    file: []const u8,
-    line: u32,
-    column: u32,
-
-    pub fn span(s: Src) diag.Span {
-        return .{ .file = s.file, .line = s.line, .column = s.column };
-    }
-};
+/// where a value came from: the file, line, and column.
+pub const Src = diag.Span;
 
 pub fn Val(comptime T: type) type {
     return struct {
@@ -62,12 +55,6 @@ pub const Set = struct {
         const i = s.indexOf(name) orelse return false;
         _ = s.items.orderedRemove(i);
         return true;
-    }
-
-    pub fn names(s: *const Set, a: Allocator) ![]const []const u8 {
-        const out = try a.alloc([]const u8, s.items.items.len);
-        for (s.items.items, out) |it, *n| n.* = it.name;
-        return out;
     }
 };
 
@@ -164,6 +151,21 @@ pub const Service = struct {
     /// for services the catalog doesn't know.
     unit: ?Str = null,
     package: ?Str = null,
+
+    /// a service is on unless the config says otherwise.
+    pub fn isEnabled(s: *const Service) bool {
+        return if (s.enabled) |e| e.v else true;
+    }
+
+    /// the unit, from the config or else the catalog. the service must be
+    /// known; `validate` checks that.
+    pub fn unitFor(s: *const Service, name: []const u8) []const u8 {
+        return if (s.unit) |u| u.v else catalog.service(name).?.unit;
+    }
+
+    pub fn packageFor(s: *const Service, name: []const u8) []const u8 {
+        return if (s.package) |p| p.v else catalog.service(name).?.package;
+    }
 };
 
 pub const State = struct {
@@ -221,7 +223,7 @@ pub fn decode(a: Allocator, file: []const u8, root: *const toml.Table, diags: *d
     }
     if (part.config.version) |v| {
         if (v.v != supported_version) {
-            try diags.add(.bad_value, v.src.span(), "config version {d} isn't supported", .{v.v}, "this os reads version 1");
+            try diags.add(.bad_value, v.src, "config version {d} isn't supported", .{v.v}, "this os reads version 1");
         }
     }
     return part;
@@ -303,7 +305,7 @@ const Decoder = struct {
             .pointer => if (e.value.data == .string) return .{ .v = try d.a.dupe(u8, e.value.data.string), .src = at },
             .@"enum" => if (e.value.data == .string) {
                 if (std.meta.stringToEnum(X, e.value.data.string)) |v| return .{ .v = v, .src = at };
-                try d.diags.addHint(.bad_value, at.span(), "{s}{s} can't be \"{s}\"", .{ prefix, e.key, e.value.data.string }, "use one of {s}", .{comptime quotedList(X)});
+                try d.diags.addHint(.bad_value, at, "{s}{s} can't be \"{s}\"", .{ prefix, e.key, e.value.data.string }, "use one of {s}", .{comptime quotedList(X)});
                 return null;
             },
             else => @compileError("no decoder for " ++ @typeName(X)),
@@ -318,7 +320,7 @@ const Decoder = struct {
     }
 
     fn unknownKey(d: *Decoder, e: *const toml.Entry, prefix: []const u8, known: []const []const u8) !void {
-        const at = d.src(e.key_span).span();
+        const at = d.src(e.key_span);
         if (diag.suggest(e.key, known)) |s| {
             try d.diags.addHint(.unknown_key, at, "unknown key \"{s}{s}\"", .{ prefix, e.key }, "did you mean \"{s}\"?", .{s});
         } else {
@@ -327,7 +329,7 @@ const Decoder = struct {
     }
 
     fn wrongType(d: *Decoder, e: *const toml.Entry, prefix: []const u8, want: []const u8, got: toml.Value) !void {
-        try d.diags.add(.wrong_type, d.src(got.span).span(), "{s}{s} should be {s}, not {s}", .{ prefix, e.key, want, got.typeName() }, null);
+        try d.diags.add(.wrong_type, d.src(got.span), "{s}{s} should be {s}, not {s}", .{ prefix, e.key, want, got.typeName() }, null);
     }
 
     fn table(d: *Decoder, e: *const toml.Entry, prefix: []const u8) !?*const toml.Table {
@@ -341,7 +343,7 @@ const Decoder = struct {
         if (e.value.data != .array) return d.wrongType(e, prefix, "a list of strings", e.value);
         for (e.value.data.array.items.items) |item| {
             if (item.data != .string) {
-                try d.diags.add(.wrong_type, d.src(item.span).span(), "{s}{s} should only hold strings, not {s}", .{ prefix, e.key, item.typeName() }, null);
+                try d.diags.add(.wrong_type, d.src(item.span), "{s}{s} should only hold strings, not {s}", .{ prefix, e.key, item.typeName() }, null);
                 continue;
             }
             try f(ctx, d.a, try d.a.dupe(u8, item.data.string), d.src(item.span));
@@ -376,17 +378,22 @@ fn quotedList(comptime E: type) []const u8 {
 /// checks a merged config for problems that need the whole picture, like a
 /// service no file explains.
 pub fn validate(c: *const Config, diags: *diag.List) !void {
+    for ([_]*const Set{ &c.packages, &c.aur }) |set| {
+        for (set.items.items) |it| {
+            if (!validPackageName(it.name)) try badPackageName(diags, it.name, it.src);
+        }
+    }
     for (c.services.entries.items) |e| {
-        if (!knownService(c, e.name)) try unknownService(diags, e.name, e.value.src.span());
+        if (!knownService(c, e.name)) try unknownService(diags, e.name, e.value.src);
     }
     if (c.system.hostname) |h| {
         if (!validHostname(h.v)) {
-            try diags.add(.bad_value, h.src.span(), "\"{s}\" isn't a valid hostname", .{h.v}, "use letters, digits, and dashes, up to 63 characters");
+            try diags.add(.bad_value, h.src, "\"{s}\" isn't a valid hostname", .{h.v}, "use letters, digits, and dashes, up to 63 characters");
         }
     }
     for (c.users.entries.items) |u| {
         if (!validUserName(u.name)) {
-            try diags.add(.bad_value, u.value.src.span(), "\"{s}\" isn't a valid user name", .{u.name}, "start with a lowercase letter or _, then lowercase letters, digits, _ or -, up to 32 characters");
+            try diags.add(.bad_value, u.value.src, "\"{s}\" isn't a valid user name", .{u.name}, "start with a lowercase letter or _, then lowercase letters, digits, _ or -, up to 32 characters");
         }
     }
 }
@@ -406,6 +413,19 @@ pub fn unknownService(diags: *diag.List, name: []const u8, at: ?diag.Span) !void
     } else {
         try diags.add(.unknown_service, at, "unknown service \"{s}\"", .{name}, "set its unit and package in [services.<name>]");
     }
+}
+
+/// pacman's rule: letters, digits, and @._+-, not starting with - or .
+pub fn validPackageName(n: []const u8) bool {
+    if (n.len == 0 or n[0] == '-' or n[0] == '.') return false;
+    for (n) |ch| {
+        if (!std.ascii.isAlphanumeric(ch) and std.mem.indexOfScalar(u8, "@._+-", ch) == null) return false;
+    }
+    return true;
+}
+
+pub fn badPackageName(diags: *diag.List, name: []const u8, at: ?diag.Span) !void {
+    try diags.add(.bad_value, at, "\"{s}\" isn't a valid package name", .{name}, "use letters, digits, and @._+-, not starting with - or .");
 }
 
 fn validHostname(h: []const u8) bool {
@@ -588,4 +608,13 @@ test "validate catches unknown services and bad names" {
     try f.expectDiag(1, .unknown_service, 8, "unknown service \"mystery\"");
     try f.expectDiag(2, .bad_value, 2, "\"-atlas\" isn't a valid hostname");
     try f.expectDiag(3, .bad_value, 3, "\"Kacy\" isn't a valid user name");
+}
+
+test "package names follow pacman's rules" {
+    try testing.expect(validPackageName("lib32-nvidia-utils"));
+    try testing.expect(validPackageName("gtk+3"));
+    try testing.expect(validPackageName("python3.12"));
+    try testing.expect(!validPackageName(""));
+    try testing.expect(!validPackageName("-rf"));
+    try testing.expect(!validPackageName("has space"));
 }

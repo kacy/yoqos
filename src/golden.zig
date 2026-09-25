@@ -1,7 +1,7 @@
 //! golden tests. each directory in tests/golden holds a machine.toml (and
 //! any files it includes), a machine.lock, and a facts.json. the test builds
-//! the plan and compares it with plan.txt and plan.json, or with errors.txt
-//! when the inputs are meant to fail.
+//! the plan and the status and compares them with plan.txt, plan.json, and
+//! status.txt, or with errors.txt when the inputs are meant to fail.
 //!
 //! `zig build test -Dupdate-golden` rewrites the expected files instead of
 //! comparing, for when a change to the output is intended.

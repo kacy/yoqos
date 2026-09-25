@@ -102,6 +102,11 @@ pub fn normalize(a: Allocator, l: *Lock) !void {
     l.providers = provs;
 }
 
+/// machine.lock sits next to the top config file.
+pub fn pathFor(a: Allocator, config_path: []const u8) ![]const u8 {
+    return std.fs.path.join(a, &.{ std.fs.path.dirnamePosix(config_path) orelse ".", "machine.lock" });
+}
+
 /// how two locks differ, by package name. every list is sorted.
 pub const Diff = struct {
     added: []const []const u8,

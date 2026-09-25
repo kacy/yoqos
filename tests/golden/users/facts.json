@@ -72,19 +72,18 @@
       "name": "bob",
       "uid": 1002,
       "shell": "/usr/bin/fish",
-      "groups": [
-        "bob"
-      ]
+      "groups": [],
+      "primary_group": "bob"
     },
     {
       "name": "kacy",
       "uid": 1000,
       "shell": "/usr/bin/bash",
       "groups": [
-        "kacy",
         "docker",
         "wheel"
-      ]
+      ],
+      "primary_group": "kacy"
     }
   ]
 }

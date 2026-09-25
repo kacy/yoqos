@@ -106,10 +106,8 @@ pub fn wants(a: Allocator, c: *const config.Config) ![]const Want {
     if (c.desktop.session) |v| for (catalog.sessionPackages(v.v)) |n| try addWant(a, &out, n, "desktop.session", v.src);
     if (c.desktop.audio) |v| for (catalog.audioPackages(v.v)) |n| try addWant(a, &out, n, "desktop.audio", v.src);
     for (c.services.entries.items) |e| {
-        const enabled = if (e.value.enabled) |en| en.v else true;
-        if (!enabled) continue;
-        const pkg = if (e.value.package) |p| p.v else catalog.service(e.name).?.package;
-        try addWant(a, &out, pkg, try std.fmt.allocPrint(a, "services.{s}", .{e.name}), e.value.src);
+        if (!e.value.isEnabled()) continue;
+        try addWant(a, &out, e.value.packageFor(e.name), try std.fmt.allocPrint(a, "services.{s}", .{e.name}), e.value.src);
     }
     return out.items;
 }
@@ -142,7 +140,7 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
     for (ws) |w| {
         if (l.package(w.name) != null) continue;
         stale = true;
-        const at: ?diag.Span = if (w.src) |s| s.span() else null;
+        const at: ?diag.Span = w.src;
         try diags.add(.lock_stale, at, "{s} isn't in machine.lock yet", .{w.name}, "run `os update` to resolve it into the lock");
     }
     if (stale) return null;
@@ -204,8 +202,8 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
     // the config doesn't mention are left alone.
     var units: std.ArrayList(Change) = .empty;
     for (c.services.entries.items) |e| {
-        const enabled = if (e.value.enabled) |en| en.v else true;
-        const unit = if (e.value.unit) |u| u.v else catalog.service(e.name).?.unit;
+        const enabled = e.value.isEnabled();
+        const unit = e.value.unitFor(e.name);
         const cause = try std.fmt.allocPrint(a, "services.{s}", .{e.name});
         const have = f.unit(unit);
         if (enabled) {
@@ -261,8 +259,7 @@ fn planUsers(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
                 .cause = cause,
             });
         }
-        // the first group is the user's own; it isn't part of the list.
-        const have_groups = if (have.groups.len > 0) have.groups[1..] else have.groups;
+        const have_groups = have.groups;
         for (want_groups) |g| {
             if (!lists.contains(have_groups, g.name)) try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = try std.fmt.allocPrint(a, "join {s}", .{g.name}), .cause = cause });
         }
@@ -444,20 +441,12 @@ const T = struct {
     }
 
     fn cfg(t: *T, src: []const u8) !config.Config {
-        var info: @import("toml.zig").ErrorInfo = .{};
-        var doc = try @import("toml.zig").parse(testing.allocator, src, &info);
-        defer doc.deinit();
-        const part = try config.decode(t.a(), "machine.toml", doc.root, &t.diags);
-        try testing.expectEqual(0, t.diags.items.items.len);
-        return part.config;
+        return helpers.configFrom(t.a(), src);
     }
 };
 
-const test_hash = "a" ** 64;
-
-fn lockPkg(name: []const u8, version: []const u8, depends: []const []const u8) lock.Package {
-    return .{ .name = name, .version = version, .repo = "core", .sha256 = test_hash, .depends = depends };
-}
+const helpers = @import("test_helpers.zig");
+const lockPkg = helpers.lockPackage;
 
 test "converged machine gives an empty plan" {
     var t: T = .{};

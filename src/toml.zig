@@ -765,7 +765,7 @@ fn parseFloat(tok: []const u8) ?f64 {
     return std.fmt.parseFloat(f64, clean) catch null;
 }
 
-pub fn isBareKey(s: []const u8) bool {
+fn isBareKey(s: []const u8) bool {
     if (s.len == 0) return false;
     for (s) |c| {
         if (!isBareKeyChar(c)) return false;
