@@ -7,6 +7,7 @@ const output = @import("output.zig");
 const diag = @import("diag.zig");
 const compose = @import("compose.zig");
 const show = @import("show.zig");
+const facts = @import("facts.zig");
 
 pub const default_config = "/etc/yoq/machine.toml";
 
@@ -36,6 +37,7 @@ const commands = [_]Command{
     .{ .name = "help", .summary = "show this help", .handler = help },
     .{ .name = "version", .summary = "print the version", .handler = version },
     .{ .name = "config", .summary = "show the merged config (config show [--resolved])", .handler = configCmd },
+    .{ .name = "facts", .summary = "show what os knows about this machine (facts --from <file>)", .handler = factsCmd },
     .{ .name = "explain", .summary = "explain an error code, like E0213", .handler = explain },
 };
 
@@ -165,6 +167,51 @@ fn configCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     }
     try show.writeToml(ctx.out, &loaded.config, sources);
     return 0;
+}
+
+fn factsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    if (args.len != 2 or !std.mem.eql(u8, args[0], "--from")) {
+        if (args.len == 0) {
+            try ctx.err.writeAll("os: reading facts from this machine isn't built yet. use `os facts --from <file>`.\n");
+            return 1;
+        }
+        try ctx.err.writeAll("usage: os facts [--from <file>]\n");
+        return 2;
+    }
+    var arena: std.heap.ArenaAllocator = .init(ctx.gpa);
+    defer arena.deinit();
+    const f = try readFacts(ctx, arena.allocator(), args[1]) orelse return 1;
+    if (ctx.json) {
+        try facts.write(ctx.out, &f);
+        return 0;
+    }
+    try ctx.out.print("hostname  {s}\ntimezone  {s}\nlocale    {s}\npackages  {d}\nunits     {d}\nusers     {d}\n", .{
+        f.hostname orelse "-",
+        f.timezone orelse "-",
+        f.locale orelse "-",
+        f.packages.len,
+        f.units.len,
+        f.users.len,
+    });
+    return 0;
+}
+
+/// reads a facts file, or says why it couldn't and returns null.
+fn readFacts(ctx: *Context, a: std.mem.Allocator, path: []const u8) !?facts.Facts {
+    const bytes = ctx.files.readFn(ctx.files.ctx, a, path) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try ctx.err.print("os: can't read facts from {s}\n", .{path});
+            return null;
+        },
+    };
+    return facts.parse(a, bytes) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.BadFacts => {
+            try ctx.err.print("os: {s} isn't a facts document ({s})\n", .{ path, facts.schema });
+            return null;
+        },
+    };
 }
 
 /// prints collected problems to stderr, or as a json document on stdout
@@ -366,4 +413,20 @@ test "--config without a path is a usage error" {
     var t: TestRun = .{};
     try t.exec(&.{ "config", "show", "--config" });
     try std.testing.expectEqual(2, t.code);
+}
+
+test "facts --from reads a fixture" {
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("f.json",
+        \\{"schema":"yoq.facts/1","hostname":"atlas","packages":[{"name":"git","version":"2.51.0-1"}]}
+    );
+    try t.exec(&.{ "facts", "--from", "f.json" });
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expect(std.mem.startsWith(u8, t.out.buffered(), "hostname  atlas\n"));
+    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "packages  1\n") != null);
+
+    try t.fs.put("bad.json", "{}");
+    try t.exec(&.{ "facts", "--from", "bad.json" });
+    try std.testing.expectEqual(1, t.code);
 }

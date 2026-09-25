@@ -38,5 +38,6 @@ test {
     _ = @import("config.zig");
     _ = @import("compose.zig");
     _ = @import("show.zig");
+    _ = @import("facts.zig");
     _ = disk;
 }
