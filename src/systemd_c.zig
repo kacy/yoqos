@@ -12,6 +12,9 @@ const manager = .{ "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org
 pub fn units(a: Allocator, diags: *diag.List) api.Error!?[]facts.Unit {
     var bus: ?*c.sd_bus = null;
     const r = c.sd_bus_open_system(&bus);
+    // no bus socket means systemd isn't running, as in a container or a
+    // chroot: nothing is enabled or running then, which isn't an error.
+    if (r == -@as(c_int, @intFromEnum(std.posix.E.NOENT)) or r == -@as(c_int, @intFromEnum(std.posix.E.CONNREFUSED))) return &.{};
     if (r < 0) {
         try diags.add(.systemd_failed, null, "can't reach systemd on the system bus: {s}", .{std.mem.span(c.strerror(-r))}, null);
         return null;

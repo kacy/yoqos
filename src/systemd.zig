@@ -25,8 +25,9 @@ pub fn managedKind(name: []const u8) bool {
 }
 
 /// services, timers, and sockets that are enabled, running, or failed, from
-/// the running system's manager. returns null, after saying why in
-/// `diags`, if the system bus can't be reached.
+/// the running system's manager. with no systemd running, that's none.
+/// returns null, after saying why in `diags`, if the bus is there but
+/// can't be used.
 pub fn units(a: Allocator, diags: *diag.List) Error!?[]facts.Unit {
     return if (comptime available) impl.units(a, diags) else error.SystemdUnavailable;
 }
@@ -50,8 +51,9 @@ test "units from the running system" {
     defer arena.deinit();
     var diags: diag.List = .init(std.testing.allocator);
     defer diags.deinit();
-    // no system bus, as in a container: nothing to check here.
-    const us = try units(arena.allocator(), &diags) orelse return error.SkipZigTest;
+    const us = try units(arena.allocator(), &diags) orelse return error.TestUnexpectedResult;
+    // no systemd running, as in a container: nothing more to check.
+    if (us.len == 0) return error.SkipZigTest;
     var journald = false;
     for (us) |u| {
         try std.testing.expect(managedKind(u.name));
