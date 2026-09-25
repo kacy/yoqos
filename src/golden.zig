@@ -12,6 +12,7 @@ const disk = @import("disk.zig");
 const diag = @import("diag.zig");
 const pipeline = @import("pipeline.zig");
 const planner = @import("planner.zig");
+const sort = @import("sort.zig");
 
 const root = "tests/golden";
 
@@ -33,11 +34,7 @@ test "golden plans" {
     while (try it.next(io)) |entry| {
         if (entry.kind == .directory) try names.append(gpa, try gpa.dupe(u8, entry.name));
     }
-    std.mem.sort([]const u8, names.items, {}, struct {
-        fn lt(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.lessThan(u8, a, b);
-        }
-    }.lt);
+    sort.strings(names.items);
     try std.testing.expect(names.items.len > 0);
 
     var failed: usize = 0;

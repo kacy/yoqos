@@ -43,5 +43,6 @@ test {
     _ = @import("planner.zig");
     _ = @import("pipeline.zig");
     _ = @import("golden.zig");
+    _ = @import("sort.zig");
     _ = disk;
 }

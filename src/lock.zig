@@ -8,6 +8,7 @@
 const std = @import("std");
 const toml = @import("toml.zig");
 const diag = @import("diag.zig");
+const sort = @import("sort.zig");
 const Allocator = std.mem.Allocator;
 
 pub const format_version = 1;
@@ -89,27 +90,15 @@ pub fn write(w: *std.Io.Writer, l: *const Lock) !void {
 /// write identical files.
 pub fn normalize(a: Allocator, l: *Lock) !void {
     const pkgs = try a.dupe(Package, l.packages);
-    std.mem.sort(Package, pkgs, {}, struct {
-        fn lt(_: void, x: Package, y: Package) bool {
-            return std.mem.lessThan(u8, x.name, y.name);
-        }
-    }.lt);
+    sort.byField(Package, "name", pkgs);
     for (pkgs) |*p| {
         const deps = try a.dupe([]const u8, p.depends);
-        std.mem.sort([]const u8, deps, {}, struct {
-            fn lt(_: void, x: []const u8, y: []const u8) bool {
-                return std.mem.lessThan(u8, x, y);
-            }
-        }.lt);
+        sort.strings(deps);
         p.depends = deps;
     }
     l.packages = pkgs;
     const provs = try a.dupe(Provider, l.providers);
-    std.mem.sort(Provider, provs, {}, struct {
-        fn lt(_: void, x: Provider, y: Provider) bool {
-            return std.mem.lessThan(u8, x.name, y.name);
-        }
-    }.lt);
+    sort.byField(Provider, "name", provs);
     l.providers = provs;
 }
 
@@ -120,78 +109,19 @@ pub fn parse(a: Allocator, path: []const u8, bytes: []const u8, diags: *diag.Lis
     var doc = toml.parse(a, bytes, &info) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Syntax => {
-            try diags.add(.lock_invalid, .{ .file = path, .line = info.pos.line, .column = info.pos.column }, "{s}", .{info.message()}, "restore it from git or run `os update`");
+            try diags.add(.lock_invalid, .{ .file = path, .line = info.pos.line, .column = info.pos.column }, "{s}", .{info.message()}, fix_hint);
             return null;
         },
     };
     defer doc.deinit();
-
     var r: Reader = .{ .a = a, .path = path, .diags = diags };
-    const root = doc.root;
-    const version = r.int(root, "version", null) orelse return null;
-    if (version != format_version) return r.bad(null, "lock format {d} isn't supported", .{version});
-    var l: Lock = .{
-        .sync_date = try r.str(root, "sync_date", null) orelse return null,
-        .keyring = try r.str(root, "keyring", null) orelse return null,
+    return r.lock(doc.root) catch |e| switch (e) {
+        error.Invalid => null,
+        error.OutOfMemory => error.OutOfMemory,
     };
-
-    var providers: std.ArrayList(Provider) = .empty;
-    if (root.get("providers")) |pv| {
-        const t = try r.table(pv, "providers") orelse return null;
-        for (t.entries.items) |*e| {
-            if (e.value.data != .string) return r.bad(e.value.span, "providers.{s} should be a string", .{e.key});
-            try providers.append(a, .{ .name = try a.dupe(u8, e.key), .chosen = try a.dupe(u8, e.value.data.string) });
-        }
-    }
-    l.providers = providers.items;
-
-    var packages: std.ArrayList(Package) = .empty;
-    if (root.get("packages")) |pv| {
-        const t = try r.table(pv, "packages") orelse return null;
-        for (t.entries.items) |*e| {
-            const pt = try r.table(&e.value, e.key) orelse return null;
-            var p: Package = .{
-                .name = try a.dupe(u8, e.key),
-                .version = try r.str(pt, "version", e.key) orelse return null,
-                .repo = try r.str(pt, "repo", e.key) orelse return null,
-                .sha256 = try r.str(pt, "sha256", e.key) orelse return null,
-            };
-            if (!validSha256(p.sha256)) return r.bad(pt.get("sha256").?.span, "packages.{s}.sha256 isn't a sha-256 hash", .{e.key});
-            if (pt.get("depends")) |dv| {
-                if (dv.data != .array) return r.bad(dv.span, "packages.{s}.depends should be a list", .{e.key});
-                var deps: std.ArrayList([]const u8) = .empty;
-                for (dv.data.array.items.items) |d| {
-                    if (d.data != .string) return r.bad(d.span, "packages.{s}.depends should only hold names", .{e.key});
-                    try deps.append(a, try a.dupe(u8, d.data.string));
-                }
-                p.depends = deps.items;
-            }
-            for (pt.entries.items) |*f| {
-                if (!oneOf(f.key, &.{ "version", "repo", "sha256", "depends" })) return r.bad(f.key_span, "unknown key packages.{s}.{s}", .{ e.key, f.key });
-            }
-            try packages.append(a, p);
-        }
-    }
-    l.packages = packages.items;
-    for (root.entries.items) |*e| {
-        if (!oneOf(e.key, &.{ "version", "sync_date", "keyring", "providers", "packages" })) return r.bad(e.key_span, "unknown key {s}", .{e.key});
-    }
-
-    try normalize(a, &l);
-    for (l.packages) |p| {
-        for (p.depends) |d| {
-            if (l.package(d) == null) return r.bad(null, "{s} depends on {s}, which isn't in the lock", .{ p.name, d });
-        }
-    }
-    return l;
 }
 
-fn oneOf(s: []const u8, options: []const []const u8) bool {
-    for (options) |o| {
-        if (std.mem.eql(u8, s, o)) return true;
-    }
-    return false;
-}
+const fix_hint = "restore it from git or run `os update`";
 
 fn validSha256(s: []const u8) bool {
     if (s.len != 64) return false;
@@ -201,58 +131,114 @@ fn validSha256(s: []const u8) bool {
     return true;
 }
 
+/// each check reports its problem and returns `error.Invalid`, so reading
+/// stops at the first one.
 const Reader = struct {
     a: Allocator,
     path: []const u8,
     diags: *diag.List,
-    failed: bool = false,
 
-    fn bad(r: *Reader, span: ?toml.Span, comptime fmt: []const u8, args: anytype) !?Lock {
-        const at: ?diag.Span = if (span) |s| .{ .file = r.path, .line = s.start.line, .column = s.start.column } else .{ .file = r.path, .line = 1, .column = 1 };
-        try r.diags.add(.lock_invalid, at, fmt, args, "restore it from git or run `os update`");
-        return null;
+    const Error = error{ Invalid, OutOfMemory };
+
+    fn bad(r: *Reader, span: ?toml.Span, comptime fmt: []const u8, args: anytype) Error {
+        const line, const column = if (span) |s| .{ s.start.line, s.start.column } else .{ 1, 1 };
+        r.diags.add(.lock_invalid, .{ .file = r.path, .line = line, .column = column }, fmt, args, fix_hint) catch return error.OutOfMemory;
+        return error.Invalid;
     }
 
-    fn table(r: *Reader, v: *const toml.Value, name: []const u8) !?*const toml.Table {
+    fn lock(r: *Reader, root: *const toml.Table) Error!Lock {
+        try r.onlyKeys(root, &.{ "version", "sync_date", "keyring", "providers", "packages" }, null);
+        const version = try r.int(root, "version", null);
+        if (version != format_version) return r.bad(null, "lock format {d} isn't supported", .{version});
+
+        var l: Lock = .{
+            .sync_date = try r.str(root, "sync_date", null),
+            .keyring = try r.str(root, "keyring", null),
+        };
+        if (root.get("providers")) |v| {
+            const t = try r.table(v, "providers");
+            const out = try r.a.alloc(Provider, t.entries.items.len);
+            for (t.entries.items, out) |*e, *p| {
+                if (e.value.data != .string) return r.bad(e.value.span, "providers.{s} should be a string", .{e.key});
+                p.* = .{ .name = try r.a.dupe(u8, e.key), .chosen = try r.a.dupe(u8, e.value.data.string) };
+            }
+            l.providers = out;
+        }
+        if (root.get("packages")) |v| {
+            const t = try r.table(v, "packages");
+            const out = try r.a.alloc(Package, t.entries.items.len);
+            for (t.entries.items, out) |*e, *p| p.* = try r.package(e);
+            l.packages = out;
+        }
+
+        try normalize(r.a, &l);
+        for (l.packages) |p| {
+            for (p.depends) |d| {
+                if (l.package(d) == null) return r.bad(null, "{s} depends on {s}, which isn't in the lock", .{ p.name, d });
+            }
+        }
+        return l;
+    }
+
+    fn package(r: *Reader, e: *const toml.Entry) Error!Package {
+        const t = try r.table(&e.value, e.key);
+        try r.onlyKeys(t, &.{ "version", "repo", "sha256", "depends" }, e.key);
+        var p: Package = .{
+            .name = try r.a.dupe(u8, e.key),
+            .version = try r.str(t, "version", e.key),
+            .repo = try r.str(t, "repo", e.key),
+            .sha256 = try r.str(t, "sha256", e.key),
+        };
+        if (!validSha256(p.sha256)) return r.bad(t.get("sha256").?.span, "packages.{s}.sha256 isn't a sha-256 hash", .{e.key});
+        if (t.get("depends")) |dv| {
+            if (dv.data != .array) return r.bad(dv.span, "packages.{s}.depends should be a list", .{e.key});
+            const items = dv.data.array.items.items;
+            const deps = try r.a.alloc([]const u8, items.len);
+            for (items, deps) |d, *out| {
+                if (d.data != .string) return r.bad(d.span, "packages.{s}.depends should only hold names", .{e.key});
+                out.* = try r.a.dupe(u8, d.data.string);
+            }
+            p.depends = deps;
+        }
+        return p;
+    }
+
+    fn onlyKeys(r: *Reader, t: *const toml.Table, keys: []const []const u8, owner: ?[]const u8) Error!void {
+        outer: for (t.entries.items) |*e| {
+            for (keys) |k| {
+                if (std.mem.eql(u8, e.key, k)) continue :outer;
+            }
+            if (owner) |o| return r.bad(e.key_span, "unknown key packages.{s}.{s}", .{ o, e.key });
+            return r.bad(e.key_span, "unknown key {s}", .{e.key});
+        }
+    }
+
+    fn table(r: *Reader, v: *const toml.Value, name: []const u8) Error!*const toml.Table {
         if (v.data == .table) return v.data.table;
-        _ = try r.bad(v.span, "{s} should be a table", .{name});
-        return null;
+        return r.bad(v.span, "{s} should be a table", .{name});
     }
 
-    fn int(r: *Reader, t: *const toml.Table, key: []const u8, owner: ?[]const u8) ?i64 {
-        const v = t.get(key) orelse {
-            r.missing(key, owner);
-            return null;
-        };
+    fn get(r: *Reader, t: *const toml.Table, key: []const u8, owner: ?[]const u8) Error!*const toml.Value {
+        if (t.get(key)) |v| return v;
+        if (owner) |o| return r.bad(null, "packages.{s} has no {s}", .{ o, key });
+        return r.bad(null, "the lock has no {s}", .{key});
+    }
+
+    fn wrong(r: *Reader, v: *const toml.Value, key: []const u8, owner: ?[]const u8, want: []const u8) Error {
+        if (owner) |o| return r.bad(v.span, "packages.{s}.{s} should be {s}", .{ o, key, want });
+        return r.bad(v.span, "{s} should be {s}", .{ key, want });
+    }
+
+    fn int(r: *Reader, t: *const toml.Table, key: []const u8, owner: ?[]const u8) Error!i64 {
+        const v = try r.get(t, key, owner);
         if (v.data == .integer) return v.data.integer;
-        r.wrong(v.span, key, owner, "an integer");
-        return null;
+        return r.wrong(v, key, owner, "an integer");
     }
 
-    fn str(r: *Reader, t: *const toml.Table, key: []const u8, owner: ?[]const u8) !?[]const u8 {
-        const v = t.get(key) orelse {
-            r.missing(key, owner);
-            return null;
-        };
-        if (v.data == .string) return try r.a.dupe(u8, v.data.string);
-        r.wrong(v.span, key, owner, "a string");
-        return null;
-    }
-
-    fn missing(r: *Reader, key: []const u8, owner: ?[]const u8) void {
-        if (owner) |o| {
-            _ = r.bad(null, "packages.{s} has no {s}", .{ o, key }) catch {};
-        } else {
-            _ = r.bad(null, "the lock has no {s}", .{key}) catch {};
-        }
-    }
-
-    fn wrong(r: *Reader, span: toml.Span, key: []const u8, owner: ?[]const u8, want: []const u8) void {
-        if (owner) |o| {
-            _ = r.bad(span, "packages.{s}.{s} should be {s}", .{ o, key, want }) catch {};
-        } else {
-            _ = r.bad(span, "{s} should be {s}", .{ key, want }) catch {};
-        }
+    fn str(r: *Reader, t: *const toml.Table, key: []const u8, owner: ?[]const u8) Error![]const u8 {
+        const v = try r.get(t, key, owner);
+        if (v.data == .string) return r.a.dupe(u8, v.data.string);
+        return r.wrong(v, key, owner, "a string");
     }
 };
 

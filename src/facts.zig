@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const output = @import("output.zig");
+const sort = @import("sort.zig");
 const Allocator = std.mem.Allocator;
 
 pub const schema = "yoq.facts/1";
@@ -58,19 +59,11 @@ pub const Facts = struct {
     /// sorts every list by name so output and hashes don't depend on the
     /// order things were observed in.
     pub fn normalize(f: *Facts) void {
-        sortByName(Package, f.packages);
-        sortByName(Unit, f.units);
-        sortByName(User, f.users);
+        sort.byField(Package, "name", f.packages);
+        sort.byField(Unit, "name", f.units);
+        sort.byField(User, "name", f.users);
     }
 };
-
-fn sortByName(comptime T: type, items: []T) void {
-    std.mem.sort(T, items, {}, struct {
-        fn lt(_: void, a: T, b: T) bool {
-            return std.mem.lessThan(u8, a.name, b.name);
-        }
-    }.lt);
-}
 
 pub fn write(w: *std.Io.Writer, f: *const Facts) !void {
     try output.writeDoc(w, schema, f.*);

@@ -15,6 +15,7 @@ const facts = @import("facts.zig");
 const catalog = @import("catalog.zig");
 const diag = @import("diag.zig");
 const output = @import("output.zig");
+const sort = @import("sort.zig");
 const Allocator = std.mem.Allocator;
 
 pub const schema = "yoq.plan/1";
@@ -132,7 +133,7 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
 
     // packages: install, upgrade, or re-mark what's needed.
     const need_names = try a.dupe([]const u8, needed.keys());
-    std.mem.sort([]const u8, need_names, {}, lessThan);
+    sort.strings(need_names);
     for (need_names) |name| {
         const lp = l.package(name).?;
         const want = findWant(wants.items, name);
@@ -164,8 +165,8 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
         });
     }
 
-    // system settings.
-    inline for (.{ "hostname", "timezone", "locale", "keymap" }) |field| {
+    // system settings. facts carry a field for every one of them.
+    inline for (comptime config.keysOf(config.System)) |field| {
         if (@field(c.system, field)) |want| {
             const have = @field(f, field);
             if (have == null or !std.mem.eql(u8, have.?, want.v)) {
@@ -202,11 +203,7 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
             }
         }
     }
-    std.mem.sort(Change, units.items, {}, struct {
-        fn lt(_: void, x: Change, y: Change) bool {
-            return std.mem.lessThan(u8, x.subject, y.subject);
-        }
-    }.lt);
+    sort.byField(Change, "subject", units.items);
     try changes.appendSlice(a, units.items);
 
     return .{ .changes = changes.items };
@@ -222,10 +219,6 @@ fn findWant(wants: []const Want, name: []const u8) ?*const Want {
         if (std.mem.eql(u8, w.name, name)) return w;
     }
     return null;
-}
-
-fn lessThan(_: void, x: []const u8, y: []const u8) bool {
-    return std.mem.lessThan(u8, x, y);
 }
 
 // -- output --

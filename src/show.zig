@@ -8,9 +8,24 @@ const Config = config.Config;
 const Src = config.Src;
 const Writer = std.Io.Writer;
 
+/// canonical toml: top-level values first, then one table per section, in
+/// the order the config types declare them. named entries like users get
+/// their own `[users.<name>]` table.
 pub fn writeToml(w: *Writer, c: *const Config, sources: bool) !void {
     var t: TomlOut = .{ .w = w, .sources = sources };
-    try t.run(c);
+    inline for (comptime config.keysOf(Config)) |name| {
+        const T = @FieldType(Config, name);
+        if (comptime isLeaf(T)) try t.leaf(name, @field(c, name));
+    }
+    inline for (comptime config.keysOf(Config)) |name| {
+        const T = @FieldType(Config, name);
+        if (comptime !isLeaf(T)) try t.section(T, name, &@field(c, name));
+    }
+}
+
+/// a value written as `key = ...` rather than as its own table.
+fn isLeaf(comptime T: type) bool {
+    return T == config.Set or @typeInfo(T) == .optional or config.isVal(T);
 }
 
 const TomlOut = struct {
@@ -18,9 +33,24 @@ const TomlOut = struct {
     sources: bool,
     wrote: bool = false,
 
-    fn src(t: *TomlOut, s: Src) !void {
-        if (t.sources) try t.w.print("  # {s}:{d}", .{ s.file, s.line });
-        try t.w.writeByte('\n');
+    fn section(t: *TomlOut, comptime T: type, comptime name: []const u8, v: *const T) !void {
+        if (comptime config.isNamed(T)) {
+            if (comptime config.isVal(T.Value)) {
+                if (v.entries.items.len == 0) return;
+                try t.header(name, null);
+                for (v.entries.items) |e| try t.leaf(e.name, e.value);
+            } else for (v.entries.items) |e| {
+                try t.header(name, e.name);
+                try t.leaves(T.Value, &e.value);
+            }
+        } else if (!isEmpty(T, v)) {
+            try t.header(name, null);
+            try t.leaves(T, v);
+        }
+    }
+
+    fn leaves(t: *TomlOut, comptime T: type, v: *const T) !void {
+        inline for (comptime config.keysOf(T)) |name| try t.leaf(name, @field(v, name));
     }
 
     fn header(t: *TomlOut, name: []const u8, key: ?[]const u8) !void {
@@ -34,25 +64,24 @@ const TomlOut = struct {
         t.wrote = true;
     }
 
-    fn str(t: *TomlOut, key: []const u8, v: ?config.Str) !void {
-        const s = v orelse return;
+    fn leaf(t: *TomlOut, key: []const u8, v: anytype) !void {
+        const T = @TypeOf(v);
+        if (T == config.Set) return t.set(key, &v);
+        if (@typeInfo(T) == .optional) {
+            if (v) |inner| try t.leaf(key, inner);
+            return;
+        }
         try toml.writeKey(t.w, key);
         try t.w.writeAll(" = ");
-        try toml.writeString(t.w, s.v);
-        try t.src(s.src);
-        t.wrote = true;
-    }
-
-    fn tag(t: *TomlOut, key: []const u8, v: anytype) !void {
-        const s = v orelse return;
-        try t.w.print("{s} = \"{s}\"", .{ key, @tagName(s.v) });
-        try t.src(s.src);
+        try writeScalar(t.w, v.v);
+        try t.src(v.src);
         t.wrote = true;
     }
 
     fn set(t: *TomlOut, key: []const u8, s: *const config.Set) !void {
         if (s.items.items.len == 0) return;
-        try t.w.print("{s} = [\n", .{key});
+        try toml.writeKey(t.w, key);
+        try t.w.writeAll(" = [\n");
         for (s.items.items) |it| {
             try t.w.writeAll("  ");
             try toml.writeString(t.w, it.name);
@@ -63,66 +92,28 @@ const TomlOut = struct {
         t.wrote = true;
     }
 
-    fn run(t: *TomlOut, c: *const Config) !void {
-        if (c.version) |v| {
-            try t.w.print("version = {d}", .{v.v});
-            try t.src(v.src);
-            t.wrote = true;
-        }
-        try t.set("packages", &c.packages);
-        try t.set("aur", &c.aur);
-
-        if (c.providers.entries.items.len > 0) {
-            try t.header("providers", null);
-            for (c.providers.entries.items) |e| try t.str(e.name, e.value);
-        }
-        if (anySet(c.system)) {
-            try t.header("system", null);
-            try t.str("hostname", c.system.hostname);
-            try t.str("timezone", c.system.timezone);
-            try t.str("locale", c.system.locale);
-            try t.str("keymap", c.system.keymap);
-        }
-        if (anySet(c.boot)) {
-            try t.header("boot", null);
-            try t.str("kernel", c.boot.kernel);
-        }
-        if (anySet(c.hardware)) {
-            try t.header("hardware", null);
-            try t.tag("cpu", c.hardware.cpu);
-            try t.tag("gpu", c.hardware.gpu);
-        }
-        if (anySet(c.desktop)) {
-            try t.header("desktop", null);
-            try t.tag("session", c.desktop.session);
-            try t.tag("audio", c.desktop.audio);
-        }
-        for (c.users.entries.items) |e| {
-            try t.header("users", e.name);
-            try t.str("shell", e.value.shell);
-            try t.set("groups", &e.value.groups);
-        }
-        for (c.services.entries.items) |e| {
-            try t.header("services", e.name);
-            if (e.value.enabled) |en| {
-                try t.w.print("enabled = {}", .{en.v});
-                try t.src(en.src);
-            }
-            try t.str("unit", e.value.unit);
-            try t.str("package", e.value.package);
-        }
-        if (c.state.carry.items.items.len > 0) {
-            try t.header("state", null);
-            try t.set("carry", &c.state.carry);
-        }
+    fn src(t: *TomlOut, s: Src) !void {
+        if (t.sources) try t.w.print("  # {s}:{d}", .{ s.file, s.line });
+        try t.w.writeByte('\n');
     }
 };
 
-fn anySet(section: anytype) bool {
-    inline for (std.meta.fields(@TypeOf(section))) |f| {
-        if (@field(section, f.name) != null) return true;
+fn writeScalar(w: *Writer, v: anytype) !void {
+    switch (@typeInfo(@TypeOf(v))) {
+        .pointer => try toml.writeString(w, v),
+        .@"enum" => try w.print("\"{s}\"", .{@tagName(v)}),
+        else => try w.print("{}", .{v}),
     }
-    return false;
+}
+
+fn isEmpty(comptime T: type, v: *const T) bool {
+    inline for (comptime config.keysOf(T)) |name| {
+        const f = @field(v, name);
+        if (@TypeOf(f) == config.Set) {
+            if (f.items.items.len > 0) return false;
+        } else if (f != null) return false;
+    }
+    return true;
 }
 
 /// the config as one json value. every setting is an object with `value`,
@@ -155,14 +146,14 @@ fn jsonValue(s: *std.json.Stringify, v: anytype) !void {
     }
     switch (@typeInfo(T)) {
         .@"struct" => {
-            if (@hasField(T, "v") and @hasField(T, "src")) {
+            if (comptime config.isVal(T)) {
                 try s.beginObject();
                 try s.objectField("value");
                 try s.write(v.v);
                 try jsonSrc(s, v.src);
                 return s.endObject();
             }
-            if (@hasField(T, "entries") and @hasDecl(T, "Entry")) {
+            if (comptime config.isNamed(T)) {
                 try s.beginObject();
                 for (v.entries.items) |e| {
                     try s.objectField(e.name);
@@ -171,16 +162,15 @@ fn jsonValue(s: *std.json.Stringify, v: anytype) !void {
                 return s.endObject();
             }
             try s.beginObject();
-            inline for (std.meta.fields(T)) |f| {
-                if (comptime std.mem.eql(u8, f.name, "src")) continue;
-                const field = @field(v, f.name);
-                if (@typeInfo(f.type) == .optional) {
+            inline for (comptime config.keysOf(T)) |name| {
+                const field = @field(v, name);
+                if (@typeInfo(@TypeOf(field)) == .optional) {
                     if (field) |inner| {
-                        try s.objectField(f.name);
+                        try s.objectField(name);
                         try jsonValue(s, inner);
                     }
                 } else {
-                    try s.objectField(f.name);
+                    try s.objectField(name);
                     try jsonValue(s, field);
                 }
             }

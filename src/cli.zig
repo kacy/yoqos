@@ -44,6 +44,22 @@ const commands = [_]Command{
     .{ .name = "explain", .summary = "explain an error code, like E0213", .handler = explain },
 };
 
+/// walks a command's own arguments.
+const ArgIter = struct {
+    args: []const [:0]const u8,
+    i: usize = 0,
+
+    fn next(it: *ArgIter) ?[]const u8 {
+        if (it.i == it.args.len) return null;
+        defer it.i += 1;
+        return it.args[it.i];
+    }
+};
+
+fn eql(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+
 /// runs one command line (without the program name) and returns the exit
 /// code: 0 ok, 1 failed, 2 bad usage.
 pub fn run(ctx: *Context, raw: []const [:0]const u8) !u8 {
@@ -59,11 +75,11 @@ pub fn run(ctx: *Context, raw: []const [:0]const u8) !u8 {
     if (args.len == 0) return help(ctx, args);
 
     const name = args[0];
-    if (std.mem.eql(u8, name, "-h") or std.mem.eql(u8, name, "--help")) return help(ctx, args[1..]);
-    if (std.mem.eql(u8, name, "--version")) return version(ctx, args[1..]);
+    if (eql(name, "-h") or eql(name, "--help")) return help(ctx, args[1..]);
+    if (eql(name, "--version")) return version(ctx, args[1..]);
 
     for (commands) |c| {
-        if (std.mem.eql(u8, c.name, name)) return c.handler(ctx, args[1..]);
+        if (eql(c.name, name)) return c.handler(ctx, args[1..]);
     }
 
     try ctx.err.print("os: unknown command '{s}'\n\n", .{name});
@@ -76,28 +92,20 @@ pub fn run(ctx: *Context, raw: []const [:0]const u8) !u8 {
 fn takeGlobalFlags(ctx: *Context, raw: []const [:0]const u8) ![]const [:0]const u8 {
     var rest: std.ArrayList([:0]const u8) = .empty;
     errdefer rest.deinit(ctx.gpa);
-    var passthrough = false;
-    var i: usize = 0;
-    while (i < raw.len) : (i += 1) {
-        const arg = raw[i];
-        if (!passthrough) {
-            if (std.mem.eql(u8, arg, "--")) passthrough = true;
-            if (std.mem.eql(u8, arg, "--json")) {
-                ctx.json = true;
-                continue;
-            }
-            if (std.mem.eql(u8, arg, "--config")) {
-                if (i + 1 == raw.len) return error.MissingConfigPath;
-                i += 1;
-                ctx.config_path = raw[i];
-                continue;
-            }
-            if (std.mem.startsWith(u8, arg, "--config=")) {
-                ctx.config_path = arg["--config=".len..];
-                continue;
-            }
+    var it: ArgIter = .{ .args = raw };
+    while (it.next()) |arg| {
+        if (eql(arg, "--")) {
+            try rest.appendSlice(ctx.gpa, raw[it.i - 1 ..]);
+            break;
+        } else if (eql(arg, "--json")) {
+            ctx.json = true;
+        } else if (eql(arg, "--config")) {
+            ctx.config_path = it.next() orelse return error.MissingConfigPath;
+        } else if (std.mem.startsWith(u8, arg, "--config=")) {
+            ctx.config_path = arg["--config=".len..];
+        } else {
+            try rest.append(ctx.gpa, raw[it.i - 1]);
         }
-        try rest.append(ctx.gpa, arg);
     }
     return rest.toOwnedSlice(ctx.gpa);
 }
@@ -135,17 +143,18 @@ fn version(ctx: *Context, _: []const [:0]const u8) !u8 {
     return 0;
 }
 
+fn usageError(ctx: *Context, comptime text: []const u8) !u8 {
+    try ctx.err.writeAll("usage: " ++ text ++ "\n");
+    return 2;
+}
+
 fn configCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (args.len == 0 or !std.mem.eql(u8, args[0], "show")) {
-        try ctx.err.writeAll("usage: os config show [--resolved]\n");
-        return 2;
-    }
+    const usage_text = "os config show [--resolved]";
+    var it: ArgIter = .{ .args = args };
+    if (!eql(it.next() orelse "", "show")) return usageError(ctx, usage_text);
     var sources = false;
-    for (args[1..]) |a| {
-        if (!std.mem.eql(u8, a, "--resolved")) {
-            try ctx.err.print("os: unknown flag '{s}' for config show\n", .{a});
-            return 2;
-        }
+    while (it.next()) |a| {
+        if (!eql(a, "--resolved")) return usageError(ctx, usage_text);
         sources = true;
     }
 
@@ -173,17 +182,18 @@ fn configCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 fn factsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (args.len != 2 or !std.mem.eql(u8, args[0], "--from")) {
-        if (args.len == 0) {
-            try ctx.err.writeAll("os: reading facts from this machine isn't built yet. use `os facts --from <file>`.\n");
-            return 1;
-        }
-        try ctx.err.writeAll("usage: os facts [--from <file>]\n");
-        return 2;
+    const usage_text = "os facts --from <file>";
+    var from: ?[]const u8 = null;
+    var it: ArgIter = .{ .args = args };
+    while (it.next()) |a| {
+        if (!eql(a, "--from")) return usageError(ctx, usage_text);
+        from = it.next() orelse return usageError(ctx, usage_text);
     }
+    const path = from orelse return noObserver(ctx, "--from");
+
     var arena: std.heap.ArenaAllocator = .init(ctx.gpa);
     defer arena.deinit();
-    const f = try readFacts(ctx, arena.allocator(), args[1]) orelse return 1;
+    const f = pipeline.readFacts(ctx.files, arena.allocator(), path) catch |e| return factsError(ctx, e, path);
     if (ctx.json) {
         try facts.write(ctx.out, &f);
         return 0;
@@ -200,39 +210,30 @@ fn factsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    var in: pipeline.Inputs = .{ .config_path = ctx.config_path, .facts_path = "" };
+    const usage_text = "os plan --facts <file> [--lock <file>] [-v]";
+    var facts_path: ?[]const u8 = null;
+    var lock_path: ?[]const u8 = null;
     var verbose = false;
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const a = args[i];
-        if (std.mem.eql(u8, a, "-v") or std.mem.eql(u8, a, "--verbose")) {
+    var it: ArgIter = .{ .args = args };
+    while (it.next()) |a| {
+        if (eql(a, "-v") or eql(a, "--verbose")) {
             verbose = true;
-        } else if ((std.mem.eql(u8, a, "--facts") or std.mem.eql(u8, a, "--lock")) and i + 1 < args.len) {
-            i += 1;
-            if (a[2] == 'f') in.facts_path = args[i] else in.lock_path = args[i];
-        } else {
-            try ctx.err.writeAll("usage: os plan --facts <file> [--lock <file>] [-v]\n");
-            return 2;
-        }
+        } else if (eql(a, "--facts")) {
+            facts_path = it.next() orelse return usageError(ctx, usage_text);
+        } else if (eql(a, "--lock")) {
+            lock_path = it.next() orelse return usageError(ctx, usage_text);
+        } else return usageError(ctx, usage_text);
     }
-    if (in.facts_path.len == 0) {
-        try ctx.err.writeAll("os: reading facts from this machine isn't built yet. pass --facts <file>.\n");
-        return 1;
-    }
+    const in: pipeline.Inputs = .{
+        .config_path = ctx.config_path,
+        .lock_path = lock_path,
+        .facts_path = facts_path orelse return noObserver(ctx, "--facts"),
+    };
 
     var diags: diag.List = .init(ctx.gpa);
     defer diags.deinit();
-    var result = pipeline.buildPlan(ctx.gpa, ctx.files, in, &diags) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        error.FactsUnreadable => {
-            try ctx.err.print("os: can't read facts from {s}\n", .{in.facts_path});
-            return 1;
-        },
-        error.BadFacts => {
-            try ctx.err.print("os: {s} isn't a facts document ({s})\n", .{ in.facts_path, facts.schema });
-            return 1;
-        },
-    } orelse return reportDiags(ctx, &diags);
+    const built = pipeline.buildPlan(ctx.gpa, ctx.files, in, &diags) catch |e| return factsError(ctx, e, in.facts_path);
+    var result = built orelse return reportDiags(ctx, &diags);
     defer result.deinit();
 
     if (ctx.json) {
@@ -243,22 +244,20 @@ fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     return 0;
 }
 
-/// reads a facts file, or says why it couldn't and returns null.
-fn readFacts(ctx: *Context, a: std.mem.Allocator, path: []const u8) !?facts.Facts {
-    const bytes = ctx.files.readFn(ctx.files.ctx, a, path) catch |e| switch (e) {
+/// until the observer exists, facts have to come from a file.
+fn noObserver(ctx: *Context, comptime flag: []const u8) !u8 {
+    try ctx.err.writeAll("os: reading facts from this machine isn't built yet. pass " ++ flag ++ " <file>.\n");
+    return 1;
+}
+
+/// says why a facts file couldn't be used. returns the exit code.
+fn factsError(ctx: *Context, e: pipeline.Error, path: []const u8) !u8 {
+    switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => {
-            try ctx.err.print("os: can't read facts from {s}\n", .{path});
-            return null;
-        },
-    };
-    return facts.parse(a, bytes) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        error.BadFacts => {
-            try ctx.err.print("os: {s} isn't a facts document ({s})\n", .{ path, facts.schema });
-            return null;
-        },
-    };
+        error.FactsUnreadable => try ctx.err.print("os: can't read facts from {s}\n", .{path}),
+        error.BadFacts => try ctx.err.print("os: {s} isn't a facts document ({s})\n", .{ path, facts.schema }),
+    }
+    return 1;
 }
 
 /// prints collected problems to stderr, or as a json document on stdout
@@ -283,10 +282,7 @@ fn explain(ctx: *Context, args: []const [:0]const u8) !u8 {
         for (diag.table) |e| try ctx.out.print("{s}  {s}\n", .{ e.id, e.title });
         return 0;
     }
-    if (args.len > 1) {
-        try ctx.err.writeAll("usage: os explain [code]\n");
-        return 2;
-    }
+    if (args.len > 1) return usageError(ctx, "os explain [code]");
     const e = diag.byId(args[0]) orelse {
         try ctx.err.print("os: no error code '{s}'. `os explain` lists them all.\n", .{args[0]});
         return 2;

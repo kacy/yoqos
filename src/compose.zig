@@ -97,14 +97,13 @@ const Loader = struct {
         const dir = std.fs.path.dirnamePosix(path) orelse ".";
         for (part.include.items) |inc| {
             const child = try std.fs.path.resolvePosix(l.a, &.{ dir, inc.v });
-            var c = try l.loadFile(child, inc.src) orelse continue;
+            const c = try l.loadFile(child, inc.src) orelse continue;
             try mergeInto(l.a, &merged, &c);
         }
         for (part.unset.items) |u| try l.unset(&merged, u);
         for (part.remove.packages.items.items) |it| _ = merged.packages.remove(it.name);
         for (part.remove.aur.items.items) |it| _ = merged.aur.remove(it.name);
-        var own = part.config;
-        try mergeInto(l.a, &merged, &own);
+        try mergeInto(l.a, &merged, &part.config);
         return merged;
     }
 
@@ -119,119 +118,63 @@ const Loader = struct {
     /// clears a key that an include set. the path names a key the way the
     /// config file would, like "desktop.audio" or "users.guest".
     fn unset(l: *Loader, c: *Config, u: config.Str) !void {
+        var segs: std.ArrayList([]const u8) = .empty;
         var it = std.mem.splitScalar(u8, u.v, '.');
-        const head = it.next().?;
-        const second = it.next();
-        const third = it.next();
-        const ok = if (it.next() != null) false else if (second == null)
-            unsetTop(c, head)
-        else if (third == null)
-            unsetSecond(c, head, second.?)
-        else
-            unsetThird(c, head, second.?, third.?);
-        if (!ok) try l.diags.add(.bad_value, u.src.span(), "\"{s}\" isn't a key that unset can clear", .{u.v}, "name a key like \"desktop.audio\" or \"users.guest\"");
+        while (it.next()) |seg| try segs.append(l.a, seg);
+        if (!clear(Config, c, segs.items)) {
+            try l.diags.add(.bad_value, u.src.span(), "\"{s}\" isn't a key that unset can clear", .{u.v}, "name a key like \"desktop.audio\" or \"users.guest\"");
+        }
     }
 };
 
-fn unsetTop(c: *Config, key: []const u8) bool {
-    if (eql(key, "packages")) {
-        c.packages = .{};
-    } else if (eql(key, "aur")) {
-        c.aur = .{};
-    } else if (eql(key, "providers")) {
-        c.providers = .{};
-    } else if (eql(key, "system")) {
-        c.system = .{};
-    } else if (eql(key, "boot")) {
-        c.boot = .{};
-    } else if (eql(key, "hardware")) {
-        c.hardware = .{};
-    } else if (eql(key, "users")) {
-        c.users = .{};
-    } else if (eql(key, "desktop")) {
-        c.desktop = .{};
-    } else if (eql(key, "services")) {
-        c.services = .{};
-    } else return false;
-    return true;
-}
-
-fn unsetSecond(c: *Config, head: []const u8, key: []const u8) bool {
-    if (eql(head, "system")) {
-        if (eql(key, "hostname")) c.system.hostname = null else if (eql(key, "timezone")) c.system.timezone = null else if (eql(key, "locale")) c.system.locale = null else if (eql(key, "keymap")) c.system.keymap = null else return false;
-    } else if (eql(head, "boot")) {
-        if (eql(key, "kernel")) c.boot.kernel = null else return false;
-    } else if (eql(head, "hardware")) {
-        if (eql(key, "cpu")) c.hardware.cpu = null else if (eql(key, "gpu")) c.hardware.gpu = null else return false;
-    } else if (eql(head, "desktop")) {
-        if (eql(key, "session")) c.desktop.session = null else if (eql(key, "audio")) c.desktop.audio = null else return false;
-    } else if (eql(head, "state")) {
-        if (eql(key, "carry")) c.state.carry = .{} else return false;
-    } else if (eql(head, "providers")) {
-        _ = c.providers.remove(key);
-    } else if (eql(head, "users")) {
-        _ = c.users.remove(key);
-    } else if (eql(head, "services")) {
-        _ = c.services.remove(key);
-    } else return false;
-    return true;
-}
-
-fn unsetThird(c: *Config, head: []const u8, name: []const u8, key: []const u8) bool {
-    if (eql(head, "users")) {
-        const u = c.users.get(name) orelse return eql(key, "shell") or eql(key, "groups");
-        if (eql(key, "shell")) u.shell = null else if (eql(key, "groups")) u.groups = .{} else return false;
-    } else if (eql(head, "services")) {
-        const s = c.services.get(name) orelse return eql(key, "enabled") or eql(key, "unit") or eql(key, "package");
-        if (eql(key, "enabled")) s.enabled = null else if (eql(key, "unit")) s.unit = null else if (eql(key, "package")) s.package = null else return false;
-    } else return false;
-    return true;
-}
-
-fn eql(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
-}
-
-fn override(dst: anytype, src: @TypeOf(dst.*)) void {
-    if (src != null) dst.* = src;
-}
-
-fn mergeSet(a: Allocator, dst: *config.Set, src: *const config.Set) !void {
-    for (src.items.items) |it| try dst.add(a, it);
-}
-
-/// lays `src` over `dst`. `src` is used up: its lists may move into `dst`.
-pub fn mergeInto(a: Allocator, dst: *Config, src: *Config) !void {
-    override(&dst.version, src.version);
-    try mergeSet(a, &dst.packages, &src.packages);
-    try mergeSet(a, &dst.aur, &src.aur);
-    for (src.providers.entries.items) |e| {
-        if (dst.providers.get(e.name)) |v| v.* = e.value else try dst.providers.entries.append(a, e);
+/// clears the key at `segs` below `target`, if it's set. returns false if
+/// the path doesn't name a key at all. `target` is null when the path runs
+/// through an entry that doesn't exist; the path is still checked.
+fn clear(comptime T: type, target: ?*T, segs: []const []const u8) bool {
+    if (segs.len == 0) {
+        if (@typeInfo(T) == .optional) {
+            if (target) |t| t.* = null;
+        } else if (comptime !@hasField(T, "src")) {
+            if (target) |t| t.* = .{};
+        } else unreachable; // named entries are removed by their table
+        return true;
     }
-    inline for (.{ "hostname", "timezone", "locale", "keymap" }) |f| override(&@field(dst.system, f), @field(src.system, f));
-    override(&dst.boot.kernel, src.boot.kernel);
-    override(&dst.hardware.cpu, src.hardware.cpu);
-    override(&dst.hardware.gpu, src.hardware.gpu);
-    override(&dst.desktop.session, src.desktop.session);
-    override(&dst.desktop.audio, src.desktop.audio);
-    for (src.users.entries.items) |e| {
-        const u = dst.users.get(e.name) orelse {
-            try dst.users.entries.append(a, e);
-            continue;
-        };
-        override(&u.shell, e.value.shell);
-        try mergeSet(a, &u.groups, &e.value.groups);
+    if (T == config.Set or @typeInfo(T) == .optional) return false;
+    if (comptime config.isNamed(T)) {
+        if (segs.len == 1) {
+            if (target) |t| _ = t.remove(segs[0]);
+            return true;
+        }
+        if (comptime config.isVal(T.Value)) return false;
+        return clear(T.Value, if (target) |t| t.get(segs[0]) else null, segs[1..]);
     }
-    for (src.services.entries.items) |e| {
-        const s = dst.services.get(e.name) orelse {
-            try dst.services.entries.append(a, e);
-            continue;
-        };
-        override(&s.enabled, e.value.enabled);
-        override(&s.unit, e.value.unit);
-        override(&s.package, e.value.package);
+    inline for (comptime config.keysOf(T)) |name| {
+        if (std.mem.eql(u8, segs[0], name)) {
+            return clear(@FieldType(T, name), if (target) |t| &@field(t, name) else null, segs[1..]);
+        }
     }
-    try mergeSet(a, &dst.state.carry, &src.state.carry);
+    return false;
+}
+
+/// lays `src` over `dst`: sets merge, named tables merge entry by entry, and
+/// any other value set in `src` replaces the one in `dst`. `src` is used
+/// up; its lists may move into `dst`.
+pub fn mergeInto(a: Allocator, dst: *Config, src: *const Config) !void {
+    try merge(a, Config, dst, src);
+}
+
+fn merge(a: Allocator, comptime T: type, dst: *T, src: *const T) !void {
+    if (T == config.Set) {
+        for (src.items.items) |it| try dst.add(a, it);
+    } else if (@typeInfo(T) == .optional or comptime config.isVal(T)) {
+        if (@typeInfo(T) != .optional or src.* != null) dst.* = src.*;
+    } else if (comptime config.isNamed(T)) {
+        for (src.entries.items) |*e| {
+            if (dst.get(e.name)) |v| try merge(a, T.Value, v, &e.value) else try dst.entries.append(a, e.*);
+        }
+    } else {
+        inline for (comptime config.keysOf(T)) |name| try merge(a, @FieldType(T, name), &@field(dst, name), &@field(src, name));
+    }
 }
 
 // -- tests --
@@ -440,4 +383,49 @@ test "the same file included twice is fine" {
     const c = try r.load("machine.toml");
     try r.expectClean();
     try testing.expectEqual(1, c.packages.items.items.len);
+}
+
+test "unset reaches every kind of key" {
+    var r: Run = .{};
+    defer r.deinit();
+    try r.fs.put("base.toml",
+        \\packages = ["git"]
+        \\[providers]
+        \\java-runtime = "jre-openjdk"
+        \\[system]
+        \\hostname = "base"
+        \\locale = "C.UTF-8"
+        \\[users.kacy]
+        \\shell = "zsh"
+        \\groups = ["wheel"]
+        \\[services.custom]
+        \\unit = "custom.service"
+        \\package = "custom"
+        \\
+    );
+    try r.fs.put("machine.toml",
+        \\include = ["base.toml"]
+        \\unset = ["packages", "providers.java-runtime", "system", "users.kacy.groups", "services.custom.unit", "users.nobody.shell"]
+        \\[services.custom]
+        \\unit = "other.service"
+        \\
+    );
+    const c = try r.load("machine.toml");
+    try r.expectClean();
+    try testing.expectEqual(0, c.packages.items.items.len);
+    try testing.expectEqual(null, c.providers.get("java-runtime"));
+    try testing.expectEqual(null, c.system.hostname);
+    try testing.expectEqual(null, c.system.locale);
+    try testing.expectEqualStrings("zsh", c.users.get("kacy").?.shell.?.v);
+    try testing.expectEqual(0, c.users.get("kacy").?.groups.items.items.len);
+    try testing.expectEqualStrings("other.service", c.services.get("custom").?.unit.?.v);
+}
+
+test "unset rejects paths that aren't keys" {
+    var r: Run = .{};
+    defer r.deinit();
+    try r.fs.put("machine.toml", "unset = [\"packages.git\", \"users.kacy.colour\", \"system.hostname.x\", \"bogus\", \"providers.a.b\"]\n");
+    _ = try r.load("machine.toml");
+    try testing.expectEqual(5, r.diags.items.items.len);
+    for (r.diags.items.items) |d| try testing.expectEqual(diag.Code.bad_value, d.code);
 }

@@ -48,14 +48,7 @@ pub fn buildPlan(gpa: Allocator, files: compose.Files, in: Inputs, diags: *diag.
     };
     const l = if (lock_bytes) |b| try lock.parse(a, lock_path, b, diags) else null;
 
-    const facts_bytes = files.readFn(files.ctx, a, in.facts_path) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.FactsUnreadable,
-    };
-    const f = facts.parse(a, facts_bytes) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        error.BadFacts => return error.BadFacts,
-    };
+    const f = try readFacts(files, a, in.facts_path);
 
     if (diags.items.items.len > 0 or l == null) {
         arena.deinit();
@@ -68,6 +61,15 @@ pub fn buildPlan(gpa: Allocator, files: compose.Files, in: Inputs, diags: *diag.
         return null;
     };
     return .{ .arena = arena, .plan = try dupePlan(a, p) };
+}
+
+/// reads and parses a facts file into `a`.
+pub fn readFacts(files: compose.Files, a: Allocator, path: []const u8) Error!facts.Facts {
+    const bytes = files.readFn(files.ctx, a, path) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.FactsUnreadable,
+    };
+    return facts.parse(a, bytes);
 }
 
 fn dupePlan(a: Allocator, p: planner.Plan) !planner.Plan {

@@ -75,6 +75,7 @@ pub const Set = struct {
 pub fn Named(comptime T: type) type {
     return struct {
         const Self = @This();
+        pub const Value = T;
         pub const Entry = struct {
             name: []const u8,
             value: T,
@@ -99,6 +100,27 @@ pub fn Named(comptime T: type) type {
             return false;
         }
     };
+}
+
+/// true for `Named(...)` types.
+pub fn isNamed(comptime T: type) bool {
+    return @typeInfo(T) == .@"struct" and @hasDecl(T, "Entry") and @hasField(T, "entries");
+}
+
+/// true for `Val(...)` types.
+pub fn isVal(comptime T: type) bool {
+    return @typeInfo(T) == .@"struct" and @hasField(T, "v") and @hasField(T, "src");
+}
+
+/// the config keys of a section: its fields, minus the `src` bookkeeping.
+pub fn keysOf(comptime T: type) []const []const u8 {
+    comptime {
+        var keys: []const []const u8 = &.{};
+        for (std.meta.fieldNames(T)) |n| {
+            if (!std.mem.eql(u8, n, "src")) keys = keys ++ .{n};
+        }
+        return keys;
+    }
 }
 
 pub const Cpu = enum { amd, intel };
@@ -134,6 +156,9 @@ pub const Desktop = struct {
 };
 
 pub const Service = struct {
+    /// `ssh = true` is shorthand for `[services.ssh] enabled = true`.
+    pub const shorthand = "enabled";
+
     src: Src,
     enabled: ?Val(bool) = null,
     /// for services the catalog doesn't know.
@@ -153,8 +178,8 @@ pub const Config = struct {
     system: System = .{},
     boot: Boot = .{},
     hardware: Hardware = .{},
-    users: Named(User) = .{},
     desktop: Desktop = .{},
+    users: Named(User) = .{},
     services: Named(Service) = .{},
     state: State = .{},
 };
@@ -173,123 +198,38 @@ pub const Part = struct {
     config: Config = .{},
 };
 
-const root_keys = [_][]const u8{
-    "version", "include", "packages", "aur",   "unset",   "remove",   "providers",
-    "system",  "boot",    "hardware", "users", "desktop", "services", "state",
-};
+/// keys a file may use besides the config itself.
+const file_keys = [_][]const u8{ "include", "unset", "remove" };
+const root_keys = keysOf(Config) ++ file_keys;
 
 /// decodes one parsed file. problems go to `diags`; decoding carries on past
 /// them so one run reports everything. strings are copied into `a`.
 pub fn decode(a: Allocator, file: []const u8, root: *const toml.Table, diags: *diag.List) !Part {
     var d: Decoder = .{ .a = a, .file = try a.dupe(u8, file), .diags = diags };
     var part: Part = .{ .file = d.file };
-    const c = &part.config;
 
     for (root.entries.items) |*e| {
-        const k = e.key;
-        if (eql(k, "version")) {
-            if (try d.integer(e, "")) |v| {
-                if (v.v != supported_version) {
-                    try diags.add(.bad_value, v.src.span(), "config version {d} isn't supported", .{v.v}, "this os reads version 1");
-                }
-                c.version = v;
-            }
-        } else if (eql(k, "include")) {
-            try d.stringList(e, "", &part.include);
-        } else if (eql(k, "packages")) {
-            try d.set(e, "", &c.packages);
-        } else if (eql(k, "aur")) {
-            try d.set(e, "", &c.aur);
-        } else if (eql(k, "unset")) {
-            try d.stringList(e, "", &part.unset);
-        } else if (eql(k, "remove")) {
-            const t = try d.table(e, "") orelse continue;
-            for (t.entries.items) |*r| {
-                if (eql(r.key, "packages")) {
-                    try d.set(r, "remove.", &part.remove.packages);
-                } else if (eql(r.key, "aur")) {
-                    try d.set(r, "remove.", &part.remove.aur);
-                } else try d.unknownKey(r, "remove.", &.{ "packages", "aur" });
-            }
-        } else if (eql(k, "providers")) {
-            const t = try d.table(e, "") orelse continue;
-            for (t.entries.items) |*p| {
-                if (try d.string(p, "providers.")) |v| try c.providers.entries.append(a, .{ .name = try a.dupe(u8, p.key), .value = v });
-            }
-        } else if (eql(k, "system")) {
-            const t = try d.table(e, "") orelse continue;
-            for (t.entries.items) |*s| {
-                if (eql(s.key, "hostname")) {
-                    c.system.hostname = try d.string(s, "system.");
-                } else if (eql(s.key, "timezone")) {
-                    c.system.timezone = try d.string(s, "system.");
-                } else if (eql(s.key, "locale")) {
-                    c.system.locale = try d.string(s, "system.");
-                } else if (eql(s.key, "keymap")) {
-                    c.system.keymap = try d.string(s, "system.");
-                } else try d.unknownKey(s, "system.", &.{ "hostname", "timezone", "locale", "keymap" });
-            }
-        } else if (eql(k, "boot")) {
-            const t = try d.table(e, "") orelse continue;
-            for (t.entries.items) |*b| {
-                if (eql(b.key, "kernel")) {
-                    c.boot.kernel = try d.string(b, "boot.");
-                } else try d.unknownKey(b, "boot.", &.{"kernel"});
-            }
-        } else if (eql(k, "hardware")) {
-            const t = try d.table(e, "") orelse continue;
-            for (t.entries.items) |*h| {
-                if (eql(h.key, "cpu")) {
-                    c.hardware.cpu = try d.enumValue(Cpu, h, "hardware.");
-                } else if (eql(h.key, "gpu")) {
-                    c.hardware.gpu = try d.enumValue(Gpu, h, "hardware.");
-                } else try d.unknownKey(h, "hardware.", &.{ "cpu", "gpu" });
-            }
-        } else if (eql(k, "users")) {
-            const t = try d.table(e, "") orelse continue;
-            for (t.entries.items) |*u| {
-                const ut = try d.table(u, "users.") orelse continue;
-                var user: User = .{ .src = d.src(u.key_span) };
-                const up = try std.fmt.allocPrint(a, "users.{s}.", .{u.key});
-                for (ut.entries.items) |*f| {
-                    if (eql(f.key, "shell")) {
-                        user.shell = try d.string(f, up);
-                    } else if (eql(f.key, "groups")) {
-                        try d.set(f, up, &user.groups);
-                    } else try d.unknownKey(f, up, &.{ "shell", "groups" });
-                }
-                try c.users.entries.append(a, .{ .name = try a.dupe(u8, u.key), .value = user });
-            }
-        } else if (eql(k, "desktop")) {
-            const t = try d.table(e, "") orelse continue;
-            for (t.entries.items) |*s| {
-                if (eql(s.key, "session")) {
-                    c.desktop.session = try d.enumValue(Session, s, "desktop.");
-                } else if (eql(s.key, "audio")) {
-                    c.desktop.audio = try d.enumValue(Audio, s, "desktop.");
-                } else try d.unknownKey(s, "desktop.", &.{ "session", "audio" });
-            }
-        } else if (eql(k, "services")) {
-            const t = try d.table(e, "") orelse continue;
-            for (t.entries.items) |*s| {
-                if (try d.service(s)) |svc| try c.services.entries.append(a, .{ .name = try a.dupe(u8, s.key), .value = svc });
-            }
-        } else if (eql(k, "state")) {
-            const t = try d.table(e, "") orelse continue;
-            for (t.entries.items) |*s| {
-                if (eql(s.key, "carry")) {
-                    try d.set(s, "state.", &c.state.carry);
-                } else try d.unknownKey(s, "state.", &.{"carry"});
-            }
-        } else try d.unknownKey(e, "", &root_keys);
+        if (std.mem.eql(u8, e.key, "include")) {
+            try d.stringList(e, &part.include);
+        } else if (std.mem.eql(u8, e.key, "unset")) {
+            try d.stringList(e, &part.unset);
+        } else if (std.mem.eql(u8, e.key, "remove")) {
+            try d.value(Remove, &part.remove, e, "");
+        } else if (!try d.field(Config, &part.config, e, "")) {
+            try d.unknownKey(e, "", root_keys);
+        }
+    }
+    if (part.config.version) |v| {
+        if (v.v != supported_version) {
+            try diags.add(.bad_value, v.src.span(), "config version {d} isn't supported", .{v.v}, "this os reads version 1");
+        }
     }
     return part;
 }
 
-fn eql(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
-}
-
+/// decodes toml into the config types by their shape, so a new key only
+/// needs a new field. messages name keys by their full path, like
+/// "users.kacy.shell".
 const Decoder = struct {
     a: Allocator,
     file: []const u8,
@@ -297,6 +237,84 @@ const Decoder = struct {
 
     fn src(d: *const Decoder, span: toml.Span) Src {
         return .{ .file = d.file, .line = span.start.line, .column = span.start.column };
+    }
+
+    fn path(d: *Decoder, prefix: []const u8, key: []const u8) ![]const u8 {
+        return std.fmt.allocPrint(d.a, "{s}{s}.", .{ prefix, key });
+    }
+
+    /// decodes `e` into the field of `target` named by its key. returns
+    /// false if `T` has no such field.
+    fn field(d: *Decoder, comptime T: type, target: *T, e: *const toml.Entry, prefix: []const u8) !bool {
+        inline for (comptime keysOf(T)) |name| {
+            if (std.mem.eql(u8, e.key, name)) {
+                try d.value(@FieldType(T, name), &@field(target, name), e, prefix);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn fields(d: *Decoder, comptime T: type, target: *T, t: *const toml.Table, prefix: []const u8) !void {
+        for (t.entries.items) |*e| {
+            if (!try d.field(T, target, e, prefix)) try d.unknownKey(e, prefix, comptime keysOf(T));
+        }
+    }
+
+    fn value(d: *Decoder, comptime T: type, target: *T, e: *const toml.Entry, prefix: []const u8) !void {
+        if (T == Set) return d.set(e, prefix, target);
+        if (@typeInfo(T) == .optional) {
+            target.* = try d.scalar(@typeInfo(T).optional.child, e, prefix);
+        } else if (comptime isNamed(T)) {
+            const t = try d.table(e, prefix) orelse return;
+            const sub = try d.path(prefix, e.key);
+            for (t.entries.items) |*n| {
+                const v = try d.entry(T.Value, n, sub) orelse continue;
+                try target.entries.append(d.a, .{ .name = try d.a.dupe(u8, n.key), .value = v });
+            }
+        } else {
+            const t = try d.table(e, prefix) orelse return;
+            try d.fields(T, target, t, try d.path(prefix, e.key));
+        }
+    }
+
+    /// one entry of a `Named` table: a plain value, or a table of fields.
+    fn entry(d: *Decoder, comptime T: type, e: *const toml.Entry, prefix: []const u8) !?T {
+        if (comptime isVal(T)) return d.scalar(T, e, prefix);
+        var out: T = .{ .src = d.src(e.key_span) };
+        if (@hasDecl(T, "shorthand") and e.value.data == .boolean) {
+            @field(out, T.shorthand) = .{ .v = e.value.data.boolean, .src = d.src(e.value.span) };
+            return out;
+        }
+        if (e.value.data != .table) {
+            try d.wrongType(e, prefix, if (@hasDecl(T, "shorthand")) "true, false, or a table" else "a table", e.value);
+            return null;
+        }
+        try d.fields(T, &out, e.value.data.table, try d.path(prefix, e.key));
+        return out;
+    }
+
+    fn scalar(d: *Decoder, comptime V: type, e: *const toml.Entry, prefix: []const u8) !?V {
+        const X = @FieldType(V, "v");
+        const at = d.src(e.value.span);
+        switch (@typeInfo(X)) {
+            .bool => if (e.value.data == .boolean) return .{ .v = e.value.data.boolean, .src = at },
+            .int => if (e.value.data == .integer) return .{ .v = e.value.data.integer, .src = at },
+            .pointer => if (e.value.data == .string) return .{ .v = try d.a.dupe(u8, e.value.data.string), .src = at },
+            .@"enum" => if (e.value.data == .string) {
+                if (std.meta.stringToEnum(X, e.value.data.string)) |v| return .{ .v = v, .src = at };
+                try d.diags.addHint(.bad_value, at.span(), "{s}{s} can't be \"{s}\"", .{ prefix, e.key, e.value.data.string }, "use one of {s}", .{comptime quotedList(X)});
+                return null;
+            },
+            else => @compileError("no decoder for " ++ @typeName(X)),
+        }
+        const want = switch (@typeInfo(X)) {
+            .bool => "true or false",
+            .int => "an integer",
+            else => "a string",
+        };
+        try d.wrongType(e, prefix, want, e.value);
+        return null;
     }
 
     fn unknownKey(d: *Decoder, e: *const toml.Entry, prefix: []const u8, known: []const []const u8) !void {
@@ -318,37 +336,7 @@ const Decoder = struct {
         return null;
     }
 
-    fn string(d: *Decoder, e: *const toml.Entry, prefix: []const u8) !?Str {
-        if (e.value.data == .string) return .{ .v = try d.a.dupe(u8, e.value.data.string), .src = d.src(e.value.span) };
-        try d.wrongType(e, prefix, "a string", e.value);
-        return null;
-    }
-
-    fn boolean(d: *Decoder, e: *const toml.Entry, prefix: []const u8) !?Val(bool) {
-        if (e.value.data == .boolean) return .{ .v = e.value.data.boolean, .src = d.src(e.value.span) };
-        try d.wrongType(e, prefix, "true or false", e.value);
-        return null;
-    }
-
-    fn integer(d: *Decoder, e: *const toml.Entry, prefix: []const u8) !?Val(i64) {
-        if (e.value.data == .integer) return .{ .v = e.value.data.integer, .src = d.src(e.value.span) };
-        try d.wrongType(e, prefix, "an integer", e.value);
-        return null;
-    }
-
-    fn enumValue(d: *Decoder, comptime E: type, e: *const toml.Entry, prefix: []const u8) !?Val(E) {
-        const s = try d.string(e, prefix) orelse return null;
-        if (std.meta.stringToEnum(E, s.v)) |v| return .{ .v = v, .src = s.src };
-        const options = comptime blk: {
-            var list: []const u8 = "";
-            for (std.meta.fieldNames(E), 0..) |n, i| list = list ++ (if (i > 0) ", " else "") ++ "\"" ++ n ++ "\"";
-            break :blk list;
-        };
-        try d.diags.addHint(.bad_value, s.src.span(), "{s}{s} can't be \"{s}\"", .{ prefix, e.key, s.v }, "use one of {s}", .{options});
-        return null;
-    }
-
-    /// a list of strings where each item keeps its own position.
+    /// calls `f` for each string in a list, with its own position.
     fn eachString(d: *Decoder, e: *const toml.Entry, prefix: []const u8, ctx: anytype, comptime f: anytype) !void {
         if (e.value.data != .array) return d.wrongType(e, prefix, "a list of strings", e.value);
         for (e.value.data.array.items.items) |item| {
@@ -368,37 +356,22 @@ const Decoder = struct {
         }.f);
     }
 
-    fn stringList(d: *Decoder, e: *const toml.Entry, prefix: []const u8, out: *std.ArrayList(Str)) !void {
-        try d.eachString(e, prefix, out, struct {
+    fn stringList(d: *Decoder, e: *const toml.Entry, out: *std.ArrayList(Str)) !void {
+        try d.eachString(e, "", out, struct {
             fn f(l: *std.ArrayList(Str), a: Allocator, v: []const u8, at: Src) !void {
                 try l.append(a, .{ .v = v, .src = at });
             }
         }.f);
     }
-
-    /// `ssh = true` is shorthand for `[services.ssh] enabled = true`.
-    fn service(d: *Decoder, e: *const toml.Entry) !?Service {
-        var svc: Service = .{ .src = d.src(e.key_span) };
-        const sp = try std.fmt.allocPrint(d.a, "services.{s}.", .{e.key});
-        switch (e.value.data) {
-            .boolean => |b| svc.enabled = .{ .v = b, .src = d.src(e.value.span) },
-            .table => |t| for (t.entries.items) |*f| {
-                if (eql(f.key, "enabled")) {
-                    svc.enabled = try d.boolean(f, sp);
-                } else if (eql(f.key, "unit")) {
-                    svc.unit = try d.string(f, sp);
-                } else if (eql(f.key, "package")) {
-                    svc.package = try d.string(f, sp);
-                } else try d.unknownKey(f, sp, &.{ "enabled", "unit", "package" });
-            },
-            else => {
-                try d.wrongType(e, "services.", "true, false, or a table", e.value);
-                return null;
-            },
-        }
-        return svc;
-    }
 };
+
+fn quotedList(comptime E: type) []const u8 {
+    comptime {
+        var list: []const u8 = "";
+        for (std.meta.fieldNames(E), 0..) |n, i| list = list ++ (if (i > 0) ", " else "") ++ "\"" ++ n ++ "\"";
+        return list;
+    }
+}
 
 /// checks a merged config for problems that need the whole picture, like a
 /// service no file explains.
