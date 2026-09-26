@@ -7,6 +7,7 @@
 const std = @import("std");
 const facts = @import("facts.zig");
 const alpm = @import("alpm.zig");
+const drift = @import("drift.zig");
 const systemd = @import("systemd.zig");
 const diag = @import("diag.zig");
 const lists = @import("lists.zig");
@@ -35,6 +36,7 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
     if (try r.file("etc/passwd")) |passwd| {
         f.users = try users(a, passwd, try r.file("etc/group") orelse "");
     }
+    f.pacman_changes = try drift.since(a, io, opts.root);
     if (opts.packages) {
         const dbpath = try r.dbpath();
         const pkgs = alpm.localPackages(a, opts.root, dbpath, diags) catch |e| switch (e) {

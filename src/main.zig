@@ -57,6 +57,8 @@ test {
     _ = @import("rootfs.zig");
     _ = @import("exec.zig");
     _ = @import("news.zig");
+    _ = @import("journal.zig");
+    _ = @import("drift.zig");
     _ = @import("planner.zig");
     _ = @import("pipeline.zig");
     _ = @import("golden.zig");

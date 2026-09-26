@@ -97,7 +97,10 @@ changed   installed but not in the config: nano  -> os adopt keeps them, os plan
 failing   none
 ```
 
-each "changed" line ends with the command that deals with it. `os status`
+each "changed" line ends with the command that deals with it. with the
+pacman hook that comes with `os` in place, a direct `pacman -S` or `pacman
+-R` also shows up, as "touched with pacman since the last apply", until
+the next `os apply`. the hook records nothing for os's own transactions. `os status`
 also warns when the lock is more than 14 days old, since an old lock holds
 back security fixes. it exits with 1 when something is failing.
 

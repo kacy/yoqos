@@ -2,9 +2,6 @@
 //! transaction, `[system]` settings through their files, users through
 //! shadow's tools, and units through systemd when it runs the machine.
 //! without systemd, `run` hands the units back as skipped.
-//!
-//! every run is journaled: a line when it starts and one when it ends, so a
-//! run that never finished shows up next time.
 
 const std = @import("std");
 const alpm = @import("alpm.zig");
@@ -92,30 +89,6 @@ fn changeUnits(a: Allocator, p: *const planner.Plan, off: bool, diags: *diag.Lis
     return true;
 }
 
-const journal = "var/lib/yoq/journal";
-
-/// appends one line to the journal. a journal that can't be written
-/// doesn't stop the apply.
-pub fn record(a: Allocator, io: std.Io, root: []const u8, time: i64, event: []const u8, hash: []const u8) !void {
-    const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
-    const line = try std.fmt.allocPrint(a, "{{\"time\":{d},\"event\":\"{s}\",\"plan\":\"{s}\"}}\n", .{ time, event, hash });
-    fs.append(journal, line) catch |e| switch (e) {
-        error.OutOfMemory => return e,
-        error.WriteFailed => {},
-    };
-}
-
-/// the plan hash of a run that started and never finished, if the last one
-/// didn't.
-pub fn unfinished(a: Allocator, io: std.Io, root: []const u8) !?[]const u8 {
-    const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
-    const trimmed = std.mem.trimEnd(u8, try fs.read(journal), "\n");
-    const last = trimmed[if (std.mem.lastIndexOfScalar(u8, trimmed, '\n')) |i| i + 1 else 0..];
-    const Line = struct { time: i64, event: []const u8, plan: []const u8 };
-    const parsed = std.json.parseFromSliceLeaky(Line, a, last, .{}) catch return null;
-    return if (std.mem.eql(u8, parsed.event, "begin")) parsed.plan else null;
-}
-
 // -- tests --
 
 const testing = std.testing;
@@ -145,18 +118,4 @@ test "a plan becomes one transaction" {
     try testing.expectEqual(2, tx.explicit.len);
     try testing.expectEqualStrings("vim", tx.explicit[1]);
     try testing.expectEqualStrings("glibc", tx.dependency[0]);
-}
-
-test "the journal notices an unfinished run" {
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
-    try testing.expectEqual(null, try unfinished(a, testing.io, root));
-    try record(a, testing.io, root, 1, "begin", "abc");
-    try testing.expectEqualStrings("abc", (try unfinished(a, testing.io, root)).?);
-    try record(a, testing.io, root, 2, "done", "abc");
-    try testing.expectEqual(null, try unfinished(a, testing.io, root));
 }

@@ -16,4 +16,6 @@ trap '"$vm" stop' EXIT
 
 "$vm" copy "$os" /usr/local/bin/os
 "$vm" copy tests/arch/smoke.sh /root/smoke.sh
-"$vm" ssh sh /root/smoke.sh /usr/local/bin/os
+"$vm" ssh mkdir -p /root/dist
+"$vm" copy dist/yoq-drift.hook /root/dist/yoq-drift.hook
+"$vm" ssh "cd /root && sh smoke.sh /usr/local/bin/os"

@@ -12,6 +12,7 @@ const history = @import("history.zig");
 const init_cmd = @import("cmd/init.zig");
 const apply_cmd = @import("cmd/apply.zig");
 const rollback = @import("cmd/rollback.zig");
+const hook = @import("cmd/hook.zig");
 const inspect = @import("cmd/inspect.zig");
 const edit = @import("cmd/edit.zig");
 const update = @import("cmd/update.zig");
@@ -50,6 +51,8 @@ const Command = struct {
     name: []const u8,
     summary: []const u8,
     handler: Handler,
+    /// plumbing for other programs, like the pacman hook, left out of help.
+    hidden: bool = false,
 };
 
 const commands = [_]Command{
@@ -70,6 +73,7 @@ const commands = [_]Command{
     .{ .name = "why", .summary = "say which config line brings in a package", .handler = inspect.whyCmd },
     .{ .name = "config", .summary = "show the merged config (config show [--resolved])", .handler = inspect.configCmd },
     .{ .name = "facts", .summary = "show what os knows about this machine", .handler = inspect.factsCmd },
+    .{ .name = "record-pacman", .summary = "record a pacman transaction (the drift hook runs this)", .handler = hook.recordPacmanCmd, .hidden = true },
     .{ .name = "explain", .summary = "explain an error code, like E0213", .handler = explain },
 };
 
@@ -163,7 +167,9 @@ fn valueFlag(ctx: *Context, arg: []const u8, it: *ArgIter) !?void {
 
 fn usage(w: *std.Io.Writer) !void {
     try w.writeAll("usage: os <command> [args]\n\ncommands:\n");
-    for (commands) |c| try w.print("  {s:<10}{s}\n", .{ c.name, c.summary });
+    for (commands) |c| {
+        if (!c.hidden) try w.print("  {s:<10}{s}\n", .{ c.name, c.summary });
+    }
     try w.writeAll(
         \\
         \\global flags:

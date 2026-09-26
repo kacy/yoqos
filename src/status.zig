@@ -37,6 +37,9 @@ pub const Status = struct {
         units: []const []const u8,
         /// declared users that are missing or differ.
         users: []const []const u8,
+        /// packages pacman touched since the last apply. this says where
+        /// the rows above came from, so it isn't counted on its own.
+        pacman: []const []const u8,
     },
     /// configured services whose units failed.
     failing: []const []const u8,
@@ -98,9 +101,21 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
             .settings = settings.items,
             .units = units.items,
             .users = users.items,
+            .pacman = try pacmanTouched(a, f),
         },
         .failing = failing.items,
     };
+}
+
+/// every package the recorded pacman transactions touched, once each.
+fn pacmanTouched(a: Allocator, f: *const facts.Facts) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    for (f.pacman_changes) |c| {
+        for (c.packages) |name| {
+            if (!lists.contains(out.items, name)) try out.append(a, name);
+        }
+    }
+    return out.items;
 }
 
 /// days since 1970-01-01 for a "yyyy-mm-dd" date.
@@ -143,6 +158,7 @@ pub fn writeText(w: *std.Io.Writer, s: *const Status) !void {
     if (ch.settings.len > 0) try rows.list("settings differ", ch.settings, "os plan");
     if (ch.units.len > 0) try rows.list("services not as configured", ch.units, "os plan");
     if (ch.users.len > 0) try rows.list("users not as configured", ch.users, "os plan");
+    if (ch.pacman.len > 0) try rows.list("touched with pacman since the last apply", ch.pacman, "os plan shows what differs");
     if (rows.first) try w.writeAll("changed   none\n");
 
     try w.writeAll("failing   ");
@@ -210,7 +226,7 @@ test "status text" {
         .lock_date = "2026-09-01",
         .lock_age_days = 24,
         .ok = .{ .packages = 400, .services = 2 },
-        .changed = .{ .extra = &.{ "htop", "btop" }, .orphans = 0, .missing = &.{}, .versions = &.{"git"}, .settings = &.{}, .units = &.{}, .users = &.{} },
+        .changed = .{ .extra = &.{ "htop", "btop" }, .orphans = 0, .missing = &.{}, .versions = &.{"git"}, .settings = &.{}, .units = &.{}, .users = &.{}, .pacman = &.{ "htop", "btop" } },
         .failing = &.{"tailscaled.service"},
     };
     var out: std.Io.Writer.Allocating = .init(arena.allocator());
@@ -221,6 +237,7 @@ test "status text" {
         \\ok        400 packages, 2 services
         \\changed   installed but not in the config: htop, btop  -> os adopt keeps them, os plan removes them
         \\          1 package differs from the lock  -> os plan
+        \\          touched with pacman since the last apply: htop, btop  -> os plan shows what differs
         \\failing   tailscaled.service
         \\
     , out.written());

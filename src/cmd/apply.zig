@@ -5,6 +5,7 @@ const std = @import("std");
 const cli = @import("../cli.zig");
 const alpm = @import("../alpm.zig");
 const apply = @import("../apply.zig");
+const journal = @import("../journal.zig");
 const lock = @import("../lock.zig");
 const observe = @import("../observe.zig");
 const output = @import("../output.zig");
@@ -85,7 +86,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs) !Outcome {
     const a = w.allocator();
     const result = try w.plan(in) orelse return Outcome.failed(&w);
     const p = &result.plan;
-    if (try apply.unfinished(a, ctx.io, ctx.root)) |hash| {
+    if (try journal.unfinished(a, ctx.io, ctx.root)) |hash| {
         try ctx.err.print("os: the last apply (plan {s}) didn't finish. this one starts from the machine as it is now.\n", .{hash[0..@min(12, hash.len)]});
     }
     if (p.empty()) {
@@ -111,12 +112,12 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs) !Outcome {
     const units = liveUnits(ctx);
     const hash = try p.hash();
     const now = std.Io.Timestamp.now(ctx.io, .real).toSeconds();
-    try apply.record(a, ctx.io, ctx.root, now, "begin", &hash);
+    try journal.record(a, ctx.io, ctx.root, now, "begin", &hash);
     const done = try apply.run(a, ctx.io, p, &result.state.lock, target, units, &w.diags) orelse {
-        try apply.record(a, ctx.io, ctx.root, now, "failed", &hash);
+        try journal.record(a, ctx.io, ctx.root, now, "failed", &hash);
         return Outcome.failed(&w);
     };
-    try apply.record(a, ctx.io, ctx.root, now, "done", &hash);
+    try journal.record(a, ctx.io, ctx.root, now, "done", &hash);
     return .{ .code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units), .matches = true };
 }
 

@@ -85,6 +85,16 @@ fi
 # update applies what it resolved; on the same day there's nothing to do.
 "$os" --config "$cfg" update --yes | grep -q "nothing to do"
 
+# drift: with os and its pacman hook installed the way a package would,
+# a direct `pacman -S` shows in status until os applies again.
+install -Dm755 "$os" /usr/bin/os
+install -Dm644 dist/yoq-drift.hook /usr/share/libalpm/hooks/yoq-drift.hook
+pacman -S --noconfirm --noprogressbar htop >/dev/null
+"$os" --config "$cfg" status | grep -q "touched with pacman since the last apply: htop"
+"$os" --config "$cfg" apply --yes
+if "$os" --config "$cfg" status | grep -q "touched with pacman"; then echo "drift survived an apply"; exit 1; fi
+rm /usr/share/libalpm/hooks/yoq-drift.hook
+
 # a config that leaves out base doesn't get to remove it.
 bare=$dir/bare.toml
 printf 'version = 1\n[boot]\nkernel = "none"\n' > "$bare"

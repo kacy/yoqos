@@ -35,6 +35,12 @@ pub const User = struct {
     groups: []const []const u8 = &.{},
 };
 
+/// packages a pacman transaction outside os touched, and when.
+pub const PacmanChange = struct {
+    time: i64,
+    packages: []const []const u8,
+};
+
 pub const Facts = struct {
     /// the document's schema tag, first in the json like every document os
     /// writes.
@@ -52,6 +58,8 @@ pub const Facts = struct {
     packages: []Package = &.{},
     units: []Unit = &.{},
     users: []User = &.{},
+    /// pacman transactions since the last apply, from the drift hook.
+    pacman_changes: []PacmanChange = &.{},
 
     pub fn package(f: *const Facts, name: []const u8) ?*const Package {
         for (f.packages) |*p| {
