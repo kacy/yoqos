@@ -29,11 +29,14 @@ jobs:
 
   arch:
     # real arch: its own libalpm and a real pacman database, as root.
-    # no running systemd, so the bus test skips.
+    # no running systemd, so the bus test skips. privileged, so the btrfs
+    # tests can loop-mount a scratch filesystem.
     runs-on: ubuntu-latest
-    container: archlinux:latest
+    container:
+      image: archlinux:latest
+      options: --privileged
     steps:
-      - run: pacman -Syu --noconfirm --needed git libarchive systemd-libs
+      - run: pacman -Syu --noconfirm --needed git libarchive systemd-libs btrfs-progs
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
