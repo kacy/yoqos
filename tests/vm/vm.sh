@@ -18,7 +18,7 @@ image_url=https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudi
 ovmf=${OVMF_DIR:-/usr/share/edk2/x64}
 port=${VM_SSH_PORT:-2222}
 
-ssh_opts="-i $dir/key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5"
+ssh_opts="-i $dir/key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
 
 run() {
     # shellcheck disable=SC2086
@@ -28,7 +28,9 @@ run() {
 # waits until the vm answers over ssh with a boot id other than $1.
 wait_boot() {
     for _ in $(seq 120); do
-        id=$(run cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+        # a guest stuck halfway through booting can hold a connection
+        # open, so every probe has its own deadline.
+        id=$(timeout 20 ssh $ssh_opts -p "$port" root@127.0.0.1 cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
         if [ -n "$id" ] && [ "$id" != "$1" ]; then return 0; fi
         sleep 3
     done

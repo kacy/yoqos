@@ -1,0 +1,42 @@
+name: spike
+# one-off experiments in the arch vm, on spike-* branches.
+on:
+  push:
+    branches: ["spike-*"]
+jobs:
+  alt-root:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    container:
+      image: archlinux:latest
+      options: --privileged
+    steps:
+      - run: pacman -Syu --noconfirm --needed git libarchive systemd-libs
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig build -Dalpm -Dsystemd
+      - run: sh tests/spikes/alt-root.sh ./zig-out/bin/os
+  vm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    container:
+      image: archlinux:latest
+      options: --device /dev/kvm
+    steps:
+      - run: pacman -Syu --noconfirm --needed git qemu-base edk2-ovmf libisoburn openssh
+      - uses: actions/checkout@v4
+      - id: week
+        run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/yoq-vm/base.qcow2
+          key: arch-cloudimg-${{ steps.week.outputs.week }}
+      - run: tests/vm/vm.sh image
+      - run: tests/vm/vm.sh start
+      - run: sh tests/vm/spikes/grub-oneshot.sh
+      - if: always()
+        run: grep -a "yoq:\|error:" ~/.cache/yoq-vm/console.log | tr -d '\r' || true
+      - if: always()
+        run: tests/vm/vm.sh stop
