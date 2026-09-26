@@ -62,6 +62,7 @@ test {
     _ = @import("btrfs.zig");
     _ = @import("enable.zig");
     _ = @import("generation.zig");
+    _ = @import("gens.zig");
     _ = @import("planner.zig");
     _ = @import("pipeline.zig");
     _ = @import("golden.zig");

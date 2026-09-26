@@ -3,9 +3,11 @@
 //! and apply do the work.
 //!
 //! the layout, under the btrfs top level:
-//!   @roots/<n>  writable roots: the one running, and the one before it
-//!   @gens/<n>   a read-only record of every generation
-//!   @var        /var, which never rolls back
+//!   @roots/<n>       writable roots: the one running, and the one before it
+//!   @roots/boot-<n>  a fresh writable copy of generation n, for its menu
+//!                    entry, remade whenever the menu is written
+//!   @gens/<n>        a read-only record of every generation
+//!   @var             /var, which never rolls back
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -21,6 +23,12 @@ pub const top_mount = "/run/yoq/top";
 /// every rollback.
 pub const records_dir = "var/lib/yoq/generations";
 
+/// whether a machine runs a generation: its root is one of @roots.
+pub fn running(root_subvol: ?[]const u8) bool {
+    const sv = root_subvol orelse return false;
+    return std.mem.startsWith(u8, sv, "/" ++ roots_dir ++ "/");
+}
+
 /// what os keeps about a generation.
 pub const Record = struct {
     n: u32,
@@ -30,6 +38,9 @@ pub const Record = struct {
     root: []const u8,
     /// what made it, like "enable-rollback" or "add fd".
     reason: []const u8,
+    /// for the first generation: the root the machine ran before, still
+    /// bootable from the menu.
+    from: ?[]const u8 = null,
 };
 
 /// one boot menu entry: a kernel and its initrds, from a root subvolume.
@@ -42,6 +53,11 @@ pub const Entry = struct {
     initrds: []const []const u8,
     args: []const u8,
 };
+
+/// the writable copy the menu boots for an older generation.
+pub fn bootCopy(a: Allocator, n: u32) ![]const u8 {
+    return std.fmt.allocPrint(a, "/{s}/boot-{d}", .{ roots_dir, n });
+}
 
 /// a generation's kernel command line, from the running one: the root is
 /// the btrfs filesystem by uuid, mounted from `subvol`; other rootflags
@@ -114,8 +130,9 @@ const testing = std.testing;
 test "a generation's kernel command line" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const got = try kernelArgs(arena.allocator(), "BOOT_IMAGE=/boot/vmlinuz-linux root=UUID=abc rw net.ifnames=0 rootflags=compress=zstd:1,subvol=/@ console=ttyS0,115200\n", "abc", "/@roots/1");
-    try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/1,compress=zstd:1 rw net.ifnames=0 console=ttyS0,115200", got);
+    const cmdline = "BOOT_IMAGE=/boot/vmlinuz-linux root=UUID=abc rw net.ifnames=0 rootflags=compress=zstd:1,subvol=/@ console=ttyS0,115200\n";
+    try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/1,compress=zstd:1 rw net.ifnames=0 console=ttyS0,115200", try kernelArgs(arena.allocator(), cmdline, "abc", "/@roots/1"));
+    try testing.expectEqualStrings("/@roots/boot-2", try bootCopy(arena.allocator(), 2));
 }
 
 test "grub's config on the esp" {

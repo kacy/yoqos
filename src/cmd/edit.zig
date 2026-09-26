@@ -121,17 +121,18 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
         }
     }
     const now = then.applies(ctx);
+    const message = try commitMessage(a, op, outcome.notes);
     if (outcome.changed()) {
         if (!ctx.json) try ctx.out.print("\nsaved {s}.\n", .{top});
         // services and packages both change what's wanted.
         const locked = try relock(ctx, top, !now);
-        try cli.record(ctx, a, top, try commitMessage(a, op, outcome.notes));
+        try cli.record(ctx, a, top, message);
         if (locked != .locked) return @intFromBool(locked == .failed);
     }
     if (!now) return 0;
     // a name already in the config applies too: the machine may be behind.
     try ctx.out.writeByte('\n');
-    return (try applying.run(ctx, then.yes, cli.inputs(ctx), .{})).code;
+    return (try applying.run(ctx, then.yes, cli.inputs(ctx), .{}, if (outcome.changed()) message else "apply")).code;
 }
 
 /// "add fd, bat": what the change did, in the words of the command.

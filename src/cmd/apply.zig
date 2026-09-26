@@ -14,6 +14,8 @@ const pipeline = @import("../pipeline.zig");
 const sync = @import("../sync.zig");
 const systemd = @import("../systemd.zig");
 const catalog = @import("../catalog.zig");
+const generation = @import("../generation.zig");
+const gens = @import("../gens.zig");
 const locking = @import("lock.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
@@ -24,7 +26,7 @@ pub fn applyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         if (isYes(arg)) yes = true else return cli.usageError(ctx, "os apply [--yes]");
     }
     if (try refused(ctx)) return 1;
-    return (try run(ctx, yes, cli.inputs(ctx), .{})).code;
+    return (try run(ctx, yes, cli.inputs(ctx), .{}, "apply")).code;
 }
 
 pub fn isYes(arg: []const u8) bool {
@@ -80,8 +82,9 @@ pub const Outcome = struct {
 };
 
 /// plans from `in`, shows the plan, asks unless `yes`, applies it, and
-/// checks the result. the caller has checked `blocker`.
-pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.RenderOptions) !Outcome {
+/// checks the result. on a machine with generations, the result becomes
+/// the next one, described by `reason`. the caller has checked `blocker`.
+pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.RenderOptions, reason: []const u8) !Outcome {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
@@ -121,7 +124,24 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.Render
     try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "done", &hash);
     const code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units);
     if (units and !ctx.json and changesPackages(p)) try offerRestarts(ctx, yes);
+    if (cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol)) try recordGeneration(ctx, a, result.facts.boot, reason);
     return .{ .code = code, .matches = true };
+}
+
+/// the applied machine becomes the next generation. the change itself is
+/// done either way, so a generation that can't be recorded is a warning.
+fn recordGeneration(ctx: *Context, a: Allocator, boot: @import("../facts.zig").Boot, reason: []const u8) !void {
+    var why: []const u8 = "";
+    const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse {
+        try ctx.err.print("os: applied, but not recorded as a generation: {s}\n", .{why});
+        return;
+    };
+    defer m.close();
+    if (try m.record(reason, std.Io.Timestamp.now(ctx.io, .real).toSeconds())) |w| {
+        try ctx.err.print("os: applied, but not recorded as a generation: {s}\n", .{w});
+        return;
+    }
+    if (!ctx.json) try ctx.out.writeAll("recorded as a new generation; the boot menu has it.\n");
 }
 
 fn changesPackages(p: *const planner.Plan) bool {

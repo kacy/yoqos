@@ -70,7 +70,7 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         var in = cli.inputs(ctx);
         in.lock_path = pending;
         try ctx.out.writeByte('\n');
-        const done = try applying.run(ctx, then.yes, in, .{ .summary = true, .verbose = verbose });
+        const done = try applying.run(ctx, then.yes, in, .{ .summary = true, .verbose = verbose }, try std.fmt.allocPrint(a, "update packages to {s}", .{l.sync_date}));
         if (!done.matches) return done.code;
         code = done.code;
     }

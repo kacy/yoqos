@@ -40,8 +40,13 @@ pub const Plan = struct {
     }
 };
 
-/// bootloaders with generations so far. limine and refind come before beta.
-pub const loaders = [_][]const u8{ "grub", "systemd-boot" };
+/// bootloaders with generations so far. systemd-boot, limine, and refind
+/// come later.
+pub const loaders = [_][]const u8{"grub"};
+
+/// root layouts enable-rollback knows how to convert: everything in the
+/// top level, as arch's cloud image has it, and archinstall's @.
+pub const layouts = [_][]const u8{ "/", "/@" };
 
 pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
     const b = f.boot;
@@ -73,24 +78,20 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .what = "bootloader",
         .ok = supported,
         .found = loader,
-        .fix = if (b.loader != null) "generations support grub and systemd-boot so far; limine and refind come later." else "no bootloader os knows was found.",
+        .fix = if (b.loader != null) "generations support grub so far; systemd-boot, limine, and refind come later." else "no bootloader os knows was found.",
     });
-    const has = struct {
-        fn hook(hooks: []const []const u8, name: []const u8) bool {
-            for (hooks) |h| {
-                if (std.mem.eql(u8, h, name)) return true;
-            }
-            return false;
-        }
-    }.hook;
-    const systemd = has(b.initramfs_hooks, "systemd");
+    const layout = b.root_subvol orelse "unknown";
+    const known = for (layouts) |l| {
+        if (std.mem.eql(u8, l, layout)) break true;
+    } else false;
+    const running_gen = @import("generation.zig").running(b.root_subvol);
     try checks.append(a, .{
-        .what = "initramfs",
-        .ok = systemd,
-        .found = if (systemd) "systemd hooks" else "busybox hooks",
-        .fix = "booting an older generation read-only uses systemd.volatile, which runs in a systemd initramfs. in /etc/mkinitcpio.conf, use HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block filesystems fsck), then run mkinitcpio -P.",
+        .what = "root layout",
+        .ok = known or running_gen,
+        .found = layout,
+        .fix = "enable-rollback converts a root in the btrfs top level, or archinstall's @ subvolume. other layouts come later.",
     });
-    const enabled = if (b.root_subvol) |sv| std.mem.startsWith(u8, sv, "/@roots/") else false;
+    const enabled = running_gen;
     try checks.append(a, .{
         .what = "generations",
         .ok = !enabled,
@@ -160,7 +161,6 @@ test "an archinstall machine on btrfs and grub is ready, with every step" {
         .loader = "grub",
         .root_fs = "btrfs",
         .root_subvol = "/@",
-        .initramfs_hooks = &.{ "base", "systemd", "autodetect", "block", "filesystems", "fsck" },
     } };
     const p = try plan(arena.allocator(), &f);
     try testing.expect(p.ready());
@@ -180,7 +180,7 @@ test "what stops a machine, and the steps it no longer needs" {
         .root_fs = "ext4",
         .var_subvol = true,
         .pacman_moved = true,
-        .initramfs_hooks = &.{ "base", "systemd", "autodetect" },
+        .root_subvol = "/@/.snapshots/1/snapshot",
     } };
     const p = try plan(arena.allocator(), &f);
     try testing.expect(!p.ready());
@@ -195,8 +195,9 @@ test "what stops a machine, and the steps it no longer needs" {
         \\  ok  firmware: uefi
         \\  ok  esp: /boot/efi
         \\  no  bootloader: limine
-        \\        generations support grub and systemd-boot so far; limine and refind come later.
-        \\  ok  initramfs: systemd hooks
+        \\        generations support grub so far; systemd-boot, limine, and refind come later.
+        \\  no  root layout: /@/.snapshots/1/snapshot
+        \\        enable-rollback converts a root in the btrfs top level, or archinstall's @ subvolume. other layouts come later.
         \\  ok  generations: none yet
         \\
         \\steps
