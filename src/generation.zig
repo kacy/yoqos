@@ -101,7 +101,9 @@ pub fn kernelArgs(a: Allocator, cmdline: []const u8, root_uuid: []const u8, subv
         }
         try rest.print(a, " {s}", .{w});
     }
-    return std.fmt.allocPrint(a, "root=UUID={s} rootflags={s}{s}", .{ root_uuid, flags.items, rest.items });
+    // a kernel that panics reboots, so a generation on trial falls back.
+    const panic = if (std.mem.indexOf(u8, rest.items, " panic=") == null) " panic=10" else "";
+    return std.fmt.allocPrint(a, "root=UUID={s} rootflags={s}{s}{s}", .{ root_uuid, flags.items, rest.items, panic });
 }
 
 pub const GrubConfig = struct {
@@ -112,8 +114,10 @@ pub const GrubConfig = struct {
     entries: []const Entry,
 };
 
-/// the whole grub.cfg os keeps on the esp. a one-shot choice comes from
-/// an env file there: grub can write fat, but not btrfs.
+/// the whole grub.cfg os keeps on the esp. choices come from an env file
+/// there, since grub can write fat but not btrfs: `yoq_next` boots an
+/// entry once, and `yoq_default`, set while a generation is on trial, is
+/// both the default and what grub falls back to if an entry won't boot.
 pub fn grubConfig(a: Allocator, c: GrubConfig) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(a);
     const w = &out.writer;
@@ -126,7 +130,11 @@ pub fn grubConfig(a: Allocator, c: GrubConfig) ![]const u8 {
         \\set default="{s}"
         \\search --no-floppy --fs-uuid --set=yoq_esp {s}
         \\if [ -f (${{yoq_esp}})/yoq/grubenv ]; then
-        \\  load_env -f (${{yoq_esp}})/yoq/grubenv yoq_next
+        \\  load_env -f (${{yoq_esp}})/yoq/grubenv yoq_next yoq_default
+        \\  if [ "${{yoq_default}}" ]; then
+        \\    set default="${{yoq_default}}"
+        \\    set fallback="${{yoq_default}}"
+        \\  fi
         \\  if [ "${{yoq_next}}" ]; then
         \\    set default="${{yoq_next}}"
         \\    set yoq_next=
@@ -167,7 +175,8 @@ test "a generation's kernel command line" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const cmdline = "BOOT_IMAGE=/boot/vmlinuz-linux root=UUID=abc rw net.ifnames=0 rootflags=compress=zstd:1,subvol=/@ console=ttyS0,115200\n";
-    try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/1,compress=zstd:1 rw net.ifnames=0 console=ttyS0,115200", try kernelArgs(arena.allocator(), cmdline, "abc", "/@roots/1"));
+    try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/1,compress=zstd:1 rw net.ifnames=0 console=ttyS0,115200 panic=10", try kernelArgs(arena.allocator(), cmdline, "abc", "/@roots/1"));
+    try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/ rw panic=30", try kernelArgs(arena.allocator(), "rw panic=30", "abc", "/"));
     try testing.expectEqualStrings("/@roots/boot-2", try bootCopy(arena.allocator(), 2));
 }
 
@@ -184,7 +193,8 @@ test "grub's config on the esp" {
         },
     });
     try testing.expect(std.mem.indexOf(u8, text, "set default=\"gen-1\"\nsearch --no-floppy --fs-uuid --set=yoq_esp 41B2-0FB5\n") != null);
-    try testing.expect(std.mem.indexOf(u8, text, "load_env -f (${yoq_esp})/yoq/grubenv yoq_next\n") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "load_env -f (${yoq_esp})/yoq/grubenv yoq_next yoq_default\n") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "set fallback=\"${yoq_default}\"") != null);
     try testing.expect(std.mem.endsWith(u8, text,
         \\search --no-floppy --fs-uuid --set=root 1df77bf6
         \\

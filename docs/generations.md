@@ -88,6 +88,30 @@ if you booted an older generation from the menu and want to stay there,
 *   3  2026-09-26  rollback to 1: enable-rollback
 ```
 
+## updates that need a reboot
+
+a change that needs a reboot, like a new kernel, systemd, or microcode,
+boots once on trial:
+
+```
+reboot to finish. the next boot tries generation 5 once; if it doesn't come up healthy, the machine goes back to generation 4.
+```
+
+the next boot runs the new generation, and the boot menu's default stays
+on the one before. once the machine is up, `yoq-health.service` checks
+it: systemd isn't in maintenance, and every service the config turns on is
+running. healthy, and the new generation becomes the default. not
+healthy, and it reboots into the generation before.
+
+if the new generation can't boot at all, grub falls back to the default on
+its own, and a kernel panic reboots after 10 seconds into it. either way,
+`os` notices on that boot, makes it the newest generation with its config,
+and `os status` says what happened:
+
+```
+note: generation 7 didn't come up healthy, so this machine went back to generation 6. it's generation 8 now, with its config. `os rollback 7` tries 7 again.
+```
+
 ## keeping and cleaning up
 
 after each new generation, `os` keeps the newest five, generation 1, and
@@ -109,8 +133,10 @@ os gc --keep 2       # clean up now, keeping the newest two
   something, the previous generation is one pick away in the boot menu, but
   the session you were in has the broken update. building the next
   generation separately, and booting it once to check it, is planned.
-- **no automatic fallback.** a generation that doesn't boot doesn't send
-  you back to the one before on its own. you pick it in the menu.
+- **the health check is simple.** it asks whether systemd is in
+  maintenance and whether the config's services are running. a desktop
+  that doesn't come up, or a network that doesn't, passes. a boot that
+  hangs without panicking waits for you to pick an entry in the menu.
 - **state carries at the moment of the rollback.** a password you change
   after `os rollback` but before the reboot stays behind. carrying again at
   shutdown is planned.
@@ -122,8 +148,8 @@ os gc --keep 2       # clean up now, keeping the newest two
 ## later
 
 - carrying state again at shutdown, and the uid map for system users
-- automatic fallback: a new generation boots once, and falls back if its
-  health check fails
+- health checks for the display manager and the network, and a watchdog
+  for boots that hang
 - systemd-boot, limine, and refind
 - more root layouts
 - building the next generation apart from the running system, so a bad

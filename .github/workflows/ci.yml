@@ -49,6 +49,7 @@ jobs:
   vm:
     # a booted arch vm under kvm: systemd running and a real bootloader.
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     container:
       image: archlinux:latest
       options: --device /dev/kvm

@@ -80,6 +80,8 @@ pub const Outcome = struct {
     /// the machine runs generations and this run changed it, so the
     /// caller records a generation once its own commits are made.
     changed_generation: bool = false,
+    /// the change needs a reboot, so its generation boots on trial.
+    needs_reboot: bool = false,
 
     fn failed(w: *cli.Work) !Outcome {
         return .{ .code = try w.fail(), .matches = false };
@@ -129,7 +131,12 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.Render
     try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "done", &hash);
     const code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units);
     if (units and !ctx.json and changesPackages(p)) try offerRestarts(ctx, yes);
-    return .{ .code = code, .matches = true, .changed_generation = cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol) };
+    return .{
+        .code = code,
+        .matches = true,
+        .changed_generation = cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol),
+        .needs_reboot = (try p.rebootReasons(a)).len > 0,
+    };
 }
 
 /// after a run that changed a machine with generations, and after the
@@ -154,6 +161,26 @@ pub fn recordGeneration(ctx: *Context, done: Outcome, reason: []const u8) !void 
     }
     if (!ctx.json) try ctx.out.writeAll("recorded as a new generation; the boot menu has it.\n");
     try collectOld(ctx, &m, generation.default_keep);
+    if (done.needs_reboot) try armTrial(ctx, a, f.boot);
+}
+
+/// a generation that needs a reboot boots once on trial: the next boot
+/// tries it, the default stays on the one before, and `os health` makes
+/// it the default once it has come up healthy.
+fn armTrial(ctx: *Context, a: Allocator, boot: @import("../facts.zig").Boot) !void {
+    const records = try gens.readRecords(a, ctx.io, "/var");
+    if (records.len < 2) return;
+    const n = records[records.len - 1].n;
+    const before = records[records.len - 2].n;
+    if (try gens.setEnv(a, ctx.io, boot.esp.?, &.{
+        "yoq_next=head",
+        try std.fmt.allocPrint(a, "yoq_default=gen-{d}", .{before}),
+        try std.fmt.allocPrint(a, "yoq_trial={d}", .{n}),
+    })) |problem| {
+        try ctx.err.print("os: couldn't set up the trial boot: {s}. the next boot runs generation {d} without a fallback.\n", .{ problem, n });
+        return;
+    }
+    if (!ctx.json) try ctx.out.print("reboot to finish. the next boot tries generation {d} once; if it doesn't come up healthy, the machine goes back to generation {d}.\n", .{ n, before });
 }
 
 /// removes generations past the newest `keep`, besides the first and

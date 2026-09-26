@@ -51,6 +51,7 @@ pub const Machine = struct {
     /// records the running root as the next generation: a read-only
     /// snapshot, its record in /var, and the boot menu with it at the top.
     pub fn record(m: *const Machine, reason: []const u8, time: i64, config: ?generation.Config) !?[]const u8 {
+        std.Io.Dir.cwd().deleteFile(m.io, notice_path) catch {};
         const records = try readRecords(m.a, m.io, "/var");
         return m.add(records, m.boot.root_subvol.?, reason, time, config);
     }
@@ -247,6 +248,50 @@ pub const Machine = struct {
         };
     }
 };
+
+/// a notice for `os status`, about something os did on its own, like
+/// falling back from a generation that didn't start. the next generation
+/// recorded clears it.
+pub const notice_path = "/var/lib/yoq/notice";
+
+pub fn writeNotice(a: Allocator, io: std.Io, text: []const u8) !?[]const u8 {
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = notice_path, .data = text }) catch return try std.fmt.allocPrint(a, "can't write {s}", .{notice_path});
+    return null;
+}
+
+/// the env file on the esp that grub reads the menu's choices from.
+pub fn envPath(a: Allocator, esp: []const u8) ![]const u8 {
+    return std.fs.path.join(a, &.{ esp, "yoq/grubenv" });
+}
+
+/// one value from the esp's env file, or null.
+pub fn envValue(a: Allocator, io: std.Io, esp: []const u8, name: []const u8) !?[]const u8 {
+    const text = switch (try exec.output(a, io, &.{ "grub-editenv", try envPath(a, esp), "list" })) {
+        .ok => |t| t,
+        .failed => return null,
+    };
+    var lines = std.mem.tokenizeScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        if (std.mem.eql(u8, line[0..eq], name) and eq + 1 < line.len) return line[eq + 1 ..];
+    }
+    return null;
+}
+
+/// sets values in the esp's env file: "name=value" each.
+pub fn setEnv(a: Allocator, io: std.Io, esp: []const u8, pairs: []const []const u8) !?[]const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, &.{ "grub-editenv", try envPath(a, esp), "set" });
+    try argv.appendSlice(a, pairs);
+    return exec.run(a, io, argv.items);
+}
+
+pub fn unsetEnv(a: Allocator, io: std.Io, esp: []const u8, names: []const []const u8) !?[]const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, &.{ "grub-editenv", try envPath(a, esp), "unset" });
+    try argv.appendSlice(a, names);
+    return exec.run(a, io, argv.items);
+}
 
 /// machine state every root gets from the running system. ssh host keys
 /// are added by name, and passwords are merged into /etc/shadow.

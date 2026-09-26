@@ -99,7 +99,7 @@ pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 /// the running machine's boot facts, when it runs a generation.
-fn generationsHere(w: *cli.Work) !?facts.Boot {
+pub fn generationsHere(w: *cli.Work) !?facts.Boot {
     if (!cli.eql(w.ctx.root, "/") or w.ctx.facts_path != null) return null;
     // only how the machine boots: no packages or units to read.
     const f = try @import("../observe.zig").observe(w.allocator(), w.ctx.io, .{ .packages = false, .units = false }, &w.diags);
@@ -167,25 +167,31 @@ fn rollbackGeneration(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, wan
             return 0;
         }
     }
+    const made = try startFrom(ctx, a, boot, target, source, reason) orelse return 1;
+    try ctx.out.print("generation {d} is ready. reboot to start it.\n", .{made});
+    return 0;
+}
+
+/// starts the next generation from `source`, carrying `target`'s config
+/// back with it so the files match that system, and collects old
+/// generations. returns its number, or null after saying why.
+pub fn startFrom(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, target: generation.Record, source: []const u8, reason: []const u8) !?u32 {
     var why: []const u8 = "";
     const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse {
         try ctx.err.print("os: {s}\n", .{why});
-        return 1;
+        return null;
     };
     defer m.close();
     const config: ?generation.Config = if (target.config_dir != null and target.config_rev != null) .{ .dir = target.config_dir.?, .rev = target.config_rev.? } else null;
     const made = try m.start(source, reason, std.Io.Timestamp.now(ctx.io, .real).toSeconds(), config, &why) orelse {
         try ctx.err.print("os: {s}\n", .{why});
-        return 1;
+        return null;
     };
-    // the config goes back with the system, so the files match what the
-    // next boot runs.
     if (config) |c| {
-        if (!try restoreConfig(ctx, a, c, reason)) return 1;
+        if (!try restoreConfig(ctx, a, c, reason)) return null;
     }
-    try ctx.out.print("generation {d} is ready. reboot to start it.\n", .{made});
     try applying.collectOld(ctx, &m, generation.default_keep);
-    return 0;
+    return made;
 }
 
 /// `os gc [--keep n]`: removes old generations now.

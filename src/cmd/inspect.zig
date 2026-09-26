@@ -90,6 +90,10 @@ pub fn statusCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
     const s = try status.summarize(result.allocator(), result.state.config(), &result.state.lock, &result.facts, &result.plan);
     if (ctx.json) try status.writeJson(ctx.out, &s) else try status.writeText(ctx.out, &s);
+    // something os did on its own, like falling back from a generation.
+    const fs: @import("../rootfs.zig").Root = .{ .a = result.allocator(), .io = ctx.io, .dir = ctx.root };
+    const notice = try fs.read("var/lib/yoq/notice");
+    if (notice.len > 0 and !ctx.json) try ctx.out.print("\nnote: {s}", .{notice});
     return if (s.failing.len > 0) 1 else 0;
 }
 
