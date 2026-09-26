@@ -52,15 +52,38 @@ pub const Machine = struct {
     /// snapshot, its record in /var, and the boot menu with it at the top.
     pub fn record(m: *const Machine, reason: []const u8, time: i64) !?[]const u8 {
         const records = try readRecords(m.a, m.io, "/var");
-        var n: u32 = 1;
-        for (records) |r| n = @max(n, r.n + 1);
-        const running = m.boot.root_subvol.?;
+        return m.add(records, m.boot.root_subvol.?, reason, time);
+    }
+
+    /// starts a new generation from `source`, a generation's record or a
+    /// copy of one: a writable root of its own, recorded and at the top of
+    /// the menu, so the next boot runs it. returns its number, or what
+    /// went wrong in `why`.
+    pub fn start(m: *const Machine, source: []const u8, reason: []const u8, time: i64, why: *[]const u8) !?u32 {
+        const records = try readRecords(m.a, m.io, "/var");
+        const n = next(records);
+        const root = try std.fmt.allocPrint(m.a, "/{s}/{d}", .{ generation.roots_dir, n });
+        btrfs.snapshot(try m.at(&.{source}), try m.at(&.{root}), false) catch |e| {
+            why.* = try std.fmt.allocPrint(m.a, "can't copy {s}: {s}", .{ source, @errorName(e) });
+            return null;
+        };
+        if (try m.add(records, root, reason, time)) |w| {
+            why.* = w;
+            return null;
+        }
+        return n;
+    }
+
+    /// the next generation, from the root at `root`: its read-only record,
+    /// the record file, and the menu with `root` at the top.
+    fn add(m: *const Machine, records: []const generation.Record, root: []const u8, reason: []const u8, time: i64) !?[]const u8 {
+        const n = next(records);
         const dest = try m.at(&.{ generation.gens_dir, try std.fmt.allocPrint(m.a, "{d}", .{n}) });
-        btrfs.snapshot(try m.at(&.{running}), dest, true) catch |e| return try std.fmt.allocPrint(m.a, "can't snapshot {s}: {s}", .{ running, @errorName(e) });
-        const rec: generation.Record = .{ .n = n, .time = time, .root = running[1..], .reason = reason };
+        btrfs.snapshot(try m.at(&.{root}), dest, true) catch |e| return try std.fmt.allocPrint(m.a, "can't snapshot {s}: {s}", .{ root, @errorName(e) });
+        const rec: generation.Record = .{ .n = n, .time = time, .root = root[1..], .reason = reason };
         if (try writeRecord(m.a, m.io, "/var", rec)) |w| return w;
         const all = try std.mem.concat(m.a, generation.Record, &.{ records, &.{rec} });
-        return m.writeMenu(running, all);
+        return m.writeMenu(root, all);
     }
 
     /// the boot menu: the running root, labelled with the newest
@@ -135,6 +158,13 @@ pub const Machine = struct {
         };
     }
 };
+
+/// the number the next generation gets.
+pub fn next(records: []const generation.Record) u32 {
+    var n: u32 = 1;
+    for (records) |r| n = @max(n, r.n + 1);
+    return n;
+}
 
 /// "yoq 2 · 2026-09-26 · add fd".
 fn title(a: Allocator, r: generation.Record) ![]const u8 {

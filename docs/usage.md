@@ -322,8 +322,9 @@ edits you make to the config by hand aren't committed for you.
 
 on a btrfs root with grub, `os enable-rollback` turns the machine's history
 into generations: whole copies of the system you can boot from the menu.
-[generations.md](generations.md) covers how they work, and what they don't
-do yet.
+there, `os rollback` goes back a whole generation and `os history` lists
+generations. [generations.md](generations.md) covers how they work, and
+what they don't do yet.
 
 ## the config
 

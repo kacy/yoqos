@@ -54,6 +54,30 @@ the top entry is the system you run. picking an older one in the menu
 boots a fresh copy of it, so looking around can't change the record.
 `/var` and `/home` stay as they are either way.
 
+## going back
+
+```
+$ sudo os rollback
+generation 2 (2026-09-26 · add tree) becomes generation 4, and the next boot runs it.
+/var and /home stay as they are.
+```
+
+`os rollback` starts a new generation from the one before the newest, and
+`os rollback 2` from generation 2. either way the machine switches at the
+next boot, and history only grows: rolling back is a new generation, so
+`os rollback` again takes you forward.
+
+if you booted an older generation from the menu and want to stay there,
+`os rollback --to-booted` makes it the newest generation.
+
+`os history` lists the generations, with a `*` on the one running:
+
+```
+    1  2026-09-26  enable-rollback
+    2  2026-09-26  add tree
+*   3  2026-09-26  rollback to 1: enable-rollback
+```
+
 ## what this doesn't do yet
 
 - **changes happen live.** an update changes the running system first, and
@@ -63,12 +87,11 @@ boots a fresh copy of it, so looking around can't change the record.
   generation separately, and booting it once to check it, is planned.
 - **no automatic fallback.** a generation that doesn't boot doesn't send
   you back to the one before on its own. you pick it in the menu.
-- **going back takes the menu.** there's no `os rollback --to-booted` yet
-  to keep the older generation you booted, and `os rollback <n>` works on
-  packages and the config, not the whole root.
+- **the config goes back too.** `/etc/yoq` lives in the root, so after a
+  rollback it's the config and lock that generation had, and its git
+  history ends where that generation's did.
 - **no carried state.** an older generation boots with its own `/etc`, so
   its passwords, ssh host keys, and machine id are the ones it had then.
-  the config in `/etc/yoq` goes back with it too.
 - **a looked-at copy doesn't last.** changes you make while running an
   older generation's copy are thrown away the next time `os` writes the
   menu.
@@ -81,7 +104,6 @@ boots a fresh copy of it, so looking around can't change the record.
 
 ## later
 
-- `os rollback <n>` and `os rollback --to-booted` for whole generations
 - carried state: passwords, host keys, and the machine id copied into every
   generation, and the config kept outside it
 - automatic fallback: a new generation boots once, and falls back if its

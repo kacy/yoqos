@@ -44,4 +44,21 @@ check "pacman -Q tree >/dev/null 2>&1 || echo no tree" "no tree"
 "$vm" reboot
 check "findmnt -no FSROOT /" /@roots/1
 check "pacman -Q tree >/dev/null && echo tree" tree
+
+# a whole-root rollback: generation 1 again, as generation 3.
+"$vm" ssh "/usr/local/bin/os rollback --yes"
+"$vm" reboot
+check "findmnt -no FSROOT /" /@roots/3
+check "pacman -Q tree >/dev/null 2>&1 || echo no tree" "no tree"
+"$vm" ssh "/usr/local/bin/os history"
+
+# an older generation booted from the menu, and kept.
+"$vm" ssh "grub-editenv /efi/yoq/grubenv set yoq_next=gen-2"
+"$vm" reboot
+check "findmnt -no FSROOT /" /@roots/boot-2
+"$vm" ssh "/usr/local/bin/os rollback --to-booted --yes"
+"$vm" reboot
+check "findmnt -no FSROOT /" /@roots/4
+check "pacman -Q tree >/dev/null && echo tree" tree
+"$vm" ssh "/usr/local/bin/os history"
 echo "rollback ok"
