@@ -19,6 +19,7 @@ pub const Code = enum {
     bad_value,
     include_missing,
     include_cycle,
+    source_missing,
     lock_invalid,
     lock_stale,
     unresolvable,
@@ -102,6 +103,14 @@ pub const table = [_]Entry{
         .title = "include cycle",
         .explanation = "two or more files include each other, directly or through other files. the message " ++
             "shows the chain. break it by moving the shared settings into a file that neither includes.",
+    },
+    .{
+        .code = .source_missing,
+        .id = "E0112",
+        .title = "file source missing",
+        .explanation = "a `[files]` entry's `source` names a file that doesn't exist or can't be read. the path " ++
+            "is relative to the config file that names it, so `source = \"files/motd\"` in /etc/yoq/machine.toml " ++
+            "is /etc/yoq/files/motd.",
     },
     .{
         .code = .lock_invalid,

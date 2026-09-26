@@ -12,6 +12,7 @@ const settings = @import("settings.zig");
 const systemd = @import("systemd.zig");
 const users = @import("users.zig");
 const rootfs = @import("rootfs.zig");
+const exec = @import("exec.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Target = alpm.Target;
@@ -43,7 +44,7 @@ pub fn transaction(a: Allocator, p: *const planner.Plan, l: *const lock.Lock, t:
             .remove => try remove.append(a, c.subject),
         },
         .reason => try (if (std.mem.eql(u8, c.to.?, "explicit")) &explicit else &dependency).append(a, c.subject),
-        .setting, .unit, .user => {},
+        .setting, .unit, .user, .file => {},
     };
     return .{
         .target = t,
@@ -58,7 +59,7 @@ pub fn transaction(a: Allocator, p: *const planner.Plan, l: *const lock.Lock, t:
 /// machine. units going away stop before their packages are removed, and
 /// new ones start after theirs are installed. returns null, with reasons
 /// in `diags`, if a step failed; steps before it stay done.
-pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock, t: Target, units: bool, diags: *diag.List) !?Result {
+pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock, files: []const planner.DesiredFile, t: Target, units: bool, diags: *diag.List) !?Result {
     var skipped: std.ArrayList(planner.Change) = .empty;
     for (p.changes) |c| {
         if (!applies(c.kind, units)) try skipped.append(a, c);
@@ -72,12 +73,37 @@ pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock
         const ok = switch (c.kind) {
             .setting => try settings.apply(a, io, t.root, c.subject, c.to.?, diags),
             .user => try users.apply(a, io, t.root, c, diags),
+            .file => try writeFile(a, io, t.root, files, c.subject, units, diags),
             else => true,
         };
         if (!ok) return null;
     }
     if (units and !try changeUnits(a, p, false, diags)) return null;
     return .{ .skipped = skipped.items };
+}
+
+/// writes a managed file whole, with its mode. on a running machine
+/// (`live`, as for units) the sysctl file is loaded right away.
+fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.DesiredFile, path: []const u8, live: bool, diags: *diag.List) !bool {
+    const d = for (files) |d| {
+        if (std.mem.eql(u8, d.path, path)) break d;
+    } else unreachable; // the plan came from these files.
+    const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
+    const mode = std.fmt.parseInt(u32, d.mode, 8) catch unreachable; // validated with the config.
+    fs.writeMode(std.mem.trimStart(u8, path, "/"), d.content, mode) catch |e| switch (e) {
+        error.OutOfMemory => return e,
+        error.WriteFailed => {
+            try diags.add(.bad_value, null, "can't write {s}", .{try fs.path(path)}, null);
+            return false;
+        },
+    };
+    if (live and std.mem.eql(u8, path, planner.sysctl_path)) {
+        if (try exec.run(a, io, &.{ "sysctl", "-p", path })) |why| {
+            try diags.add(.bad_value, null, "wrote {s}, but loading it failed: {s}", .{ path, why }, null);
+            return false;
+        }
+    }
+    return true;
 }
 
 /// the unit changes that turn units off, or the ones that turn them on.
@@ -118,4 +144,43 @@ test "a plan becomes one transaction" {
     try testing.expectEqual(2, tx.explicit.len);
     try testing.expectEqualStrings("vim", tx.explicit[1]);
     try testing.expectEqualStrings("glibc", tx.dependency[0]);
+}
+
+test "files are written with their mode, and the plan comes back empty" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+    var diags: diag.List = .init(testing.allocator);
+    defer diags.deinit();
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+
+    var c = try helpers.configFrom(a,
+        \\[boot]
+        \\kernel = "none"
+        \\[files."/etc/ssh/sshd_config.d/10-local.conf"]
+        \\text = "PasswordAuthentication no\n"
+        \\mode = "0600"
+        \\[sysctl]
+        \\"vm.swappiness" = 10
+        \\
+    );
+    for (c.files.entries.items) |*e| e.value.content = e.value.text.?.v;
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
+    const files = try planner.desiredFiles(a, &c);
+    const paths = try planner.filePaths(a, &c);
+    const observe = @import("observe.zig");
+
+    var f = try observe.observe(a, io, .{ .root = root, .packages = false, .units = false, .files = paths }, &diags);
+    const p = (try planner.plan(a, &c, &l, &f, &diags)).?;
+    try testing.expectEqual(2, p.changes.len);
+    const t: Target = .{ .root = root, .dbpath = "", .dbs = &.{}, .cachedir = "", .gpgdir = null };
+    _ = (try run(a, io, &p, &l, files, t, false, &diags)).?;
+
+    f = try observe.observe(a, io, .{ .root = root, .packages = false, .units = false, .files = paths }, &diags);
+    try testing.expect((try planner.plan(a, &c, &l, &f, &diags)).?.empty());
+    try testing.expectEqualStrings("0600", f.file("/etc/ssh/sshd_config.d/10-local.conf").?.mode);
+    try testing.expectEqualStrings("0644", f.file(planner.sysctl_path).?.mode);
 }

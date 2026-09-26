@@ -113,7 +113,8 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs) !Outcome {
     const hash = try p.hash();
     const now = std.Io.Timestamp.now(ctx.io, .real).toSeconds();
     try journal.record(a, ctx.io, ctx.root, now, "begin", &hash);
-    const done = try apply.run(a, ctx.io, p, &result.state.lock, target, units, &w.diags) orelse {
+    const files = try planner.desiredFiles(a, result.state.config());
+    const done = try apply.run(a, ctx.io, p, &result.state.lock, files, target, units, &w.diags) orelse {
         try journal.record(a, ctx.io, ctx.root, now, "failed", &hash);
         return Outcome.failed(&w);
     };

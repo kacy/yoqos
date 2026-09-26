@@ -54,6 +54,7 @@ pub fn load(gpa: Allocator, files: Files, path: []const u8, diags: *diag.List) e
     const top = try std.fs.path.resolvePosix(l.a, &.{path});
     if (try l.loadFile(top, null)) |c| {
         loaded.config = c;
+        try l.fileContents(&loaded.config);
         try config.validate(&loaded.config, diags);
     }
     return loaded;
@@ -115,6 +116,25 @@ const Loader = struct {
         try mergeInto(l.a, &merged, &part.config);
         for (part.remove.packages.items.items) |it| try merged.removed.add(l.a, it);
         return merged;
+    }
+
+    /// reads what each `[files]` entry holds. a source is relative to the
+    /// file that names it, which its span records.
+    fn fileContents(l: *Loader, c: *Config) !void {
+        for (c.files.entries.items) |*e| {
+            const f = &e.value;
+            if (f.text) |t| f.content = t.v;
+            const source = f.source orelse continue;
+            const dir = std.fs.path.dirnamePosix(source.src.file) orelse ".";
+            const path = try std.fs.path.resolvePosix(l.a, &.{ dir, source.v });
+            f.content = l.files.read(l.a, path) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    try l.diags.add(.source_missing, source.src, "{s} can't be read, for {s}", .{ path, e.name }, null);
+                    continue;
+                },
+            };
+        }
     }
 
     fn cycle(l: *Loader, start: usize, path: []const u8, from: Src) error{OutOfMemory}!?Config {
@@ -462,4 +482,36 @@ test "unset rejects paths that aren't keys" {
     _ = try r.load("machine.toml");
     try testing.expectEqual(5, r.diags.items.items.len);
     for (r.diags.items.items) |d| try testing.expectEqual(diag.Code.bad_value, d.code);
+}
+
+test "files read their source next to the file that names them" {
+    var r: Run = .{};
+    defer r.deinit();
+    try r.fs.put("/etc/yoq/profiles/base.toml",
+        \\[files."/etc/motd"]
+        \\source = "motd"
+        \\
+    );
+    try r.fs.put("/etc/yoq/profiles/motd", "welcome\n");
+    try r.fs.put("/etc/yoq/machine.toml",
+        \\include = ["profiles/base.toml"]
+        \\[files."/etc/issue"]
+        \\text = "atlas\n"
+        \\mode = "0600"
+        \\[sysctl]
+        \\"vm.swappiness" = 10
+        \\"kernel.printk" = "3 3 3 3"
+        \\
+    );
+    const c = try r.load("/etc/yoq/machine.toml");
+    try r.expectClean();
+    try testing.expectEqualStrings("welcome\n", c.files.get("/etc/motd").?.content.?);
+    try testing.expectEqualStrings("atlas\n", c.files.get("/etc/issue").?.content.?);
+    try testing.expectEqualStrings("0600", c.files.get("/etc/issue").?.modeOf());
+    try testing.expectEqualStrings("10", c.sysctl.get("vm.swappiness").?.v.text);
+    try testing.expectEqualStrings("3 3 3 3", c.sysctl.get("kernel.printk").?.v.text);
+
+    try r.fs.put("/etc/yoq/machine.toml", "[files.\"/etc/motd\"]\nsource = \"gone\"\n");
+    _ = try r.load("/etc/yoq/machine.toml");
+    try testing.expectEqual(diag.Code.source_missing, r.diags.items.items[0].code);
 }

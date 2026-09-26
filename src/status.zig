@@ -37,6 +37,8 @@ pub const Status = struct {
         units: []const []const u8,
         /// declared users that are missing or differ.
         users: []const []const u8,
+        /// managed files that are missing or differ.
+        files: []const []const u8,
         /// packages pacman touched since the last apply. this says where
         /// the rows above came from, so it isn't counted on its own.
         pacman: []const []const u8,
@@ -46,7 +48,7 @@ pub const Status = struct {
 
     pub fn clean(s: *const Status) bool {
         const ch = s.changed;
-        return ch.extra.len + ch.orphans + ch.missing.len + ch.versions.len + ch.settings.len + ch.units.len + ch.users.len + s.failing.len == 0;
+        return ch.extra.len + ch.orphans + ch.missing.len + ch.versions.len + ch.settings.len + ch.units.len + ch.users.len + ch.files.len + s.failing.len == 0;
     }
 };
 
@@ -57,6 +59,7 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
     var settings: std.ArrayList([]const u8) = .empty;
     var units: std.ArrayList([]const u8) = .empty;
     var users: std.ArrayList([]const u8) = .empty;
+    var files: std.ArrayList([]const u8) = .empty;
     var orphans: usize = 0;
     for (p.changes) |ch| switch (ch.kind) {
         .package, .dependency => switch (ch.op) {
@@ -72,6 +75,7 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
         .setting => try settings.append(a, ch.subject),
         .unit => try units.append(a, ch.subject),
         .user => if (!lists.contains(users.items, ch.subject)) try users.append(a, ch.subject),
+        .file => try files.append(a, ch.subject),
     };
 
     var failing: std.ArrayList([]const u8) = .empty;
@@ -101,6 +105,7 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
             .settings = settings.items,
             .units = units.items,
             .users = users.items,
+            .files = files.items,
             .pacman = try pacmanTouched(a, f),
         },
         .failing = failing.items,
@@ -158,6 +163,7 @@ pub fn writeText(w: *std.Io.Writer, s: *const Status) !void {
     if (ch.settings.len > 0) try rows.list("settings differ", ch.settings, "os plan");
     if (ch.units.len > 0) try rows.list("services not as configured", ch.units, "os plan");
     if (ch.users.len > 0) try rows.list("users not as configured", ch.users, "os plan");
+    if (ch.files.len > 0) try rows.list("files differ", ch.files, "os plan");
     if (ch.pacman.len > 0) try rows.list("touched with pacman since the last apply", ch.pacman, "os plan shows what differs");
     if (rows.first) try w.writeAll("changed   none\n");
 
@@ -226,7 +232,7 @@ test "status text" {
         .lock_date = "2026-09-01",
         .lock_age_days = 24,
         .ok = .{ .packages = 400, .services = 2 },
-        .changed = .{ .extra = &.{ "htop", "btop" }, .orphans = 0, .missing = &.{}, .versions = &.{"git"}, .settings = &.{}, .units = &.{}, .users = &.{}, .pacman = &.{ "htop", "btop" } },
+        .changed = .{ .extra = &.{ "htop", "btop" }, .orphans = 0, .missing = &.{}, .versions = &.{"git"}, .settings = &.{}, .units = &.{}, .users = &.{}, .files = &.{}, .pacman = &.{ "htop", "btop" } },
         .failing = &.{"tailscaled.service"},
     };
     var out: std.Io.Writer.Allocating = .init(arena.allocator());

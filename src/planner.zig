@@ -35,6 +35,8 @@ pub const Kind = enum {
     unit,
     /// a user being created or changed. `from` and `to` say how.
     user,
+    /// a file os writes whole: its content, its mode, or both.
+    file,
 };
 
 pub const Change = struct {
@@ -237,6 +239,7 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
     lists.sortByField(Change, "subject", units.items);
     try changes.appendSlice(a, units.items);
     try planUsers(a, c, f, &changes);
+    try planFiles(a, c, f, &changes);
 
     return .{ .changes = changes.items };
 }
@@ -245,6 +248,75 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
 /// groups. the groups listed are all of them: others are left. users the
 /// config doesn't mention are left alone, since removing an account by
 /// accident costs too much.
+/// a file os writes, from `[files]` or made from another key.
+pub const DesiredFile = struct {
+    path: []const u8,
+    content: []const u8,
+    mode: []const u8,
+    /// the key that makes the file, for ones `[files]` doesn't name.
+    cause: ?[]const u8 = null,
+};
+
+/// where `[sysctl]` goes.
+pub const sysctl_path = "/etc/sysctl.d/99-yoq.conf";
+
+/// every file the config wants: `[files]`, then the one `[sysctl]` makes.
+pub fn desiredFiles(a: Allocator, c: *const config.Config) ![]const DesiredFile {
+    var out: std.ArrayList(DesiredFile) = .empty;
+    for (c.files.entries.items) |e| {
+        // a source that couldn't be read was reported when loading.
+        const content = e.value.content orelse continue;
+        try out.append(a, .{ .path = e.name, .content = content, .mode = e.value.modeOf() });
+    }
+    if (c.sysctl.entries.items.len > 0) {
+        const keys = try a.alloc([]const u8, c.sysctl.entries.items.len);
+        for (c.sysctl.entries.items, keys) |e, *k| k.* = e.name;
+        lists.sortStrings(keys);
+        var text: std.ArrayList(u8) = .empty;
+        try text.appendSlice(a, "# written by os from [sysctl] in the config. edits here are overwritten.\n");
+        for (keys) |k| try text.print(a, "{s} = {s}\n", .{ k, c.sysctl.get(k).?.v.text });
+        try out.append(a, .{ .path = sysctl_path, .content = text.items, .mode = config.File.default_mode, .cause = "sysctl" });
+    }
+    return out.items;
+}
+
+/// the paths of every file the config wants, for the observer to hash.
+pub fn filePaths(a: Allocator, c: *const config.Config) ![]const []const u8 {
+    const want = try desiredFiles(a, c);
+    const out = try a.alloc([]const u8, want.len);
+    for (want, out) |d, *p| p.* = d.path;
+    return out;
+}
+
+/// files: written when missing or when their content differs, and their
+/// mode set when only that differs. files the config doesn't name are
+/// left alone.
+fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
+    const want = try desiredFiles(a, c);
+    var files: std.ArrayList(Change) = .empty;
+    for (want) |d| {
+        const cause = d.cause orelse try std.fmt.allocPrint(a, "files.\"{s}\"", .{d.path});
+        const have = f.file(d.path) orelse {
+            try files.append(a, .{ .op = .add, .kind = .file, .subject = d.path, .to = try std.fmt.allocPrint(a, "write, mode {s}", .{d.mode}), .cause = cause });
+            continue;
+        };
+        const hex = @import("observe.zig").sha256Hex(d.content);
+        const mode = try normalMode(a, d.mode);
+        if (!std.mem.eql(u8, have.sha256, &hex)) {
+            try files.append(a, .{ .op = .change, .kind = .file, .subject = d.path, .to = try std.fmt.allocPrint(a, "rewrite, mode {s}", .{mode}), .cause = cause });
+        } else if (!std.mem.eql(u8, have.mode, mode)) {
+            try files.append(a, .{ .op = .change, .kind = .file, .subject = d.path, .from = have.mode, .to = try std.fmt.allocPrint(a, "mode {s}", .{mode}), .cause = cause });
+        }
+    }
+    lists.sortByField(Change, "subject", files.items);
+    try changes.appendSlice(a, files.items);
+}
+
+/// "644" and "0644" are the same mode; facts write four digits.
+fn normalMode(a: Allocator, mode: []const u8) ![]const u8 {
+    return if (mode.len == 3) std.fmt.allocPrint(a, "0{s}", .{mode}) else mode;
+}
+
 fn planUsers(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
     for (c.users.entries.items) |e| {
         const name = e.name;
@@ -331,7 +403,7 @@ pub fn writeText(w: *std.Io.Writer, a: Allocator, p: *const Plan, opts: RenderOp
             try depSummary(w, p);
         }
     }
-    inline for (.{ .{ "system", Kind.setting }, .{ "users", Kind.user }, .{ "services", Kind.unit } }) |section| {
+    inline for (.{ .{ "system", Kind.setting }, .{ "users", Kind.user }, .{ "services", Kind.unit }, .{ "files", Kind.file } }) |section| {
         if (has(p, section[1])) {
             try w.writeAll(section[0] ++ "\n");
             for (p.changes) |c| {
@@ -390,7 +462,7 @@ fn line(w: *std.Io.Writer, c: Change) !void {
                 try w.print("{s}: {s}", .{ key, c.to.? });
             }
         },
-        .unit => try w.print("{s}: {s}", .{ c.subject, c.to.? }),
+        .unit, .file => try w.print("{s}: {s}", .{ c.subject, c.to.? }),
         .user => if (c.from != null and c.to != null) {
             // "shell bash -> shell zsh" reads better as "shell bash -> zsh".
             const from = c.from.?;
@@ -613,6 +685,52 @@ test "the same inputs give the same plan and hash" {
     defer parsed.deinit();
     try testing.expectEqualStrings(&first.?, parsed.value.object.get("hash").?.string);
     try testing.expectEqual(2, parsed.value.object.get("summary").?.object.get("remove").?.integer);
+}
+
+test "files: written when missing, rewritten when different, and the sysctl file" {
+    var t: T = .{};
+    defer t.deinit();
+    var c = try t.cfg(
+        \\[boot]
+        \\kernel = "none"
+        \\[files."/etc/motd"]
+        \\text = "hi\n"
+        \\[files."/etc/issue"]
+        \\text = "atlas\n"
+        \\mode = "0600"
+        \\[files."/etc/hosts.allow"]
+        \\text = "same\n"
+        \\mode = "600"
+        \\[sysctl]
+        \\"vm.swappiness" = 10
+        \\"kernel.printk" = "3 3 3 3"
+        \\
+    );
+    // decoding alone doesn't fill in content; loading does.
+    for (c.files.entries.items) |*e| e.value.content = e.value.text.?.v;
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
+    var have = [_]facts.File{
+        .{ .path = "/etc/issue", .sha256 = &@import("observe.zig").sha256Hex("old\n"), .mode = "0600" },
+        .{ .path = "/etc/hosts.allow", .sha256 = &@import("observe.zig").sha256Hex("same\n"), .mode = "0644" },
+    };
+    const f: facts.Facts = .{ .files = &have };
+    const p = (try plan(t.a(), &c, &l, &f, &t.diags)).?;
+    try testing.expectEqual(4, p.changes.len);
+    try testing.expectEqualStrings("/etc/hosts.allow", p.changes[0].subject);
+    try testing.expectEqualStrings("mode 0600", p.changes[0].to.?);
+    try testing.expectEqualStrings("/etc/issue", p.changes[1].subject);
+    try testing.expectEqualStrings("rewrite, mode 0600", p.changes[1].to.?);
+    try testing.expectEqual(Op.add, p.changes[2].op);
+    try testing.expectEqualStrings(sysctl_path, p.changes[3].subject);
+    try testing.expectEqualStrings("sysctl", p.changes[3].cause.?);
+
+    const sysctl = (try desiredFiles(t.a(), &c))[3];
+    try testing.expectEqualStrings(
+        \\# written by os from [sysctl] in the config. edits here are overwritten.
+        \\kernel.printk = 3 3 3 3
+        \\vm.swappiness = 10
+        \\
+    , sysctl.content);
 }
 
 test "a package from a service keeps its install reason" {

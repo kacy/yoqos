@@ -58,6 +58,16 @@ id -nG yoqtest | grep -qw video
 if id -nG yoqtest | grep -qw wheel; then echo "yoqtest is still in wheel"; exit 1; fi
 "$os" --config "$cfg" plan | grep -q "nothing to do"
 
+# files and sysctl: written with their mode, and sysctl loaded where
+# systemd runs the machine.
+printf '\n[files."/etc/motd"]\ntext = "managed by os\\n"\nmode = "0600"\n\n[sysctl]\n"vm.swappiness" = 17\n' >> "$cfg"
+"$os" --config "$cfg" apply --yes
+grep -qx "managed by os" /etc/motd
+[ "$(stat -c %a /etc/motd)" = 600 ]
+grep -qx "vm.swappiness = 17" /etc/sysctl.d/99-yoq.conf
+if [ -d /run/systemd/system ]; then [ "$(sysctl -n vm.swappiness)" = 17 ]; fi
+"$os" --config "$cfg" plan | grep -q "nothing to do"
+
 # rollback: back past an add, then forward again, with history to match.
 "$os" --config "$cfg" add --yes tree
 "$os" --config "$cfg" rollback --yes

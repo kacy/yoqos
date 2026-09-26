@@ -282,7 +282,7 @@ pub fn record(ctx: *Context, a: std.mem.Allocator, top: []const u8, message: []c
 /// to `w.diags`; a bad facts file is reported here and returns null.
 pub fn facts(w: *Work) !?@import("facts.zig").Facts {
     const ctx = w.ctx;
-    return pipeline.getFacts(ctx.files, ctx.io, w.allocator(), ctx.facts_path, ctx.root, &w.diags) catch |e| {
+    return pipeline.getFacts(ctx.files, ctx.io, w.allocator(), ctx.facts_path, ctx.root, &.{}, &w.diags) catch |e| {
         try factsError(ctx, e, ctx.facts_path);
         return null;
     };

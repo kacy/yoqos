@@ -335,6 +335,8 @@ bluetooth = false
 | `[desktop]` | `session`: `hyprland`. `audio`: `pipewire`. these bring in their packages. |
 | `[users.<name>]` | `shell`, and `groups`: the full list of groups beyond the user's own |
 | `[services]` | `<name> = true` or `false`, for the services listed below |
+| `[files."<path>"]` | a file `os` writes whole: `text` or `source`, and `mode` |
+| `[sysctl]` | kernel settings, like `"vm.swappiness" = 10` |
 
 `aur` and `[state]` are read but not used yet.
 
@@ -394,6 +396,31 @@ no `groups` at all, its groups are left alone.
 `os` never deletes a user, and passwords stay yours to set with `passwd`.
 every uid `os` gives out is kept in `/var/lib/yoq/ids`, so a user created
 again gets its old uid back, and its files in `/home` are still its own.
+
+### files and sysctl
+
+```toml
+[files."/etc/ssh/sshd_config.d/10-local.conf"]
+source = "files/sshd.conf"
+mode = "0600"
+
+[files."/etc/motd"]
+text = "welcome to atlas\n"
+
+[sysctl]
+"vm.swappiness" = 10
+"net.ipv4.ip_forward" = 1
+```
+
+a `[files]` entry is a file `os` writes whole. `text` is the content itself;
+`source` names a file next to the config, relative to the config file that
+names it, so a repository can keep them together. `mode` is octal and
+`0644` unless you say otherwise. `os plan` shows a file that's missing, has
+different content, or has a different mode. files the config doesn't name
+are left alone, and so is a file you take out of the config.
+
+`[sysctl]` becomes one file, `/etc/sysctl.d/99-yoq.conf`, and `apply` loads
+it right away when systemd runs the machine.
 
 ### includes
 

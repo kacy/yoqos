@@ -101,6 +101,8 @@ const TomlOut = struct {
 fn writeScalar(w: *Writer, v: anytype) !void {
     switch (@typeInfo(@TypeOf(v))) {
         .pointer => try toml.writeString(w, v),
+        // a number stays one; anything else is a string.
+        .@"struct" => if (std.fmt.parseInt(i64, v.text, 10)) |_| try w.writeAll(v.text) else |_| try toml.writeString(w, v.text),
         .@"enum" => try w.print("\"{s}\"", .{@tagName(v)}),
         else => try w.print("{}", .{v}),
     }

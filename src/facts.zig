@@ -35,6 +35,15 @@ pub const User = struct {
     groups: []const []const u8 = &.{},
 };
 
+/// a file os manages, as it is on the machine.
+pub const File = struct {
+    path: []const u8,
+    /// hex sha256 of the content.
+    sha256: []const u8,
+    /// octal permission bits, like "0644".
+    mode: []const u8,
+};
+
 /// packages a pacman transaction outside os touched, and when.
 pub const PacmanChange = struct {
     time: i64,
@@ -60,10 +69,19 @@ pub const Facts = struct {
     users: []User = &.{},
     /// pacman transactions since the last apply, from the drift hook.
     pacman_changes: []PacmanChange = &.{},
+    /// the files the config manages that exist.
+    files: []File = &.{},
 
     pub fn package(f: *const Facts, name: []const u8) ?*const Package {
         for (f.packages) |*p| {
             if (std.mem.eql(u8, p.name, name)) return p;
+        }
+        return null;
+    }
+
+    pub fn file(f: *const Facts, path: []const u8) ?*const File {
+        for (f.files) |*x| {
+            if (std.mem.eql(u8, x.path, path)) return x;
         }
         return null;
     }
@@ -81,6 +99,7 @@ pub const Facts = struct {
         lists.sortByField(Package, "name", f.packages);
         lists.sortByField(Unit, "name", f.units);
         lists.sortByField(User, "name", f.users);
+        lists.sortByField(File, "path", f.files);
     }
 };
 

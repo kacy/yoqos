@@ -25,6 +25,16 @@ pub fn Val(comptime T: type) type {
 
 pub const Str = Val([]const u8);
 
+/// a value written as a number or a string, like a sysctl's, kept as the
+/// text it stands for.
+pub const Loose = struct {
+    text: []const u8,
+
+    pub fn jsonStringify(l: Loose, jw: anytype) !void {
+        try jw.write(l.text);
+    }
+};
+
 /// one element of a set, like a package name.
 pub const Item = struct {
     name: []const u8,
@@ -100,11 +110,20 @@ pub fn isVal(comptime T: type) bool {
 }
 
 /// the config keys of a section: its fields, minus the `src` bookkeeping.
+/// fields that aren't config keys: where a value came from, and what
+/// loading works out from the keys.
+fn isHidden(comptime name: []const u8) bool {
+    for ([_][]const u8{ "src", "removed", "content" }) |h| {
+        if (std.mem.eql(u8, h, name)) return true;
+    }
+    return false;
+}
+
 pub fn keysOf(comptime T: type) []const []const u8 {
     comptime {
         var keys: []const []const u8 = &.{};
         for (std.meta.fieldNames(T)) |n| {
-            if (!std.mem.eql(u8, n, "src") and !std.mem.eql(u8, n, "removed")) keys = keys ++ .{n};
+            if (!isHidden(n)) keys = keys ++ .{n};
         }
         return keys;
     }
@@ -172,6 +191,26 @@ pub const State = struct {
     carry: Set = .{},
 };
 
+/// a file os writes whole, keyed by its absolute path.
+pub const File = struct {
+    src: Src,
+    /// a file next to the config, relative to the one that names it.
+    source: ?Str = null,
+    /// or the content itself.
+    text: ?Str = null,
+    /// octal, like "0644", the default.
+    mode: ?Str = null,
+    /// what the file holds: `text`, or `source` as it was read when the
+    /// config loaded. not a key.
+    content: ?[]const u8 = null,
+
+    pub const default_mode = "0644";
+
+    pub fn modeOf(f: *const File) []const u8 {
+        return if (f.mode) |m| m.v else default_mode;
+    }
+};
+
 pub const Config = struct {
     version: ?Val(i64) = null,
     packages: Set = .{},
@@ -184,6 +223,9 @@ pub const Config = struct {
     users: Named(User) = .{},
     services: Named(Service) = .{},
     state: State = .{},
+    files: Named(File) = .{},
+    /// kernel settings, written to one file in /etc/sysctl.d.
+    sysctl: Named(Val(Loose)) = .{},
     /// every package a `[remove]` names, in this file or an include. not a
     /// key: it's what lets the plan remove a protected package.
     removed: Set = .{},
@@ -307,6 +349,11 @@ const Decoder = struct {
             .bool => if (e.value.data == .boolean) return .{ .v = e.value.data.boolean, .src = at },
             .int => if (e.value.data == .integer) return .{ .v = e.value.data.integer, .src = at },
             .pointer => if (e.value.data == .string) return .{ .v = try d.a.dupe(u8, e.value.data.string), .src = at },
+            .@"struct" => switch (e.value.data) {
+                .string => |t| return .{ .v = .{ .text = try d.a.dupe(u8, t) }, .src = at },
+                .integer => |i| return .{ .v = .{ .text = try std.fmt.allocPrint(d.a, "{d}", .{i}) }, .src = at },
+                else => {},
+            },
             .@"enum" => if (e.value.data == .string) {
                 if (std.meta.stringToEnum(X, e.value.data.string)) |v| return .{ .v = v, .src = at };
                 try d.diags.addHint(.bad_value, at, "{s}{s} can't be \"{s}\"", .{ prefix, e.key, e.value.data.string }, "use one of {s}", .{comptime quotedList(X)});
@@ -317,6 +364,7 @@ const Decoder = struct {
         const want = switch (@typeInfo(X)) {
             .bool => "true or false",
             .int => "an integer",
+            .@"struct" => "a number or a string",
             else => "a string",
         };
         try d.wrongType(e, prefix, want, e.value);
@@ -395,6 +443,23 @@ pub fn validate(c: *const Config, diags: *diag.List) !void {
             try diags.add(.bad_value, h.src, "\"{s}\" isn't a valid hostname", .{h.v}, "use letters, digits, and dashes, up to 63 characters");
         }
     }
+    for (c.files.entries.items) |e| {
+        const f = &e.value;
+        if (!std.fs.path.isAbsolute(e.name)) {
+            try diags.add(.bad_value, f.src, "\"{s}\" isn't an absolute path", .{e.name}, "files are keyed by their full path, like \"/etc/motd\"");
+        }
+        if ((f.source == null) == (f.text == null)) {
+            try diags.add(.bad_value, f.src, "{s} needs one of source or text", .{e.name}, "source names a file next to the config; text is the content itself");
+        }
+        if (f.mode) |m| {
+            if (!validMode(m.v)) try diags.add(.bad_value, m.src, "\"{s}\" isn't a file mode", .{m.v}, "write it in octal, like \"0644\" or \"0600\"");
+        }
+    }
+    for (c.sysctl.entries.items) |e| {
+        if (e.name.len == 0 or std.mem.indexOfAny(u8, e.name, " =\n") != null) {
+            try diags.add(.bad_value, e.value.src, "\"{s}\" isn't a sysctl key", .{e.name}, "keys look like \"vm.swappiness\"");
+        }
+    }
     for (c.users.entries.items) |u| {
         if (!validUserName(u.name)) {
             try diags.add(.bad_value, u.value.src, "\"{s}\" isn't a valid user name", .{u.name}, "start with a lowercase letter or _, then lowercase letters, digits, _ or -, up to 32 characters");
@@ -417,6 +482,15 @@ pub fn unknownService(diags: *diag.List, name: []const u8, at: ?diag.Span) !void
     } else {
         try diags.add(.unknown_service, at, "unknown service \"{s}\"", .{name}, "set its unit and package in [services.<name>]");
     }
+}
+
+/// three or four octal digits, like "644" or "0600".
+pub fn validMode(m: []const u8) bool {
+    if (m.len < 3 or m.len > 4) return false;
+    for (m) |ch| {
+        if (ch < '0' or ch > '7') return false;
+    }
+    return true;
 }
 
 /// pacman's rule: letters, digits, and @._+-, not starting with - or .

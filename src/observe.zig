@@ -8,6 +8,7 @@ const std = @import("std");
 const facts = @import("facts.zig");
 const alpm = @import("alpm.zig");
 const drift = @import("drift.zig");
+const rootfs = @import("rootfs.zig");
 const systemd = @import("systemd.zig");
 const diag = @import("diag.zig");
 const lists = @import("lists.zig");
@@ -21,6 +22,8 @@ pub const Options = struct {
     /// read units from the running systemd. only for the running machine,
     /// and off in builds without libsystemd.
     units: bool = systemd.available,
+    /// the files to hash, by their absolute paths on the machine.
+    files: []const []const u8 = &.{},
 };
 
 pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error{OutOfMemory}!facts.Facts {
@@ -37,6 +40,7 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
         f.users = try users(a, passwd, try r.file("etc/group") orelse "");
     }
     f.pacman_changes = try drift.since(a, io, opts.root);
+    f.files = try files(a, io, opts.root, opts.files);
     if (opts.packages) {
         const dbpath = try r.dbpath();
         const pkgs = alpm.localPackages(a, opts.root, dbpath, diags) catch |e| switch (e) {
@@ -110,6 +114,25 @@ const Reader = struct {
         return pacmanDb(r.a, r.io, r.root);
     }
 };
+
+/// the managed files that exist, with their hash and mode.
+fn files(a: Allocator, io: std.Io, root: []const u8, paths: []const []const u8) ![]facts.File {
+    const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
+    var out: std.ArrayList(facts.File) = .empty;
+    for (paths) |p| {
+        const rel = std.mem.trimStart(u8, p, "/");
+        const m = try fs.mode(rel) orelse continue;
+        const hex = sha256Hex(try fs.read(rel));
+        try out.append(a, .{ .path = p, .sha256 = try a.dupe(u8, &hex), .mode = try std.fmt.allocPrint(a, "{o:0>4}", .{m}) });
+    }
+    return out.items;
+}
+
+pub fn sha256Hex(bytes: []const u8) [64]u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    return std.fmt.bytesToHex(digest, .lower);
+}
 
 /// pacman's database directory under `root`: in /usr on the rollback rung,
 /// in /var otherwise.

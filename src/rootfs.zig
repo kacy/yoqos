@@ -25,12 +25,25 @@ pub const Root = struct {
     /// replaces the file in one step, making its directory if needed, so a
     /// crash leaves the old or the new content, never half of each.
     pub fn write(r: Root, rel: []const u8, bytes: []const u8) error{ OutOfMemory, WriteFailed }!void {
+        return r.writeMode(rel, bytes, null);
+    }
+
+    /// `write`, with the file's permission bits set to `mode`, if given,
+    /// before it takes the old one's place.
+    pub fn writeMode(r: Root, rel: []const u8, bytes: []const u8, bits: ?u32) error{ OutOfMemory, WriteFailed }!void {
         const p = try r.path(rel);
         const tmp = try std.fmt.allocPrint(r.a, "{s}.os-tmp", .{p});
         const cwd = std.Io.Dir.cwd();
         if (std.fs.path.dirnamePosix(p)) |d| cwd.createDirPath(r.io, d) catch return error.WriteFailed;
         cwd.writeFile(r.io, .{ .sub_path = tmp, .data = bytes }) catch return error.WriteFailed;
+        if (bits) |m| cwd.setFilePermissions(r.io, tmp, @enumFromInt(m), .{}) catch return error.WriteFailed;
         cwd.rename(tmp, cwd, p, r.io) catch return error.WriteFailed;
+    }
+
+    /// a file's permission bits, or null if it's missing.
+    pub fn mode(r: Root, rel: []const u8) !?u32 {
+        const st = std.Io.Dir.cwd().statFile(r.io, try r.path(rel), .{}) catch return null;
+        return @as(u32, @intCast(@intFromEnum(st.permissions))) & 0o7777;
     }
 
     /// adds `bytes` to the end of the file.
