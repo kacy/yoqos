@@ -38,7 +38,12 @@ before=$("$vm" ssh "ls /var/lib/yoq/generations | sort -n | tail -n 1 | cut -d. 
 "$vm" ssh "rm /etc/yoq-flaky-ok"
 env
 "$vm" reboot
-# the trial boot finds the service down and reboots; this is the boot after.
-settled
+# the trial boot may answer before its health check reboots it, so wait
+# for the boot after: the generation before, from its copy.
+for _ in $(seq 60); do
+    root=$(timeout 20 "$vm" ssh "findmnt -no FSROOT /" 2>/dev/null || true)
+    [ "$root" = "/@roots/boot-$before" ] && break
+    sleep 5
+done
 check "findmnt -no FSROOT /" "/@roots/boot-$before"
 echo "trial ok"
