@@ -153,6 +153,21 @@ pub fn recordGeneration(ctx: *Context, done: Outcome, reason: []const u8) !void 
         return;
     }
     if (!ctx.json) try ctx.out.writeAll("recorded as a new generation; the boot menu has it.\n");
+    try collectOld(ctx, &m, generation.default_keep);
+}
+
+/// removes generations past the newest `keep`, besides the first and
+/// pinned ones, and says which went.
+pub fn collectOld(ctx: *Context, m: *const gens.Machine, keep: usize) !void {
+    var removed: std.ArrayList(u32) = .empty;
+    if (try m.collect(keep, &removed)) |problem| {
+        try ctx.err.print("os: couldn't remove old generations: {s}\n", .{problem});
+        return;
+    }
+    if (removed.items.len == 0 or ctx.json) return;
+    try ctx.out.writeAll("removed old generations:");
+    for (removed.items) |n| try ctx.out.print(" {d}", .{n});
+    try ctx.out.writeAll(". `os pin <n>` keeps one.\n");
 }
 
 /// the config directory and its newest commit, if it has history.

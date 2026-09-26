@@ -71,6 +71,8 @@ const commands = [_]Command{
     .{ .name = "adopt", .summary = "put packages installed outside os into the config", .handler = edit.adoptCmd },
     .{ .name = "rollback", .summary = "go back to an earlier generation of the config", .handler = rollback.rollbackCmd },
     .{ .name = "enable-rollback", .summary = "check this machine for generations, and the steps to them", .handler = enable_rollback.enableRollbackCmd },
+    .{ .name = "gc", .summary = "remove old generations, keeping the newest and pinned ones", .handler = rollback.gcCmd },
+    .{ .name = "pin", .summary = "keep a generation through garbage collection", .handler = rollback.pinCmd },
     .{ .name = "history", .summary = "list the config's generations", .handler = rollback.historyCmd },
     .{ .name = "why", .summary = "say which config line brings in a package", .handler = inspect.whyCmd },
     .{ .name = "config", .summary = "show the merged config (config show [--resolved])", .handler = inspect.configCmd },

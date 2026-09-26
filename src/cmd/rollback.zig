@@ -119,7 +119,7 @@ fn listGenerations(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot) !u8 {
         if (std.mem.eql(u8, r.root, boot.root_subvol.?[1..])) running = r.n;
     }
     for (records) |r| {
-        try ctx.out.print("{s} {d: >3}  {s}  {s}\n", .{ if (running == r.n) "*" else " ", r.n, try gens.dateOf(a, r.time), r.reason });
+        try ctx.out.print("{s} {d: >3}  {s}  {s}{s}\n", .{ if (running == r.n) "*" else " ", r.n, try gens.dateOf(a, r.time), r.reason, if (r.pinned) "  (pinned)" else "" });
     }
     return 0;
 }
@@ -184,7 +184,78 @@ fn rollbackGeneration(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, wan
         if (!try restoreConfig(ctx, a, c, reason)) return 1;
     }
     try ctx.out.print("generation {d} is ready. reboot to start it.\n", .{made});
+    try applying.collectOld(ctx, &m, generation.default_keep);
     return 0;
+}
+
+/// `os gc [--keep n]`: removes old generations now.
+pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    const usage_text = "os gc [--keep n]";
+    var keep: usize = generation.default_keep;
+    var it: cli.ArgIter = .{ .args = args };
+    while (it.next()) |arg| {
+        if (!cli.eql(arg, "--keep")) return cli.usageError(ctx, usage_text);
+        keep = std.fmt.parseInt(usize, it.next() orelse return cli.usageError(ctx, usage_text), 10) catch return cli.usageError(ctx, usage_text);
+    }
+    var w: cli.Work = .init(ctx);
+    defer w.deinit();
+    const a = w.allocator();
+    const boot = try generationsHere(&w) orelse return noGenerations(ctx);
+    var why: []const u8 = "";
+    const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse {
+        try ctx.err.print("os: {s}\n", .{why});
+        return 1;
+    };
+    defer m.close();
+    var removed: std.ArrayList(u32) = .empty;
+    if (try m.collect(keep, &removed)) |problem| {
+        try ctx.err.print("os: {s}\n", .{problem});
+        return 1;
+    }
+    if (removed.items.len == 0) {
+        try ctx.out.writeAll("nothing to remove.\n");
+        return 0;
+    }
+    try ctx.out.writeAll("removed generations:");
+    for (removed.items) |n| try ctx.out.print(" {d}", .{n});
+    try ctx.out.writeAll(".\n");
+    return 0;
+}
+
+/// `os pin <n>` and `os pin --remove <n>`: keep a generation through
+/// garbage collection, or stop keeping it.
+pub fn pinCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    const usage_text = "os pin [--remove] <n>";
+    var pin = true;
+    var wanted: ?u32 = null;
+    for (args) |arg| {
+        if (cli.eql(arg, "--remove")) {
+            pin = false;
+        } else wanted = std.fmt.parseInt(u32, arg, 10) catch return cli.usageError(ctx, usage_text);
+    }
+    const n = wanted orelse return cli.usageError(ctx, usage_text);
+    var w: cli.Work = .init(ctx);
+    defer w.deinit();
+    const a = w.allocator();
+    _ = try generationsHere(&w) orelse return noGenerations(ctx);
+    for (try gens.readRecords(a, ctx.io, "/var")) |r| {
+        if (r.n != n) continue;
+        var changed = r;
+        changed.pinned = pin;
+        if (try gens.writeRecord(a, ctx.io, "/var", changed)) |why| {
+            try ctx.err.print("os: {s}\n", .{why});
+            return 1;
+        }
+        try ctx.out.print("generation {d} {s}.\n", .{ n, if (pin) "is pinned: garbage collection keeps it" else "isn't pinned any more" });
+        return 0;
+    }
+    try ctx.err.print("os: there's no generation {d}. `os history` lists them.\n", .{n});
+    return 1;
+}
+
+fn noGenerations(ctx: *Context) !u8 {
+    try ctx.err.writeAll("os: this machine has no generations. `os enable-rollback` turns them on.\n");
+    return 1;
 }
 
 /// writes the config directory back as it was at `c.rev`, and commits it.

@@ -45,7 +45,22 @@ pub const Record = struct {
     /// so a rollback can put that config back.
     config_dir: ?[]const u8 = null,
     config_rev: ?[]const u8 = null,
+    /// kept by garbage collection however old it gets.
+    pinned: bool = false,
 };
+
+/// how many generations garbage collection keeps, besides pinned ones and
+/// the first.
+pub const default_keep = 5;
+
+/// the generations to keep of `records`, sorted by number: the newest
+/// `keep`, the first, and every pinned one.
+pub fn keeps(r: Record, records: []const Record, keep: usize) bool {
+    if (r.n == 1 or r.pinned) return true;
+    var newer: usize = 0;
+    for (records) |o| newer += @intFromBool(o.n > r.n);
+    return newer < keep;
+}
 
 /// a config directory at one commit.
 pub const Config = struct { dir: []const u8, rev: []const u8 };
@@ -133,6 +148,20 @@ pub fn grubConfig(a: Allocator, c: GrubConfig) ![]const u8 {
 // -- tests --
 
 const testing = std.testing;
+
+test "which generations collection keeps" {
+    const recs = [_]Record{
+        .{ .n = 1, .time = 0, .root = "@roots/1", .reason = "enable-rollback" },
+        .{ .n = 2, .time = 0, .root = "@roots/1", .reason = "a" },
+        .{ .n = 3, .time = 0, .root = "@roots/1", .reason = "b", .pinned = true },
+        .{ .n = 4, .time = 0, .root = "@roots/1", .reason = "c" },
+        .{ .n = 5, .time = 0, .root = "@roots/1", .reason = "d" },
+        .{ .n = 6, .time = 0, .root = "@roots/1", .reason = "e" },
+    };
+    var kept: [6]bool = undefined;
+    for (recs, &kept) |r, *k| k.* = keeps(r, &recs, 2);
+    try testing.expectEqualSlices(bool, &.{ true, false, true, false, true, true }, &kept);
+}
 
 test "a generation's kernel command line" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);

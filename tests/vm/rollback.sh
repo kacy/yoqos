@@ -85,4 +85,12 @@ check "pacman -Q tree >/dev/null && echo tree" tree
 check "grep -c tree /etc/yoq/machine.toml" 1
 check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 "$vm" ssh "/usr/local/bin/os history"
+
+# garbage collection: pinned, first, and newest stay; 3 goes, with its
+# snapshot and the root nothing else uses.
+"$vm" ssh "/usr/local/bin/os pin 2"
+check "/usr/local/bin/os gc --keep 1" "removed generations: 3."
+check "ls /var/lib/yoq/generations | tr '\\n' ' '" "1.json 2.json 4.json "
+check "mkdir -p /run/yoq-gc && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-gc && ls /run/yoq-gc/@gens /run/yoq-gc/@roots | tr '\\n' ' '; umount /run/yoq-gc" "/run/yoq-gc/@gens: 1 2 4  /run/yoq-gc/@roots: 1 4 boot-1 boot-2 "
+"$vm" ssh "/usr/local/bin/os history"
 echo "rollback ok"

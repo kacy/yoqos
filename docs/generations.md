@@ -27,7 +27,9 @@ with a menu that `os` keeps. after a reboot, the machine runs generation 1.
 the boot menu also keeps the system as it was before, in case you want it.
 
 anything you change between running `enable-rollback` and rebooting is left
-behind, because generation 1 comes from the snapshot.
+behind, because generation 1 comes from the snapshot. if a step fails, `enable-rollback` takes back the steps before it and says
+whether the machine is as it was. grub's files go in last, so until then
+the machine boots the way it always did.
 
 ## how they work
 
@@ -86,6 +88,20 @@ if you booted an older generation from the menu and want to stay there,
 *   3  2026-09-26  rollback to 1: enable-rollback
 ```
 
+## keeping and cleaning up
+
+after each new generation, `os` keeps the newest five, generation 1, and
+any you pin, and removes the rest: their records, snapshots, boot copies,
+and any writable root nothing else uses. it says which ones went.
+
+```
+os pin 3             # keep generation 3 however old it gets
+os pin --remove 3    # stop keeping it
+os gc --keep 2       # clean up now, keeping the newest two
+```
+
+`os history` marks pinned generations.
+
 ## what this doesn't do yet
 
 - **changes happen live.** an update changes the running system first, and
@@ -101,11 +117,6 @@ if you booted an older generation from the menu and want to stay there,
 - **a looked-at copy doesn't last.** changes you make while running an
   older generation's copy are thrown away the next time `os` writes the
   menu.
-- **nothing gets cleaned up.** generations and their copies pile up until
-  garbage collection exists.
-- **a failed `enable-rollback` isn't undone.** if a step fails, what the
-  steps before it made stays in the btrfs top level, and the message says
-  so.
 - **grub only**, and only the two root layouts above.
 
 ## later
@@ -113,9 +124,8 @@ if you booted an older generation from the menu and want to stay there,
 - carrying state again at shutdown, and the uid map for system users
 - automatic fallback: a new generation boots once, and falls back if its
   health check fails
-- garbage collection, keeping the last few generations and any you pin
 - systemd-boot, limine, and refind
-- more root layouts, and undoing a failed `enable-rollback`
+- more root layouts
 - building the next generation apart from the running system, so a bad
   update never touches the session you're in
 - a clean build of a root from the lock alone, and an installer built on it

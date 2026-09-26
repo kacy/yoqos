@@ -97,6 +97,55 @@ pub const Machine = struct {
         return m.writeMenu(root, all);
     }
 
+    /// removes the generations `generation.keeps` doesn't keep: their
+    /// records, read-only snapshots, and boot copies, and the writable
+    /// roots nothing kept or running uses. then rewrites the menu. the
+    /// numbers removed go in `removed`.
+    pub fn collect(m: *const Machine, keep: usize, removed: *std.ArrayList(u32)) !?[]const u8 {
+        const records = try readRecords(m.a, m.io, "/var");
+        if (records.len == 0) return null;
+        const running = m.boot.root_subvol.?;
+        var kept: std.ArrayList(generation.Record) = .empty;
+        var roots: std.ArrayList([]const u8) = .empty;
+        try roots.append(m.a, running[1..]);
+        for (records) |r| {
+            if (!generation.keeps(r, records, keep)) continue;
+            try kept.append(m.a, r);
+            try roots.append(m.a, r.root);
+        }
+        if (kept.items.len == records.len) return null;
+        for (records) |r| {
+            if (generation.keeps(r, records, keep)) continue;
+            const name = try std.fmt.allocPrint(m.a, "{d}", .{r.n});
+            const saved = try m.at(&.{ generation.gens_dir, name });
+            btrfs.setReadOnly(saved, false) catch {};
+            if (try m.drop(saved)) |w| return w;
+            const copy = try generation.bootCopy(m.a, r.n);
+            if (!std.mem.eql(u8, copy, running)) {
+                if (try m.drop(try m.at(&.{copy}))) |w| return w;
+            }
+            var used = false;
+            for (roots.items) |root| used = used or std.mem.eql(u8, root, r.root);
+            if (!used and std.mem.startsWith(u8, r.root, generation.roots_dir ++ "/")) {
+                if (try m.drop(try m.at(&.{r.root}))) |w| return w;
+                // several removed generations can share a root; drop it once.
+                try roots.append(m.a, r.root);
+            }
+            const file = try std.fmt.allocPrint(m.a, "/var/lib/yoq/generations/{d}.json", .{r.n});
+            std.Io.Dir.cwd().deleteFile(m.io, file) catch {};
+            try removed.append(m.a, r.n);
+        }
+        const newest = records[records.len - 1];
+        return m.writeMenu(try std.fmt.allocPrint(m.a, "/{s}", .{newest.root}), kept.items);
+    }
+
+    /// deletes a subvolume if it's there.
+    fn drop(m: *const Machine, path: []const u8) !?[]const u8 {
+        if (!(btrfs.isSubvolume(path) catch false)) return null;
+        btrfs.delete(path) catch |e| return try std.fmt.allocPrint(m.a, "can't remove {s}: {s}", .{ path, @errorName(e) });
+        return null;
+    }
+
     /// the boot menu: the running root, labelled with the newest
     /// generation, then every older one, from a fresh writable copy of its
     /// record, then the system from before generations.
