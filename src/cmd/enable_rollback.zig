@@ -214,6 +214,7 @@ const Enabler = struct {
             .esp = .{ .uuid = e.m.esp_uuid, .point = e.boot.esp.? },
         });
         std.Io.Dir.cwd().writeFile(e.ctx.io, .{ .sub_path = fstab_path, .data = fstab }) catch return e.failed("can't write {s}", .{fstab_path});
+        if (!try e.healthUnit()) return false;
         const gen = try e.m.at(&.{ generation.gens_dir, "1" });
         if (!try e.tried(btrfs.snapshot(try e.m.at(&.{new_root}), gen, true), "record generation 1")) return false;
         try e.later(.{ .subvol = gen });
@@ -229,6 +230,31 @@ const Enabler = struct {
         if (try gens.writeRecord(e.a, e.ctx.io, e.var_dir, record)) |why| return e.failed("{s}", .{why});
         if (!e.moved_var) try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rm", "-f", try std.fs.path.join(e.a, &.{ e.var_dir, "lib/yoq/generations/1.json" }) }) });
         return true;
+    }
+
+    /// yoq-health.service in generation 1, enabled: it runs `os health`
+    /// at each boot, which ends a trial boot one way or the other.
+    fn healthUnit(e: *Enabler) !bool {
+        const os_path = try std.process.executablePathAlloc(e.ctx.io, e.a);
+        const dir = try e.m.at(&.{ new_root, "etc/systemd/system" });
+        const unit = try std.fs.path.join(e.a, &.{ dir, "yoq-health.service" });
+        const text = try std.fmt.allocPrint(e.a,
+            \\# written by os enable-rollback.
+            \\[Unit]
+            \\Description=Check that a generation on trial came up healthy
+            \\After=multi-user.target
+            \\
+            \\[Service]
+            \\Type=oneshot
+            \\ExecStart={s} health
+            \\
+            \\[Install]
+            \\WantedBy=multi-user.target
+            \\
+        , .{os_path});
+        if (!try e.sh(&.{ "mkdir", "-p", try std.fs.path.join(e.a, &.{ dir, "multi-user.target.wants" }) })) return false;
+        std.Io.Dir.cwd().writeFile(e.ctx.io, .{ .sub_path = unit, .data = text }) catch return e.failed("can't write {s}", .{unit});
+        return e.sh(&.{ "ln", "-sf", "../yoq-health.service", try std.fs.path.join(e.a, &.{ dir, "multi-user.target.wants/yoq-health.service" }) });
     }
 
     /// grub's files on the esp, so the menu lives outside every

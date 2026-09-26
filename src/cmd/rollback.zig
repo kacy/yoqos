@@ -99,7 +99,7 @@ pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 /// the running machine's boot facts, when it runs a generation.
-fn generationsHere(w: *cli.Work) !?facts.Boot {
+pub fn generationsHere(w: *cli.Work) !?facts.Boot {
     if (!cli.eql(w.ctx.root, "/") or w.ctx.facts_path != null) return null;
     // only how the machine boots: no packages or units to read.
     const f = try @import("../observe.zig").observe(w.allocator(), w.ctx.io, .{ .packages = false, .units = false }, &w.diags);

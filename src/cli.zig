@@ -13,6 +13,7 @@ const init_cmd = @import("cmd/init.zig");
 const apply_cmd = @import("cmd/apply.zig");
 const rollback = @import("cmd/rollback.zig");
 const hook = @import("cmd/hook.zig");
+const health = @import("cmd/health.zig");
 const enable_rollback = @import("cmd/enable_rollback.zig");
 const inspect = @import("cmd/inspect.zig");
 const edit = @import("cmd/edit.zig");
@@ -77,6 +78,7 @@ const commands = [_]Command{
     .{ .name = "why", .summary = "say which config line brings in a package", .handler = inspect.whyCmd },
     .{ .name = "config", .summary = "show the merged config (config show [--resolved])", .handler = inspect.configCmd },
     .{ .name = "facts", .summary = "show what os knows about this machine", .handler = inspect.factsCmd },
+    .{ .name = "health", .summary = "check a generation on trial, at boot (yoq-health.service runs this)", .handler = health.healthCmd, .hidden = true },
     .{ .name = "record-pacman", .summary = "record a pacman transaction (the drift hook runs this)", .handler = hook.recordPacmanCmd, .hidden = true },
     .{ .name = "explain", .summary = "explain an error code, like E0213", .handler = explain },
 };

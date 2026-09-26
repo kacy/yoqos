@@ -248,6 +248,40 @@ pub const Machine = struct {
     }
 };
 
+/// the env file on the esp that grub reads the menu's choices from.
+pub fn envPath(a: Allocator, esp: []const u8) ![]const u8 {
+    return std.fs.path.join(a, &.{ esp, "yoq/grubenv" });
+}
+
+/// one value from the esp's env file, or null.
+pub fn envValue(a: Allocator, io: std.Io, esp: []const u8, name: []const u8) !?[]const u8 {
+    const text = switch (try exec.output(a, io, &.{ "grub-editenv", try envPath(a, esp), "list" })) {
+        .ok => |t| t,
+        .failed => return null,
+    };
+    var lines = std.mem.tokenizeScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        if (std.mem.eql(u8, line[0..eq], name) and eq + 1 < line.len) return line[eq + 1 ..];
+    }
+    return null;
+}
+
+/// sets values in the esp's env file: "name=value" each.
+pub fn setEnv(a: Allocator, io: std.Io, esp: []const u8, pairs: []const []const u8) !?[]const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, &.{ "grub-editenv", try envPath(a, esp), "set" });
+    try argv.appendSlice(a, pairs);
+    return exec.run(a, io, argv.items);
+}
+
+pub fn unsetEnv(a: Allocator, io: std.Io, esp: []const u8, names: []const []const u8) !?[]const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, &.{ "grub-editenv", try envPath(a, esp), "unset" });
+    try argv.appendSlice(a, names);
+    return exec.run(a, io, argv.items);
+}
+
 /// machine state every root gets from the running system. ssh host keys
 /// are added by name, and passwords are merged into /etc/shadow.
 const carried = [_][]const u8{ "etc/machine-id", "etc/adjtime", "etc/subuid", "etc/subgid", "etc/pacman.d/gnupg" };
