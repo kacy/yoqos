@@ -71,6 +71,8 @@ const Enabler = struct {
     var_dir: []const u8 = "/var",
     moved_var: bool = false,
     moved_config: bool = false,
+    /// how to take back what the steps did, newest last.
+    undo: std.ArrayList(Undo) = .empty,
     /// /etc/yoq's commit before it moves, for generation 1's record.
     config: ?generation.Config = null,
 
@@ -89,12 +91,51 @@ const Enabler = struct {
                 .var_subvol => try e.moveVar(),
                 .pacman_db => try e.movePacmanDb(),
                 .config_dir => try e.moveConfig(),
-                .boot_files => try e.seal() and try e.bootFiles(),
-                .boot_entry => try e.bootEntry(),
+                .boot_entry => try e.seal() and try e.bootEntry(),
+                .boot_files => try e.bootFiles(),
             };
-            if (!ok) return false;
+            if (!ok) {
+                try e.takeBack();
+                return false;
+            }
         }
         return true;
+    }
+
+    /// what a step left that taking it back removes or puts back.
+    const Undo = union(enum) {
+        /// a subvolume it created, read-only or not.
+        subvol: []const u8,
+        /// a command that reverses it.
+        run: []const []const u8,
+    };
+
+    fn later(e: *Enabler, u: Undo) !void {
+        try e.undo.append(e.a, u);
+    }
+
+    /// reverses every step done so far, newest first, and says whether
+    /// the machine is back as it was.
+    fn takeBack(e: *Enabler) !void {
+        var clean = true;
+        var i = e.undo.items.len;
+        while (i > 0) {
+            i -= 1;
+            switch (e.undo.items[i]) {
+                .subvol => |path| {
+                    btrfs.setReadOnly(path, false) catch {};
+                    btrfs.delete(path) catch |err| {
+                        try e.ctx.err.print("os: couldn't remove {s}: {s}\n", .{ path, @errorName(err) });
+                        clean = false;
+                    };
+                },
+                .run => |argv| if (try exec.run(e.a, e.ctx.io, argv)) |why| {
+                    try e.ctx.err.print("os: couldn't undo with {s}: {s}\n", .{ argv[0], why });
+                    clean = false;
+                },
+            }
+        }
+        try e.ctx.err.writeAll(if (clean) "os: took back the steps above; the machine is as it was.\n" else "os: took back what it could; see the lines above.\n");
     }
 
     const new_root = "/" ++ generation.roots_dir ++ "/1";
@@ -102,9 +143,15 @@ const Enabler = struct {
     /// the running root's writable copy, @roots/1.
     fn snapshot(e: *Enabler) !bool {
         for ([_][]const u8{ generation.roots_dir, generation.gens_dir }) |d| {
-            if (!try e.sh(&.{ "mkdir", "-p", try e.m.at(&.{d}) })) return false;
+            const dir = try e.m.at(&.{d});
+            const had = if (std.Io.Dir.cwd().access(e.ctx.io, dir, .{})) |_| true else |_| false;
+            if (!try e.sh(&.{ "mkdir", "-p", dir })) return false;
+            if (!had) try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rmdir", dir }) });
         }
-        return e.tried(btrfs.snapshot(try e.m.at(&.{e.boot.root_subvol.?}), try e.m.at(&.{new_root}), false), "snapshot the running root");
+        const root = try e.m.at(&.{new_root});
+        if (!try e.tried(btrfs.snapshot(try e.m.at(&.{e.boot.root_subvol.?}), root, false), "snapshot the running root")) return false;
+        try e.later(.{ .subvol = root });
+        return true;
     }
 
     /// generation 1's /var becomes @var: its contents move there, and
@@ -112,6 +159,7 @@ const Enabler = struct {
     fn moveVar(e: *Enabler) !bool {
         const dest = try e.m.at(&.{generation.var_subvol});
         if (!try e.tried(btrfs.create(dest), "create @var")) return false;
+        try e.later(.{ .subvol = dest });
         const var_dir = try e.m.at(&.{ new_root, "var" });
         // reflink where it can: journald's files are nocow, and btrfs won't
         // clone those, so they're copied.
@@ -128,8 +176,14 @@ const Enabler = struct {
         const sysimage = try e.m.at(&.{ new_root, "usr/lib/sysimage" });
         const db = try std.fs.path.join(e.a, &.{ e.var_dir, "lib/pacman" });
         if (!try e.sh(&.{ "mkdir", "-p", sysimage })) return false;
-        if (!try e.sh(&.{ "mv", db, try std.fs.path.join(e.a, &.{ sysimage, "pacman" }) })) return false;
-        return e.sh(&.{ "ln", "-s", "/usr/lib/sysimage/pacman", db });
+        const moved = try std.fs.path.join(e.a, &.{ sysimage, "pacman" });
+        if (!try e.sh(&.{ "mv", db, moved })) return false;
+        // with the running /var, the database has to come back out of the
+        // new root before that root goes.
+        if (!e.moved_var) try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "mv", moved, db }) });
+        if (!try e.sh(&.{ "ln", "-s", "/usr/lib/sysimage/pacman", db })) return false;
+        if (!e.moved_var) try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rm", db }) });
+        return true;
     }
 
     /// generation 1's /etc/yoq moves into its /var, and fstab mounts it
@@ -142,6 +196,7 @@ const Enabler = struct {
         if (has_config) {
             if (!try e.sh(&.{ "mv", src, dest })) return false;
         } else if (!try e.sh(&.{ "mkdir", "-p", dest })) return false;
+        if (!e.moved_var) try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rm", "-rf", dest }) });
         if (!try e.sh(&.{ "mkdir", "-p", src })) return false;
         e.moved_config = true;
         return true;
@@ -159,7 +214,9 @@ const Enabler = struct {
             .esp = .{ .uuid = e.m.esp_uuid, .point = e.boot.esp.? },
         });
         std.Io.Dir.cwd().writeFile(e.ctx.io, .{ .sub_path = fstab_path, .data = fstab }) catch return e.failed("can't write {s}", .{fstab_path});
-        if (!try e.tried(btrfs.snapshot(try e.m.at(&.{new_root}), try e.m.at(&.{ generation.gens_dir, "1" }), true), "record generation 1")) return false;
+        const gen = try e.m.at(&.{ generation.gens_dir, "1" });
+        if (!try e.tried(btrfs.snapshot(try e.m.at(&.{new_root}), gen, true), "record generation 1")) return false;
+        try e.later(.{ .subvol = gen });
         const record: generation.Record = .{
             .n = 1,
             .time = e.time,
@@ -170,6 +227,7 @@ const Enabler = struct {
             .config_rev = if (e.config) |c| c.rev else null,
         };
         if (try gens.writeRecord(e.a, e.ctx.io, e.var_dir, record)) |why| return e.failed("{s}", .{why});
+        if (!e.moved_var) try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rm", "-f", try std.fs.path.join(e.a, &.{ e.var_dir, "lib/yoq/generations/1.json" }) }) });
         return true;
     }
 
@@ -177,6 +235,14 @@ const Enabler = struct {
     /// generation. it keeps the efi path the machine boots from now.
     fn bootFiles(e: *Enabler) !bool {
         const esp = e.boot.esp.?;
+        // what the firmware boots now, kept until grub-install is done.
+        const efi = try std.fs.path.join(e.a, &.{ esp, "EFI" });
+        const backup = "/run/yoq/efi-backup";
+        if (!try e.sh(&.{ "rm", "-rf", backup })) return false;
+        if (!try e.sh(&.{ "cp", "-a", efi, backup })) return false;
+        // taken back newest first: the new EFI goes, then the copy returns.
+        try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "cp", "-a", backup, efi }) });
+        try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rm", "-rf", efi }) });
         var argv: std.ArrayList([]const u8) = .empty;
         try argv.appendSlice(e.a, &.{ "grub-install", "--target=x86_64-efi", try std.fmt.allocPrint(e.a, "--efi-directory={s}", .{esp}), try std.fmt.allocPrint(e.a, "--boot-directory={s}", .{esp}) });
         if (try e.grubId(esp)) |id| {
@@ -202,9 +268,17 @@ const Enabler = struct {
     /// the menu, with generation 1 and the system as it is now, and the
     /// esp's env file for one-shot boots.
     fn bootEntry(e: *Enabler) !bool {
+        const esp = e.boot.esp.?;
+        // the menu goes where grub-install will point grub. nothing reads
+        // it until then, and taking back this step removes it.
+        const grub_dir = try std.fs.path.join(e.a, &.{ esp, "grub" });
+        const had_grub_dir = if (std.Io.Dir.cwd().access(e.ctx.io, grub_dir, .{})) |_| true else |_| false;
+        if (!had_grub_dir) try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rm", "-rf", grub_dir }) });
+        if (!try e.sh(&.{ "mkdir", "-p", grub_dir })) return false;
+        const env_dir = try std.fs.path.join(e.a, &.{ esp, "yoq" });
+        try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rm", "-rf", env_dir }) });
         const records = try gens.readRecords(e.a, e.ctx.io, e.var_dir);
         if (try e.m.writeMenu(new_root, records)) |why| return e.failed("{s}", .{why});
-        const esp = e.boot.esp.?;
         if (!try e.sh(&.{ "mkdir", "-p", try std.fs.path.join(e.a, &.{ esp, "yoq" }) })) return false;
         return e.sh(&.{ "grub-editenv", try std.fs.path.join(e.a, &.{ esp, "yoq/grubenv" }), "create" });
     }
@@ -221,7 +295,6 @@ const Enabler = struct {
 
     fn failed(e: *Enabler, comptime fmt: []const u8, args: anytype) !bool {
         try e.ctx.err.print("os: " ++ fmt ++ "\n", args);
-        try e.ctx.err.print("os: stopped partway. {s} still has whatever the steps above made.\n", .{generation.top_mount});
         return false;
     }
 };

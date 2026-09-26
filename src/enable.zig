@@ -131,15 +131,17 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .why = "the config and its history stay put when a rollback changes the root; a rollback puts back the config that generation had",
     });
     try steps.append(a, .{
-        .kind = .boot_files,
-        .what = try std.fmt.allocPrint(a, "install {s}'s boot files on the esp ({s})", .{ loader, b.esp orelse "?" }),
-        .why = "the boot menu has to live outside every generation",
-    });
-    try steps.append(a, .{
         .kind = .boot_entry,
-        .what = try std.fmt.allocPrint(a, "boot generation 1 from {s}'s menu, and keep an entry for the system as it is now", .{loader}),
+        .what = try std.fmt.allocPrint(a, "write {s}'s menu on the esp: generation 1 first, and the system as it is now", .{loader}),
         .why = "every generation can be booted, and so can the way back",
         .at_boot = true,
+    });
+    // last, so the machine boots the way it did until everything else is
+    // in place. a failure before it undoes the steps above.
+    try steps.append(a, .{
+        .kind = .boot_files,
+        .what = try std.fmt.allocPrint(a, "install {s}'s boot files on the esp ({s}), reading that menu", .{ loader, b.esp orelse "?" }),
+        .why = "the boot menu has to live outside every generation",
     });
     return .{ .checks = checks.items, .steps = steps.items };
 }
@@ -177,7 +179,8 @@ test "an archinstall machine on btrfs and grub is ready, with every step" {
     try testing.expectEqual(Kind.snapshot, p.steps[0].kind);
     try testing.expect(p.steps[1].at_boot);
     try testing.expectEqual(Kind.config_dir, p.steps[3].kind);
-    try testing.expectEqualStrings("install grub's boot files on the esp (/efi)", p.steps[4].what);
+    try testing.expectEqual(Kind.boot_entry, p.steps[4].kind);
+    try testing.expectEqualStrings("install grub's boot files on the esp (/efi), reading that menu", p.steps[5].what);
 }
 
 test "what stops a machine, and the steps it no longer needs" {
@@ -215,10 +218,10 @@ test "what stops a machine, and the steps it no longer needs" {
         \\     the first generation to go back to. changes made after it and before the reboot are left behind
         \\  2. keep the config in /var/lib/yoq/config, mounted at /etc/yoq
         \\     the config and its history stay put when a rollback changes the root; a rollback puts back the config that generation had
-        \\  3. install limine's boot files on the esp (/boot/efi)
-        \\     the boot menu has to live outside every generation
-        \\  4. boot generation 1 from limine's menu, and keep an entry for the system as it is now (at the next boot)
+        \\  3. write limine's menu on the esp: generation 1 first, and the system as it is now (at the next boot)
         \\     every generation can be booted, and so can the way back
+        \\  4. install limine's boot files on the esp (/boot/efi), reading that menu
+        \\     the boot menu has to live outside every generation
         \\
     , out.written());
 }
