@@ -98,17 +98,6 @@ fn writeNews(ctx: *Context, since: []const u8, items: []const news.Item) !void {
     for (items) |it| try ctx.out.print("  {s}  {s}\n              {s}\n", .{ it.date, it.title, it.link });
 }
 
-/// arch's repositories in the order pacman.conf lists them. others follow
-/// by name.
-const repo_order = [_][]const u8{ "core-testing", "core", "extra-testing", "extra", "multilib-testing", "multilib" };
-
-fn repoRank(name: []const u8) usize {
-    for (repo_order, 0..) |r, i| {
-        if (eql(r, name)) return i;
-    }
-    return repo_order.len;
-}
-
 /// every `<repo>.db` file in `dir`, in pacman's repository order.
 fn syncDbs(ctx: *Context, a: Allocator, dir: []const u8) !?[]const alpm.SyncDb {
     var d = std.Io.Dir.cwd().openDir(ctx.io, dir, .{ .iterate = true }) catch {
@@ -137,7 +126,7 @@ fn sortRepos(dbs: []alpm.SyncDb) void {
     lists.sortByField(alpm.SyncDb, "name", dbs);
     std.mem.sort(alpm.SyncDb, dbs, {}, struct {
         fn lt(_: void, x: alpm.SyncDb, y: alpm.SyncDb) bool {
-            return repoRank(x.name) < repoRank(y.name);
+            return sync.repoRank(x.name) < sync.repoRank(y.name);
         }
     }.lt);
 }

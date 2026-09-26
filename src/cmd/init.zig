@@ -33,7 +33,7 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const dir = std.fs.path.dirnamePosix(top) orelse ".";
     const imported_path = try std.fs.path.join(a, &.{ dir, "imported.toml" });
     const machine = try generate.machineToml(a, &c, date);
-    for ([_][2][]const u8{ .{ imported_path, try generate.importedToml(a, imported, date) }, .{ top, machine } }) |file| {
+    for ([_][2][]const u8{ .{ imported_path, try generate.importedToml(a, imported, date, null) }, .{ top, machine } }) |file| {
         if (!try cli.writeFile(ctx, file[0], file[1])) return 1;
     }
 
@@ -50,6 +50,12 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     }
 
     const locked = try lockNew(ctx, &w, loaded, date, f.packages);
+    // with a lock, the imported packages can be grouped by repository.
+    if (locked != null) {
+        if (try locking.readLock(ctx, a, top)) |l| {
+            if (!try cli.writeFile(ctx, imported_path, try generate.importedToml(a, imported, date, &l))) return 1;
+        }
+    }
     try cli.record(ctx, a, top, try std.fmt.allocPrint(a, "init: {s} as found on {s}", .{ f.hostname orelse "this machine", date }));
     if (ctx.json) {
         try output.writeDoc(ctx.out, "yoq.init/1", .{

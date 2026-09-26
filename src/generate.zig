@@ -10,6 +10,8 @@ const catalog = @import("catalog.zig");
 const lists = @import("lists.zig");
 const planner = @import("planner.zig");
 const show = @import("show.zig");
+const lock = @import("lock.zig");
+const sync = @import("sync.zig");
 const Allocator = std.mem.Allocator;
 
 /// the config for what `f` describes, without its packages.
@@ -86,7 +88,9 @@ pub fn machineToml(a: Allocator, c: *const config.Config, date: []const u8) ![]c
     return out.written();
 }
 
-pub fn importedToml(a: Allocator, packages: []const []const u8, date: []const u8) ![]const u8 {
+/// with a lock, the packages are grouped under a comment naming their
+/// repository, in pacman's order, so a long list is easier to trim.
+pub fn importedToml(a: Allocator, packages: []const []const u8, date: []const u8, l: ?*const lock.Lock) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(a);
     const w = &out.writer;
     w.print(
@@ -95,9 +99,31 @@ pub fn importedToml(a: Allocator, packages: []const []const u8, date: []const u8
         \\# deleted from here gets removed by the next apply.
         \\
     , .{date}) catch return error.OutOfMemory;
-    var c: config.Config = .{};
-    for (packages) |p| try c.packages.add(a, .{ .name = p, .src = .{ .file = "imported.toml", .line = 0, .column = 0 } });
-    show.writeToml(w, &c, false) catch return error.OutOfMemory;
+    const locked = l orelse {
+        var c: config.Config = .{};
+        for (packages) |p| try c.packages.add(a, .{ .name = p, .src = .{ .file = "imported.toml", .line = 0, .column = 0 } });
+        show.writeToml(w, &c, false) catch return error.OutOfMemory;
+        return out.written();
+    };
+
+    const Entry = struct { repo: []const u8, name: []const u8 };
+    const entries = try a.alloc(Entry, packages.len);
+    for (packages, entries) |p, *e| e.* = .{ .repo = if (locked.package(p)) |lp| lp.repo else "not in the lock", .name = p };
+    std.mem.sort(Entry, entries, {}, struct {
+        fn lt(_: void, x: Entry, y: Entry) bool {
+            const rx = sync.repoRank(x.repo);
+            const ry = sync.repoRank(y.repo);
+            if (rx != ry) return rx < ry;
+            const by_repo = std.mem.order(u8, x.repo, y.repo);
+            return if (by_repo != .eq) by_repo == .lt else std.mem.lessThan(u8, x.name, y.name);
+        }
+    }.lt);
+    w.writeAll("packages = [\n") catch return error.OutOfMemory;
+    for (entries, 0..) |e, i| {
+        if (i == 0 or !std.mem.eql(u8, entries[i - 1].repo, e.repo)) w.print("  # {s}\n", .{e.repo}) catch return error.OutOfMemory;
+        w.print("  \"{s}\",\n", .{e.name}) catch return error.OutOfMemory;
+    }
+    w.writeAll("]\n") catch return error.OutOfMemory;
     return out.written();
 }
 
@@ -181,7 +207,7 @@ test "a config from facts" {
         \\  "neovim",
         \\]
         \\
-    , try importedToml(a, imported, "2026-09-25"));
+    , try importedToml(a, imported, "2026-09-25", null));
 }
 
 test "hardware without its packages installed stays out of the config" {
@@ -192,4 +218,30 @@ test "hardware without its packages installed stays out of the config" {
     const c = try fromFacts(arena.allocator(), &f);
     try testing.expectEqual(null, c.hardware.cpu);
     try testing.expectEqual(null, c.hardware.gpu);
+}
+
+test "imported packages grouped by repository" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const helpers = @import("test_helpers.zig");
+    var git = helpers.lockPackage("git", "2", &.{});
+    git.repo = "extra";
+    var steam = helpers.lockPackage("steam", "1", &.{});
+    steam.repo = "multilib";
+    // the lock keeps packages sorted by name.
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{ helpers.lockPackage("base", "3", &.{}), git, steam } };
+    const text = try importedToml(arena.allocator(), &.{ "base", "git", "steam", "zz-local" }, "2026-09-25", &l);
+    try testing.expect(std.mem.endsWith(u8, text,
+        \\packages = [
+        \\  # core
+        \\  "base",
+        \\  # extra
+        \\  "git",
+        \\  # multilib
+        \\  "steam",
+        \\  # not in the lock
+        \\  "zz-local",
+        \\]
+        \\
+    ));
 }

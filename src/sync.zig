@@ -15,6 +15,17 @@ pub const Repo = struct {
     servers: []const []const u8,
 };
 
+/// arch's repositories in the order pacman.conf lists them.
+const repo_order = [_][]const u8{ "core-testing", "core", "extra-testing", "extra", "multilib-testing", "multilib" };
+
+/// where a repository sorts among arch's own. others come after them.
+pub fn repoRank(name: []const u8) usize {
+    for (repo_order, 0..) |r, i| {
+        if (std.mem.eql(u8, r, name)) return i;
+    }
+    return repo_order.len;
+}
+
 /// used when pacman's config names no server for a repository.
 pub const fallback_server = "https://geo.mirror.pkgbuild.com/$repo/os/$arch";
 
