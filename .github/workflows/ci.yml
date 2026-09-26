@@ -66,3 +66,23 @@ jobs:
       - run: tests/vm/test.sh ./zig-out/bin/os
       - if: failure()
         run: tail -n 60 ~/.cache/yoq-vm/console.log || true
+
+  package:
+    # the pkgbuild in dist/, built from this checkout and installed the way
+    # a user would.
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - run: pacman -Syu --noconfirm --needed base-devel git zig
+      - uses: actions/checkout@v4
+      - name: build and install the package
+        run: |
+          useradd -m builder
+          install -d -o builder /home/builder/pkg
+          install -m644 -o builder dist/PKGBUILD /home/builder/pkg/PKGBUILD
+          git config --system --add safe.directory '*'
+          su builder -c "cd ~/pkg && YOQ_SOURCE=file://$GITHUB_WORKSPACE makepkg --noconfirm"
+          pacman -U --noconfirm /home/builder/pkg/yoq-os-git-*.pkg.tar.zst
+          os version
+          test -f /usr/share/libalpm/hooks/yoq-drift.hook
+          pacman -Qi yoq-os-git

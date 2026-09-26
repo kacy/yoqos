@@ -29,7 +29,18 @@ every other command only reads the machine or edits the config.
 | `os facts` | what `os` sees on this machine |
 | `os explain` | the long explanation of an error code |
 
-## building
+## installing
+
+`dist/PKGBUILD` in the repository builds the `yoq-os-git` package, with the
+`os` command and a pacman hook that records direct `pacman` use for `os
+status`:
+
+```
+cd dist
+makepkg -si
+```
+
+## building by hand
 
 you need zig 0.16.
 

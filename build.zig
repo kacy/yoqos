@@ -20,11 +20,13 @@ pub fn build(b: *std.Build) void {
     root.addOptions("build_options", options);
     if (alpm) {
         root.link_libc = true;
-        root.linkSystemLibrary("alpm", .{});
+        root.linkSystemLibrary("alpm", .{ .use_pkg_config = .no });
     }
     if (systemd) {
         root.link_libc = true;
-        root.linkSystemLibrary("systemd", .{});
+        // not through pkg-config: arch's systemd.pc is systemd's own,
+        // with no library in it.
+        root.linkSystemLibrary("systemd", .{ .use_pkg_config = .no });
     }
 
     const exe = b.addExecutable(.{ .name = "os", .root_module = root });

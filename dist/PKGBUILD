@@ -1,0 +1,40 @@
+# the os command from this repository's main branch. YOQ_SOURCE points it
+# at another clone, like ci's own checkout: YOQ_SOURCE=file:///path/to/yoqos
+pkgname=yoq-os-git
+pkgver=r0
+pkgrel=1
+pkgdesc='declarative arch linux with real rollback'
+arch=(x86_64)
+url='https://github.com/kacy/yoqos'
+license=(MIT)
+depends=(pacman systemd-libs git shadow)
+makedepends=(zig)
+provides=(yoq-os)
+conflicts=(yoq-os)
+source=("yoqos::git+${YOQ_SOURCE:-https://github.com/kacy/yoqos.git}")
+sha256sums=(SKIP)
+
+pkgver() {
+  cd yoqos
+  printf 'r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+build() {
+  cd yoqos
+  export ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache"
+  zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe --prefix "$srcdir/out"
+}
+
+check() {
+  cd yoqos
+  export ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache"
+  zig build test -Dalpm -Dsystemd
+}
+
+package() {
+  cd yoqos
+  install -Dm755 "$srcdir/out/bin/os" "$pkgdir/usr/bin/os"
+  install -Dm644 dist/yoq-drift.hook "$pkgdir/usr/share/libalpm/hooks/yoq-drift.hook"
+  install -Dm644 docs/usage.md "$pkgdir/usr/share/doc/$pkgname/usage.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

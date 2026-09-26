@@ -6,6 +6,9 @@ const diag = @import("diag.zig");
 const api = @import("systemd.zig");
 const Allocator = std.mem.Allocator;
 const c = @cImport({
+    // glibc's fortify wrappers use builtins translate-c can't follow, and
+    // os calls none of the functions they wrap.
+    @cUndef("_FORTIFY_SOURCE");
     @cInclude("systemd/sd-bus.h");
     @cInclude("systemd/sd-daemon.h");
 });

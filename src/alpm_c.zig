@@ -8,6 +8,8 @@ const diag = @import("diag.zig");
 const api = @import("alpm.zig");
 const Allocator = std.mem.Allocator;
 const c = @cImport({
+    // see systemd_c.zig: glibc's fortify wrappers don't translate.
+    @cUndef("_FORTIFY_SOURCE");
     @cInclude("alpm.h");
     @cInclude("stdio.h");
 });

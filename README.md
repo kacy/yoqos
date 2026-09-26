@@ -55,6 +55,18 @@ os apply      # show the plan, ask, apply it
 os rollback   # go back to the previous generation
 ```
 
+## installing
+
+on arch, `dist/PKGBUILD` builds the `yoq-os-git` package: the `os` command
+and the pacman hook that notices direct `pacman` use.
+
+```
+git clone https://github.com/kacy/yoqos
+cd yoqos/dist
+makepkg -si
+sudo os init
+```
+
 ## building
 
 needs zig 0.16.
