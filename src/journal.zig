@@ -8,7 +8,14 @@ const Allocator = std.mem.Allocator;
 
 const path = "var/lib/yoq/journal";
 
+/// `time` is unix milliseconds: seconds are too coarse to tell an apply
+/// from a pacman run right after it.
 const Line = struct { time: i64, event: []const u8, plan: []const u8 };
+
+/// the time to record, in unix milliseconds.
+pub fn now(io: std.Io) i64 {
+    return std.Io.Timestamp.now(io, .real).toMilliseconds();
+}
 
 /// appends one line. a journal that can't be written doesn't stop the
 /// apply.

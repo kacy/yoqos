@@ -83,7 +83,8 @@ pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock
 }
 
 /// writes a managed file whole, with its mode. on a running machine
-/// (`live`, as for units) the sysctl file is loaded right away.
+/// (`live`, as for units) the sysctl file is loaded right away, and a
+/// mkinitcpio drop-in rebuilds the initramfs.
 fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.DesiredFile, path: []const u8, live: bool, diags: *diag.List) !bool {
     const d = for (files) |d| {
         if (std.mem.eql(u8, d.path, path)) break d;
@@ -97,11 +98,16 @@ fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.
             return false;
         },
     };
-    if (live and std.mem.eql(u8, path, planner.sysctl_path)) {
-        if (try exec.run(a, io, &.{ "sysctl", "-p", path })) |why| {
-            try diags.add(.bad_value, null, "wrote {s}, but loading it failed: {s}", .{ path, why }, null);
-            return false;
-        }
+    if (!live) return true;
+    const then: []const []const u8 = if (std.mem.eql(u8, path, planner.sysctl_path))
+        &.{ "sysctl", "-p", path }
+    else if (std.mem.startsWith(u8, path, "/etc/mkinitcpio.conf.d/"))
+        &.{ "mkinitcpio", "-P" }
+    else
+        return true;
+    if (try exec.run(a, io, then)) |why| {
+        try diags.add(.bad_value, null, "wrote {s}, but {s} failed: {s}", .{ path, then[0], why }, null);
+        return false;
     }
     return true;
 }
@@ -169,7 +175,7 @@ test "files are written with their mode, and the plan comes back empty" {
     );
     for (c.files.entries.items) |*e| e.value.content = e.value.text.?.v;
     const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
-    const files = try planner.desiredFiles(a, &c);
+    const files = try planner.desiredFiles(a, &c, &.{});
     const paths = try planner.filePaths(a, &c);
     const observe = @import("observe.zig");
 

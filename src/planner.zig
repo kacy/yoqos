@@ -255,13 +255,23 @@ pub const DesiredFile = struct {
     mode: []const u8,
     /// the key that makes the file, for ones `[files]` doesn't name.
     cause: ?[]const u8 = null,
+    /// why a change to it needs a reboot, if one does.
+    reboot: ?[]const u8 = null,
 };
+
+/// mkinitcpio's drop-in that loads nvidia's modules early.
+pub const nvidia_initramfs_path = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf";
 
 /// where `[sysctl]` goes.
 pub const sysctl_path = "/etc/sysctl.d/99-yoq.conf";
 
-/// every file the config wants: `[files]`, then the one `[sysctl]` makes.
-pub fn desiredFiles(a: Allocator, c: *const config.Config) ![]const DesiredFile {
+/// the modules nvidia's driver wants early.
+const nvidia_modules = [_][]const u8{ "nvidia", "nvidia_modeset", "nvidia_uvm", "nvidia_drm" };
+
+/// every file the config wants: `[files]`, the one `[sysctl]` makes, and
+/// nvidia's initramfs drop-in unless the machine loads those modules
+/// already, as `f` shows.
+pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts) ![]const DesiredFile {
     var out: std.ArrayList(DesiredFile) = .empty;
     for (c.files.entries.items) |e| {
         // a source that couldn't be read was reported when loading.
@@ -277,12 +287,29 @@ pub fn desiredFiles(a: Allocator, c: *const config.Config) ![]const DesiredFile 
         for (keys) |k| try text.print(a, "{s} = {s}\n", .{ k, c.sysctl.get(k).?.v.text });
         try out.append(a, .{ .path = sysctl_path, .content = text.items, .mode = config.File.default_mode, .cause = "sysctl" });
     }
+    // nvidia's driver wants its modules in the initramfs. amd and intel
+    // come with mkinitcpio's kms hook already.
+    const gpu = if (c.hardware.gpu) |g| g.v else .none;
+    const initramfs = if (c.providers.get("initramfs")) |p| p.v else "mkinitcpio";
+    const loaded = for (nvidia_modules) |m| {
+        if (!lists.contains(f.initramfs_modules, m)) break false;
+    } else true;
+    if (gpu == .nvidia and std.mem.eql(u8, initramfs, "mkinitcpio") and !loaded) {
+        try out.append(a, .{
+            .path = nvidia_initramfs_path,
+            .content = "# written by os for [hardware] gpu = \"nvidia\".\nMODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)\n",
+            .mode = config.File.default_mode,
+            .cause = "hardware.gpu",
+            .reboot = "initramfs",
+        });
+    }
     return out.items;
 }
 
-/// the paths of every file the config wants, for the observer to hash.
+/// the paths of every file the config might want, for the observer to
+/// hash.
 pub fn filePaths(a: Allocator, c: *const config.Config) ![]const []const u8 {
-    const want = try desiredFiles(a, c);
+    const want = try desiredFiles(a, c, &.{});
     const out = try a.alloc([]const u8, want.len);
     for (want, out) |d, *p| p.* = d.path;
     return out;
@@ -292,18 +319,18 @@ pub fn filePaths(a: Allocator, c: *const config.Config) ![]const []const u8 {
 /// mode set when only that differs. files the config doesn't name are
 /// left alone.
 fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
-    const want = try desiredFiles(a, c);
+    const want = try desiredFiles(a, c, f);
     var files: std.ArrayList(Change) = .empty;
     for (want) |d| {
         const cause = d.cause orelse try std.fmt.allocPrint(a, "files.\"{s}\"", .{d.path});
         const have = f.file(d.path) orelse {
-            try files.append(a, .{ .op = .add, .kind = .file, .subject = d.path, .to = try std.fmt.allocPrint(a, "write, mode {s}", .{d.mode}), .cause = cause });
+            try files.append(a, .{ .op = .add, .kind = .file, .subject = d.path, .to = try std.fmt.allocPrint(a, "write, mode {s}", .{d.mode}), .cause = cause, .reboot = d.reboot });
             continue;
         };
         const hex = @import("observe.zig").sha256Hex(d.content);
         const mode = try normalMode(a, d.mode);
         if (!std.mem.eql(u8, have.sha256, &hex)) {
-            try files.append(a, .{ .op = .change, .kind = .file, .subject = d.path, .to = try std.fmt.allocPrint(a, "rewrite, mode {s}", .{mode}), .cause = cause });
+            try files.append(a, .{ .op = .change, .kind = .file, .subject = d.path, .to = try std.fmt.allocPrint(a, "rewrite, mode {s}", .{mode}), .cause = cause, .reboot = d.reboot });
         } else if (!std.mem.eql(u8, have.mode, mode)) {
             try files.append(a, .{ .op = .change, .kind = .file, .subject = d.path, .from = have.mode, .to = try std.fmt.allocPrint(a, "mode {s}", .{mode}), .cause = cause });
         }
@@ -758,7 +785,7 @@ test "files: written when missing, rewritten when different, and the sysctl file
     try testing.expectEqualStrings(sysctl_path, p.changes[3].subject);
     try testing.expectEqualStrings("sysctl", p.changes[3].cause.?);
 
-    const sysctl = (try desiredFiles(t.a(), &c))[3];
+    const sysctl = (try desiredFiles(t.a(), &c, &f))[3];
     try testing.expectEqualStrings(
         \\# written by os from [sysctl] in the config. edits here are overwritten.
         \\kernel.printk = 3 3 3 3
@@ -790,6 +817,23 @@ test "the update summary counts packages and names the notable ones" {
         \\plan: 1 to add, 4 to change, 1 to remove · reboot needed: kernel
         \\
     , out.written());
+}
+
+test "nvidia's initramfs drop-in, unless the machine loads the modules already" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("[boot]\nkernel = \"none\"\n[hardware]\ngpu = \"nvidia\"\n");
+    const without: facts.Facts = .{};
+    const want = try desiredFiles(t.a(), &c, &without);
+    try testing.expectEqual(1, want.len);
+    try testing.expectEqualStrings(nvidia_initramfs_path, want[0].path);
+    try testing.expectEqualStrings("initramfs", want[0].reboot.?);
+
+    const with: facts.Facts = .{ .initramfs_modules = &.{ "nvidia", "nvidia_modeset", "nvidia_uvm", "nvidia_drm" } };
+    try testing.expectEqual(0, (try desiredFiles(t.a(), &c, &with)).len);
+
+    const booster = try t.cfg("[boot]\nkernel = \"none\"\n[hardware]\ngpu = \"nvidia\"\n[providers]\ninitramfs = \"booster\"\n");
+    try testing.expectEqual(0, (try desiredFiles(t.a(), &booster, &without)).len);
 }
 
 test "a package from a service keeps its install reason" {

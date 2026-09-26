@@ -1,8 +1,8 @@
 {
   "schema": "yoq.plan/1",
-  "hash": "7090ede53566375723a7f65d6d5f54ac529d86129487af2bb0f72cc9ebeb85df",
+  "hash": "8037f1c617542a91fe1ade6d0438a1cfabba8c8ccfed30e89c3a391bf19c3527",
   "summary": {
-    "add": 10,
+    "add": 11,
     "change": 0,
     "remove": 0
   },
@@ -10,7 +10,8 @@
     "needed": true,
     "because": [
       "microcode",
-      "gpu driver"
+      "gpu driver",
+      "initramfs"
     ]
   },
   "changes": [
@@ -103,6 +104,15 @@
       "to": "1.3.10-1",
       "cause": "desktop.session",
       "reboot": null
+    },
+    {
+      "op": "add",
+      "kind": "file",
+      "subject": "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf",
+      "from": null,
+      "to": "write, mode 0644",
+      "cause": "hardware.gpu",
+      "reboot": "initramfs"
     }
   ]
 }

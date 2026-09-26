@@ -112,14 +112,13 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.Render
     const target = try targetFor(ctx, &w, &result.state.lock) orelse return Outcome.failed(&w);
     const units = liveUnits(ctx);
     const hash = try p.hash();
-    const now = std.Io.Timestamp.now(ctx.io, .real).toSeconds();
-    try journal.record(a, ctx.io, ctx.root, now, "begin", &hash);
-    const files = try planner.desiredFiles(a, result.state.config());
+    try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "begin", &hash);
+    const files = try planner.desiredFiles(a, result.state.config(), &result.facts);
     const done = try apply.run(a, ctx.io, p, &result.state.lock, files, target, units, &w.diags) orelse {
-        try journal.record(a, ctx.io, ctx.root, now, "failed", &hash);
+        try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "failed", &hash);
         return Outcome.failed(&w);
     };
-    try journal.record(a, ctx.io, ctx.root, now, "done", &hash);
+    try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "done", &hash);
     const code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units);
     if (units and !ctx.json and changesPackages(p)) try offerRestarts(ctx, yes);
     return .{ .code = code, .matches = true };

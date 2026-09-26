@@ -17,8 +17,7 @@ pub fn recordPacmanCmd(ctx: *Context, _: []const [:0]const u8) !u8 {
         const name = std.mem.trim(u8, line, " \t\r");
         if (name.len > 0) try names.append(a, try a.dupe(u8, name));
     }
-    const now = std.Io.Timestamp.now(ctx.io, .real).toSeconds();
-    try drift.record(a, ctx.io, ctx.root, now, names.items);
+    try drift.record(a, ctx.io, ctx.root, @import("../journal.zig").now(ctx.io), names.items);
     return 0;
 }
 

@@ -41,6 +41,7 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
     }
     f.pacman_changes = try drift.since(a, io, opts.root);
     f.files = try files(a, io, opts.root, opts.files);
+    f.initramfs_modules = try r.initramfsModules();
     if (opts.packages) {
         const dbpath = try r.dbpath();
         const pkgs = alpm.localPackages(a, opts.root, dbpath, diags) catch |e| switch (e) {
@@ -86,6 +87,21 @@ const Reader = struct {
         };
     }
 
+    /// MODULES from mkinitcpio.conf and every drop-in os didn't write.
+    fn initramfsModules(r: Reader) ![]const []const u8 {
+        var out: std.ArrayList([]const u8) = .empty;
+        if (try r.file("etc/mkinitcpio.conf")) |text| try mkinitcpioModules(r.a, text, &out);
+        var dir = std.Io.Dir.cwd().openDir(r.io, try r.path("etc/mkinitcpio.conf.d"), .{ .iterate = true }) catch return out.items;
+        defer dir.close(r.io);
+        var it = dir.iterate();
+        while (it.next(r.io) catch null) |e| {
+            if (std.mem.startsWith(u8, e.name, "10-yoq-") or !std.mem.endsWith(u8, e.name, ".conf")) continue;
+            const text = try r.file(try std.fmt.allocPrint(r.a, "etc/mkinitcpio.conf.d/{s}", .{e.name})) orelse continue;
+            try mkinitcpioModules(r.a, text, &out);
+        }
+        return out.items;
+    }
+
     /// whether a process maps package files that have been replaced
     /// since it started.
     fn runsReplaced(r: Reader, pid: u32) !bool {
@@ -124,6 +140,18 @@ const Reader = struct {
         return pacmanDb(r.a, r.io, r.root);
     }
 };
+
+/// the names in `MODULES=(...)` and `MODULES+=(...)` lines.
+pub fn mkinitcpioModules(a: Allocator, text: []const u8, out: *std.ArrayList([]const u8)) !void {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        const start = if (std.mem.startsWith(u8, line, "MODULES=(")) "MODULES=(".len else if (std.mem.startsWith(u8, line, "MODULES+=(")) "MODULES+=(".len else continue;
+        const end = std.mem.indexOfScalarPos(u8, line, start, ')') orelse continue;
+        var names = std.mem.tokenizeAny(u8, line[start..end], " \t\"'");
+        while (names.next()) |n| try out.append(a, try a.dupe(u8, n));
+    }
+}
 
 /// whether /proc/<pid>/maps lists a deleted file from a package's
 /// directories. memfds and deleted files in /tmp don't count.
@@ -283,6 +311,21 @@ test "timezone from the localtime link" {
     defer testing.allocator.free(utc);
     try testing.expectEqualStrings("UTC", utc);
     try testing.expectEqual(null, try zoneFromLink(testing.allocator, "/etc/somewhere"));
+}
+
+test "mkinitcpio's modules" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList([]const u8) = .empty;
+    try mkinitcpioModules(arena.allocator(),
+        \\# MODULES=(ignored)
+        \\MODULES=(nvidia "nvidia_modeset")
+        \\MODULES+=(nvidia_uvm nvidia_drm)
+        \\HOOKS=(base udev)
+        \\
+    , &out);
+    try testing.expectEqual(4, out.items.len);
+    try testing.expectEqualStrings("nvidia_modeset", out.items[1]);
 }
 
 test "a process running replaced package files" {

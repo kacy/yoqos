@@ -351,7 +351,7 @@ bluetooth = false
 | `[providers]` | which package provides a virtual one, like `initramfs` |
 | `[system]` | `hostname`, `timezone`, `locale`, and `keymap` |
 | `[boot]` | `kernel`: `linux` unless you say otherwise. `none` for a machine without its own kernel, like a container. |
-| `[hardware]` | `cpu`: `amd` or `intel`. `gpu`: `amd`, `intel`, `nvidia`, or `none`. these bring in microcode and drivers. |
+| `[hardware]` | `cpu`: `amd` or `intel`. `gpu`: `amd`, `intel`, `nvidia`, or `none`. these bring in microcode and drivers. `nvidia` also loads its modules early, with a drop-in in `/etc/mkinitcpio.conf.d`, unless mkinitcpio.conf does already. |
 | `[desktop]` | `session`: `hyprland`. `audio`: `pipewire`. these bring in their packages. |
 | `[users.<name>]` | `shell`, and `groups`: the full list of groups beyond the user's own |
 | `[services]` | `<name> = true` or `false`, for the services listed below |

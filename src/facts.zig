@@ -51,6 +51,7 @@ pub const File = struct {
 
 /// packages a pacman transaction outside os touched, and when.
 pub const PacmanChange = struct {
+    /// unix milliseconds, like the apply journal's.
     time: i64,
     packages: []const []const u8,
 };
@@ -76,6 +77,9 @@ pub const Facts = struct {
     pacman_changes: []PacmanChange = &.{},
     /// the files the config manages that exist.
     files: []File = &.{},
+    /// modules mkinitcpio puts in the initramfs, from mkinitcpio.conf and
+    /// its drop-ins, leaving out the ones os writes.
+    initramfs_modules: []const []const u8 = &.{},
 
     pub fn package(f: *const Facts, name: []const u8) ?*const Package {
         for (f.packages) |*p| {

@@ -9,5 +9,7 @@ packages
   + wireplumber 0.5.11-1  (desktop.audio)
   + xdg-desktop-portal-hyprland 1.3.10-1  (desktop.session)
   + mesa 1:25.2.3-1 (dependency)
+files
+  + /etc/mkinitcpio.conf.d/10-yoq-nvidia.conf: write, mode 0644  (hardware.gpu)
 
-plan: 10 to add, 0 to change, 0 to remove · reboot needed: microcode, gpu driver
+plan: 11 to add, 0 to change, 0 to remove · reboot needed: microcode, gpu driver, initramfs
