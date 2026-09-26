@@ -41,7 +41,7 @@ pub fn running() bool {
 
 /// what can be done to a unit. a plan's unit change lists these in order,
 /// like "disable, stop".
-pub const Verb = enum { enable, disable, start, stop };
+pub const Verb = enum { enable, disable, start, stop, restart };
 
 /// the verbs in a plan's "enable, start".
 pub fn parseVerbs(a: Allocator, text: []const u8) ![]const Verb {

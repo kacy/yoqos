@@ -161,7 +161,12 @@ the config. it uses the machine's own pacman.conf for mirrors and download
 settings. packages come from the lock's date, so run `os update` first to
 move to today's.
 
-afterwards it plans again and says if anything still differs. `--yes` skips
+afterwards it plans again and says if anything still differs. arch
+doesn't restart services after an upgrade, so when packages changed,
+`apply` also lists the services still running files the upgrade replaced
+and offers to restart them. `os status` shows them too. services a
+session depends on, like d-bus and display managers, are left for a
+reboot. `--yes` skips
 the question; without a terminal, `apply` needs it. it needs root.
 
 read the plan before you say yes: `apply` removes every package the config

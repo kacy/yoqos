@@ -115,8 +115,13 @@ pub fn change(a: Allocator, unit: []const u8, verbs: []const api.Verb, diags: *d
                 try do(bus, "DisableUnitFiles", "asb", .{ @as(c_int, 1), name.ptr, @as(c_int, 0) }, diags);
             if (!ok or !try do(bus, "Reload", null, .{}, diags)) return false;
         },
-        .start, .stop => {
-            const m = try call(bus, if (v == .start) "StartUnit" else "StopUnit", "ss", .{ name.ptr, "replace" }, diags) orelse return false;
+        .start, .stop, .restart => {
+            const method: [*:0]const u8 = switch (v) {
+                .start => "StartUnit",
+                .stop => "StopUnit",
+                else => "RestartUnit",
+            };
+            const m = try call(bus, method, "ss", .{ name.ptr, "replace" }, diags) orelse return false;
             defer _ = c.sd_bus_message_unref(m);
             var job: [*c]const u8 = null;
             if (c.sd_bus_message_read(m, "o", &job) < 0) return badReply(diags, "StartUnit");
@@ -209,8 +214,18 @@ fn loadedUnits(a: Allocator, bus: ?*c.sd_bus, found: *std.StringArrayHashMapUnma
         const u = try entry(a, found, name);
         u.active = std.mem.eql(u8, active, "active");
         u.failed = std.mem.eql(u8, active, "failed");
+        if (u.active and std.mem.endsWith(u8, name, ".service")) u.main_pid = mainPid(bus, s[6]);
     }
     return true;
+}
+
+/// a service's main process, or 0 if it has none or systemd won't say.
+fn mainPid(bus: ?*c.sd_bus, path: [*c]const u8) u32 {
+    var err: c.sd_bus_error = std.mem.zeroes(c.sd_bus_error);
+    defer c.sd_bus_error_free(&err);
+    var pid: u32 = 0;
+    if (c.sd_bus_get_property_trivial(bus, manager[0], path, "org.freedesktop.systemd1.Service", "MainPID", &err, 'u', &pid) < 0) return 0;
+    return pid;
 }
 
 fn badReply(diags: *diag.List, method: []const u8) !bool {

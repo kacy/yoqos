@@ -90,6 +90,17 @@ pub const default_kernel = "linux";
 /// container.
 pub const no_kernel = "none";
 
+/// whether os offers to restart a unit that runs replaced files. the
+/// plumbing a session hangs on, like d-bus, logins, and display managers,
+/// waits for a reboot instead.
+pub fn restartable(unit: []const u8) bool {
+    const prefixes = [_][]const u8{ "systemd-", "dbus", "user@", "getty@", "serial-getty@", "polkit", "gdm", "sddm", "lightdm", "greetd", "ly." };
+    for (prefixes) |p| {
+        if (std.mem.startsWith(u8, unit, p)) return false;
+    }
+    return true;
+}
+
 /// arch's kernel packages.
 pub const kernels = [_][]const u8{ "linux", "linux-lts", "linux-zen", "linux-hardened" };
 

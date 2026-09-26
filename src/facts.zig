@@ -23,6 +23,11 @@ pub const Unit = struct {
     active: bool = false,
     /// the unit tried to run and failed.
     failed: bool = false,
+    /// a running service's main process, 0 if there isn't one.
+    main_pid: u32 = 0,
+    /// that process runs files an upgrade has since replaced, so it needs
+    /// a restart to pick up the new ones.
+    stale: bool = false,
 };
 
 pub const User = struct {

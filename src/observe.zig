@@ -55,6 +55,9 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
             error.SystemdUnavailable => null,
         };
         f.units = us orelse &.{};
+        for (f.units) |*u| {
+            if (u.main_pid != 0) u.stale = try r.runsReplaced(u.main_pid);
+        }
     }
     f.normalize();
     return f;
@@ -81,6 +84,13 @@ const Reader = struct {
             error.OutOfMemory => error.OutOfMemory,
             else => null,
         };
+    }
+
+    /// whether a process maps package files that have been replaced
+    /// since it started.
+    fn runsReplaced(r: Reader, pid: u32) !bool {
+        const maps = try r.file(try std.fmt.allocPrint(r.a, "proc/{d}/maps", .{pid})) orelse return false;
+        return mapsReplaced(maps);
     }
 
     /// /etc/localtime is a symlink into the zoneinfo tree; the zone is the
@@ -114,6 +124,19 @@ const Reader = struct {
         return pacmanDb(r.a, r.io, r.root);
     }
 };
+
+/// whether /proc/<pid>/maps lists a deleted file from a package's
+/// directories. memfds and deleted files in /tmp don't count.
+pub fn mapsReplaced(maps: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, maps, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.endsWith(u8, line, " (deleted)")) continue;
+        const slash = std.mem.indexOfScalar(u8, line, '/') orelse continue;
+        const file = line[slash..];
+        if (std.mem.startsWith(u8, file, "/usr/") or std.mem.startsWith(u8, file, "/opt/")) return true;
+    }
+    return false;
+}
 
 /// the managed files that exist, with their hash and mode.
 fn files(a: Allocator, io: std.Io, root: []const u8, paths: []const []const u8) ![]facts.File {
@@ -260,6 +283,20 @@ test "timezone from the localtime link" {
     defer testing.allocator.free(utc);
     try testing.expectEqualStrings("UTC", utc);
     try testing.expectEqual(null, try zoneFromLink(testing.allocator, "/etc/somewhere"));
+}
+
+test "a process running replaced package files" {
+    try testing.expect(mapsReplaced(
+        \\55d0a000-55d0b000 r--p 00000000 fe:01 1234   /usr/bin/sshd
+        \\7f00a000-7f00b000 r-xp 00000000 fe:01 5678   /usr/lib/libcrypto.so.3 (deleted)
+        \\
+    ));
+    try testing.expect(!mapsReplaced(
+        \\7f00a000-7f00b000 rw-s 00000000 00:01 42     /memfd:pulseaudio (deleted)
+        \\7f00c000-7f00d000 rw-p 00000000 fe:01 43     /tmp/scratch (deleted)
+        \\7f00e000-7f00f000 r-xp 00000000 fe:01 44     /usr/lib/libc.so.6
+        \\
+    ));
 }
 
 test "users and their groups" {

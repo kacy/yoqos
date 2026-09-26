@@ -13,6 +13,7 @@ const planner = @import("../planner.zig");
 const pipeline = @import("../pipeline.zig");
 const sync = @import("../sync.zig");
 const systemd = @import("../systemd.zig");
+const catalog = @import("../catalog.zig");
 const locking = @import("lock.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
@@ -119,7 +120,44 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs) !Outcome {
         return Outcome.failed(&w);
     };
     try journal.record(a, ctx.io, ctx.root, now, "done", &hash);
-    return .{ .code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units), .matches = true };
+    const code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units);
+    if (units and !ctx.json and changesPackages(p)) try offerRestarts(ctx, yes);
+    return .{ .code = code, .matches = true };
+}
+
+fn changesPackages(p: *const planner.Plan) bool {
+    for (p.changes) |c| {
+        if (c.kind == .package or c.kind == .dependency) return true;
+    }
+    return false;
+}
+
+/// arch doesn't restart services after an upgrade. this finds the ones
+/// still running replaced files and offers to restart them, or says how
+/// when there's no one to ask.
+fn offerRestarts(ctx: *Context, yes: bool) !void {
+    var w: cli.Work = .init(ctx);
+    defer w.deinit();
+    const a = w.allocator();
+    const f = try cli.facts(&w) orelse return;
+    var names: std.ArrayList([]const u8) = .empty;
+    for (f.units) |u| {
+        if (u.stale and catalog.restartable(u.name)) try names.append(a, u.name);
+    }
+    if (names.items.len == 0) return;
+    const list = try std.mem.join(a, " ", names.items);
+    try ctx.out.print("\nthese services still run files the upgrade replaced: {s}\n", .{list});
+    if (yes or !ctx.interactive or !try cli.confirm(ctx, "restart them now?")) {
+        try ctx.out.print("restart them when it suits: systemctl restart {s}\n", .{list});
+        return;
+    }
+    for (names.items) |n| {
+        if (!try systemd.change(a, n, &.{.restart}, &w.diags)) {
+            _ = try w.fail();
+            return;
+        }
+    }
+    try ctx.out.writeAll("restarted.\n");
 }
 
 /// units change only on the running machine, and only when systemd runs

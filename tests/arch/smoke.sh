@@ -86,6 +86,16 @@ if [ -d /run/systemd/system ]; then
     systemctl is-enabled tailscaled.service
     systemctl is-active tailscaled.service
     "$os" --config "$cfg" plan | grep -q "nothing to do"
+    # an upgrade replacing tailscaled's binary under it: status says so,
+    # the next apply that changes packages offers the restart, and a
+    # restart clears it.
+    cp /usr/bin/tailscaled /usr/bin/tailscaled.new
+    mv -f /usr/bin/tailscaled.new /usr/bin/tailscaled
+    "$os" --config "$cfg" status | grep -q "running replaced files:.*tailscaled.service"
+    "$os" --config "$cfg" add --yes tree | grep -q "systemctl restart tailscaled.service"
+    "$os" --config "$cfg" remove --yes tree
+    systemctl restart tailscaled.service
+    if "$os" --config "$cfg" status | grep -q "running replaced files:.*tailscaled"; then echo "tailscaled still stale after a restart"; exit 1; fi
     "$os" --config "$cfg" disable --yes tailscale
     if systemctl is-active tailscaled.service; then echo "tailscaled is still running"; exit 1; fi
     if pacman -Q tailscale 2>/dev/null; then echo "tailscale is still installed"; exit 1; fi
@@ -93,7 +103,8 @@ if [ -d /run/systemd/system ]; then
 fi
 
 # update applies what it resolved; on the same day there's nothing to do.
-"$os" --config "$cfg" update --yes | grep -q "nothing to do"
+"$os" --config "$cfg" update --yes | tee "$dir/update.out"
+grep -q "nothing to do" "$dir/update.out"
 
 # drift: with os and its pacman hook installed the way a package would,
 # a direct `pacman -S` shows in status until os applies again.

@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const lists = @import("lists.zig");
+const catalog = @import("catalog.zig");
 const config = @import("config.zig");
 const lock = @import("lock.zig");
 const facts = @import("facts.zig");
@@ -39,6 +40,10 @@ pub const Status = struct {
         users: []const []const u8,
         /// managed files that are missing or differ.
         files: []const []const u8,
+        /// services running files an upgrade replaced, which a restart
+        /// fixes, and the ones only a reboot should.
+        restart: []const []const u8,
+        reboot: []const []const u8,
         /// packages pacman touched since the last apply. this says where
         /// the rows above came from, so it isn't counted on its own.
         pacman: []const []const u8,
@@ -48,7 +53,7 @@ pub const Status = struct {
 
     pub fn clean(s: *const Status) bool {
         const ch = s.changed;
-        return ch.extra.len + ch.orphans + ch.missing.len + ch.versions.len + ch.settings.len + ch.units.len + ch.users.len + ch.files.len + s.failing.len == 0;
+        return ch.extra.len + ch.orphans + ch.missing.len + ch.versions.len + ch.settings.len + ch.units.len + ch.users.len + ch.files.len + ch.restart.len + ch.reboot.len + s.failing.len == 0;
     }
 };
 
@@ -60,6 +65,11 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
     var units: std.ArrayList([]const u8) = .empty;
     var users: std.ArrayList([]const u8) = .empty;
     var files: std.ArrayList([]const u8) = .empty;
+    var restart: std.ArrayList([]const u8) = .empty;
+    var reboot: std.ArrayList([]const u8) = .empty;
+    for (f.units) |u| {
+        if (u.stale) try (if (catalog.restartable(u.name)) &restart else &reboot).append(a, u.name);
+    }
     var orphans: usize = 0;
     for (p.changes) |ch| switch (ch.kind) {
         .package, .dependency => switch (ch.op) {
@@ -106,6 +116,8 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
             .units = units.items,
             .users = users.items,
             .files = files.items,
+            .restart = restart.items,
+            .reboot = reboot.items,
             .pacman = try pacmanTouched(a, f),
         },
         .failing = failing.items,
@@ -164,6 +176,8 @@ pub fn writeText(w: *std.Io.Writer, s: *const Status) !void {
     if (ch.units.len > 0) try rows.list("services not as configured", ch.units, "os plan");
     if (ch.users.len > 0) try rows.list("users not as configured", ch.users, "os plan");
     if (ch.files.len > 0) try rows.list("files differ", ch.files, "os plan");
+    if (ch.restart.len > 0) try rows.list("running replaced files", ch.restart, "systemctl restart them");
+    if (ch.reboot.len > 0) try rows.list("system services running replaced files", ch.reboot, "reboot when you can");
     if (ch.pacman.len > 0) try rows.list("touched with pacman since the last apply", ch.pacman, "os plan shows what differs");
     if (rows.first) try w.writeAll("changed   none\n");
 
@@ -232,7 +246,7 @@ test "status text" {
         .lock_date = "2026-09-01",
         .lock_age_days = 24,
         .ok = .{ .packages = 400, .services = 2 },
-        .changed = .{ .extra = &.{ "htop", "btop" }, .orphans = 0, .missing = &.{}, .versions = &.{"git"}, .settings = &.{}, .units = &.{}, .users = &.{}, .files = &.{}, .pacman = &.{ "htop", "btop" } },
+        .changed = .{ .extra = &.{ "htop", "btop" }, .orphans = 0, .missing = &.{}, .versions = &.{"git"}, .settings = &.{}, .units = &.{}, .users = &.{}, .files = &.{}, .restart = &.{"sshd.service"}, .reboot = &.{}, .pacman = &.{ "htop", "btop" } },
         .failing = &.{"tailscaled.service"},
     };
     var out: std.Io.Writer.Allocating = .init(arena.allocator());
@@ -243,6 +257,7 @@ test "status text" {
         \\ok        400 packages, 2 services
         \\changed   installed but not in the config: htop, btop  -> os adopt keeps them, os plan removes them
         \\          1 package differs from the lock  -> os plan
+        \\          running replaced files: sshd.service  -> systemctl restart them
         \\          touched with pacman since the last apply: htop, btop  -> os plan shows what differs
         \\failing   tailscaled.service
         \\
