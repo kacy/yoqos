@@ -44,6 +44,10 @@ pub const Status = struct {
         /// fixes, and the ones only a reboot should.
         restart: []const []const u8,
         reboot: []const []const u8,
+        /// files with a new upstream default beside them: ones os doesn't
+        /// manage, and ones it does, where the .pacnew is only news.
+        pacnew: []const []const u8,
+        pacnew_managed: []const []const u8,
         /// packages pacman touched since the last apply. this says where
         /// the rows above came from, so it isn't counted on its own.
         pacman: []const []const u8,
@@ -70,6 +74,10 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
     for (f.units) |u| {
         if (u.stale) try (if (catalog.restartable(u.name)) &restart else &reboot).append(a, u.name);
     }
+    var pacnew: std.ArrayList([]const u8) = .empty;
+    var pacnew_managed: std.ArrayList([]const u8) = .empty;
+    const managed = try planner.filePaths(a, c);
+    for (f.pacnew) |path| try (if (lists.contains(managed, path)) &pacnew_managed else &pacnew).append(a, path);
     var orphans: usize = 0;
     for (p.changes) |ch| switch (ch.kind) {
         .package, .dependency => switch (ch.op) {
@@ -118,6 +126,8 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
             .files = files.items,
             .restart = restart.items,
             .reboot = reboot.items,
+            .pacnew = pacnew.items,
+            .pacnew_managed = pacnew_managed.items,
             .pacman = try pacmanTouched(a, f),
         },
         .failing = failing.items,
@@ -178,6 +188,8 @@ pub fn writeText(w: *std.Io.Writer, s: *const Status) !void {
     if (ch.files.len > 0) try rows.list("files differ", ch.files, "os plan");
     if (ch.restart.len > 0) try rows.list("running replaced files", ch.restart, "systemctl restart them");
     if (ch.reboot.len > 0) try rows.list("system services running replaced files", ch.reboot, "reboot when you can");
+    if (ch.pacnew.len > 0) try rows.list("new upstream defaults", ch.pacnew, "merge them with pacdiff");
+    if (ch.pacnew_managed.len > 0) try rows.list("new upstream defaults for files os writes", ch.pacnew_managed, "os keeps its version; the .pacnew is for reference");
     if (ch.pacman.len > 0) try rows.list("touched with pacman since the last apply", ch.pacman, "os plan shows what differs");
     if (rows.first) try w.writeAll("changed   none\n");
 
@@ -246,7 +258,7 @@ test "status text" {
         .lock_date = "2026-09-01",
         .lock_age_days = 24,
         .ok = .{ .packages = 400, .services = 2 },
-        .changed = .{ .extra = &.{ "htop", "btop" }, .orphans = 0, .missing = &.{}, .versions = &.{"git"}, .settings = &.{}, .units = &.{}, .users = &.{}, .files = &.{}, .restart = &.{"sshd.service"}, .reboot = &.{}, .pacman = &.{ "htop", "btop" } },
+        .changed = .{ .extra = &.{ "htop", "btop" }, .orphans = 0, .missing = &.{}, .versions = &.{"git"}, .settings = &.{}, .units = &.{}, .users = &.{}, .files = &.{}, .restart = &.{"sshd.service"}, .reboot = &.{}, .pacnew = &.{"/etc/pacman.conf"}, .pacnew_managed = &.{}, .pacman = &.{ "htop", "btop" } },
         .failing = &.{"tailscaled.service"},
     };
     var out: std.Io.Writer.Allocating = .init(arena.allocator());
@@ -258,6 +270,7 @@ test "status text" {
         \\changed   installed but not in the config: htop, btop  -> os adopt keeps them, os plan removes them
         \\          1 package differs from the lock  -> os plan
         \\          running replaced files: sshd.service  -> systemctl restart them
+        \\          new upstream defaults: /etc/pacman.conf  -> merge them with pacdiff
         \\          touched with pacman since the last apply: htop, btop  -> os plan shows what differs
         \\failing   tailscaled.service
         \\

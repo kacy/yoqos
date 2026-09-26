@@ -42,6 +42,7 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
     f.pacman_changes = try drift.since(a, io, opts.root);
     f.files = try files(a, io, opts.root, opts.files);
     f.initramfs_modules = try r.initramfsModules();
+    f.pacnew = try r.pacnew();
     if (opts.packages) {
         const dbpath = try r.dbpath();
         const pkgs = alpm.localPackages(a, opts.root, dbpath, diags) catch |e| switch (e) {
@@ -85,6 +86,22 @@ const Reader = struct {
             error.OutOfMemory => error.OutOfMemory,
             else => null,
         };
+    }
+
+    /// the files under /etc that have a .pacnew beside them. a directory
+    /// that can't be read ends the search early rather than failing.
+    fn pacnew(r: Reader) ![]const []const u8 {
+        var out: std.ArrayList([]const u8) = .empty;
+        var etc = std.Io.Dir.cwd().openDir(r.io, try r.path("etc"), .{ .iterate = true }) catch return out.items;
+        defer etc.close(r.io);
+        var walker = try etc.walk(r.a);
+        defer walker.deinit();
+        while (walker.next(r.io) catch null) |e| {
+            if (e.kind != .file or !std.mem.endsWith(u8, e.basename, ".pacnew")) continue;
+            try out.append(r.a, try std.fmt.allocPrint(r.a, "/etc/{s}", .{e.path[0 .. e.path.len - ".pacnew".len]}));
+        }
+        lists.sortStrings(out.items);
+        return out.items;
     }
 
     /// MODULES from mkinitcpio.conf and every drop-in os didn't write.
@@ -406,4 +423,23 @@ test "observe a machine laid out in a directory" {
     try testing.expectEqualStrings("intel", f.gpus[0]);
     try testing.expectEqualStrings("nvidia", f.gpus[1]);
     try testing.expect(f.time > 1_700_000_000);
+}
+
+test "files with a new upstream default beside them" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const io = testing.io;
+    try tmp.dir.createDirPath(io, "etc/ssh");
+    try tmp.dir.writeFile(io, .{ .sub_path = "etc/ssh/sshd_config.pacnew", .data = "" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "etc/pacman.conf.pacnew", .data = "" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "etc/pacman.conf", .data = "" });
+    const root = try std.fmt.allocPrint(arena.allocator(), ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var diags: diag.List = .init(testing.allocator);
+    defer diags.deinit();
+    const f = try observe(arena.allocator(), io, .{ .root = root, .packages = false, .units = false }, &diags);
+    try testing.expectEqual(2, f.pacnew.len);
+    try testing.expectEqualStrings("/etc/pacman.conf", f.pacnew[0]);
+    try testing.expectEqualStrings("/etc/ssh/sshd_config", f.pacnew[1]);
 }

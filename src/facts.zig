@@ -87,6 +87,9 @@ pub const Facts = struct {
     /// modules mkinitcpio puts in the initramfs, from mkinitcpio.conf and
     /// its drop-ins, leaving out the ones os writes.
     initramfs_modules: []const []const u8 = &.{},
+    /// files under /etc with a new upstream default beside them, as
+    /// `<path>.pacnew`, by the path of the file itself.
+    pacnew: []const []const u8 = &.{},
 
     pub fn package(f: *const Facts, name: []const u8) ?*const Package {
         for (f.packages) |*p| {

@@ -111,7 +111,10 @@ failing   none
 each "changed" line ends with the command that deals with it. with the
 pacman hook that comes with `os` in place, a direct `pacman -S` or `pacman
 -R` also shows up, as "touched with pacman since the last apply", until
-the next `os apply`. the hook records nothing for os's own transactions. `os status`
+the next `os apply`. the hook records nothing for os's own transactions. when an upgrade leaves a new default beside a
+config file you changed, as `<file>.pacnew`, status lists it too. for files
+`os` writes itself, `os` keeps its version and the `.pacnew` is only there
+to read. `os status`
 also warns when the lock is more than 14 days old, since an old lock holds
 back security fixes. it exits with 1 when something is failing.
 
