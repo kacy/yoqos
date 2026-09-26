@@ -232,6 +232,21 @@ when a package depends on something several packages provide, like
 want and saves the answer in `[providers]`, so it only asks once. without a
 terminal, it stops and says which choices to make.
 
+an update can move hundreds of packages, so its plan is a summary:
+
+```
+packages
+  upgrades 142    new 3    removed 1   (-v lists them)
+  notable  linux 6.16.8.arch1-1 -> 6.17.1.arch1-1
+           mesa 1:25.1.0-1 -> 1:25.2.0-1
+           icu 76.1-1 -> 77.1-1
+
+plan: 3 to add, 142 to change, 1 to remove · reboot needed: kernel
+```
+
+notable upgrades are the ones that need a reboot, graphics and boot
+packages, and new major versions. `os update -v` lists every package.
+
 before the plan, `update` lists the arch news posted since the lock's
 last date. arch posts there when an update needs a hand, so read those
 items before saying yes.

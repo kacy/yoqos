@@ -131,7 +131,7 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
     if (!now) return 0;
     // a name already in the config applies too: the machine may be behind.
     try ctx.out.writeByte('\n');
-    return (try applying.run(ctx, then.yes, cli.inputs(ctx))).code;
+    return (try applying.run(ctx, then.yes, cli.inputs(ctx), .{})).code;
 }
 
 /// "add fd, bat": what the change did, in the words of the command.

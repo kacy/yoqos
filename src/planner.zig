@@ -382,6 +382,8 @@ pub fn findWant(list: []const Want, name: []const u8) ?*const Want {
 pub const RenderOptions = struct {
     /// list each dependency instead of counting them.
     verbose: bool = false,
+    /// packages as counts and the notable few, for big updates.
+    summary: bool = false,
 };
 
 pub fn writeText(w: *std.Io.Writer, a: Allocator, p: *const Plan, opts: RenderOptions) !void {
@@ -390,7 +392,9 @@ pub fn writeText(w: *std.Io.Writer, a: Allocator, p: *const Plan, opts: RenderOp
         return;
     }
 
-    if (has(p, .package) or has(p, .dependency) or has(p, .reason)) {
+    if (opts.summary and !opts.verbose) {
+        try packageSummary(w, p);
+    } else if (has(p, .package) or has(p, .dependency) or has(p, .reason)) {
         try w.writeAll("packages\n");
         for (p.changes) |c| {
             if (c.kind == .package) try line(w, c);
@@ -476,6 +480,36 @@ fn line(w: *std.Io.Writer, c: Change) !void {
         if (c.kind != .user) try w.print("  ({s})", .{cause});
     }
     try w.writeByte('\n');
+}
+
+/// the update screen's packages: how many move, and the ones worth a look
+/// before saying yes.
+fn packageSummary(w: *std.Io.Writer, p: *const Plan) !void {
+    var n = [_]usize{ 0, 0, 0 };
+    for (p.changes) |c| {
+        if (c.kind == .package or c.kind == .dependency) n[@intFromEnum(c.op)] += 1;
+    }
+    if (n[0] + n[1] + n[2] == 0) return;
+    try w.print("packages\n  upgrades {d}    new {d}    removed {d}   (-v lists them)\n", .{ n[1], n[0], n[2] });
+    var first = true;
+    for (p.changes) |c| {
+        if ((c.kind != .package and c.kind != .dependency) or c.op != .change or !notable(c)) continue;
+        try w.print("  {s:<9}{s} {s} -> {s}\n", .{ if (first) "notable" else "", c.subject, c.from.?, c.to.? });
+        first = false;
+    }
+}
+
+/// an upgrade worth a look: one that needs a reboot, one the catalog
+/// flags, like graphics and boot, or a new major version.
+fn notable(c: Change) bool {
+    if (catalog.rebootReason(c.subject) != null or catalog.notable(c.subject)) return true;
+    return !std.mem.eql(u8, majorOf(c.from.?), majorOf(c.to.?));
+}
+
+/// "1:2.3.4-1" and "2.3.4-1" are both major version "2".
+fn majorOf(version: []const u8) []const u8 {
+    const v = if (std.mem.indexOfScalar(u8, version, ':')) |i| version[i + 1 ..] else version;
+    return v[0 .. std.mem.indexOfAny(u8, v, ".-+_") orelse v.len];
 }
 
 fn depSummary(w: *std.Io.Writer, p: *const Plan) !void {
@@ -731,6 +765,31 @@ test "files: written when missing, rewritten when different, and the sysctl file
         \\vm.swappiness = 10
         \\
     , sysctl.content);
+}
+
+test "the update summary counts packages and names the notable ones" {
+    var t: T = .{};
+    defer t.deinit();
+    const p: Plan = .{ .changes = &.{
+        .{ .op = .change, .kind = .package, .subject = "git", .from = "2.51.0-1", .to = "2.51.1-1" },
+        .{ .op = .change, .kind = .package, .subject = "linux", .from = "6.16.8-1", .to = "6.17.1-1", .reboot = "kernel" },
+        .{ .op = .change, .kind = .dependency, .subject = "mesa", .from = "1:25.1.0-1", .to = "1:25.2.0-1" },
+        .{ .op = .change, .kind = .dependency, .subject = "icu", .from = "76.1-1", .to = "77.1-1" },
+        .{ .op = .add, .kind = .dependency, .subject = "libnew", .to = "1.0-1" },
+        .{ .op = .remove, .kind = .dependency, .subject = "libold", .from = "0.9-1" },
+    } };
+    var out: std.Io.Writer.Allocating = .init(t.a());
+    try writeText(&out.writer, t.a(), &p, .{ .summary = true });
+    try testing.expectEqualStrings(
+        \\packages
+        \\  upgrades 4    new 1    removed 1   (-v lists them)
+        \\  notable  linux 6.16.8-1 -> 6.17.1-1
+        \\           mesa 1:25.1.0-1 -> 1:25.2.0-1
+        \\           icu 76.1-1 -> 77.1-1
+        \\
+        \\plan: 1 to add, 4 to change, 1 to remove · reboot needed: kernel
+        \\
+    , out.written());
 }
 
 test "a package from a service keeps its install reason" {

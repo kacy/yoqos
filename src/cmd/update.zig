@@ -18,14 +18,17 @@ const eql = cli.eql;
 const Allocator = std.mem.Allocator;
 
 pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os update [--yes] [--no-apply] [--dbs <dir>] [--date yyyy-mm-dd]";
+    const usage_text = "os update [--yes] [--no-apply] [-v] [--dbs <dir>] [--date yyyy-mm-dd]";
     var dbs_dir: ?[]const u8 = null;
     var date: ?[]const u8 = null;
     var then: applying.Then = .{ .apply = true };
+    var verbose = false;
     var it: cli.ArgIter = .{ .args = args };
     while (it.next()) |a| {
         if (then.flag(a)) {
             continue;
+        } else if (eql(a, "-v")) {
+            verbose = true;
         } else if (eql(a, "--dbs")) {
             dbs_dir = it.next() orelse return cli.usageError(ctx, usage_text);
         } else if (eql(a, "--date")) {
@@ -67,7 +70,7 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         var in = cli.inputs(ctx);
         in.lock_path = pending;
         try ctx.out.writeByte('\n');
-        const done = try applying.run(ctx, then.yes, in);
+        const done = try applying.run(ctx, then.yes, in, .{ .summary = true, .verbose = verbose });
         if (!done.matches) return done.code;
         code = done.code;
     }

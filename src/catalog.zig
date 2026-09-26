@@ -108,6 +108,16 @@ pub const kernels = [_][]const u8{ "linux", "linux-lts", "linux-zen", "linux-har
 /// them the machine can't boot or can't manage packages.
 pub const protected = [_][]const u8{ "base", "filesystem", "glibc", "pacman", "systemd" };
 
+/// upgrades worth pointing out even without a reboot: graphics, boot, and
+/// the package manager.
+pub fn notable(pkg: []const u8) bool {
+    const prefixes = [_][]const u8{ "mesa", "nvidia", "vulkan-", "grub", "limine", "refind", "pacman", "openssh" };
+    for (prefixes) |p| {
+        if (std.mem.startsWith(u8, pkg, p)) return true;
+    }
+    return false;
+}
+
 /// why changing this package needs a reboot, or null if it can apply live.
 /// these are the packages the running system can't swap out safely.
 pub fn rebootReason(pkg: []const u8) ?[]const u8 {

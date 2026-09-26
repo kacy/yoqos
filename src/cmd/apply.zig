@@ -24,7 +24,7 @@ pub fn applyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         if (isYes(arg)) yes = true else return cli.usageError(ctx, "os apply [--yes]");
     }
     if (try refused(ctx)) return 1;
-    return (try run(ctx, yes, cli.inputs(ctx))).code;
+    return (try run(ctx, yes, cli.inputs(ctx), .{})).code;
 }
 
 pub fn isYes(arg: []const u8) bool {
@@ -81,7 +81,7 @@ pub const Outcome = struct {
 
 /// plans from `in`, shows the plan, asks unless `yes`, applies it, and
 /// checks the result. the caller has checked `blocker`.
-pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs) !Outcome {
+pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.RenderOptions) !Outcome {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
@@ -96,7 +96,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs) !Outcome {
         return .{ .code = 0, .matches = true };
     }
 
-    if (!ctx.json) try planner.writeText(ctx.out, a, p, .{});
+    if (!ctx.json) try planner.writeText(ctx.out, a, p, render);
     if (!yes) {
         if (!ctx.interactive) {
             try ctx.err.writeAll("os: pass --yes to apply without a terminal.\n");

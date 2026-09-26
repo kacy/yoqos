@@ -74,7 +74,7 @@ pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var in = cli.inputs(ctx);
     in.config_path = try std.fs.path.join(a, &.{ staging, top[dir.len + 1 ..] });
     try ctx.out.print("rolling back to {d}: {s}\n\n", .{ target.n, target.message });
-    const done = try applying.run(ctx, yes, in);
+    const done = try applying.run(ctx, yes, in, .{});
     if (!done.matches) return done.code;
 
     for (files) |f| {
