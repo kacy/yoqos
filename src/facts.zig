@@ -49,6 +49,13 @@ pub const File = struct {
     mode: []const u8,
 };
 
+/// the hash files are compared by.
+pub fn sha256Hex(bytes: []const u8) [64]u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    return std.fmt.bytesToHex(digest, .lower);
+}
+
 /// packages a pacman transaction outside os touched, and when.
 pub const PacmanChange = struct {
     /// unix milliseconds, like the apply journal's.

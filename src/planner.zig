@@ -322,18 +322,28 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
     const want = try desiredFiles(a, c, f);
     var files: std.ArrayList(Change) = .empty;
     for (want) |d| {
-        const cause = d.cause orelse try std.fmt.allocPrint(a, "files.\"{s}\"", .{d.path});
-        const have = f.file(d.path) orelse {
-            try files.append(a, .{ .op = .add, .kind = .file, .subject = d.path, .to = try std.fmt.allocPrint(a, "write, mode {s}", .{d.mode}), .cause = cause, .reboot = d.reboot });
-            continue;
-        };
-        const hex = @import("observe.zig").sha256Hex(d.content);
         const mode = try normalMode(a, d.mode);
-        if (!std.mem.eql(u8, have.sha256, &hex)) {
-            try files.append(a, .{ .op = .change, .kind = .file, .subject = d.path, .to = try std.fmt.allocPrint(a, "rewrite, mode {s}", .{mode}), .cause = cause, .reboot = d.reboot });
-        } else if (!std.mem.eql(u8, have.mode, mode)) {
-            try files.append(a, .{ .op = .change, .kind = .file, .subject = d.path, .from = have.mode, .to = try std.fmt.allocPrint(a, "mode {s}", .{mode}), .cause = cause });
+        var ch: Change = .{
+            .op = .change,
+            .kind = .file,
+            .subject = d.path,
+            .cause = d.cause orelse try std.fmt.allocPrint(a, "files.\"{s}\"", .{d.path}),
+            .reboot = d.reboot,
+        };
+        if (f.file(d.path)) |have| {
+            if (!std.mem.eql(u8, have.sha256, &facts.sha256Hex(d.content))) {
+                ch.to = try std.fmt.allocPrint(a, "rewrite, mode {s}", .{mode});
+            } else if (!std.mem.eql(u8, have.mode, mode)) {
+                // only the mode: nothing the reboot was for changes.
+                ch.from = have.mode;
+                ch.to = try std.fmt.allocPrint(a, "mode {s}", .{mode});
+                ch.reboot = null;
+            } else continue;
+        } else {
+            ch.op = .add;
+            ch.to = try std.fmt.allocPrint(a, "write, mode {s}", .{mode});
         }
+        try files.append(a, ch);
     }
     lists.sortByField(Change, "subject", files.items);
     try changes.appendSlice(a, files.items);
@@ -771,8 +781,8 @@ test "files: written when missing, rewritten when different, and the sysctl file
     for (c.files.entries.items) |*e| e.value.content = e.value.text.?.v;
     const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
     var have = [_]facts.File{
-        .{ .path = "/etc/issue", .sha256 = &@import("observe.zig").sha256Hex("old\n"), .mode = "0600" },
-        .{ .path = "/etc/hosts.allow", .sha256 = &@import("observe.zig").sha256Hex("same\n"), .mode = "0644" },
+        .{ .path = "/etc/issue", .sha256 = &facts.sha256Hex("old\n"), .mode = "0600" },
+        .{ .path = "/etc/hosts.allow", .sha256 = &facts.sha256Hex("same\n"), .mode = "0644" },
     };
     const f: facts.Facts = .{ .files = &have };
     const p = (try plan(t.a(), &c, &l, &f, &t.diags)).?;

@@ -173,16 +173,10 @@ fn files(a: Allocator, io: std.Io, root: []const u8, paths: []const []const u8) 
     for (paths) |p| {
         const rel = std.mem.trimStart(u8, p, "/");
         const m = try fs.mode(rel) orelse continue;
-        const hex = sha256Hex(try fs.read(rel));
+        const hex = facts.sha256Hex(try fs.read(rel));
         try out.append(a, .{ .path = p, .sha256 = try a.dupe(u8, &hex), .mode = try std.fmt.allocPrint(a, "{o:0>4}", .{m}) });
     }
     return out.items;
-}
-
-pub fn sha256Hex(bytes: []const u8) [64]u8 {
-    var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
-    return std.fmt.bytesToHex(digest, .lower);
 }
 
 /// pacman's database directory under `root`: in /usr on the rollback rung,
