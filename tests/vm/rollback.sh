@@ -5,6 +5,8 @@
 set -eu
 vm=tests/vm/vm.sh
 
+# a config in /etc/yoq first, so generation 1 has one to go back to.
+"$vm" ssh "/usr/local/bin/os init >/dev/null"
 "$vm" ssh /usr/local/bin/os enable-rollback --yes
 "$vm" reboot
 
@@ -20,6 +22,8 @@ check "findmnt -no FSROOT /" /@roots/1
 check "findmnt -no FSROOT /var" /@var
 check "readlink /var/lib/pacman" /usr/lib/sysimage/pacman
 check "findmnt -no FSTYPE /efi" vfat
+check "findmnt -no FSROOT /etc/yoq" /@var/lib/yoq/config
+check "git -C /etc/yoq log --format=%s -1" "init: yoq-test as found on $(date -u +%Y-%m-%d)"
 check "pacman -Q pacman >/dev/null && echo pacman works" "pacman works"
 check "mkdir -p /run/yoq-check && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-check && btrfs property get -ts /run/yoq-check/@gens/1 ro" "ro=true"
 "$vm" ssh "cat /var/lib/yoq/generations/1.json"
@@ -27,9 +31,7 @@ check "mkdir -p /run/yoq-check && mount -o subvolid=5 \$(findmnt -no SOURCE / | 
 check "/usr/local/bin/os enable-rollback" "generations are on: this machine runs /@roots/1."
 
 # an apply makes generation 2, and the menu keeps generation 1.
-cfg=/root/yoq/machine.toml
-"$vm" ssh "/usr/local/bin/os --config $cfg init >/dev/null"
-"$vm" ssh "/usr/local/bin/os --config $cfg add --yes tree" | tail -n 3
+"$vm" ssh "/usr/local/bin/os add --yes tree" | tail -n 3
 check "ls /var/lib/yoq/generations | tr '\\n' ' '" "1.json 2.json "
 check "grep -c -e '--id head' -e '--id gen-1' /efi/grub/grub.cfg" 2
 
@@ -45,11 +47,18 @@ check "pacman -Q tree >/dev/null 2>&1 || echo no tree" "no tree"
 check "findmnt -no FSROOT /" /@roots/1
 check "pacman -Q tree >/dev/null && echo tree" tree
 
-# a whole-root rollback: generation 1 again, as generation 3.
+# a whole-root rollback: generation 1 again, as generation 3. a password
+# changed since carries over: generation 1's would be the old one.
+"$vm" ssh "echo root:carried-over | chpasswd"
+hash=$("$vm" ssh "grep ^root: /etc/shadow | cut -d: -f2")
 "$vm" ssh "/usr/local/bin/os rollback --yes"
 "$vm" reboot
 check "findmnt -no FSROOT /" /@roots/3
+check "grep ^root: /etc/shadow | cut -d: -f2" "$hash"
 check "pacman -Q tree >/dev/null 2>&1 || echo no tree" "no tree"
+# the config went back with it: no tree there either, and nothing to do.
+check "grep -c tree /etc/yoq/machine.toml || true" 0
+check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 "$vm" ssh "/usr/local/bin/os history"
 
 # an older generation booted from the menu, and kept.
@@ -60,5 +69,7 @@ check "findmnt -no FSROOT /" /@roots/boot-2
 "$vm" reboot
 check "findmnt -no FSROOT /" /@roots/4
 check "pacman -Q tree >/dev/null && echo tree" tree
+check "grep -c tree /etc/yoq/machine.toml" 1
+check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 "$vm" ssh "/usr/local/bin/os history"
 echo "rollback ok"

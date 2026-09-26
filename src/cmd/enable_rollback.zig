@@ -70,9 +70,14 @@ const Enabler = struct {
     /// running /var if it's a subvolume already.
     var_dir: []const u8 = "/var",
     moved_var: bool = false,
+    moved_config: bool = false,
+    /// /etc/yoq's commit before it moves, for generation 1's record.
+    config: ?generation.Config = null,
 
     fn run(e: *Enabler, p: *const enable.Plan) !bool {
         var why: []const u8 = "";
+        const entries = try e.ctx.history.log(e.a, "/etc/yoq", &why) orelse &.{};
+        if (entries.len > 0) e.config = .{ .dir = "/etc/yoq", .rev = entries[entries.len - 1].rev };
         e.m = try gens.Machine.open(e.a, e.ctx.io, e.boot, &why) orelse return e.failed("{s}", .{why});
         defer e.m.close();
 
@@ -83,6 +88,7 @@ const Enabler = struct {
                 .snapshot => try e.snapshot(),
                 .var_subvol => try e.moveVar(),
                 .pacman_db => try e.movePacmanDb(),
+                .config_dir => try e.moveConfig(),
                 .boot_files => try e.seal() and try e.bootFiles(),
                 .boot_entry => try e.bootEntry(),
             };
@@ -126,6 +132,21 @@ const Enabler = struct {
         return e.sh(&.{ "ln", "-s", "/usr/lib/sysimage/pacman", db });
     }
 
+    /// generation 1's /etc/yoq moves into its /var, and fstab mounts it
+    /// back where it was.
+    fn moveConfig(e: *Enabler) !bool {
+        const src = try e.m.at(&.{ new_root, "etc/yoq" });
+        const dest = try std.fs.path.join(e.a, &.{ e.var_dir, "lib/yoq/config" });
+        if (!try e.sh(&.{ "mkdir", "-p", std.fs.path.dirnamePosix(dest).? })) return false;
+        const has_config = if (std.Io.Dir.cwd().access(e.ctx.io, src, .{})) |_| true else |_| false;
+        if (has_config) {
+            if (!try e.sh(&.{ "mv", src, dest })) return false;
+        } else if (!try e.sh(&.{ "mkdir", "-p", dest })) return false;
+        if (!try e.sh(&.{ "mkdir", "-p", src })) return false;
+        e.moved_config = true;
+        return true;
+    }
+
     /// the new root's fstab mounts its own subvolume, @var at /var, and
     /// the esp; then it's recorded, read-only, as @gens/1.
     fn seal(e: *Enabler) !bool {
@@ -134,11 +155,20 @@ const Enabler = struct {
         const fstab = try rewriteFstab(e.a, old, .{
             .uuid = e.m.root_uuid,
             .add_var = e.moved_var,
+            .bind_config = e.moved_config,
             .esp = .{ .uuid = e.m.esp_uuid, .point = e.boot.esp.? },
         });
         std.Io.Dir.cwd().writeFile(e.ctx.io, .{ .sub_path = fstab_path, .data = fstab }) catch return e.failed("can't write {s}", .{fstab_path});
         if (!try e.tried(btrfs.snapshot(try e.m.at(&.{new_root}), try e.m.at(&.{ generation.gens_dir, "1" }), true), "record generation 1")) return false;
-        const record: generation.Record = .{ .n = 1, .time = e.time, .root = new_root[1..], .reason = "enable-rollback", .from = e.boot.root_subvol.? };
+        const record: generation.Record = .{
+            .n = 1,
+            .time = e.time,
+            .root = new_root[1..],
+            .reason = "enable-rollback",
+            .from = e.boot.root_subvol.?,
+            .config_dir = if (e.config) |c| c.dir else null,
+            .config_rev = if (e.config) |c| c.rev else null,
+        };
         if (try gens.writeRecord(e.a, e.ctx.io, e.var_dir, record)) |why| return e.failed("{s}", .{why});
         return true;
     }
@@ -199,6 +229,8 @@ const Enabler = struct {
 pub const Fstab = struct {
     uuid: []const u8,
     add_var: bool,
+    /// /etc/yoq is a bind mount of the config in /var.
+    bind_config: bool = false,
     /// the esp, which gets a line if none mounts it: without one it might
     /// only have been automounted, which a new root can't count on.
     esp: ?struct { uuid: []const u8, point: []const u8 } = null,
@@ -229,6 +261,7 @@ pub fn rewriteFstab(a: Allocator, text: []const u8, f: Fstab) ![]const u8 {
         try out.print(a, "{s} / btrfs {s} 0 0\n", .{ spec, root_opts });
     }
     if (f.add_var) try out.print(a, "UUID={s} /var btrfs {s},subvol=/{s} 0 0\n", .{ uuid, root_opts, generation.var_subvol });
+    if (f.bind_config) try out.print(a, "{s} /etc/yoq none bind,x-systemd.requires-mounts-for=/var 0 0\n", .{enable.config_home});
     if (f.esp) |esp| {
         if (!has_esp) try out.print(a, "UUID={s} {s} vfat rw,relatime,fmask=0077,dmask=0077 0 2\n", .{ esp.uuid, esp.point });
     }
@@ -255,13 +288,14 @@ test "the new root's fstab" {
         \\UUID=abc / btrfs rw,relatime,compress=zstd:1 0 0
         \\UUID=efi /efi vfat rw 0 2
         \\UUID=abc /var btrfs rw,relatime,compress=zstd:1,subvol=/@var 0 0
+        \\/var/lib/yoq/config /etc/yoq none bind,x-systemd.requires-mounts-for=/var 0 0
         \\
     , try rewriteFstab(a,
         \\# /dev/vda3
         \\UUID=abc / btrfs rw,relatime,compress=zstd:1,subvol=/@ 0 0
         \\UUID=efi /efi vfat rw 0 2
         \\
-    , .{ .uuid = "abc", .add_var = true, .esp = .{ .uuid = "efi", .point = "/efi" } }));
+    , .{ .uuid = "abc", .add_var = true, .bind_config = true, .esp = .{ .uuid = "efi", .point = "/efi" } }));
     // no lines at all, as on an image that relies on automounts.
     try std.testing.expectEqualStrings(
         \\UUID=abc /var btrfs rw,relatime,subvol=/@var 0 0

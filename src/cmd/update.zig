@@ -62,6 +62,7 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     }
 
     var code: u8 = 0;
+    var outcome: applying.Outcome = .{ .code = 0, .matches = true };
     if (now) {
         // apply against the new lock first. machine.lock moves only once
         // the machine does, so saying no, or a failure, changes nothing.
@@ -70,13 +71,17 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         var in = cli.inputs(ctx);
         in.lock_path = pending;
         try ctx.out.writeByte('\n');
-        const done = try applying.run(ctx, then.yes, in, .{ .summary = true, .verbose = verbose }, try std.fmt.allocPrint(a, "update packages to {s}", .{l.sync_date}));
+        const done = try applying.run(ctx, then.yes, in, .{ .summary = true, .verbose = verbose });
         if (!done.matches) return done.code;
         code = done.code;
+        outcome = done;
     }
 
+    const message = try std.fmt.allocPrint(a, "update packages to {s}", .{l.sync_date});
     const path = try locking.writeLock(ctx, a, top, &l) orelse return w.fail();
-    try cli.record(ctx, a, top, try std.fmt.allocPrint(a, "update packages to {s}", .{l.sync_date}));
+    try cli.record(ctx, a, top, message);
+    // the generation comes after the commit, so it records the new lock.
+    try applying.recordGeneration(ctx, outcome, message);
     if (ctx.json) try output.writeDoc(ctx.out, "yoq.update/1", .{ .lock = path, .sync_date = l.sync_date, .packages = l.packages.len, .diff = d, .news = posted });
     return code;
 }

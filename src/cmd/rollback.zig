@@ -88,7 +88,7 @@ pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var in = cli.inputs(ctx);
     in.config_path = try std.fs.path.join(a, &.{ staging, top[dir.len + 1 ..] });
     try ctx.out.print("rolling back to {d}: {s}\n\n", .{ target.n, target.message });
-    const done = try applying.run(ctx, yes, in, .{}, try std.fmt.allocPrint(a, "rollback to {d}: {s}", .{ target.n, target.message }));
+    const done = try applying.run(ctx, yes, in, .{});
     if (!done.matches) return done.code;
 
     for (files) |f| {
@@ -173,12 +173,32 @@ fn rollbackGeneration(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, wan
         return 1;
     };
     defer m.close();
-    const made = try m.start(source, reason, std.Io.Timestamp.now(ctx.io, .real).toSeconds(), &why) orelse {
+    const config: ?generation.Config = if (target.config_dir != null and target.config_rev != null) .{ .dir = target.config_dir.?, .rev = target.config_rev.? } else null;
+    const made = try m.start(source, reason, std.Io.Timestamp.now(ctx.io, .real).toSeconds(), config, &why) orelse {
         try ctx.err.print("os: {s}\n", .{why});
         return 1;
     };
+    // the config goes back with the system, so the files match what the
+    // next boot runs.
+    if (config) |c| {
+        if (!try restoreConfig(ctx, a, c, reason)) return 1;
+    }
     try ctx.out.print("generation {d} is ready. reboot to start it.\n", .{made});
     return 0;
+}
+
+/// writes the config directory back as it was at `c.rev`, and commits it.
+fn restoreConfig(ctx: *Context, a: std.mem.Allocator, c: generation.Config, message: []const u8) !bool {
+    var why: []const u8 = "";
+    const files = try ctx.history.files(a, c.dir, c.rev, &why) orelse {
+        try ctx.err.print("os: the new generation is ready, but {s} couldn't go back with it: {s}\n", .{ c.dir, why });
+        return false;
+    };
+    for (files) |f| {
+        if (!try cli.writeFile(ctx, try std.fs.path.join(a, &.{ c.dir, f.path }), f.bytes)) return false;
+    }
+    try cli.record(ctx, a, try std.fs.path.join(a, &.{ c.dir, "machine.toml" }), message);
+    return true;
 }
 
 fn logOf(ctx: *Context, a: std.mem.Allocator, top: []const u8) !?[]const history.Entry {

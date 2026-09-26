@@ -24,7 +24,11 @@ pub const Step = struct {
 };
 
 /// what the executor does for a step.
-pub const Kind = enum { var_subvol, pacman_db, snapshot, boot_files, boot_entry };
+pub const Kind = enum { var_subvol, pacman_db, config_dir, snapshot, boot_files, boot_entry };
+
+/// where the config lives on the rollback rung: in /var, so no rollback
+/// takes it, and bind-mounted at /etc/yoq.
+pub const config_home = "/var/lib/yoq/config";
 
 pub const Plan = struct {
     checks: []const Check,
@@ -122,6 +126,11 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .why = "the database has to describe the /usr beside it, and /var doesn't roll back",
     });
     try steps.append(a, .{
+        .kind = .config_dir,
+        .what = "keep the config in " ++ config_home ++ ", mounted at /etc/yoq",
+        .why = "the config and its history stay put when a rollback changes the root; a rollback puts back the config that generation had",
+    });
+    try steps.append(a, .{
         .kind = .boot_files,
         .what = try std.fmt.allocPrint(a, "install {s}'s boot files on the esp ({s})", .{ loader, b.esp orelse "?" }),
         .why = "the boot menu has to live outside every generation",
@@ -164,10 +173,11 @@ test "an archinstall machine on btrfs and grub is ready, with every step" {
     } };
     const p = try plan(arena.allocator(), &f);
     try testing.expect(p.ready());
-    try testing.expectEqual(5, p.steps.len);
+    try testing.expectEqual(6, p.steps.len);
     try testing.expectEqual(Kind.snapshot, p.steps[0].kind);
     try testing.expect(p.steps[1].at_boot);
-    try testing.expectEqualStrings("install grub's boot files on the esp (/efi)", p.steps[3].what);
+    try testing.expectEqual(Kind.config_dir, p.steps[3].kind);
+    try testing.expectEqualStrings("install grub's boot files on the esp (/efi)", p.steps[4].what);
 }
 
 test "what stops a machine, and the steps it no longer needs" {
@@ -184,7 +194,7 @@ test "what stops a machine, and the steps it no longer needs" {
     } };
     const p = try plan(arena.allocator(), &f);
     try testing.expect(!p.ready());
-    try testing.expectEqual(3, p.steps.len);
+    try testing.expectEqual(4, p.steps.len);
 
     var out: std.Io.Writer.Allocating = .init(arena.allocator());
     try writeText(&out.writer, &p);
@@ -203,9 +213,11 @@ test "what stops a machine, and the steps it no longer needs" {
         \\steps
         \\  1. snapshot the running root as generation 1
         \\     the first generation to go back to. changes made after it and before the reboot are left behind
-        \\  2. install limine's boot files on the esp (/boot/efi)
+        \\  2. keep the config in /var/lib/yoq/config, mounted at /etc/yoq
+        \\     the config and its history stay put when a rollback changes the root; a rollback puts back the config that generation had
+        \\  3. install limine's boot files on the esp (/boot/efi)
         \\     the boot menu has to live outside every generation
-        \\  3. boot generation 1 from limine's menu, and keep an entry for the system as it is now (at the next boot)
+        \\  4. boot generation 1 from limine's menu, and keep an entry for the system as it is now (at the next boot)
         \\     every generation can be booted, and so can the way back
         \\
     , out.written());

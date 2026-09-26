@@ -52,7 +52,11 @@ the system before generations
 
 the top entry is the system you run. picking an older one in the menu
 boots a fresh copy of it, so looking around can't change the record.
-`/var` and `/home` stay as they are either way.
+`/var` and `/home` stay as they are either way, and so does the machine's
+own state: every new root, and every copy the menu boots, gets the running
+system's passwords, ssh host keys, machine id, clock setting, id ranges,
+and pacman keyring. users and everything else in `/etc` are the
+generation's own.
 
 ## going back
 
@@ -66,6 +70,10 @@ generation 2 (2026-09-26 · add tree) becomes generation 4, and the next boot ru
 `os rollback 2` from generation 2. either way the machine switches at the
 next boot, and history only grows: rolling back is a new generation, so
 `os rollback` again takes you forward.
+
+the config goes back with it. `/etc/yoq` lives in `/var/lib/yoq/config`,
+outside every generation, and a rollback writes back the config and lock
+that generation had, as a new commit. its history stays whole.
 
 if you booted an older generation from the menu and want to stay there,
 `os rollback --to-booted` makes it the newest generation.
@@ -87,11 +95,9 @@ if you booted an older generation from the menu and want to stay there,
   generation separately, and booting it once to check it, is planned.
 - **no automatic fallback.** a generation that doesn't boot doesn't send
   you back to the one before on its own. you pick it in the menu.
-- **the config goes back too.** `/etc/yoq` lives in the root, so after a
-  rollback it's the config and lock that generation had, and its git
-  history ends where that generation's did.
-- **no carried state.** an older generation boots with its own `/etc`, so
-  its passwords, ssh host keys, and machine id are the ones it had then.
+- **state carries at the moment of the rollback.** a password you change
+  after `os rollback` but before the reboot stays behind. carrying again at
+  shutdown is planned.
 - **a looked-at copy doesn't last.** changes you make while running an
   older generation's copy are thrown away the next time `os` writes the
   menu.
@@ -104,8 +110,7 @@ if you booted an older generation from the menu and want to stay there,
 
 ## later
 
-- carried state: passwords, host keys, and the machine id copied into every
-  generation, and the config kept outside it
+- carrying state again at shutdown, and the uid map for system users
 - automatic fallback: a new generation boots once, and falls back if its
   health check fails
 - garbage collection, keeping the last few generations and any you pin

@@ -50,16 +50,16 @@ pub const Machine = struct {
 
     /// records the running root as the next generation: a read-only
     /// snapshot, its record in /var, and the boot menu with it at the top.
-    pub fn record(m: *const Machine, reason: []const u8, time: i64) !?[]const u8 {
+    pub fn record(m: *const Machine, reason: []const u8, time: i64, config: ?generation.Config) !?[]const u8 {
         const records = try readRecords(m.a, m.io, "/var");
-        return m.add(records, m.boot.root_subvol.?, reason, time);
+        return m.add(records, m.boot.root_subvol.?, reason, time, config);
     }
 
     /// starts a new generation from `source`, a generation's record or a
     /// copy of one: a writable root of its own, recorded and at the top of
     /// the menu, so the next boot runs it. returns its number, or what
     /// went wrong in `why`.
-    pub fn start(m: *const Machine, source: []const u8, reason: []const u8, time: i64, why: *[]const u8) !?u32 {
+    pub fn start(m: *const Machine, source: []const u8, reason: []const u8, time: i64, config: ?generation.Config, why: *[]const u8) !?u32 {
         const records = try readRecords(m.a, m.io, "/var");
         const n = next(records);
         const root = try std.fmt.allocPrint(m.a, "/{s}/{d}", .{ generation.roots_dir, n });
@@ -67,7 +67,11 @@ pub const Machine = struct {
             why.* = try std.fmt.allocPrint(m.a, "can't copy {s}: {s}", .{ source, @errorName(e) });
             return null;
         };
-        if (try m.add(records, root, reason, time)) |w| {
+        if (try m.carry(root)) |w| {
+            why.* = w;
+            return null;
+        }
+        if (try m.add(records, root, reason, time, config)) |w| {
             why.* = w;
             return null;
         }
@@ -76,11 +80,18 @@ pub const Machine = struct {
 
     /// the next generation, from the root at `root`: its read-only record,
     /// the record file, and the menu with `root` at the top.
-    fn add(m: *const Machine, records: []const generation.Record, root: []const u8, reason: []const u8, time: i64) !?[]const u8 {
+    fn add(m: *const Machine, records: []const generation.Record, root: []const u8, reason: []const u8, time: i64, config: ?generation.Config) !?[]const u8 {
         const n = next(records);
         const dest = try m.at(&.{ generation.gens_dir, try std.fmt.allocPrint(m.a, "{d}", .{n}) });
         btrfs.snapshot(try m.at(&.{root}), dest, true) catch |e| return try std.fmt.allocPrint(m.a, "can't snapshot {s}: {s}", .{ root, @errorName(e) });
-        const rec: generation.Record = .{ .n = n, .time = time, .root = root[1..], .reason = reason };
+        const rec: generation.Record = .{
+            .n = n,
+            .time = time,
+            .root = root[1..],
+            .reason = reason,
+            .config_dir = if (config) |c| c.dir else null,
+            .config_rev = if (config) |c| c.rev else null,
+        };
         if (try writeRecord(m.a, m.io, "/var", rec)) |w| return w;
         const all = try std.mem.concat(m.a, generation.Record, &.{ records, &.{rec} });
         return m.writeMenu(root, all);
@@ -130,6 +141,35 @@ pub const Machine = struct {
         }
         const saved = try m.at(&.{ generation.gens_dir, try std.fmt.allocPrint(m.a, "{d}", .{n}) });
         btrfs.snapshot(saved, path, false) catch |e| return try std.fmt.allocPrint(m.a, "can't copy generation {d}: {s}", .{ n, @errorName(e) });
+        return m.carry(copy);
+    }
+
+    /// carries the running machine's own state into the root at `subvol`:
+    /// its identity, host keys, clock, id ranges, keyring, and passwords.
+    /// a generation holds the system, not these.
+    fn carry(m: *const Machine, subvol: []const u8) !?[]const u8 {
+        const root = try m.at(&.{subvol});
+        var paths: std.ArrayList([]const u8) = .empty;
+        try paths.appendSlice(m.a, &carried);
+        var ssh = std.Io.Dir.cwd().openDir(m.io, "/etc/ssh", .{ .iterate = true }) catch null;
+        if (ssh) |*d| {
+            defer d.close(m.io);
+            var it = d.iterate();
+            while (it.next(m.io) catch null) |f| {
+                if (std.mem.startsWith(u8, f.name, "ssh_host_")) try paths.append(m.a, try std.fmt.allocPrint(m.a, "etc/ssh/{s}", .{f.name}));
+            }
+        }
+        for (paths.items) |rel| {
+            const src = try std.fmt.allocPrint(m.a, "/{s}", .{rel});
+            std.Io.Dir.cwd().access(m.io, src, .{}) catch continue;
+            const dest = try std.fs.path.join(m.a, &.{ root, rel });
+            if (try m.run(&.{ "rm", "-rf", dest })) |w| return w;
+            if (try m.run(&.{ "cp", "-a", src, dest })) |w| return w;
+        }
+        const fs: @import("rootfs.zig").Root = .{ .a = m.a, .io = m.io, .dir = root };
+        const here: @import("rootfs.zig").Root = .{ .a = m.a, .io = m.io, .dir = "/" };
+        const merged = try mergeShadow(m.a, try here.read("etc/shadow"), try fs.read("etc/shadow"));
+        fs.writeMode("etc/shadow", merged, 0o600) catch return try std.fmt.allocPrint(m.a, "can't write {s}/etc/shadow", .{root});
         return null;
     }
 
@@ -158,6 +198,45 @@ pub const Machine = struct {
         };
     }
 };
+
+/// machine state every root gets from the running system. ssh host keys
+/// are added by name, and passwords are merged into /etc/shadow.
+const carried = [_][]const u8{ "etc/machine-id", "etc/adjtime", "etc/subuid", "etc/subgid", "etc/pacman.d/gnupg" };
+
+/// `target`'s shadow file with the password hash, and when it last
+/// changed, taken from `current` for every user both have. users only in
+/// one of them stay as they are.
+pub fn mergeShadow(a: Allocator, current: []const u8, target: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, target, "\n"), '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const name = line[0 .. std.mem.indexOfScalar(u8, line, ':') orelse line.len];
+        const now = findUser(current, name) orelse {
+            try out.print(a, "{s}\n", .{line});
+            continue;
+        };
+        // name:hash:lastchange:rest
+        var theirs = std.mem.splitScalar(u8, line, ':');
+        var ours = std.mem.splitScalar(u8, now, ':');
+        _ = theirs.next();
+        _ = ours.next();
+        const hash = ours.next() orelse "";
+        const changed = ours.next() orelse "";
+        _ = theirs.next();
+        _ = theirs.next();
+        try out.print(a, "{s}:{s}:{s}:{s}\n", .{ name, hash, changed, theirs.rest() });
+    }
+    return out.items;
+}
+
+fn findUser(shadow: []const u8, name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, shadow, '\n');
+    while (lines.next()) |line| {
+        if (line.len > name.len and std.mem.startsWith(u8, line, name) and line[name.len] == ':') return line;
+    }
+    return null;
+}
 
 /// the number the next generation gets.
 pub fn next(records: []const generation.Record) u32 {
@@ -224,6 +303,28 @@ pub fn dateOf(a: Allocator, secs: i64) ![]const u8 {
     const day = es.getEpochDay().calculateYearDay();
     const md = day.calculateMonthDay();
     return std.fmt.allocPrint(a, "{d}-{d:0>2}-{d:0>2}", .{ day.year, md.month.numeric(), md.day_index + 1 });
+}
+
+test "passwords carry over, users don't" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const merged = try mergeShadow(arena.allocator(),
+        \\root:$6$new$root:20000::::::
+        \\kacy:$6$new$kacy:20001:0:99999:7:::
+        \\newuser:$6$x:20002::::::
+        \\
+    ,
+        \\root:$6$old$root:19000::::::
+        \\kacy:!:19001:0:99999:7:::
+        \\olduser:$6$y:19002::::::
+        \\
+    );
+    try std.testing.expectEqualStrings(
+        \\root:$6$new$root:20000::::::
+        \\kacy:$6$new$kacy:20001:0:99999:7:::
+        \\olduser:$6$y:19002::::::
+        \\
+    , merged);
 }
 
 test "records by number, and dates" {

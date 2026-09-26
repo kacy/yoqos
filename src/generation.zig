@@ -41,7 +41,14 @@ pub const Record = struct {
     /// for the first generation: the root the machine ran before, still
     /// bootable from the menu.
     from: ?[]const u8 = null,
+    /// the config directory and its commit when the generation was made,
+    /// so a rollback can put that config back.
+    config_dir: ?[]const u8 = null,
+    config_rev: ?[]const u8 = null,
 };
+
+/// a config directory at one commit.
+pub const Config = struct { dir: []const u8, rev: []const u8 };
 
 /// one boot menu entry: a kernel and its initrds, from a root subvolume.
 pub const Entry = struct {

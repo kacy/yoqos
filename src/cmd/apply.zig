@@ -26,7 +26,9 @@ pub fn applyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         if (isYes(arg)) yes = true else return cli.usageError(ctx, "os apply [--yes]");
     }
     if (try refused(ctx)) return 1;
-    return (try run(ctx, yes, cli.inputs(ctx), .{}, "apply")).code;
+    const done = try run(ctx, yes, cli.inputs(ctx), .{});
+    try recordGeneration(ctx, done, "apply");
+    return done.code;
 }
 
 pub fn isYes(arg: []const u8) bool {
@@ -75,6 +77,9 @@ pub fn refused(ctx: *Context) !bool {
 pub const Outcome = struct {
     code: u8,
     matches: bool,
+    /// the machine runs generations and this run changed it, so the
+    /// caller records a generation once its own commits are made.
+    changed_generation: bool = false,
 
     fn failed(w: *cli.Work) !Outcome {
         return .{ .code = try w.fail(), .matches = false };
@@ -82,9 +87,9 @@ pub const Outcome = struct {
 };
 
 /// plans from `in`, shows the plan, asks unless `yes`, applies it, and
-/// checks the result. on a machine with generations, the result becomes
-/// the next one, described by `reason`. the caller has checked `blocker`.
-pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.RenderOptions, reason: []const u8) !Outcome {
+/// checks the result. the caller has checked `blocker`, and records a
+/// generation afterwards with `recordGeneration`.
+pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.RenderOptions) !Outcome {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
@@ -124,24 +129,39 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.Render
     try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "done", &hash);
     const code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units);
     if (units and !ctx.json and changesPackages(p)) try offerRestarts(ctx, yes);
-    if (cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol)) try recordGeneration(ctx, a, result.facts.boot, reason);
-    return .{ .code = code, .matches = true };
+    return .{ .code = code, .matches = true, .changed_generation = cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol) };
 }
 
-/// the applied machine becomes the next generation. the change itself is
-/// done either way, so a generation that can't be recorded is a warning.
-fn recordGeneration(ctx: *Context, a: Allocator, boot: @import("../facts.zig").Boot, reason: []const u8) !void {
+/// after a run that changed a machine with generations, and after the
+/// caller's commits: the machine as it is becomes the next generation,
+/// with the config's commit. the change is done either way, so a
+/// generation that can't be recorded is a warning.
+pub fn recordGeneration(ctx: *Context, done: Outcome, reason: []const u8) !void {
+    if (!done.changed_generation) return;
+    var w: cli.Work = .init(ctx);
+    defer w.deinit();
+    const a = w.allocator();
+    const f = try @import("../observe.zig").observe(a, ctx.io, .{ .packages = false, .units = false }, &w.diags);
     var why: []const u8 = "";
-    const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse {
+    const m = try gens.Machine.open(a, ctx.io, f.boot, &why) orelse {
         try ctx.err.print("os: applied, but not recorded as a generation: {s}\n", .{why});
         return;
     };
     defer m.close();
-    if (try m.record(reason, std.Io.Timestamp.now(ctx.io, .real).toSeconds())) |w| {
-        try ctx.err.print("os: applied, but not recorded as a generation: {s}\n", .{w});
+    if (try m.record(reason, std.Io.Timestamp.now(ctx.io, .real).toSeconds(), try configNow(ctx, a))) |problem| {
+        try ctx.err.print("os: applied, but not recorded as a generation: {s}\n", .{problem});
         return;
     }
     if (!ctx.json) try ctx.out.writeAll("recorded as a new generation; the boot menu has it.\n");
+}
+
+/// the config directory and its newest commit, if it has history.
+fn configNow(ctx: *Context, a: Allocator) !?generation.Config {
+    const dir = std.fs.path.dirnamePosix(ctx.config_path) orelse return null;
+    var why: []const u8 = "";
+    const entries = try ctx.history.log(a, dir, &why) orelse return null;
+    if (entries.len == 0) return null;
+    return .{ .dir = dir, .rev = entries[entries.len - 1].rev };
 }
 
 fn changesPackages(p: *const planner.Plan) bool {
