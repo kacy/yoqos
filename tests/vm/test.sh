@@ -19,3 +19,4 @@ trap '"$vm" stop' EXIT
 "$vm" ssh mkdir -p /root/dist
 "$vm" copy dist/yoq-drift.hook /root/dist/yoq-drift.hook
 "$vm" ssh "cd /root && sh smoke.sh /usr/local/bin/os"
+tests/vm/rollback.sh

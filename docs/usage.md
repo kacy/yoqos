@@ -318,6 +318,42 @@ rollback, with snapshots and boot entries, comes later on btrfs.
 
 edits you make to the config by hand aren't committed for you.
 
+## generations (early)
+
+on a btrfs root, `os enable-rollback` turns the machine's history into
+generations: whole copies of the system you can boot. it checks first, and
+shows what it would do:
+
+```
+$ sudo os enable-rollback
+checks
+  ok  root filesystem: btrfs
+  ok  firmware: uefi
+  ok  esp: /efi
+  ok  bootloader: grub
+  ok  initramfs: systemd hooks
+  ok  generations: none yet
+
+steps
+  1. snapshot the running root as generation 1
+  2. give generation 1 a /var of its own, as a subvolume (at the next boot)
+  3. move generation 1's pacman database to /usr/lib/sysimage/pacman, with a symlink at /var/lib/pacman
+  4. install grub's boot files on the esp (/efi)
+  5. boot generation 1 from grub's menu, and keep an entry for the system as it is now (at the next boot)
+```
+
+everything comes from one snapshot of the running root, so anything you
+change between running it and rebooting is left behind. after the reboot,
+the machine runs generation 1 from `@roots/1`, with `/var` on its own
+subvolume, and the boot menu still has the system as it was before.
+
+grub's menu moves to the esp, where `os` keeps it: grub is reinstalled there
+with `grub-install --boot-directory`, on the same efi path as before.
+systemd-boot, limine, and refind aren't supported yet.
+
+this is as far as generations go so far: applying changes as new
+generations, and booting older ones, come next.
+
 ## the config
 
 `machine.toml` is plain toml. a full example:

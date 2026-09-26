@@ -49,6 +49,26 @@ pub const File = struct {
     mode: []const u8,
 };
 
+/// how the machine boots, for the rollback rung's checks.
+pub const Boot = struct {
+    uefi: bool = false,
+    /// where the esp is mounted, if it is, and its device.
+    esp: ?[]const u8 = null,
+    esp_device: ?[]const u8 = null,
+    /// "grub", "systemd-boot", "limine", or "refind".
+    loader: ?[]const u8 = null,
+    root_fs: ?[]const u8 = null,
+    root_device: ?[]const u8 = null,
+    /// the root's btrfs subvolume: "/@", or "/" for the top level.
+    root_subvol: ?[]const u8 = null,
+    /// /var is a subvolume of its own.
+    var_subvol: bool = false,
+    /// mkinitcpio's HOOKS.
+    initramfs_hooks: []const []const u8 = &.{},
+    /// the pacman database lives in /usr/lib/sysimage/pacman.
+    pacman_moved: bool = false,
+};
+
 /// the hash files are compared by.
 pub fn sha256Hex(bytes: []const u8) [64]u8 {
     var digest: [32]u8 = undefined;
@@ -90,6 +110,7 @@ pub const Facts = struct {
     /// files under /etc with a new upstream default beside them, as
     /// `<path>.pacnew`, by the path of the file itself.
     pacnew: []const []const u8 = &.{},
+    boot: Boot = .{},
 
     pub fn package(f: *const Facts, name: []const u8) ?*const Package {
         for (f.packages) |*p| {

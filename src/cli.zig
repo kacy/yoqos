@@ -13,6 +13,7 @@ const init_cmd = @import("cmd/init.zig");
 const apply_cmd = @import("cmd/apply.zig");
 const rollback = @import("cmd/rollback.zig");
 const hook = @import("cmd/hook.zig");
+const enable_rollback = @import("cmd/enable_rollback.zig");
 const inspect = @import("cmd/inspect.zig");
 const edit = @import("cmd/edit.zig");
 const update = @import("cmd/update.zig");
@@ -69,6 +70,7 @@ const commands = [_]Command{
     .{ .name = "disable", .summary = "turn services off in the config", .handler = edit.disableCmd },
     .{ .name = "adopt", .summary = "put packages installed outside os into the config", .handler = edit.adoptCmd },
     .{ .name = "rollback", .summary = "go back to an earlier generation of the config", .handler = rollback.rollbackCmd },
+    .{ .name = "enable-rollback", .summary = "check this machine for generations, and the steps to them", .handler = enable_rollback.enableRollbackCmd },
     .{ .name = "history", .summary = "list the config's generations", .handler = rollback.historyCmd },
     .{ .name = "why", .summary = "say which config line brings in a package", .handler = inspect.whyCmd },
     .{ .name = "config", .summary = "show the merged config (config show [--resolved])", .handler = inspect.configCmd },

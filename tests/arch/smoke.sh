@@ -122,5 +122,8 @@ printf 'version = 1\n[boot]\nkernel = "none"\n' > "$bare"
 if "$os" --config "$bare" plan 2> "$dir/bare.err"; then echo "planned removing base"; exit 1; fi
 grep -q E0126 "$dir/bare.err"
 
+# what enable-rollback makes of this machine. it only reports, for now.
+"$os" enable-rollback || true
+
 git -C "$dir" log --format=%s
 echo "smoke ok"
