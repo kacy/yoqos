@@ -16,14 +16,7 @@ const path = "var/lib/yoq/drift";
 /// hook mustn't fail pacman.
 pub fn record(a: Allocator, io: std.Io, root: []const u8, time: i64, packages: []const []const u8) !void {
     if (packages.len == 0 or try journal.unfinished(a, io, root) != null) return;
-    var line: std.Io.Writer.Allocating = .init(a);
-    try std.json.Stringify.value(facts.PacmanChange{ .time = time, .packages = packages }, .{}, &line.writer);
-    try line.writer.writeByte('\n');
-    const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
-    fs.append(path, line.written()) catch |e| switch (e) {
-        error.OutOfMemory => return e,
-        error.WriteFailed => {},
-    };
+    try journal.appendLine(a, io, root, path, facts.PacmanChange{ .time = time, .packages = packages });
 }
 
 /// the pacman transactions since the last apply finished.

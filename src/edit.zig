@@ -28,13 +28,7 @@ const Doc = struct {
 
     /// the table at `path` below the root, if it exists.
     fn table(d: *const Doc, path: []const []const u8) ?*const toml.Table {
-        var t: *const toml.Table = d.doc.root;
-        for (path) |p| {
-            const v = t.get(p) orelse return null;
-            if (v.data != .table) return null;
-            t = v.data.table;
-        }
-        return t;
+        return (d.find(path) orelse return null).table;
     }
 
     const Found = struct {
@@ -46,7 +40,7 @@ const Doc = struct {
         dotted: []const []const u8,
     };
 
-    /// like `table`, but also says how the table is written.
+    /// the table at `path`, and how it's written.
     fn find(d: *const Doc, path: []const []const u8) ?Found {
         var t: *const toml.Table = d.doc.root;
         var value: ?*const toml.Value = null;
@@ -166,6 +160,12 @@ fn hasCommaAfter(text: []const u8, from: usize, limit: usize) bool {
     return false;
 }
 
+fn skipBlanks(text: []const u8, from: usize, limit: usize) usize {
+    var i = from;
+    while (i < limit and (text[i] == ' ' or text[i] == '\t')) i += 1;
+    return i;
+}
+
 /// removes `item` from the string list `key` in the table at `path`.
 /// returns null if it isn't there.
 pub fn removeFromList(a: Allocator, text: []const u8, path: []const []const u8, key: []const u8, item: []const u8) Error!?[]u8 {
@@ -173,7 +173,7 @@ pub fn removeFromList(a: Allocator, text: []const u8, path: []const []const u8, 
     defer d.deinit();
     const t = d.table(path) orelse return null;
     const v = t.get(key) orelse return null;
-    if (v.data != .array) return null;
+    if (v.data != .array) return error.BadToml;
     const items = v.data.array.items.items;
     const i = for (items, 0..) |it, n| {
         if (it.data == .string and std.mem.eql(u8, it.data.string, item)) break n;
@@ -185,10 +185,8 @@ pub fn removeFromList(a: Allocator, text: []const u8, path: []const []const u8, 
     // alone on its line: take the whole line, comma and comment included.
     const ls = d.lineStart(start);
     const le = d.lineEnd(start);
-    var rest = end;
-    while (rest < le and (text[rest] == ' ' or text[rest] == '\t')) rest += 1;
-    if (rest < le and text[rest] == ',') rest += 1;
-    while (rest < le and (text[rest] == ' ' or text[rest] == '\t')) rest += 1;
+    var rest = skipBlanks(text, end, le);
+    if (rest < le and text[rest] == ',') rest = skipBlanks(text, rest + 1, le);
     const blank_before = std.mem.trim(u8, text[ls..start], " \t").len == 0;
     if (blank_before and (rest == le or text[rest] == '\n' or text[rest] == '#' or text[rest] == '\r')) {
         return try splice(a, text, ls, le - ls, "");
@@ -196,8 +194,7 @@ pub fn removeFromList(a: Allocator, text: []const u8, path: []const []const u8, 
 
     // on a shared line: take the item and the comma after it, or the comma
     // before it when it's last.
-    var j = end;
-    while (j < text.len and (text[j] == ' ' or text[j] == '\t')) j += 1;
+    const j = skipBlanks(text, end, text.len);
     if (j < text.len and text[j] == ',') {
         end = j + 1;
         while (end < text.len and text[end] == ' ') end += 1;
@@ -214,7 +211,7 @@ pub fn removeFromList(a: Allocator, text: []const u8, path: []const []const u8, 
 /// like `true` or `"mkinitcpio"`. the table may be a `[section]`, an inline
 /// `{ ... }`, dotted keys, or missing, in which case a section is added at
 /// the end. returns null if the key already holds exactly that text.
-pub fn setKey(a: Allocator, text_in: []const u8, path: []const []const u8, key: []const u8, value: []const u8) Error!?[]u8 {
+fn setKey(a: Allocator, text_in: []const u8, path: []const []const u8, key: []const u8, value: []const u8) Error!?[]u8 {
     const text = try ensureNewline(a, text_in);
     var d = try Doc.init(a, text);
     defer d.deinit();

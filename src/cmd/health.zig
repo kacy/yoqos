@@ -1,12 +1,16 @@
 //! `os health`: runs at boot from yoq-health.service. when a generation
 //! is on trial and this boot runs it, it checks the machine came up
-//! healthy: systemd isn't in maintenance, and every service the config
-//! turns on is running. healthy makes it the default; unhealthy reboots
-//! into the generation before, which is still the default.
+//! healthy: systemd isn't in maintenance or on its way down, the display
+//! manager is up if there is one, and every service the config turns on is
+//! running. healthy makes it the default; unhealthy reboots into the
+//! generation before, which is still the default.
 
 const std = @import("std");
+const rootfs = @import("../rootfs.zig");
 const cli = @import("../cli.zig");
 const exec = @import("../exec.zig");
+const facts = @import("../facts.zig");
+const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
 const rollback = @import("rollback.zig");
 const Context = cli.Context;
@@ -17,7 +21,7 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    const boot = try rollback.generationsHere(&w) orelse return 0;
+    const boot = try w.generations() orelse return 0;
     // the boot finished, so a trial's watchdog stands down. this runs on
     // every boot, so a stray one can't reboot a healthy machine.
     _ = try exec.run(a, ctx.io, &.{ "systemctl", "stop", "yoq-watchdog.timer" });
@@ -27,14 +31,12 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         return 0;
     };
     const trial = std.fmt.parseInt(u32, trial_text, 10) catch return 0;
-    const record = for (try gens.readRecords(a, ctx.io, "/var")) |r| {
-        if (r.n == trial) break r;
-    } else return 0;
+    const record = generation.find(try gens.readRecords(a, ctx.io, "/var"), trial) orelse return 0;
     if (!std.mem.eql(u8, boot.root_subvol.?[1..], record.root)) return fellBack(ctx, a, boot, trial);
 
     const problems = try check(ctx, a);
     if (problems.len == 0) {
-        if (try gens.unsetEnv(a, ctx.io, esp, &.{ "yoq_default", "yoq_trial" })) |why| {
+        if (try gens.endTrial(a, ctx.io, esp)) |why| {
             try ctx.err.print("os: generation {d} is healthy, but couldn't make it the default: {s}\n", .{ trial, why });
             return 1;
         }
@@ -51,20 +53,17 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 /// the trial didn't come up healthy, and this boot runs the generation
 /// before it, from its copy. that becomes the newest generation, with its
 /// config, the trial ends, and a notice says what happened.
-fn fellBack(ctx: *Context, a: Allocator, boot: @import("../facts.zig").Boot, trial: u32) !u8 {
+fn fellBack(ctx: *Context, a: Allocator, boot: facts.Boot, trial: u32) !u8 {
     const running = boot.root_subvol.?;
-    const prefix = "/" ++ @import("../generation.zig").roots_dir ++ "/boot-";
-    const n = if (std.mem.startsWith(u8, running, prefix)) std.fmt.parseInt(u32, running[prefix.len..], 10) catch 0 else 0;
-    const target = for (try gens.readRecords(a, ctx.io, "/var")) |r| {
-        if (r.n == n) break r;
-    } else {
+    const n = generation.bootCopyOf(running) orelse 0;
+    const target = generation.find(try gens.readRecords(a, ctx.io, "/var"), n) orelse {
         try ctx.err.print("os: generation {d} didn't start, and this boot isn't one os knows ({s}).\n", .{ trial, running });
-        _ = try gens.unsetEnv(a, ctx.io, boot.esp.?, &.{ "yoq_default", "yoq_trial" });
+        _ = try gens.endTrial(a, ctx.io, boot.esp.?);
         return 1;
     };
     const reason = try std.fmt.allocPrint(a, "fell back from {d} to {d}", .{ trial, n });
     const made = try rollback.startFrom(ctx, a, boot, target, running, reason) orelse return 1;
-    _ = try gens.unsetEnv(a, ctx.io, boot.esp.?, &.{ "yoq_default", "yoq_trial" });
+    _ = try gens.endTrial(a, ctx.io, boot.esp.?);
     const notice = try std.fmt.allocPrint(a, "generation {d} didn't come up healthy, so this machine went back to generation {d}. it's generation {d} now, with its config. `os rollback {d}` tries {d} again.\n", .{ trial, n, made, trial, trial });
     if (try gens.writeNotice(a, ctx.io, notice)) |why| try ctx.err.print("os: {s}\n", .{why});
     try ctx.out.writeAll(notice);
@@ -87,13 +86,12 @@ fn check(ctx: *Context, a: Allocator) ![]const []const u8 {
         if (std.mem.eql(u8, state, bad)) try out.append(a, try std.fmt.allocPrint(a, "systemd is in {s}", .{state}));
     }
     // a machine with a display manager has to have it running.
-    if (std.Io.Dir.cwd().access(ctx.io, "/etc/systemd/system/display-manager.service", .{})) |_| {
+    if (rootfs.pathExists(ctx.io, "/etc/systemd/system/display-manager.service")) {
         const dm = switch (try exec.output(a, ctx.io, &.{ "systemctl", "is-active", "display-manager.service" })) {
-            .ok => |t| std.mem.trim(u8, t, " \n"),
-            .failed => |t| std.mem.trim(u8, t, " \n"),
+            .ok, .failed => |t| std.mem.trim(u8, t, " \n"),
         };
         if (!std.mem.eql(u8, dm, "active")) try out.append(a, try std.fmt.allocPrint(a, "the display manager is {s}", .{dm}));
-    } else |_| {}
+    }
     // configured services that aren't running show up as unit changes.
     var w: cli.Work = .init(ctx);
     defer w.deinit();

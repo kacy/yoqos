@@ -19,9 +19,9 @@ pub const var_subvol = "@var";
 /// where the btrfs top level is mounted while os works on it.
 pub const top_mount = "/run/yoq/top";
 
-/// generation records, one json file each, in /var so they outlive
-/// every rollback.
-pub const records_dir = "var/lib/yoq/generations";
+/// generation records, one json file each, under /var so they outlive
+/// every rollback. relative to a var directory.
+pub const records_dir = "lib/yoq/generations";
 
 /// whether a machine runs a generation: its root is one of @roots.
 pub fn running(root_subvol: ?[]const u8) bool {
@@ -90,6 +90,20 @@ pub fn bootFile(name: []const u8) bool {
 /// the writable copy the menu boots for an older generation.
 pub fn bootCopy(a: Allocator, n: u32) ![]const u8 {
     return std.fmt.allocPrint(a, "/{s}/boot-{d}", .{ roots_dir, n });
+}
+
+/// the generation whose copy the root at `subvol` is, if it's one.
+pub fn bootCopyOf(subvol: []const u8) ?u32 {
+    const prefix = "/" ++ roots_dir ++ "/boot-";
+    if (!std.mem.startsWith(u8, subvol, prefix)) return null;
+    return std.fmt.parseInt(u32, subvol[prefix.len..], 10) catch null;
+}
+
+pub fn find(records: []const Record, n: u32) ?Record {
+    for (records) |r| {
+        if (r.n == n) return r;
+    }
+    return null;
 }
 
 /// a generation's kernel command line, from the running one: the root is
@@ -194,6 +208,8 @@ test "a generation's kernel command line" {
     try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/1,compress=zstd:1 rw net.ifnames=0 console=ttyS0,115200 panic=10", try kernelArgs(arena.allocator(), cmdline, "abc", "/@roots/1"));
     try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/ rw panic=30", try kernelArgs(arena.allocator(), "rw panic=30", "abc", "/"));
     try testing.expectEqualStrings("/@roots/boot-2", try bootCopy(arena.allocator(), 2));
+    try testing.expectEqual(2, bootCopyOf("/@roots/boot-2"));
+    try testing.expectEqual(null, bootCopyOf("/@roots/2"));
 }
 
 test "which files in /boot a root keeps" {

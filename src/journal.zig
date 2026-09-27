@@ -20,9 +20,15 @@ pub fn now(io: std.Io) i64 {
 /// appends one line. a journal that can't be written doesn't stop the
 /// apply.
 pub fn record(a: Allocator, io: std.Io, root: []const u8, time: i64, event: []const u8, hash: []const u8) !void {
+    try appendLine(a, io, root, path, Line{ .time = time, .event = event, .plan = hash });
+}
+
+/// appends `value` as a json line to `file` under `root`, or drops it if
+/// the file can't be written.
+pub fn appendLine(a: Allocator, io: std.Io, root: []const u8, file: []const u8, value: anytype) !void {
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
-    const line = try std.fmt.allocPrint(a, "{{\"time\":{d},\"event\":\"{s}\",\"plan\":\"{s}\"}}\n", .{ time, event, hash });
-    fs.append(path, line) catch |e| switch (e) {
+    const line = try std.fmt.allocPrint(a, "{f}\n", .{std.json.fmt(value, .{})});
+    fs.append(file, line) catch |e| switch (e) {
         error.OutOfMemory => return e,
         error.WriteFailed => {},
     };

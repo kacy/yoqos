@@ -27,9 +27,36 @@ test sortByField {
     try std.testing.expectEqual(2, items[0].n);
 }
 
+/// the index of the first item whose string `field` equals `key`.
+pub fn indexOf(items: anytype, comptime field: []const u8, key: []const u8) ?usize {
+    for (items, 0..) |x, i| {
+        if (std.mem.eql(u8, @field(x, field), key)) return i;
+    }
+    return null;
+}
+
+/// like `indexOf`, but a pointer to the item.
+pub fn find(items: anytype, comptime field: []const u8, key: []const u8) ?@TypeOf(&items[0]) {
+    return &items[indexOf(items, field, key) orelse return null];
+}
+
+test find {
+    const P = struct { name: []const u8, n: u8 };
+    var items = [_]P{ .{ .name = "a", .n = 1 }, .{ .name = "b", .n = 2 } };
+    try std.testing.expectEqual(2, find(&items, "name", "b").?.n);
+    try std.testing.expectEqual(null, find(&items, "name", "c"));
+}
+
 pub fn contains(list: []const []const u8, s: []const u8) bool {
     for (list) |x| {
         if (std.mem.eql(u8, x, s)) return true;
+    }
+    return false;
+}
+
+pub fn startsWithAny(s: []const u8, prefixes: []const []const u8) bool {
+    for (prefixes) |p| {
+        if (std.mem.startsWith(u8, s, p)) return true;
     }
     return false;
 }

@@ -24,8 +24,7 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         return 1;
     } else |e| if (e == error.OutOfMemory) return error.OutOfMemory;
 
-    const f = try cli.facts(&w) orelse return w.fail();
-    if (w.failed()) return w.fail();
+    const f = try w.facts() orelse return w.fail();
 
     const date = try locking.today(ctx.io, a);
     const c = try generate.fromFacts(a, &f);
@@ -86,9 +85,10 @@ fn lockNew(ctx: *Context, w: *cli.Work, loaded: *const compose.Loaded, date: []c
 }
 
 /// the lock is a separate step; its problems are worth showing, but the
-/// config is written and init still worked.
+/// config is written and init still worked. under --json they go to
+/// stderr, since stdout gets the init document.
 fn reportLater(ctx: *Context, w: *cli.Work) !?[]const u8 {
-    _ = try w.fail();
+    try w.diags.render(ctx.err);
     w.diags.items.clearRetainingCapacity();
     if (!ctx.json) try ctx.out.writeAll("no machine.lock yet: fix the above, then `os update`.\n");
     return null;

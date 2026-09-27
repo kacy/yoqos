@@ -127,8 +127,15 @@ pub fn change(a: Allocator, unit: []const u8, verbs: []const api.Verb, diags: *d
             const m = try call(bus, method, "ss", .{ name.ptr, "replace" }, diags) orelse return false;
             defer _ = c.sd_bus_message_unref(m);
             var job: [*c]const u8 = null;
-            if (c.sd_bus_message_read(m, "o", &job) < 0) return badReply(diags, "StartUnit");
-            const result = try jobs.wait(bus, std.mem.span(job)) orelse {
+            if (c.sd_bus_message_read(m, "o", &job) < 0) return badReply(diags, std.mem.span(method));
+            const waited = jobs.wait(bus, std.mem.span(job)) catch |e| switch (e) {
+                error.BusFailed => {
+                    try diags.add(.systemd_failed, null, "lost touch with systemd while waiting to {s} {s}", .{ @tagName(v), unit }, null);
+                    return false;
+                },
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+            const result = waited orelse {
                 try diags.add(.systemd_failed, null, "{s} didn't {s} within 90 seconds", .{ unit, @tagName(v) }, null);
                 return false;
             };
@@ -166,14 +173,15 @@ const Jobs = struct {
     }
 
     /// the job's result, or null if it didn't finish in time.
-    fn wait(j: *Jobs, bus: *c.sd_bus, path: []const u8) !?[]const u8 {
+    fn wait(j: *Jobs, bus: *c.sd_bus, path: []const u8) error{ OutOfMemory, BusFailed }!?[]const u8 {
         var waited: usize = 0;
         while (true) {
             if (j.out_of_memory) return error.OutOfMemory;
             if (j.done.get(path)) |r| return r;
             const r = c.sd_bus_process(bus, null);
             if (r > 0) continue;
-            if (r < 0 or waited == 90) return null;
+            if (r < 0) return error.BusFailed;
+            if (waited == 90) return null;
             _ = c.sd_bus_wait(bus, std.time.us_per_s);
             waited += 1;
         }

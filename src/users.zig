@@ -39,7 +39,7 @@ const Users = struct {
     /// runs a shadow tool. its own message says what went wrong.
     fn run(u: Users, argv: []const []const u8) !bool {
         const why = try exec.run(u.fs.a, u.fs.io, argv) orelse return true;
-        try u.diags.add(.bad_value, null, "{s}", .{why}, null);
+        try u.diags.add(.apply_failed, null, "{s}", .{why}, null);
         return false;
     }
 
@@ -66,7 +66,7 @@ const Users = struct {
             u.fs.append(ids_path, try std.fmt.allocPrint(a, "{s} {d}\n", .{ name, made.uid })) catch |e| switch (e) {
                 error.OutOfMemory => return e,
                 error.WriteFailed => {
-                    try u.diags.add(.bad_value, null, "created {s}, but can't record its uid in {s}", .{ name, try u.fs.path(ids_path) }, null);
+                    try u.diags.add(.apply_failed, null, "created {s}, but can't record its uid in {s}", .{ name, try u.fs.path(ids_path) }, null);
                     return false;
                 },
             };
@@ -79,10 +79,10 @@ const Users = struct {
     fn shellPath(u: Users, shell: []const u8) !?[]const u8 {
         if (std.mem.indexOfScalar(u8, shell, '/') != null) return shell;
         const full = try std.fmt.allocPrint(u.fs.a, "/usr/bin/{s}", .{shell});
-        std.Io.Dir.cwd().access(u.fs.io, try u.fs.path(full[1..]), .{}) catch {
+        if (!u.fs.exists(full[1..])) {
             try u.diags.add(.bad_value, null, "the shell {s} isn't installed", .{shell}, try std.fmt.allocPrint(u.fs.a, "add {s} to packages", .{shell}));
             return null;
-        };
+        }
         return full;
     }
 };
@@ -150,8 +150,7 @@ test "users under a root: create, shell, groups, and the same uid again" {
         step("guest", .change, "shell zsh"),
         step("guest", .add, "join wheel"),
     }) |c| try expectOk(try apply(a, io, root, c, &diags), &diags);
-    const u: Users = .{ .fs = .{ .a = a, .io = io, .dir = root }, .diags = &diags };
-    const r = u.fs;
+    const r: rootfs.Root = .{ .a = a, .io = io, .dir = root };
     const us = try observe.users(a, try r.read("etc/passwd"), try r.read("etc/group"));
     try testing.expectEqual(1, us.len);
     try testing.expectEqualStrings("guest", us[0].name);
@@ -165,7 +164,7 @@ test "users under a root: create, shell, groups, and the same uid again" {
 
     // gone and back: the same uid, where useradd alone would take the
     // next one after other's.
-    try expectOk(try u.run(&.{ "userdel", "--root", root, "guest" }), &diags);
+    try testing.expectEqual(null, try exec.run(a, io, &.{ "userdel", "--root", root, "guest" }));
     try tmp.dir.writeFile(io, .{ .sub_path = "etc/passwd", .data = "root:x:0:0::/root:/bin/sh\nother:x:1001:1001::/:/bin/sh\n" });
     diags.items.clearRetainingCapacity();
     try expectOk(try apply(a, io, root, step("guest", .add, "new user"), &diags), &diags);

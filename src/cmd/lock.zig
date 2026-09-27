@@ -10,6 +10,7 @@ const config = @import("../config.zig");
 const lock = @import("../lock.zig");
 const change = @import("../change.zig");
 const edit = @import("../edit.zig");
+const diag = @import("../diag.zig");
 const facts = @import("../facts.zig");
 const planner = @import("../planner.zig");
 const sync = @import("../sync.zig");
@@ -39,17 +40,12 @@ pub fn resolveLock(ctx: *Context, w: *cli.Work, c: *const config.Config, top: []
             .failed => return null,
             .choose => |choices| choices,
         };
+        // what's installed already answers a choice; otherwise ask.
         const settled = try installedChoices(a, choices, installed);
-        if (settled.len > 0) {
-            if (!try saveProviders(ctx, w, top, settled)) return null;
-            in.providers = try std.mem.concat(a, lock.Provider, &.{ in.providers, settled });
-            continue;
-        }
-        if (!ctx.interactive) {
+        const picked = if (settled.len > 0) settled else if (ctx.interactive) try askProviders(ctx, a, choices) orelse return null else {
             try alpm.reportChoices(a, choices, &w.diags);
             return null;
-        }
-        const picked = try askProviders(ctx, a, choices) orelse return null;
+        };
         if (!try saveProviders(ctx, w, top, picked)) return null;
         in.providers = try std.mem.concat(a, lock.Provider, &.{ in.providers, picked });
     }
@@ -110,12 +106,20 @@ fn saveProviders(ctx: *Context, w: *cli.Work, top: []const u8, picked: []const l
     return true;
 }
 
-/// the current lock, or null if there isn't a readable one.
+/// the current lock, or null if there isn't a readable one. a lock that
+/// doesn't parse is treated as missing, with a warning: it's generated,
+/// so resolving a new one replaces it.
 pub fn readLock(ctx: *Context, a: Allocator, top: []const u8) !?lock.Lock {
     const path = try lock.pathFor(a, top);
-    const bytes = ctx.files.read(a, path) catch return null;
-    var ignored: @import("../diag.zig").List = .init(a);
-    return lock.parse(a, path, bytes, &ignored);
+    const bytes = ctx.files.read(a, path) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    var ignored: diag.List = .init(a);
+    return try lock.parse(a, path, bytes, &ignored) orelse {
+        try ctx.err.print("os: {s} doesn't parse, so it's treated as missing. `os plan` says what's wrong with it.\n", .{path});
+        return null;
+    };
 }
 
 /// writes `l` next to `top`. returns the path, or null after saying why.

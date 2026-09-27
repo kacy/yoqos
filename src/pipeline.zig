@@ -59,21 +59,16 @@ pub fn load(gpa: Allocator, files: compose.Files, config_path: []const u8, lock_
     return .{ .loaded = loaded, .arena = arena, .lock = l.? };
 }
 
-/// reads and parses a facts file into `a`.
-fn readFacts(files: compose.Files, a: Allocator, path: []const u8) Error!facts.Facts {
-    const bytes = files.read(a, path) catch |e| switch (e) {
+/// facts read from the file at `path` if given, else observed from the
+/// machine under `root`, hashing the `managed` files. observer problems go
+/// to `diags`.
+pub fn getFacts(files: compose.Files, io: std.Io, a: Allocator, path: ?[]const u8, root: []const u8, managed: []const []const u8, diags: *diag.List) Error!facts.Facts {
+    const p = path orelse return observe.observe(a, io, .{ .root = root, .files = managed }, diags);
+    const bytes = files.read(a, p) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.FactsUnreadable,
     };
     return facts.parse(a, bytes);
-}
-
-/// facts from `path` if given, else observed from the machine under
-/// `root`. observer problems go to `diags`.
-/// `managed` names the files the config manages, which get hashed.
-pub fn getFacts(files: compose.Files, io: std.Io, a: Allocator, path: ?[]const u8, root: []const u8, managed: []const []const u8, diags: *diag.List) Error!facts.Facts {
-    if (path) |p| return readFacts(files, a, p);
-    return observe.observe(a, io, .{ .root = root, .files = managed }, diags);
 }
 
 pub const Inputs = struct {

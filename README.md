@@ -1,41 +1,11 @@
 # yoq os
 
-declarative arch linux with real rollback.
+declarative arch linux with rollback.
 
-you describe the machine in one short file, `os` shows you exactly what it's
-going to change, and every change becomes a generation you can boot back into.
-it's still arch underneath: same packages, same wiki, and you can stop using it
-whenever you want.
-
-it's early. `os apply` installs and removes packages, sets the system
-settings, turns services on and off, manages users, and rolls packages and
-config back. whole-system rollback on btrfs comes next.
-
-```
-os init       # write a config that describes this machine
-os status     # what matches the config, what changed, what's failing
-os add fd     # edit the config (and the lock) for you
-os update     # resolve against today's arch packages into machine.lock
-os plan       # what applying would change
-os apply      # show the plan, ask, apply it
-os rollback   # go back to the previous generation
-os why perl   # which config line brings a package in
-```
-
-[docs/usage.md](docs/usage.md) walks through all of it: getting started,
-every command, and the config format.
-
-reading packages and resolving need libalpm, and reading services needs
-libsystemd. build with `-Dalpm -Dsystemd` to link them. without a real arch
-machine, the test fixtures work too:
-
-```
-zig build
-./zig-out/bin/os --config tests/golden/fresh-install/machine.toml \
-    --facts tests/golden/fresh-install/facts.json plan
-```
-
-## the idea
+you describe the machine in one short file. `os` shows what it's going to
+change before it changes anything, and on a btrfs root every change becomes a
+generation you can boot back into. underneath it's still arch, with the same
+packages and the same wiki, and you can stop using it whenever you like.
 
 ```toml
 version = 1
@@ -50,44 +20,61 @@ ssh = true
 ```
 
 ```
-os update     # move to today's arch packages
+os init       # write a config that describes this machine
+os status     # what matches the config, what changed, what's failing
+os add fd     # edit the config (and the lock) for you, then apply
+os update     # resolve against today's arch packages
+os plan       # what applying would change
 os apply      # show the plan, ask, apply it
 os rollback   # go back to the previous generation
+os why perl   # which config line brings a package in
 ```
 
-## installing
+it's early. on any arch install, `os` manages packages, system settings,
+services, users, files, and sysctl, and rolls packages and config back. on a
+btrfs root with grub, `os enable-rollback` turns on whole-system generations:
+every change is a snapshot in the boot menu, and an update that needs a
+reboot boots once on trial and falls back by itself if it doesn't come up
+healthy. that works on arch's cloud image and on archinstall's default
+layout.
 
-on arch, `dist/PKGBUILD` builds the `yoq-os-git` package: the `os` command
-and the pacman hook that notices direct `pacman` use.
+- [docs/usage.md](docs/usage.md): installing, every command, and the config
+  format
+- [docs/generations.md](docs/generations.md): how generations and rollback
+  work, and what they don't do yet
+
+## trying it without a machine
+
+the test fixtures stand in for a real one:
 
 ```
-git clone https://github.com/kacy/yoqos
-cd yoqos/dist
-makepkg -si
-sudo os init
+zig build
+./zig-out/bin/os --config tests/golden/fresh-install/machine.toml \
+    --facts tests/golden/fresh-install/facts.json plan
 ```
 
-## building
+## building and testing
 
-needs zig 0.16.
+needs zig 0.16. reading packages needs libalpm and reading services needs
+libsystemd; `-Dalpm -Dsystemd` links them.
 
 ```
 zig build
 zig build test
-zig build test -Dalpm -Dsystemd   # needs libalpm and libsystemd
-./zig-out/bin/os help
+zig build test -Dalpm -Dsystemd
 ```
 
-`tests/vm/test.sh zig-out/bin/os` boots arch's cloud image under kvm and
-runs the whole loop in it. `tests/vm/vm.sh` starts, reaches, and stops that
-vm by hand. ci runs the vm test on every push.
+`tests/vm/test.sh zig-out/bin/os` boots an arch vm under kvm and runs the
+whole loop in it: the manage rung, enable-rollback, rollback, and trial
+boots. `VM_IMAGE=archinstall` runs it on an image archinstall installs
+instead of arch's cloud image. ci runs both on every push.
 
-## rough plan
+## what's next
 
-- manage packages, services, users, and files on any arch install
-- whole-system generations and rollback on btrfs, with the bootloader you
-  already have (grub, systemd-boot, limine, refind)
-- an installer that builds a machine straight from its config
+see the end of [docs/generations.md](docs/generations.md). the big pieces
+are more bootloaders (systemd-boot, limine, refind), building the next
+generation apart from the running system, and an installer that builds a
+machine straight from its config.
 
 ## license
 

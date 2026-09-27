@@ -3,6 +3,7 @@
 //! snapshot of the running root, which becomes the root at the next boot.
 
 const std = @import("std");
+const rootfs = @import("../rootfs.zig");
 const cli = @import("../cli.zig");
 const btrfs = @import("../btrfs.zig");
 const enable = @import("../enable.zig");
@@ -11,18 +12,19 @@ const facts = @import("../facts.zig");
 const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
 const output = @import("../output.zig");
+const applying = @import("apply.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
 pub fn enableRollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var yes = false;
     for (args) |arg| {
-        if (@import("apply.zig").isYes(arg)) yes = true else return cli.usageError(ctx, "os enable-rollback [--yes]");
+        if (applying.isYes(arg)) yes = true else return cli.usageError(ctx, "os enable-rollback [--yes]");
     }
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    const f = try cli.facts(&w) orelse return w.fail();
+    const f = try w.facts() orelse return w.fail();
     const p = try enable.plan(a, &f);
     if (ctx.json) {
         try output.writeDoc(ctx.out, "yoq.enable-rollback/1", .{ .ready = p.ready(), .running = p.running, .checks = p.checks, .steps = p.steps });
@@ -41,17 +43,7 @@ pub fn enableRollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.err.writeAll("os: enable-rollback changes the running machine's disk and boot menu, so it needs root and no --root.\n");
         return 1;
     }
-    if (!yes) {
-        if (!ctx.interactive) {
-            try ctx.err.writeAll("os: pass --yes to enable rollback without a terminal.\n");
-            return 2;
-        }
-        try ctx.out.writeByte('\n');
-        if (!try cli.confirm(ctx, "enable rollback?")) {
-            try ctx.out.writeAll("nothing changed.\n");
-            return 0;
-        }
-    }
+    if (try cli.approve(ctx, yes, "enable rollback", "enable rollback?")) |code| return code;
     try ctx.out.writeByte('\n');
     var e: Enabler = .{ .ctx = ctx, .a = a, .boot = f.boot, .time = std.Io.Timestamp.now(ctx.io, .real).toSeconds() };
     if (!try e.run(&p)) return 1;
@@ -110,8 +102,14 @@ const Enabler = struct {
         run: []const []const u8,
     };
 
-    fn later(e: *Enabler, u: Undo) !void {
-        try e.undo.append(e.a, u);
+    /// runs `argv` if the steps are taken back.
+    fn later(e: *Enabler, argv: []const []const u8) !void {
+        try e.undo.append(e.a, .{ .run = try e.a.dupe([]const u8, argv) });
+    }
+
+    /// deletes the subvolume at `path` if the steps are taken back.
+    fn laterDrop(e: *Enabler, path: []const u8) !void {
+        try e.undo.append(e.a, .{ .subvol = path });
     }
 
     /// reverses every step done so far, newest first, and says whether
@@ -144,17 +142,17 @@ const Enabler = struct {
     fn snapshot(e: *Enabler) !bool {
         for ([_][]const u8{ generation.roots_dir, generation.gens_dir }) |d| {
             const dir = try e.m.at(&.{d});
-            const had = if (std.Io.Dir.cwd().access(e.ctx.io, dir, .{})) |_| true else |_| false;
+            const had = rootfs.pathExists(e.ctx.io, dir);
             if (!try e.sh(&.{ "mkdir", "-p", dir })) return false;
-            if (!had) try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rmdir", dir }) });
+            if (!had) try e.later(&.{ "rmdir", dir });
         }
         const root = try e.m.at(&.{new_root});
         if (!try e.tried(btrfs.snapshot(try e.m.at(&.{e.boot.root_subvol.?}), root, false), "snapshot the running root")) return false;
-        try e.later(.{ .subvol = root });
+        try e.laterDrop(root);
         // with the esp at /boot, both roots in the menu keep the kernel
         // they boot with. the running root's /boot was an empty mount point.
         if (try e.m.keepBoot(new_root)) |why| return e.failed("{s}", .{why});
-        if (e.m.bootOnEsp()) try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "find", try e.m.at(&.{ e.boot.root_subvol.?, "boot" }), "-maxdepth", "1", "-type", "f", "-delete" }) });
+        if (e.m.bootOnEsp()) try e.later(&.{ "find", try e.m.at(&.{ e.boot.root_subvol.?, "boot" }), "-maxdepth", "1", "-type", "f", "-delete" });
         if (try e.m.keepBoot(e.boot.root_subvol.?)) |why| return e.failed("{s}", .{why});
         return true;
     }
@@ -164,7 +162,7 @@ const Enabler = struct {
     fn moveVar(e: *Enabler) !bool {
         const dest = try e.m.at(&.{generation.var_subvol});
         if (!try e.tried(btrfs.create(dest), "create @var")) return false;
-        try e.later(.{ .subvol = dest });
+        try e.laterDrop(dest);
         const var_dir = try e.m.at(&.{ new_root, "var" });
         // reflink where it can: journald's files are nocow, and btrfs won't
         // clone those, so they're copied.
@@ -176,19 +174,26 @@ const Enabler = struct {
     }
 
     /// the pacman database moves into generation 1's /usr, and /var keeps
-    /// a symlink to it.
+    /// a symlink to it. a /var the running root shares gets that symlink
+    /// now, so the running root gets its own copy of the database too.
     fn movePacmanDb(e: *Enabler) !bool {
-        const sysimage = try e.m.at(&.{ new_root, "usr/lib/sysimage" });
         const db = try std.fs.path.join(e.a, &.{ e.var_dir, "lib/pacman" });
-        if (!try e.sh(&.{ "mkdir", "-p", sysimage })) return false;
-        const moved = try std.fs.path.join(e.a, &.{ sysimage, "pacman" });
-        if (!try e.sh(&.{ "mv", db, moved })) return false;
-        // with the running /var, the database has to come back out of the
-        // new root before that root goes.
-        if (!e.moved_var) try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "mv", moved, db }) });
-        if (!try e.sh(&.{ "ln", "-s", "/usr/lib/sysimage/pacman", db })) return false;
-        if (!e.moved_var) try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rm", db }) });
-        return true;
+        const moved = try e.m.at(&.{ new_root, "usr/lib/sysimage/pacman" });
+        if (!try e.sh(&.{ "mkdir", "-p", std.fs.path.dirnamePosix(moved).? })) return false;
+        if (e.moved_var) {
+            if (!try e.sh(&.{ "mv", db, moved })) return false;
+        } else {
+            const here = try e.m.at(&.{ e.boot.root_subvol.?, "usr/lib/sysimage/pacman" });
+            if (!try e.sh(&.{ "cp", "-a", "--reflink=auto", db, moved })) return false;
+            if (!try e.sh(&.{ "cp", "-a", "--reflink=auto", db, here })) return false;
+            // taken back newest first: the symlink goes, the database
+            // returns from the running root's copy, and that copy goes.
+            try e.later(&.{ "rm", "-rf", here });
+            try e.later(&.{ "cp", "-a", here, db });
+            try e.later(&.{ "rm", "-f", db });
+            if (!try e.sh(&.{ "rm", "-rf", db })) return false;
+        }
+        return e.sh(&.{ "ln", "-s", "/usr/lib/sysimage/pacman", db });
     }
 
     /// generation 1's /etc/yoq moves into its /var, and fstab mounts it
@@ -197,11 +202,10 @@ const Enabler = struct {
         const src = try e.m.at(&.{ new_root, "etc/yoq" });
         const dest = try std.fs.path.join(e.a, &.{ e.var_dir, "lib/yoq/config" });
         if (!try e.sh(&.{ "mkdir", "-p", std.fs.path.dirnamePosix(dest).? })) return false;
-        const has_config = if (std.Io.Dir.cwd().access(e.ctx.io, src, .{})) |_| true else |_| false;
-        if (has_config) {
+        if (rootfs.pathExists(e.ctx.io, src)) {
             if (!try e.sh(&.{ "mv", src, dest })) return false;
         } else if (!try e.sh(&.{ "mkdir", "-p", dest })) return false;
-        if (!e.moved_var) try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rm", "-rf", dest }) });
+        if (!e.moved_var) try e.later(&.{ "rm", "-rf", dest });
         if (!try e.sh(&.{ "mkdir", "-p", src })) return false;
         e.moved_config = true;
         return true;
@@ -222,7 +226,7 @@ const Enabler = struct {
         if (!try e.healthUnit()) return false;
         const gen = try e.m.at(&.{ generation.gens_dir, "1" });
         if (!try e.tried(btrfs.snapshot(try e.m.at(&.{new_root}), gen, true), "record generation 1")) return false;
-        try e.later(.{ .subvol = gen });
+        try e.laterDrop(gen);
         const record: generation.Record = .{
             .n = 1,
             .time = e.time,
@@ -233,7 +237,7 @@ const Enabler = struct {
             .config_rev = if (e.config) |c| c.rev else null,
         };
         if (try gens.writeRecord(e.a, e.ctx.io, e.var_dir, record)) |why| return e.failed("{s}", .{why});
-        if (!e.moved_var) try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rm", "-f", try std.fs.path.join(e.a, &.{ e.var_dir, "lib/yoq/generations/1.json" }) }) });
+        if (!e.moved_var) try e.later(&.{ "rm", "-f", try gens.recordPath(e.a, e.var_dir, 1) });
         return true;
     }
 
@@ -342,7 +346,7 @@ const Enabler = struct {
         if (!try e.keep(grub_dir, "/run/yoq/grub-backup")) return false;
         if (!try e.sh(&.{ "mkdir", "-p", grub_dir })) return false;
         const env_dir = try std.fs.path.join(e.a, &.{ esp, "yoq" });
-        try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rm", "-rf", env_dir }) });
+        try e.later(&.{ "rm", "-rf", env_dir });
         const records = try gens.readRecords(e.a, e.ctx.io, e.var_dir);
         if (try e.m.writeMenu(new_root, records)) |why| return e.failed("{s}", .{why});
         if (!try e.sh(&.{ "mkdir", "-p", try std.fs.path.join(e.a, &.{ esp, "yoq" }) })) return false;
@@ -352,13 +356,13 @@ const Enabler = struct {
     /// copies `dir` to `backup`, if it's there, so taking back the steps
     /// puts it back as it was; if it isn't, taking back removes it.
     fn keep(e: *Enabler, dir: []const u8, backup: []const u8) !bool {
-        if (std.Io.Dir.cwd().access(e.ctx.io, dir, .{})) |_| {
+        if (rootfs.pathExists(e.ctx.io, dir)) {
             if (!try e.sh(&.{ "rm", "-rf", backup })) return false;
             if (!try e.sh(&.{ "cp", "-a", dir, backup })) return false;
             // taken back newest first: the new one goes, then the copy returns.
-            try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "cp", "-a", backup, dir }) });
-        } else |_| {}
-        try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rm", "-rf", dir }) });
+            try e.later(&.{ "cp", "-a", backup, dir });
+        }
+        try e.later(&.{ "rm", "-rf", dir });
         return true;
     }
 
@@ -378,7 +382,7 @@ const Enabler = struct {
     }
 };
 
-pub const Fstab = struct {
+const Fstab = struct {
     uuid: []const u8,
     add_var: bool,
     /// /etc/yoq is a bind mount of the config in /var.
@@ -390,7 +394,7 @@ pub const Fstab = struct {
 
 /// the new root's fstab: a btrfs line for / names no subvolume, /var gets
 /// a line for @var when it moved, and the esp gets one if it had none.
-pub fn rewriteFstab(a: Allocator, text: []const u8, f: Fstab) ![]const u8 {
+fn rewriteFstab(a: Allocator, text: []const u8, f: Fstab) ![]const u8 {
     const uuid = f.uuid;
     var out: std.ArrayList(u8) = .empty;
     var root_opts: []const u8 = "rw,relatime";

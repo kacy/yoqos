@@ -7,6 +7,9 @@ const output = @import("output.zig");
 const diag = @import("diag.zig");
 const compose = @import("compose.zig");
 const pipeline = @import("pipeline.zig");
+const facts_mod = @import("facts.zig");
+const generation = @import("generation.zig");
+const observe = @import("observe.zig");
 const sync = @import("sync.zig");
 const history = @import("history.zig");
 const init_cmd = @import("cmd/init.zig");
@@ -70,11 +73,11 @@ const commands = [_]Command{
     .{ .name = "enable", .summary = "turn services on in the config", .handler = edit.enableCmd },
     .{ .name = "disable", .summary = "turn services off in the config", .handler = edit.disableCmd },
     .{ .name = "adopt", .summary = "put packages installed outside os into the config", .handler = edit.adoptCmd },
-    .{ .name = "rollback", .summary = "go back to an earlier generation of the config", .handler = rollback.rollbackCmd },
-    .{ .name = "enable-rollback", .summary = "check this machine for generations, and the steps to them", .handler = enable_rollback.enableRollbackCmd },
+    .{ .name = "rollback", .summary = "go back to an earlier generation", .handler = rollback.rollbackCmd },
+    .{ .name = "enable-rollback", .summary = "turn on generations of the whole system (btrfs and grub)", .handler = enable_rollback.enableRollbackCmd },
     .{ .name = "gc", .summary = "remove old generations, keeping the newest and pinned ones", .handler = rollback.gcCmd },
     .{ .name = "pin", .summary = "keep a generation through garbage collection", .handler = rollback.pinCmd },
-    .{ .name = "history", .summary = "list the config's generations", .handler = rollback.historyCmd },
+    .{ .name = "history", .summary = "list the generations", .handler = rollback.historyCmd },
     .{ .name = "why", .summary = "say which config line brings in a package", .handler = inspect.whyCmd },
     .{ .name = "config", .summary = "show the merged config (config show [--resolved])", .handler = inspect.configCmd },
     .{ .name = "facts", .summary = "show what os knows about this machine", .handler = inspect.factsCmd },
@@ -174,7 +177,7 @@ fn valueFlag(ctx: *Context, arg: []const u8, it: *ArgIter) !?void {
 fn usage(w: *std.Io.Writer) !void {
     try w.writeAll("usage: os <command> [args]\n\ncommands:\n");
     for (commands) |c| {
-        if (!c.hidden) try w.print("  {s:<10}{s}\n", .{ c.name, c.summary });
+        if (!c.hidden) try w.print("  {s:<17}{s}\n", .{ c.name, c.summary });
     }
     try w.writeAll(
         \\
@@ -250,6 +253,26 @@ pub const Work = struct {
         return if (w.failed()) reportDiags(w.ctx, &w.diags) else 1;
     }
 
+    /// facts from --facts, or observed from the machine. null if they
+    /// couldn't be read in full: a bad facts file is reported here, and
+    /// observer problems are in `diags`.
+    pub fn facts(w: *Work) !?facts_mod.Facts {
+        const ctx = w.ctx;
+        const f = pipeline.getFacts(ctx.files, ctx.io, w.allocator(), ctx.facts_path, ctx.root, &.{}, &w.diags) catch |e| {
+            try factsError(ctx, e, ctx.facts_path);
+            return null;
+        };
+        return if (w.failed()) null else f;
+    }
+
+    /// the running machine's boot facts, when it runs a generation.
+    pub fn generations(w: *Work) !?facts_mod.Boot {
+        if (!eql(w.ctx.root, "/") or w.ctx.facts_path != null) return null;
+        // only how the machine boots: no packages or units to read.
+        const f = try observe.observe(w.allocator(), w.ctx.io, .{ .packages = false, .units = false }, &w.diags);
+        return if (generation.running(f.boot.root_subvol)) f.boot else null;
+    }
+
     /// the merged config, or null if it has problems.
     pub fn config(w: *Work) !?*compose.Loaded {
         w.loaded = try compose.load(w.ctx.gpa, w.ctx.files, w.ctx.config_path, &w.diags);
@@ -282,16 +305,6 @@ pub fn record(ctx: *Context, a: std.mem.Allocator, top: []const u8, message: []c
     if (!try ctx.history.commit(a, dir, message, &why)) {
         try ctx.err.print("os: saved, but couldn't record it in git: {s}\n", .{why});
     }
-}
-
-/// facts from --facts, or observed from the machine. observer problems go
-/// to `w.diags`; a bad facts file is reported here and returns null.
-pub fn facts(w: *Work) !?@import("facts.zig").Facts {
-    const ctx = w.ctx;
-    return pipeline.getFacts(ctx.files, ctx.io, w.allocator(), ctx.facts_path, ctx.root, &.{}, &w.diags) catch |e| {
-        try factsError(ctx, e, ctx.facts_path);
-        return null;
-    };
 }
 
 /// writes a file through `ctx.files`. returns false after saying it
@@ -340,6 +353,20 @@ pub fn inputs(ctx: *const Context) pipeline.Inputs {
 }
 
 /// asks a yes or no question. anything but y or yes is no.
+/// asks before `what`, unless `yes`. null to go ahead, or the exit code:
+/// 2 with no terminal to ask on, 0 when the answer is no.
+pub fn approve(ctx: *Context, yes: bool, what: []const u8, question: []const u8) !?u8 {
+    if (yes) return null;
+    if (!ctx.interactive) {
+        try ctx.err.print("os: pass --yes to {s} without a terminal.\n", .{what});
+        return 2;
+    }
+    try ctx.out.writeByte('\n');
+    if (try confirm(ctx, question)) return null;
+    try ctx.out.writeAll("nothing changed.\n");
+    return 0;
+}
+
 pub fn confirm(ctx: *Context, question: []const u8) !bool {
     try ctx.out.print("{s} [y/N] ", .{question});
     try ctx.out.flush();

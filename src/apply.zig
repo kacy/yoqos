@@ -29,7 +29,7 @@ pub const Result = struct {
 };
 
 /// the package side of a plan, as one transaction's worth of lists.
-pub fn transaction(a: Allocator, p: *const planner.Plan, l: *const lock.Lock, t: Target) !alpm.Transaction {
+fn transaction(a: Allocator, p: *const planner.Plan, l: *const lock.Lock, t: Target) !alpm.Transaction {
     var install: std.ArrayList(lock.Package) = .empty;
     var remove: std.ArrayList([]const u8) = .empty;
     var explicit: std.ArrayList([]const u8) = .empty;
@@ -94,7 +94,7 @@ fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.
     fs.writeMode(std.mem.trimStart(u8, path, "/"), d.content, mode) catch |e| switch (e) {
         error.OutOfMemory => return e,
         error.WriteFailed => {
-            try diags.add(.bad_value, null, "can't write {s}", .{try fs.path(path)}, null);
+            try diags.add(.apply_failed, null, "can't write {s}", .{try fs.path(path)}, null);
             return false;
         },
     };
@@ -106,7 +106,7 @@ fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.
     else
         return true;
     if (try exec.run(a, io, then)) |why| {
-        try diags.add(.bad_value, null, "wrote {s}, but {s} failed: {s}", .{ path, then[0], why }, null);
+        try diags.add(.apply_failed, null, "wrote {s}, but {s} failed: {s}", .{ path, then[0], why }, null);
         return false;
     }
     return true;

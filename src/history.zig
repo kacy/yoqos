@@ -48,13 +48,7 @@ pub const Git = struct {
 
     fn log(ctx: *anyopaque, a: Allocator, dir: []const u8, why: *[]const u8) error{OutOfMemory}!?[]const Entry {
         const g: *Git = @ptrCast(@alignCast(ctx));
-        const text = switch (try exec.output(a, g.io, &.{ "git", "-C", dir, "log", "--reverse", "--format=%H %s" })) {
-            .ok => |t| t,
-            .failed => |w| {
-                why.* = w;
-                return null;
-            },
-        };
+        const text = try g.output(a, &.{ "git", "-C", dir, "log", "--reverse", "--format=%H %s" }, why) orelse return null;
         var out: std.ArrayList(Entry) = .empty;
         var lines = std.mem.tokenizeScalar(u8, text, '\n');
         while (lines.next()) |line| {
@@ -67,24 +61,13 @@ pub const Git = struct {
     fn files(ctx: *anyopaque, a: Allocator, dir: []const u8, rev: []const u8, why: *[]const u8) error{OutOfMemory}!?[]const File {
         const g: *Git = @ptrCast(@alignCast(ctx));
         // ls-tree names paths from `dir`, and `rev:./path` reads them back.
-        const names = switch (try exec.output(a, g.io, &.{ "git", "-C", dir, "ls-tree", "-r", "--name-only", rev })) {
-            .ok => |t| t,
-            .failed => |w| {
-                why.* = w;
-                return null;
-            },
-        };
+        const names = try g.output(a, &.{ "git", "-C", dir, "ls-tree", "-r", "--name-only", rev }, why) orelse return null;
         var out: std.ArrayList(File) = .empty;
         var lines = std.mem.tokenizeScalar(u8, names, '\n');
         while (lines.next()) |name| {
             const spec = try std.fmt.allocPrint(a, "{s}:./{s}", .{ rev, name });
-            switch (try exec.output(a, g.io, &.{ "git", "-C", dir, "show", spec })) {
-                .ok => |bytes| try out.append(a, .{ .path = name, .bytes = bytes }),
-                .failed => |w| {
-                    why.* = w;
-                    return null;
-                },
-            }
+            const bytes = try g.output(a, &.{ "git", "-C", dir, "show", spec }, why) orelse return null;
+            try out.append(a, .{ .path = name, .bytes = bytes });
         }
         return out.items;
     }
@@ -108,6 +91,17 @@ pub const Git = struct {
     fn run(g: *Git, a: Allocator, argv: []const []const u8, why: *[]const u8) !bool {
         why.* = try exec.run(a, g.io, argv) orelse return true;
         return false;
+    }
+
+    /// what `argv` printed, or null with the reason in `why`.
+    fn output(g: *Git, a: Allocator, argv: []const []const u8, why: *[]const u8) !?[]const u8 {
+        return switch (try exec.output(a, g.io, argv)) {
+            .ok => |text| text,
+            .failed => |w| {
+                why.* = w;
+                return null;
+            },
+        };
     }
 
     fn succeeds(g: *Git, a: Allocator, argv: []const []const u8) !bool {

@@ -9,8 +9,10 @@ to use it today.
 `os` reads a machine, writes a config for it, keeps that config and its lock
 up to date, tells you what's different, and applies the difference. `os
 apply` installs and removes packages, sets the `[system]` settings, turns
-services on and off, and creates users and sets their shells and groups.
-every other command only reads the machine or edits the config.
+services on and off, creates users and sets their shells and groups, and
+writes files and sysctl settings. on a btrfs root with grub, `os
+enable-rollback` adds whole-system generations; see
+[generations.md](generations.md).
 
 | command | what it does |
 | --- | --- |
@@ -18,8 +20,10 @@ every other command only reads the machine or edits the config.
 | `os status` | what matches the config, what changed, what's failing |
 | `os plan` | every change applying would make |
 | `os apply` | makes those changes, after asking |
-| `os history` | the config's generations |
+| `os history` | the generations |
 | `os rollback` | goes back to an earlier generation |
+| `os enable-rollback` | turns on whole-system generations (btrfs and grub) |
+| `os gc`, `os pin` | clean up old generations, or keep one |
 | `os update` | resolves the config against today's arch packages into the lock |
 | `os add`, `os remove` | edit the package list, and the lock with it |
 | `os enable`, `os disable` | turn services on or off in the config |
@@ -28,16 +32,19 @@ every other command only reads the machine or edits the config.
 | `os config show` | the config with all its includes merged |
 | `os facts` | what `os` sees on this machine |
 | `os explain` | the long explanation of an error code |
+| `os help`, `os version` | the command list, and the version |
 
 ## installing
 
 `dist/PKGBUILD` in the repository builds the `yoq-os-git` package, with the
 `os` command and a pacman hook that records direct `pacman` use for `os
-status`:
+status`. it builds from the repository's `main` branch on github;
+`YOQ_SOURCE` points it at a local clone instead:
 
 ```
 cd dist
 makepkg -si
+YOQ_SOURCE=file://$PWD/.. makepkg -si   # build this checkout
 ```
 
 ## building by hand
@@ -110,13 +117,18 @@ failing   none
 
 each "changed" line ends with the command that deals with it. with the
 pacman hook that comes with `os` in place, a direct `pacman -S` or `pacman
--R` also shows up, as "touched with pacman since the last apply", until
-the next `os apply`. the hook records nothing for os's own transactions. when an upgrade leaves a new default beside a
-config file you changed, as `<file>.pacnew`, status lists it too. for files
-`os` writes itself, `os` keeps its version and the `.pacnew` is only there
-to read. `os status`
-also warns when the lock is more than 14 days old, since an old lock holds
-back security fixes. it exits with 1 when something is failing.
+-R` also shows up, as "touched with pacman since the last apply", until the
+next `os apply`. the hook records nothing for os's own transactions.
+
+when an upgrade leaves a new default beside a config file you changed, as
+`<file>.pacnew`, status lists it too. for files `os` writes itself, `os`
+keeps its version and the `.pacnew` is only there to read. status also
+lists services still running files an upgrade replaced, and on a machine
+with generations, a `note:` line when `os` fell back from a generation
+that didn't come up healthy.
+
+`os status` warns when the lock is more than 14 days old, since an old lock
+holds back security fixes. it exits with 1 when something is failing.
 
 ### plan
 
@@ -145,8 +157,9 @@ plan: 16 to add, 3 to change, 1 to remove · reboot needed: microcode
 
 `+` adds, `~` changes, and `-` removes. the text in parentheses is the config
 key that asked for a change, when it isn't the `packages` list itself. `-v`
-lists the dependencies one by one. the last line says whether the change
-needs a reboot, and why.
+(or `--verbose`) lists the dependencies one by one. the last line says
+whether the change needs a reboot, and why. `--lock <file>` plans against
+another lock file.
 
 ### apply
 
@@ -168,20 +181,24 @@ packages, then the settings change, then new services are enabled and
 started. `apply` waits for each start and stop to finish, and a service
 that fails to start stops the apply with the unit's name. services change
 only when systemd runs the machine: not under `--root`, and not in a
-container. it installs exactly the
-versions in the lock, checks each package against the lock's checksum and
-arch's signatures, and marks packages as explicit or dependencies to match
-the config. it uses the machine's own pacman.conf for mirrors and download
-settings. packages come from the lock's date, so run `os update` first to
-move to today's.
+container.
 
-afterwards it plans again and says if anything still differs. arch
-doesn't restart services after an upgrade, so when packages changed,
-`apply` also lists the services still running files the upgrade replaced
-and offers to restart them. `os status` shows them too. services a
-session depends on, like d-bus and display managers, are left for a
-reboot. `--yes` skips
-the question; without a terminal, `apply` needs it. it needs root.
+it installs exactly the versions in the lock, checks each package against
+the lock's checksum and arch's signatures, and marks packages as explicit or
+dependencies to match the config. it uses the machine's own pacman.conf for
+mirrors and download settings. packages come from the lock's date, so run
+`os update` first to move to today's.
+
+afterwards it plans again and says if anything still differs. arch doesn't
+restart services after an upgrade, so when packages changed, `apply` also
+lists the services still running files the upgrade replaced and offers to
+restart them. services a session depends on, like d-bus and display
+managers, are left for a reboot.
+
+`--yes` (or `-y`) skips the question; without a terminal, `apply` needs it.
+it needs root, and a build with libalpm. on a machine with generations, it
+won't run on a copy of an older generation booted from the menu, since that
+copy is remade from its record; `os rollback --to-booted` keeps it first.
 
 read the plan before you say yes: `apply` removes every package the config
 doesn't ask for. the exception is a few core packages (`base`,
@@ -214,8 +231,9 @@ applied 1 change.
 these edit `machine.toml` for you, keep its comments and formatting, and
 then apply the change the way `os apply` does: the plan, a question, and
 the change. `--yes` skips the question, and `--no-apply` stops after the
-edit. without a terminal, or with `--json`, they stop after the edit too,
-and `os apply` makes the change.
+edit. they also stop after the edit with `--json`, without a terminal
+unless `--yes` is given, and when apply can't run here (not root, or a build
+without libalpm). `os apply` makes the change later.
 
 they also update the lock, since a service brings its package, resolving
 against the same package date the lock already has, so adding one package
@@ -238,8 +256,9 @@ downloads today's package databases, using the repositories and mirrors in
 the result like `os apply`: the plan, a question, and the change.
 `machine.lock` moves to the new packages only once the machine has, so
 saying no, or an apply that fails, leaves the lock as it was. `--yes` skips
-the question. with `--no-apply`, without a terminal, or with `--json`, it
-only writes the new lock, and `os apply` makes the change later.
+the question. with `--no-apply`, with `--json`, or without a terminal and
+`--yes`, it only writes the new lock, and `os apply` makes the change
+later.
 
 when a package depends on something several packages provide, like
 `initramfs` (mkinitcpio, booster, or dracut), `os update` asks which one you
@@ -259,7 +278,9 @@ plan: 3 to add, 142 to change, 1 to remove · reboot needed: kernel
 ```
 
 notable upgrades are the ones that need a reboot, graphics and boot
-packages, and new major versions. `os update -v` lists every package.
+packages, and new major versions. past eight, the rest are counted on an
+`and N more` line, so the screen stays short. `os update -v` lists every
+package.
 
 before the plan, `update` lists the arch news posted since the lock's
 last date. arch posts there when an update needs a hand, so read those
@@ -292,10 +313,15 @@ package.
 
 ## history and rollback
 
+this section is about machines without generations. with them, history and
+rollback work on whole copies of the system instead; see
+[generations.md](generations.md).
+
 `/etc/yoq` is a git repository. every change `os` makes there, from `init`,
 `add`, `remove`, `enable`, `disable`, `adopt`, `update`, and `rollback`, is a
-commit with a short message, like `add fd`. each commit is a generation of
-the machine's config, numbered from the first:
+commit with a short message, like `add fd` (`adopt` commits as `add`). each
+commit is a generation of the machine's config, numbered from the first,
+and `*` marks the newest:
 
 ```
 $ os history
@@ -310,21 +336,27 @@ generation 2. it applies that generation's config and lock like `os apply`
 does, with the plan and a question first, installing the older package
 versions from the local cache. once the machine matches, it writes those
 files back to `/etc/yoq` as a new generation, `rollback to 2: ...`, so
-nothing is lost and `os rollback` again undoes the rollback.
+nothing is lost and `os rollback` again undoes the rollback. if the cached
+package databases for that generation's date are gone, the plan stops and
+says to run `os update`.
 
-this rolls back packages, settings, services, and users, not files that
-package scripts changed, or anything else `os` doesn't manage. whole-system
-rollback, with snapshots and boot entries, comes later on btrfs.
+this rolls back packages, settings, services, users, and the files the
+config names, not files that package scripts changed, or anything else `os`
+doesn't manage.
 
-edits you make to the config by hand aren't committed for you.
+edits you make to the config by hand aren't committed for you, even after
+`os apply`, so commit them yourself if you want them in the history.
 
 ## generations (early)
 
 on a btrfs root with grub, `os enable-rollback` turns the machine's history
-into generations: whole copies of the system you can boot from the menu.
-there, `os rollback` goes back a whole generation and `os history` lists
-generations. [generations.md](generations.md) covers how they work, and
-what they don't do yet.
+into generations: whole copies of the system you can boot from the menu. it
+shows its checks and steps and asks first; `--yes` skips the question.
+there, `os rollback [n]` starts an older generation as a new one for the
+next boot, `os rollback --to-booted` keeps the one you booted from the menu,
+`os gc [--keep n]` removes old ones, and `os pin <n>` keeps one.
+[generations.md](generations.md) covers how they work, and what they don't
+do yet.
 
 ## the config
 
@@ -487,8 +519,8 @@ includes merge in order, and the including file always wins.
   asked for.
 - `unset = ["desktop.audio"]` clears a key an include set.
 
-`os config show --resolved` prints the merged result with the file and line
-every value came from:
+`os config show` prints the merged config, and `--resolved` adds the file
+and line every value came from:
 
 ```
 $ os config show --resolved
@@ -502,7 +534,8 @@ packages = [
 
 ## errors
 
-every error names the file and line, says what's wrong, and gives a code:
+errors say what's wrong and give a code, and errors in the config name the
+file and line:
 
 ```
 error[E0213]: unknown service "sshd"
@@ -517,8 +550,9 @@ code.
 
 every command takes `--json` and prints one json document. each document
 starts with a `schema` field, like `"schema": "yoq.plan/1"`, that names its
-shape and version. errors come out as a `yoq.errors/1` document on stdout
-under `--json`.
+shape and version. errors with a code come out as a `yoq.errors/1`
+document on stdout under `--json`; other problems, like a file that can't
+be written, are an `os: ...` line on stderr either way.
 
 exit codes:
 

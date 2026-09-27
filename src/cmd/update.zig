@@ -27,7 +27,7 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     while (it.next()) |a| {
         if (then.flag(a)) {
             continue;
-        } else if (eql(a, "-v")) {
+        } else if (eql(a, "-v") or eql(a, "--verbose")) {
             verbose = true;
         } else if (eql(a, "--dbs")) {
             dbs_dir = it.next() orelse return cli.usageError(ctx, usage_text);
@@ -61,7 +61,6 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         if (old) |o| try writeNews(ctx, o.sync_date, posted);
     }
 
-    var code: u8 = 0;
     var outcome: applying.Outcome = .{ .code = 0, .matches = true };
     if (now) {
         // apply against the new lock first. machine.lock moves only once
@@ -71,10 +70,8 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         var in = cli.inputs(ctx);
         in.lock_path = pending;
         try ctx.out.writeByte('\n');
-        const done = try applying.run(ctx, then.yes, in, .{ .summary = true, .verbose = verbose });
-        if (!done.matches) return done.code;
-        code = done.code;
-        outcome = done;
+        outcome = try applying.run(ctx, then.yes, in, .{ .summary = true, .verbose = verbose });
+        if (!outcome.matches) return outcome.code;
     }
 
     const message = try std.fmt.allocPrint(a, "update packages to {s}", .{l.sync_date});
@@ -83,7 +80,7 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     // the generation comes after the commit, so it records the new lock.
     try applying.recordGeneration(ctx, outcome, message);
     if (ctx.json) try output.writeDoc(ctx.out, "yoq.update/1", .{ .lock = path, .sync_date = l.sync_date, .packages = l.packages.len, .diff = d, .news = posted });
-    return code;
+    return outcome.code;
 }
 
 /// arch news posted after the old lock's date, up to the new one. a feed

@@ -6,6 +6,7 @@ const facts = @import("facts.zig");
 const lock = @import("lock.zig");
 const diag = @import("diag.zig");
 const api = @import("alpm.zig");
+const sync = @import("sync.zig");
 const Allocator = std.mem.Allocator;
 const c = @cImport({
     // see systemd_c.zig: glibc's fortify wrappers don't translate.
@@ -37,9 +38,6 @@ const Handle = struct {
     fn lastError(h: Handle) []const u8 {
         return std.mem.span(c.alpm_strerror(c.alpm_errno(h.h)));
     }
-
-    const configure = configureImpl;
-    const run = runImpl;
 };
 
 fn listItems(comptime T: type, list: ?*c.alpm_list_t) ListIter(T) {
@@ -131,7 +129,8 @@ pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Er
     const scratch = try Scratch.make(a, io, in, diags) orelse return .failed;
     const h = try Handle.open(a, scratch.root, scratch.dbpath, diags) orelse return .failed;
     defer h.close();
-    var questions: Questions = .{ .a = a, .providers = in.providers };
+    // set on each pass below, before libalpm asks anything.
+    var questions: Questions = undefined;
     _ = c.alpm_option_set_questioncb(h.h, Questions.answer, &questions);
     for (in.dbs) |db| {
         if (c.alpm_register_syncdb(h.h, (try a.dupeZ(u8, db.name)).ptr, 0) == null) {
@@ -201,18 +200,13 @@ const Scratch = struct {
             .root = try std.fs.path.join(a, &.{ in.scratch, "root" }),
             .dbpath = try std.fs.path.join(a, &.{ in.scratch, "db" }),
         };
-        const sync_dir = try std.fs.path.join(a, &.{ s.dbpath, "sync" });
         const local_dir = try std.fs.path.join(a, &.{ s.dbpath, "local" });
-        for ([_][]const u8{ s.root, sync_dir, local_dir }) |d| cwd.createDirPath(io, d) catch return scratchFailed(diags, d);
+        for ([_][]const u8{ s.root, local_dir }) |d| cwd.createDirPath(io, d) catch return scratchFailed(diags, d);
         const version = try std.fs.path.join(a, &.{ local_dir, "ALPM_DB_VERSION" });
         cwd.writeFile(io, .{ .sub_path = version, .data = "9\n" }) catch return scratchFailed(diags, version);
-        for (in.dbs) |db| {
-            const bytes = cwd.readFileAlloc(io, db.path, a, .limited(256 << 20)) catch {
-                try diags.add(.alpm_failed, null, "can't read the {s} database at {s}", .{ db.name, db.path }, null);
-                return null;
-            };
-            const dest = try std.fmt.allocPrint(a, "{s}/{s}.db", .{ sync_dir, db.name });
-            cwd.writeFile(io, .{ .sub_path = dest, .data = bytes }) catch return scratchFailed(diags, dest);
+        if (try copySyncDbs(a, io, in.dbs, s.dbpath)) |why| {
+            try diags.add(.alpm_failed, null, "{s}", .{why}, null);
+            return null;
         }
         return s;
     }
@@ -321,29 +315,37 @@ fn reportPrepare(h: Handle, data: ?*c.alpm_list_t, diags: *diag.List) !void {
     }
 }
 
-pub fn transact(a: Allocator, io: std.Io, t: api.Transaction, diags: *diag.List) Error!bool {
+/// copies each of `dbs` to <dbpath>/sync/<name>.db, where libalpm looks for
+/// sync databases. returns the path that failed, if one did.
+/// copies the sync databases into `dbpath`/sync. returns what went wrong,
+/// if something did.
+fn copySyncDbs(a: Allocator, io: std.Io, dbs: []const api.SyncDb, dbpath: []const u8) Error!?[]const u8 {
     const cwd = std.Io.Dir.cwd();
-    // the lock's databases, where libalpm will look for sync databases.
-    const sync_dir = try std.fs.path.join(a, &.{ t.target.dbpath, "sync" });
-    cwd.createDirPath(io, sync_dir) catch return fail(diags, "can't create {s}", .{sync_dir});
-    for (t.target.dbs) |db| {
-        const bytes = cwd.readFileAlloc(io, db.path, a, .limited(256 << 20)) catch return fail(diags, "can't read {s}", .{db.path});
+    const sync_dir = try std.fs.path.join(a, &.{ dbpath, "sync" });
+    cwd.createDirPath(io, sync_dir) catch return try std.fmt.allocPrint(a, "can't create {s}", .{sync_dir});
+    for (dbs) |db| {
+        const bytes = cwd.readFileAlloc(io, db.path, a, .limited(256 << 20)) catch return try std.fmt.allocPrint(a, "can't read the {s} database at {s}", .{ db.name, db.path });
         const dest = try std.fmt.allocPrint(a, "{s}/{s}.db", .{ sync_dir, db.name });
-        cwd.writeFile(io, .{ .sub_path = dest, .data = bytes }) catch return fail(diags, "can't write {s}", .{dest});
+        cwd.writeFile(io, .{ .sub_path = dest, .data = bytes }) catch return try std.fmt.allocPrint(a, "can't write {s}", .{dest});
     }
-    cwd.createDirPath(io, t.target.cachedir) catch return fail(diags, "can't create {s}", .{t.target.cachedir});
+    return null;
+}
+
+pub fn transact(a: Allocator, io: std.Io, t: api.Transaction, diags: *diag.List) Error!bool {
+    if (try copySyncDbs(a, io, t.target.dbs, t.target.dbpath)) |why| return fail(diags, "{s}", .{why});
+    std.Io.Dir.cwd().createDirPath(io, t.target.cachedir) catch return fail(diags, "can't create {s}", .{t.target.cachedir});
 
     const h = try Handle.open(a, t.target.root, t.target.dbpath, diags) orelse return false;
     defer h.close();
-    if (!try h.configure(a, t, diags)) return false;
+    if (!try configure(h, a, t, diags)) return false;
     var questions: Questions = .{ .a = a, .providers = &.{} };
     _ = c.alpm_option_set_questioncb(h.h, Questions.answer, &questions);
     _ = c.alpm_option_set_logcb(h.h, logErrors, diags);
 
     // install first: removing can take away what downloading needs, like
     // the tls certificates.
-    if (t.install.len > 0 and !try h.run(a, t, .install, diags)) return false;
-    if (t.remove.len > 0 and !try h.run(a, t, .remove, diags)) return false;
+    if (t.install.len > 0 and !try run(h, a, t, .install, diags)) return false;
+    if (t.remove.len > 0 and !try run(h, a, t, .remove, diags)) return false;
 
     const local = c.alpm_get_localdb(h.h);
     for ([_]struct { []const []const u8, c.alpm_pkgreason_t }{
@@ -394,11 +396,11 @@ fn dirZ(a: Allocator, parts: []const []const u8) ![*:0]const u8 {
 
 const Step = enum { remove, install };
 
-fn configureImpl(h: Handle, a: Allocator, t: api.Transaction, diags: *diag.List) Error!bool {
+fn configure(h: Handle, a: Allocator, t: api.Transaction, diags: *diag.List) Error!bool {
     if (c.alpm_option_add_cachedir(h.h, try dirZ(a, &.{t.target.cachedir})) != 0 or
         c.alpm_option_add_hookdir(h.h, try dirZ(a, &.{ t.target.root, "usr/share/libalpm/hooks" })) != 0 or
         c.alpm_option_add_hookdir(h.h, try dirZ(a, &.{ t.target.root, "etc/pacman.d/hooks" })) != 0 or
-        c.alpm_option_add_architecture(h.h, @import("sync.zig").arch) != 0 or
+        c.alpm_option_add_architecture(h.h, sync.arch) != 0 or
         c.alpm_option_set_logfile(h.h, (try a.dupeZ(u8, try std.fs.path.join(a, &.{ t.target.root, "var/log/pacman.log" }))).ptr) != 0)
     {
         return fail(diags, "can't set up libalpm: {s}", .{h.lastError()});
@@ -423,7 +425,7 @@ fn configureImpl(h: Handle, a: Allocator, t: api.Transaction, diags: *diag.List)
 }
 
 /// one transaction: all the removals, or all the installs.
-fn runImpl(h: Handle, a: Allocator, t: api.Transaction, step: Step, diags: *diag.List) Error!bool {
+fn run(h: Handle, a: Allocator, t: api.Transaction, step: Step, diags: *diag.List) Error!bool {
     if (c.alpm_trans_init(h.h, 0) != 0) return fail(diags, "can't start the transaction: {s}", .{h.lastError()});
     defer _ = c.alpm_trans_release(h.h);
     switch (step) {

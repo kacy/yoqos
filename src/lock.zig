@@ -195,13 +195,13 @@ const Reader = struct {
     }
 
     fn lock(r: *Reader, root: *const toml.Table) Error!Lock {
-        try r.onlyKeys(root, &.{ "version", "sync_date", "keyring", "providers", "packages" }, null);
-        const version = try r.int(root, "version", null);
+        try r.onlyKeys(root, &.{ "version", "sync_date", "keyring", "providers", "packages" }, "");
+        const version = try r.int(root, "version", "");
         if (version != format_version) return r.bad(null, "lock format {d} isn't supported", .{version});
 
         var l: Lock = .{
-            .sync_date = try r.str(root, "sync_date", null),
-            .keyring = try r.str(root, "keyring", null),
+            .sync_date = try r.str(root, "sync_date", ""),
+            .keyring = try r.str(root, "keyring", ""),
         };
         if (root.get("providers")) |v| {
             const t = try r.table(v, "providers");
@@ -230,20 +230,21 @@ const Reader = struct {
 
     fn package(r: *Reader, e: *const toml.Entry) Error!Package {
         const t = try r.table(&e.value, e.key);
-        try r.onlyKeys(t, &.{ "version", "repo", "sha256", "depends" }, e.key);
+        const prefix = try std.fmt.allocPrint(r.a, "packages.{s}.", .{e.key});
+        try r.onlyKeys(t, &.{ "version", "repo", "sha256", "depends" }, prefix);
         var p: Package = .{
             .name = try r.a.dupe(u8, e.key),
-            .version = try r.str(t, "version", e.key),
-            .repo = try r.str(t, "repo", e.key),
-            .sha256 = try r.str(t, "sha256", e.key),
+            .version = try r.str(t, "version", prefix),
+            .repo = try r.str(t, "repo", prefix),
+            .sha256 = try r.str(t, "sha256", prefix),
         };
-        if (!validSha256(p.sha256)) return r.bad(t.get("sha256").?.span, "packages.{s}.sha256 isn't a sha-256 hash", .{e.key});
+        if (!validSha256(p.sha256)) return r.bad(t.get("sha256").?.span, "{s}sha256 isn't a sha-256 hash", .{prefix});
         if (t.get("depends")) |dv| {
-            if (dv.data != .array) return r.bad(dv.span, "packages.{s}.depends should be a list", .{e.key});
+            if (dv.data != .array) return r.wrong(dv, "depends", prefix, "a list");
             const items = dv.data.array.items.items;
             const deps = try r.a.alloc([]const u8, items.len);
             for (items, deps) |d, *out| {
-                if (d.data != .string) return r.bad(d.span, "packages.{s}.depends should only hold names", .{e.key});
+                if (d.data != .string) return r.bad(d.span, "{s}depends should only hold names", .{prefix});
                 out.* = try r.a.dupe(u8, d.data.string);
             }
             p.depends = deps;
@@ -251,13 +252,11 @@ const Reader = struct {
         return p;
     }
 
-    fn onlyKeys(r: *Reader, t: *const toml.Table, keys: []const []const u8, owner: ?[]const u8) Error!void {
-        outer: for (t.entries.items) |*e| {
-            for (keys) |k| {
-                if (std.mem.eql(u8, e.key, k)) continue :outer;
-            }
-            if (owner) |o| return r.bad(e.key_span, "unknown key packages.{s}.{s}", .{ o, e.key });
-            return r.bad(e.key_span, "unknown key {s}", .{e.key});
+    /// `prefix` is where the table sits, like "packages.git.", and empty
+    /// at the top of the lock.
+    fn onlyKeys(r: *Reader, t: *const toml.Table, keys: []const []const u8, prefix: []const u8) Error!void {
+        for (t.entries.items) |*e| {
+            if (!lists.contains(keys, e.key)) return r.bad(e.key_span, "unknown key {s}{s}", .{ prefix, e.key });
         }
     }
 
@@ -266,27 +265,26 @@ const Reader = struct {
         return r.bad(v.span, "{s} should be a table", .{name});
     }
 
-    fn get(r: *Reader, t: *const toml.Table, key: []const u8, owner: ?[]const u8) Error!*const toml.Value {
+    fn get(r: *Reader, t: *const toml.Table, key: []const u8, prefix: []const u8) Error!*const toml.Value {
         if (t.get(key)) |v| return v;
-        if (owner) |o| return r.bad(null, "packages.{s} has no {s}", .{ o, key });
-        return r.bad(null, "the lock has no {s}", .{key});
+        const owner = if (prefix.len == 0) "the lock" else prefix[0 .. prefix.len - 1];
+        return r.bad(null, "{s} has no {s}", .{ owner, key });
     }
 
-    fn wrong(r: *Reader, v: *const toml.Value, key: []const u8, owner: ?[]const u8, want: []const u8) Error {
-        if (owner) |o| return r.bad(v.span, "packages.{s}.{s} should be {s}", .{ o, key, want });
-        return r.bad(v.span, "{s} should be {s}", .{ key, want });
+    fn wrong(r: *Reader, v: *const toml.Value, key: []const u8, prefix: []const u8, want: []const u8) Error {
+        return r.bad(v.span, "{s}{s} should be {s}", .{ prefix, key, want });
     }
 
-    fn int(r: *Reader, t: *const toml.Table, key: []const u8, owner: ?[]const u8) Error!i64 {
-        const v = try r.get(t, key, owner);
+    fn int(r: *Reader, t: *const toml.Table, key: []const u8, prefix: []const u8) Error!i64 {
+        const v = try r.get(t, key, prefix);
         if (v.data == .integer) return v.data.integer;
-        return r.wrong(v, key, owner, "an integer");
+        return r.wrong(v, key, prefix, "an integer");
     }
 
-    fn str(r: *Reader, t: *const toml.Table, key: []const u8, owner: ?[]const u8) Error![]const u8 {
-        const v = try r.get(t, key, owner);
+    fn str(r: *Reader, t: *const toml.Table, key: []const u8, prefix: []const u8) Error![]const u8 {
+        const v = try r.get(t, key, prefix);
         if (v.data == .string) return r.a.dupe(u8, v.data.string);
-        return r.wrong(v, key, owner, "a string");
+        return r.wrong(v, key, prefix, "a string");
     }
 };
 

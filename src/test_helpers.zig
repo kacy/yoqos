@@ -16,7 +16,10 @@ pub fn configFrom(a: std.mem.Allocator, text: []const u8) !config.Config {
     defer doc.deinit();
     const part = try config.decode(a, "machine.toml", doc.root, &diags);
     try std.testing.expectEqual(0, diags.items.items.len);
-    return part.config;
+    // compose fills this in when it merges; there's no merge here.
+    var c = part.config;
+    c.removed = part.remove.packages;
+    return c;
 }
 
 /// a locked package with a placeholder repo and hash.

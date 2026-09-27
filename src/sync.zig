@@ -3,6 +3,7 @@
 //! databases per date under /var/cache/yoq/sync/<date>/.
 
 const std = @import("std");
+const rootfs = @import("rootfs.zig");
 const builtin = @import("builtin");
 const alpm = @import("alpm.zig");
 const diag = @import("diag.zig");
@@ -27,7 +28,7 @@ pub fn repoRank(name: []const u8) usize {
 }
 
 /// used when pacman's config names no server for a repository.
-pub const fallback_server = "https://geo.mirror.pkgbuild.com/$repo/os/$arch";
+const fallback_server = "https://geo.mirror.pkgbuild.com/$repo/os/$arch";
 
 pub const arch = switch (builtin.cpu.arch) {
     .x86_64 => "x86_64",
@@ -64,7 +65,7 @@ pub fn pacmanConf(a: Allocator, files: compose.Files, root: []const u8) !Pacman 
             section = line[1 .. line.len - 1];
             continue;
         }
-        const key, const value = setting(line) orelse continue;
+        const key, const value = setting(raw) orelse continue;
         if (std.mem.eql(u8, section, "options")) {
             if (std.mem.eql(u8, key, "DownloadUser")) p.download_user = value;
             if (std.mem.eql(u8, key, "DisableSandbox")) p.sandbox = .{ .no_filesystem = true, .no_syscalls = true };
@@ -115,14 +116,14 @@ fn mirrorlist(a: Allocator, text: []const u8, out: *std.ArrayList([]const u8)) !
 
 /// a server url with `$repo` and `$arch` filled in: the repository's
 /// directory.
-pub fn serverUrl(a: Allocator, server: []const u8, repo: []const u8) ![]const u8 {
+fn serverUrl(a: Allocator, server: []const u8, repo: []const u8) ![]const u8 {
     const with_repo = try std.mem.replaceOwned(u8, a, server, "$repo", repo);
     const with_arch = try std.mem.replaceOwned(u8, a, with_repo, "$arch", arch);
     return std.mem.trimEnd(u8, with_arch, "/");
 }
 
 /// the repository's database on a server.
-pub fn dbUrl(a: Allocator, server: []const u8, repo: []const u8) ![]const u8 {
+fn dbUrl(a: Allocator, server: []const u8, repo: []const u8) ![]const u8 {
     return std.fmt.allocPrint(a, "{s}/{s}.db", .{ try serverUrl(a, server, repo), repo });
 }
 
@@ -177,15 +178,13 @@ pub fn databases(a: Allocator, io: std.Io, fetcher: Fetcher, rs: []const Repo, c
     };
     const out = try a.alloc(alpm.SyncDb, rs.len);
     for (rs, out) |r, *db| {
-        db.* = .{ .name = r.name, .path = try std.fmt.allocPrint(a, "{s}/{s}.db", .{ dir, r.name }) };
-        if (cwd.access(io, db.path, .{})) |_| continue else |_| {}
+        db.* = .{ .name = r.name, .path = try cachePath(a, cache, date, r.name) };
+        if (rootfs.pathExists(io, db.path)) continue;
         const bytes = try fetchRepo(a, fetcher, r) orelse {
             try diags.add(.alpm_failed, null, "can't download the {s} database from any server", .{r.name}, "check the network and the servers in pacman.conf and its mirrorlist");
             return null;
         };
-        const tmp = try std.fmt.allocPrint(a, "{s}.part", .{db.path});
-        cwd.writeFile(io, .{ .sub_path = tmp, .data = bytes }) catch return writeFailed(diags, db.path);
-        cwd.rename(tmp, cwd, db.path, io) catch return writeFailed(diags, db.path);
+        rootfs.writeAtomic(io, db.path, bytes, null) catch return writeFailed(diags, db.path);
     }
     return out;
 }
@@ -197,7 +196,7 @@ pub fn withServers(a: Allocator, dbs: []const alpm.SyncDb, rs: []const Repo) ![]
     for (out) |*db| {
         for (rs) |r| {
             if (!std.mem.eql(u8, r.name, db.name)) continue;
-            const templates: []const []const u8 = if (r.servers.len > 0) r.servers else &.{fallback_server};
+            const templates = serversOf(r);
             const urls = try a.alloc([]const u8, templates.len);
             for (templates, urls) |t, *u| u.* = try serverUrl(a, t, r.name);
             db.servers = urls;
@@ -211,15 +210,24 @@ pub fn withServers(a: Allocator, dbs: []const alpm.SyncDb, rs: []const Repo) ![]
 pub fn cached(a: Allocator, io: std.Io, rs: []const Repo, cache: []const u8, date: []const u8) !?[]const alpm.SyncDb {
     const out = try a.alloc(alpm.SyncDb, rs.len);
     for (rs, out) |r, *db| {
-        db.* = .{ .name = r.name, .path = try std.fmt.allocPrint(a, "{s}/{s}/{s}.db", .{ cache, date, r.name }) };
-        std.Io.Dir.cwd().access(io, db.path, .{}) catch return null;
+        db.* = .{ .name = r.name, .path = try cachePath(a, cache, date, r.name) };
+        if (!rootfs.pathExists(io, db.path)) return null;
     }
     return out;
 }
 
+/// the repository's servers, or the fallback if pacman.conf names none.
+fn serversOf(r: Repo) []const []const u8 {
+    return if (r.servers.len > 0) r.servers else &.{fallback_server};
+}
+
+/// where the cache keeps a repository's database for a date.
+fn cachePath(a: Allocator, cache: []const u8, date: []const u8, repo: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(a, "{s}/{s}/{s}.db", .{ cache, date, repo });
+}
+
 fn fetchRepo(a: Allocator, fetcher: Fetcher, r: Repo) !?[]const u8 {
-    const servers: []const []const u8 = if (r.servers.len > 0) r.servers else &.{fallback_server};
-    for (servers) |s| {
+    for (serversOf(r)) |s| {
         if (try fetcher.fetch(a, try dbUrl(a, s, r.name))) |bytes| return bytes;
     }
     return null;

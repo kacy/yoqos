@@ -42,8 +42,9 @@ everything lives in the btrfs top level:
 | `@roots/boot-<n>` | a fresh writable copy of generation n, for its menu entry |
 | `@var` | `/var`, which no generation touches |
 
-every `os apply`, `add`, `remove`, `update`, or `rollback` that changes
-the machine records the result as the next generation, with what made it:
+every `os apply`, `add`, `remove`, `enable`, `disable`, or `update` that
+changes the machine records the result as the next generation, with what
+made it:
 
 ```
 yoq 3 · 2026-09-27 · update packages to 2026-09-27
@@ -73,12 +74,16 @@ an older generation puts that generation's kernel back on the esp.
 $ sudo os rollback
 generation 2 (2026-09-26 · add tree) becomes generation 4, and the next boot runs it.
 /var and /home stay as they are.
+
+roll back? [y/N] y
+generation 4 is ready. reboot to start it.
 ```
 
 `os rollback` starts a new generation from the one before the newest, and
 `os rollback 2` from generation 2. either way the machine switches at the
 next boot, and history only grows: rolling back is a new generation, so
-`os rollback` again takes you forward.
+`os rollback` again takes you forward. `--yes` skips the question, and
+without a terminal it's needed.
 
 the config goes back with it. `/etc/yoq` lives in `/var/lib/yoq/config`,
 outside every generation, and a rollback writes back the config and lock
@@ -106,14 +111,19 @@ reboot to finish. the next boot tries generation 5 once; if it doesn't come up h
 
 the next boot runs the new generation, and the boot menu's default stays
 on the one before. once the machine is up, `yoq-health.service` checks
-it: systemd isn't in maintenance, the display manager started if there is
-one, and every service the config turns on is running. healthy, and the new
+it: systemd isn't in maintenance or on its way down, the display manager
+started if there is one, and every service the config turns on is
+running. healthy, and the new
 generation becomes the default. not healthy, and it reboots into the
 generation before.
 
 a trial boot that hangs without panicking, say on a service that never
 finishes starting, gets five minutes. then `yoq-watchdog.timer` reboots
 it, and grub picks the generation before.
+
+two changes that need a reboot, applied before rebooting, make one trial:
+the next boot tries the newest, and falls back to the generation that last
+booted.
 
 if the new generation can't boot at all, grub falls back to the default on
 its own, and a kernel panic reboots after 10 seconds into it. either way,
@@ -140,23 +150,23 @@ os gc --keep 2       # clean up now, keeping the newest two
 
 ## what this doesn't do yet
 
-- **changes happen live.** an update changes the running system first, and
-  the result becomes a generation afterwards. if an update breaks
-  something, the previous generation is one pick away in the boot menu, but
-  the session you were in has the broken update. building the next
-  generation separately, and booting it once to check it, is planned.
-- **the health check is simple.** it asks whether systemd is in
-  maintenance, whether the display manager started, and whether the
-  config's services are running. a network that doesn't come up passes
-  unless a service the config turns on needs it. a desktop that starts but
-  shows nothing useful passes too.
-- **state carries at the moment of the rollback.** a password you change
-  after `os rollback` but before the reboot stays behind. carrying again at
+- changes happen live. an update changes the running system first, and the
+  result becomes a generation afterwards. if an update breaks something,
+  the previous generation is one pick away in the boot menu, but the
+  session you were in has the broken update. building the next generation
+  separately, and booting it once to check it, is planned.
+- the health check is simple. it looks at systemd's state, the display
+  manager, and the config's services. a network that doesn't come up
+  passes unless a service the config turns on needs it, and so does a
+  desktop that starts but shows nothing useful.
+- state carries at the moment of the rollback. a password you change after
+  `os rollback` but before the reboot stays behind. carrying again at
   shutdown is planned.
-- **a looked-at copy doesn't last.** changes you make while running an
-  older generation's copy are thrown away the next time `os` writes the
-  menu.
-- **grub only**, and only the two root layouts above.
+- an older generation booted from the menu is only for looking around.
+  `os apply` refuses there, and anything else you change is thrown away the
+  next time `os` writes the menu. `os rollback --to-booted` keeps it for
+  real.
+- grub only, and only the two root layouts above.
 
 ## later
 

@@ -129,37 +129,30 @@ pub const Json = struct {
     }
 };
 
-fn jsonSrc(s: *std.json.Stringify, src: Src) !void {
+/// a value as an object that also says where it came from.
+fn jsonSourced(s: *std.json.Stringify, value: anytype, src: Src) !void {
+    try s.beginObject();
+    try s.objectField("value");
+    try s.write(value);
     try s.objectField("file");
     try s.write(src.file);
     try s.objectField("line");
     try s.write(src.line);
     try s.objectField("column");
     try s.write(src.column);
+    try s.endObject();
 }
 
 fn jsonValue(s: *std.json.Stringify, v: anytype) !void {
     const T = @TypeOf(v);
     if (T == config.Set) {
         try s.beginArray();
-        for (v.items.items) |it| {
-            try s.beginObject();
-            try s.objectField("value");
-            try s.write(it.name);
-            try jsonSrc(s, it.src);
-            try s.endObject();
-        }
+        for (v.items.items) |it| try jsonSourced(s, it.name, it.src);
         return s.endArray();
     }
     switch (@typeInfo(T)) {
         .@"struct" => {
-            if (comptime config.isVal(T)) {
-                try s.beginObject();
-                try s.objectField("value");
-                try s.write(v.v);
-                try jsonSrc(s, v.src);
-                return s.endObject();
-            }
+            if (comptime config.isVal(T)) return jsonSourced(s, v.v, v.src);
             if (comptime config.isNamed(T)) {
                 try s.beginObject();
                 for (v.entries.items) |e| {

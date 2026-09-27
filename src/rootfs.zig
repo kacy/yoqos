@@ -31,13 +31,11 @@ pub const Root = struct {
     /// `write`, with the file's permission bits set to `mode`, if given,
     /// before it takes the old one's place.
     pub fn writeMode(r: Root, rel: []const u8, bytes: []const u8, bits: ?u32) error{ OutOfMemory, WriteFailed }!void {
-        const p = try r.path(rel);
-        const tmp = try std.fmt.allocPrint(r.a, "{s}.os-tmp", .{p});
-        const cwd = std.Io.Dir.cwd();
-        if (std.fs.path.dirnamePosix(p)) |d| cwd.createDirPath(r.io, d) catch return error.WriteFailed;
-        cwd.writeFile(r.io, .{ .sub_path = tmp, .data = bytes }) catch return error.WriteFailed;
-        if (bits) |m| cwd.setFilePermissions(r.io, tmp, @enumFromInt(m), .{}) catch return error.WriteFailed;
-        cwd.rename(tmp, cwd, p, r.io) catch return error.WriteFailed;
+        return writeAtomic(r.io, try r.path(rel), bytes, bits);
+    }
+
+    pub fn exists(r: Root, rel: []const u8) bool {
+        return pathExists(r.io, r.path(rel) catch return false);
     }
 
     /// a file's permission bits, or null if it's missing.
@@ -46,11 +44,36 @@ pub const Root = struct {
         return @as(u32, @intCast(@intFromEnum(st.permissions))) & 0o7777;
     }
 
-    /// adds `bytes` to the end of the file.
-    pub fn append(r: Root, rel: []const u8, bytes: []const u8) !void {
-        return r.write(rel, try std.mem.concat(r.a, u8, &.{ try r.read(rel), bytes }));
+    /// adds `bytes` to the end of the file. a file that's there but can't
+    /// be read is a failure, not an empty file to start over.
+    pub fn append(r: Root, rel: []const u8, bytes: []const u8) error{ OutOfMemory, WriteFailed }!void {
+        const old = std.Io.Dir.cwd().readFileAlloc(r.io, try r.path(rel), r.a, .limited(64 << 20)) catch |e| switch (e) {
+            error.FileNotFound => "",
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.WriteFailed,
+        };
+        return r.write(rel, try std.mem.concat(r.a, u8, &.{ old, bytes }));
     }
 };
+
+pub fn pathExists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
+}
+
+/// replaces the file at `path` in one step, making its directory if
+/// needed, so a crash leaves the old or the new content, never half of
+/// each. `bits`, if given, are the new file's permissions.
+pub fn writeAtomic(io: std.Io, path: []const u8, bytes: []const u8, bits: ?u32) error{WriteFailed}!void {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp = std.fmt.bufPrint(&buf, "{s}.os-tmp", .{path}) catch return error.WriteFailed;
+    const cwd = std.Io.Dir.cwd();
+    if (std.fs.path.dirnamePosix(path)) |d| cwd.createDirPath(io, d) catch return error.WriteFailed;
+    cwd.writeFile(io, .{ .sub_path = tmp, .data = bytes }) catch return error.WriteFailed;
+    errdefer cwd.deleteFile(io, tmp) catch {};
+    if (bits) |m| cwd.setFilePermissions(io, tmp, @enumFromInt(m), .{}) catch return error.WriteFailed;
+    cwd.rename(tmp, cwd, path, io) catch return error.WriteFailed;
+}
 
 test "write, read, and append under a root" {
     var tmp = std.testing.tmpDir(.{});

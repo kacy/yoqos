@@ -9,6 +9,7 @@ const std = @import("std");
 const toml = @import("toml.zig");
 const diag = @import("diag.zig");
 const catalog = @import("catalog.zig");
+const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 
 pub const supported_version = 1;
@@ -50,10 +51,7 @@ pub const Set = struct {
     }
 
     pub fn indexOf(s: *const Set, name: []const u8) ?usize {
-        for (s.items.items, 0..) |it, i| {
-            if (std.mem.eql(u8, it.name, name)) return i;
-        }
-        return null;
+        return lists.indexOf(s.items.items, "name", name);
     }
 
     /// adds `item` unless the name is already there. the first source wins.
@@ -81,20 +79,14 @@ pub fn Named(comptime T: type) type {
         entries: std.ArrayList(Entry) = .empty,
 
         pub fn get(n: *const Self, name: []const u8) ?*T {
-            for (n.entries.items) |*e| {
-                if (std.mem.eql(u8, e.name, name)) return &e.value;
-            }
-            return null;
+            const e = lists.find(n.entries.items, "name", name) orelse return null;
+            return &e.value;
         }
 
         pub fn remove(n: *Self, name: []const u8) bool {
-            for (n.entries.items, 0..) |e, i| {
-                if (std.mem.eql(u8, e.name, name)) {
-                    _ = n.entries.orderedRemove(i);
-                    return true;
-                }
-            }
-            return false;
+            const i = lists.indexOf(n.entries.items, "name", name) orelse return false;
+            _ = n.entries.orderedRemove(i);
+            return true;
         }
     };
 }
@@ -109,16 +101,13 @@ pub fn isVal(comptime T: type) bool {
     return @typeInfo(T) == .@"struct" and @hasField(T, "v") and @hasField(T, "src");
 }
 
-/// the config keys of a section: its fields, minus the `src` bookkeeping.
 /// fields that aren't config keys: where a value came from, and what
 /// loading works out from the keys.
 fn isHidden(comptime name: []const u8) bool {
-    for ([_][]const u8{ "src", "removed", "content" }) |h| {
-        if (std.mem.eql(u8, h, name)) return true;
-    }
-    return false;
+    return lists.contains(&.{ "src", "removed", "content" }, name);
 }
 
+/// the config keys of a section: its fields, minus the hidden ones.
 pub fn keysOf(comptime T: type) []const []const u8 {
     comptime {
         var keys: []const []const u8 = &.{};
@@ -266,7 +255,6 @@ pub fn decode(a: Allocator, file: []const u8, root: *const toml.Table, diags: *d
             try d.unknownKey(e, "", root_keys);
         }
     }
-    part.config.removed = part.remove.packages;
     if (part.config.version) |v| {
         if (v.v != supported_version) {
             try diags.add(.bad_value, v.src, "config version {d} isn't supported", .{v.v}, "this os reads version 1");
@@ -485,7 +473,7 @@ pub fn unknownService(diags: *diag.List, name: []const u8, at: ?diag.Span) !void
 }
 
 /// three or four octal digits, like "644" or "0600".
-pub fn validMode(m: []const u8) bool {
+fn validMode(m: []const u8) bool {
     if (m.len < 3 or m.len > 4) return false;
     for (m) |ch| {
         if (ch < '0' or ch > '7') return false;

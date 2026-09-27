@@ -42,10 +42,10 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
     f.pacman_changes = try drift.since(a, io, opts.root);
     f.files = try files(a, io, opts.root, opts.files);
     f.initramfs_modules = try r.mkinitcpio("MODULES");
-    f.boot = try r.boot();
+    const dbpath = try pacmanDb(a, io, opts.root);
+    f.boot = try r.boot(dbpath);
     f.pacnew = try r.pacnew();
     if (opts.packages) {
-        const dbpath = try r.dbpath();
         const pkgs = alpm.localPackages(a, opts.root, dbpath, diags) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             error.AlpmUnavailable => null,
@@ -64,6 +64,13 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
     }
     f.normalize();
     return f;
+}
+
+/// the subvolume the running root is mounted from, on btrfs.
+pub fn rootSubvol(a: Allocator, io: std.Io) !?[]const u8 {
+    const r: Reader = .{ .a = a, .io = io, .root = "/" };
+    const root = mountAt(try mounts(a, try r.file("proc/self/mountinfo") orelse ""), "/") orelse return null;
+    return if (std.mem.eql(u8, root.fstype, "btrfs")) root.root else null;
 }
 
 const Reader = struct {
@@ -123,10 +130,10 @@ const Reader = struct {
 
     /// how the machine boots. mounts and firmware only describe the
     /// running machine, so under another root those stay unknown.
-    fn boot(r: Reader) !facts.Boot {
+    fn boot(r: Reader, dbpath: []const u8) !facts.Boot {
         var b: facts.Boot = .{
             .initramfs_hooks = try r.mkinitcpio("HOOKS"),
-            .pacman_moved = std.mem.endsWith(u8, try r.dbpath(), "sysimage/pacman"),
+            .pacman_moved = std.mem.endsWith(u8, dbpath, "sysimage/pacman"),
         };
         if (!std.mem.eql(u8, r.root, "/")) return b;
         b.uefi = r.exists("sys/firmware/efi");
@@ -171,9 +178,7 @@ const Reader = struct {
     }
 
     fn exists(r: Reader, rel: []const u8) bool {
-        const p = r.path(rel) catch return false;
-        std.Io.Dir.cwd().access(r.io, p, .{}) catch return false;
-        return true;
+        return rootfs.pathExists(r.io, r.path(rel) catch return false);
     }
 
     /// whether a process maps package files that have been replaced
@@ -209,15 +214,11 @@ const Reader = struct {
         }
         return out.items;
     }
-
-    fn dbpath(r: Reader) ![]const u8 {
-        return pacmanDb(r.a, r.io, r.root);
-    }
 };
 
 /// a mkinitcpio array, like MODULES or HOOKS: `KEY=(...)` sets it and
 /// `KEY+=(...)` adds to it, in the order the lines come.
-pub fn mkinitcpioList(a: Allocator, text: []const u8, comptime key: []const u8, out: *std.ArrayList([]const u8)) !void {
+fn mkinitcpioList(a: Allocator, text: []const u8, comptime key: []const u8, out: *std.ArrayList([]const u8)) !void {
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
@@ -290,7 +291,7 @@ pub fn mountAt(ms: []const Mount, point: []const u8) ?Mount {
 
 /// whether /proc/<pid>/maps lists a deleted file from a package's
 /// directories. memfds and deleted files in /tmp don't count.
-pub fn mapsReplaced(maps: []const u8) bool {
+fn mapsReplaced(maps: []const u8) bool {
     var lines = std.mem.splitScalar(u8, maps, '\n');
     while (lines.next()) |line| {
         if (!std.mem.endsWith(u8, line, " (deleted)")) continue;
@@ -318,8 +319,8 @@ fn files(a: Allocator, io: std.Io, root: []const u8, paths: []const []const u8) 
 /// in /var otherwise.
 pub fn pacmanDb(a: Allocator, io: std.Io, root: []const u8) ![]const u8 {
     const moved = try std.fs.path.join(a, &.{ root, "usr/lib/sysimage/pacman" });
-    std.Io.Dir.cwd().access(io, try std.fs.path.join(a, &.{ moved, "local" }), .{}) catch return std.fs.path.join(a, &.{ root, "var/lib/pacman" });
-    return moved;
+    if (rootfs.pathExists(io, try std.fs.path.join(a, &.{ moved, "local" }))) return moved;
+    return std.fs.path.join(a, &.{ root, "var/lib/pacman" });
 }
 
 /// "amd" or "intel" from /proc/cpuinfo's vendor_id, or the raw vendor.
@@ -344,7 +345,7 @@ fn gpuVendor(id: []const u8) ?[]const u8 {
     return null;
 }
 
-pub fn zoneFromLink(a: Allocator, target: []const u8) !?[]const u8 {
+fn zoneFromLink(a: Allocator, target: []const u8) !?[]const u8 {
     const marker = "zoneinfo/";
     const i = std.mem.indexOf(u8, target, marker) orelse return null;
     return try a.dupe(u8, target[i + marker.len ..]);
@@ -358,7 +359,7 @@ fn firstLine(text: []const u8) ?[]const u8 {
 
 /// the value of `KEY=value` in a shell-style config file like
 /// /etc/locale.conf, without quotes.
-pub fn shellVar(text: []const u8, key: []const u8) ?[]const u8 {
+fn shellVar(text: []const u8, key: []const u8) ?[]const u8 {
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");

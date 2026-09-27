@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const compose = @import("compose.zig");
+const rootfs = @import("rootfs.zig");
 
 const max_config_bytes = 1 << 20;
 
@@ -12,18 +13,9 @@ pub const Files = struct {
         return .{ .ctx = d, .readFn = read, .writeFn = write };
     }
 
-    /// writes next to the target, then renames over it.
     fn write(ctx: *anyopaque, path: []const u8, bytes: []const u8) compose.Files.WriteError!void {
         const d: *Files = @ptrCast(@alignCast(ctx));
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const tmp = std.fmt.bufPrint(&buf, "{s}.os-tmp", .{path}) catch return error.WriteFailed;
-        const cwd = std.Io.Dir.cwd();
-        if (std.fs.path.dirnamePosix(path)) |dir| cwd.createDirPath(d.io, dir) catch return error.WriteFailed;
-        cwd.writeFile(d.io, .{ .sub_path = tmp, .data = bytes }) catch return error.WriteFailed;
-        cwd.rename(tmp, cwd, path, d.io) catch {
-            cwd.deleteFile(d.io, tmp) catch {};
-            return error.WriteFailed;
-        };
+        return rootfs.writeAtomic(d.io, path, bytes, null);
     }
 
     fn read(ctx: *anyopaque, gpa: std.mem.Allocator, path: []const u8) compose.Files.ReadError![]u8 {

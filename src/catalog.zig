@@ -3,6 +3,7 @@
 //! instead of naming `openssh` and `sshd.service`.
 
 const std = @import("std");
+const lists = @import("lists.zig");
 
 pub const Service = struct {
     name: []const u8,
@@ -38,10 +39,7 @@ comptime {
 }
 
 pub fn service(name: []const u8) ?Service {
-    for (services) |s| {
-        if (std.mem.eql(u8, s.name, name)) return s;
-    }
-    return null;
+    return services[lists.indexOf(&services, "name", name) orelse return null];
 }
 
 pub fn serviceNames() [services.len][]const u8 {
@@ -94,11 +92,7 @@ pub const no_kernel = "none";
 /// plumbing a session hangs on, like d-bus, logins, and display managers,
 /// waits for a reboot instead.
 pub fn restartable(unit: []const u8) bool {
-    const prefixes = [_][]const u8{ "systemd-", "dbus", "user@", "getty@", "serial-getty@", "polkit", "gdm", "sddm", "lightdm", "greetd", "ly." };
-    for (prefixes) |p| {
-        if (std.mem.startsWith(u8, unit, p)) return false;
-    }
-    return true;
+    return !lists.startsWithAny(unit, &.{ "systemd-", "dbus", "user@", "getty@", "serial-getty@", "polkit", "gdm", "sddm", "lightdm", "greetd", "ly." });
 }
 
 /// arch's kernel packages.
@@ -111,19 +105,13 @@ pub const protected = [_][]const u8{ "base", "filesystem", "glibc", "pacman", "s
 /// upgrades worth pointing out even without a reboot: graphics, boot, and
 /// the package manager.
 pub fn notable(pkg: []const u8) bool {
-    const prefixes = [_][]const u8{ "mesa", "nvidia", "vulkan-", "grub", "limine", "refind", "pacman", "openssh" };
-    for (prefixes) |p| {
-        if (std.mem.startsWith(u8, pkg, p)) return true;
-    }
-    return false;
+    return lists.startsWithAny(pkg, &.{ "mesa", "nvidia", "vulkan-", "grub", "limine", "refind", "pacman", "openssh" });
 }
 
 /// why changing this package needs a reboot, or null if it can apply live.
 /// these are the packages the running system can't swap out safely.
 pub fn rebootReason(pkg: []const u8) ?[]const u8 {
-    for (kernels) |k| {
-        if (std.mem.eql(u8, k, pkg)) return "kernel";
-    }
+    if (lists.contains(&kernels, pkg)) return "kernel";
     const exact = [_]struct { []const u8, []const u8 }{
         .{ "amd-ucode", "microcode" },
         .{ "intel-ucode", "microcode" },

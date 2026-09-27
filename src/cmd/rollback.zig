@@ -19,7 +19,7 @@ pub fn historyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (try cli.noArgs(ctx, args, "os history")) |code| return code;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
-    if (try generationsHere(&w)) |boot| return listGenerations(ctx, w.allocator(), boot);
+    if (try w.generations()) |boot| return listGenerations(ctx, w.allocator(), boot);
     const loaded = try w.config() orelse return w.fail();
     const entries = try logOf(ctx, w.allocator(), loaded.files.items[0]) orelse return 1;
     if (ctx.json) {
@@ -36,21 +36,23 @@ pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const usage_text = "os rollback [n | --to-booted] [--yes]";
     var yes = false;
     var to_booted = false;
-    var wanted: ?usize = null;
+    var wanted: ?u32 = null;
     for (args) |arg| {
         if (applying.isYes(arg)) {
             yes = true;
         } else if (cli.eql(arg, "--to-booted")) {
             to_booted = true;
-        } else wanted = std.fmt.parseInt(usize, arg, 10) catch return cli.usageError(ctx, usage_text);
+        } else if (wanted == null) {
+            wanted = std.fmt.parseInt(u32, arg, 10) catch return cli.usageError(ctx, usage_text);
+        } else return cli.usageError(ctx, usage_text);
     }
     if (to_booted and wanted != null) return cli.usageError(ctx, usage_text);
-    if (try applying.refused(ctx)) return 1;
+    if (try applying.refused(ctx, applying.blocker(ctx))) return 1;
 
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    if (try generationsHere(&w)) |boot| return rollbackGeneration(ctx, a, boot, wanted, to_booted, yes);
+    if (try w.generations()) |boot| return rollbackGeneration(ctx, a, boot, wanted, to_booted, yes);
     if (to_booted) {
         try ctx.err.writeAll("os: --to-booted keeps an older generation booted from the menu. this machine has no generations; `os enable-rollback` turns them on.\n");
         return 1;
@@ -98,14 +100,6 @@ pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     return done.code;
 }
 
-/// the running machine's boot facts, when it runs a generation.
-pub fn generationsHere(w: *cli.Work) !?facts.Boot {
-    if (!cli.eql(w.ctx.root, "/") or w.ctx.facts_path != null) return null;
-    // only how the machine boots: no packages or units to read.
-    const f = try @import("../observe.zig").observe(w.allocator(), w.ctx.io, .{ .packages = false, .units = false }, &w.diags);
-    return if (generation.running(f.boot.root_subvol)) f.boot else null;
-}
-
 fn listGenerations(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot) !u8 {
     const records = try gens.readRecords(a, ctx.io, "/var");
     if (ctx.json) {
@@ -126,25 +120,21 @@ fn listGenerations(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot) !u8 {
 
 /// starts a new generation from an older one, or from the copy of one
 /// that's running, and puts it first in the boot menu.
-fn rollbackGeneration(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, wanted: ?usize, to_booted: bool, yes: bool) !u8 {
+fn rollbackGeneration(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, wanted: ?u32, to_booted: bool, yes: bool) !u8 {
     const records = try gens.readRecords(a, ctx.io, "/var");
     if (records.len == 0) {
         try ctx.err.writeAll("os: no generations are recorded in /var/lib/yoq/generations.\n");
         return 1;
     }
     const newest = records[records.len - 1];
-    const copy_prefix = "/" ++ generation.roots_dir ++ "/boot-";
-    const n: u32 = if (to_booted) blk: {
-        const running = boot.root_subvol.?;
-        if (!std.mem.startsWith(u8, running, copy_prefix)) {
+    const n: u32 = if (to_booted)
+        generation.bootCopyOf(boot.root_subvol.?) orelse {
             try ctx.err.writeAll("os: this is the newest generation already. --to-booted keeps an older one you booted from the menu.\n");
             return 1;
         }
-        break :blk std.fmt.parseInt(u32, running[copy_prefix.len..], 10) catch return 1;
-    } else if (wanted) |w| @intCast(w) else newest.n -| 1;
-    const target = for (records) |r| {
-        if (r.n == n) break r;
-    } else {
+    else
+        wanted orelse newest.n -| 1;
+    const target = generation.find(records, n) orelse {
         try ctx.err.print("os: there's no generation {d}. `os history` lists them.\n", .{n});
         return 1;
     };
@@ -156,17 +146,7 @@ fn rollbackGeneration(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, wan
     const source = if (to_booted) boot.root_subvol.? else try std.fmt.allocPrint(a, "/{s}/{d}", .{ generation.gens_dir, n });
     const reason = try std.fmt.allocPrint(a, "{s} {d}: {s}", .{ if (to_booted) "keep" else "rollback to", n, target.reason });
     try ctx.out.print("generation {d} ({s} · {s}) becomes generation {d}, and the next boot runs it.\n/var and /home stay as they are.\n", .{ n, try gens.dateOf(a, target.time), target.reason, gens.next(records) });
-    if (!yes) {
-        if (!ctx.interactive) {
-            try ctx.err.writeAll("os: pass --yes to roll back without a terminal.\n");
-            return 2;
-        }
-        try ctx.out.writeByte('\n');
-        if (!try cli.confirm(ctx, "roll back?")) {
-            try ctx.out.writeAll("nothing changed.\n");
-            return 0;
-        }
-    }
+    if (try cli.approve(ctx, yes, "roll back", "roll back?")) |code| return code;
     const made = try startFrom(ctx, a, boot, target, source, reason) orelse return 1;
     try ctx.out.print("generation {d} is ready. reboot to start it.\n", .{made});
     return 0;
@@ -183,10 +163,11 @@ pub fn startFrom(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, target: 
     };
     defer m.close();
     const config: ?generation.Config = if (target.config_dir != null and target.config_rev != null) .{ .dir = target.config_dir.?, .rev = target.config_rev.? } else null;
-    const made = try m.start(source, reason, std.Io.Timestamp.now(ctx.io, .real).toSeconds(), config, &why) orelse {
-        try ctx.err.print("os: {s}\n", .{why});
+    var made: u32 = 0;
+    if (try m.start(source, reason, std.Io.Timestamp.now(ctx.io, .real).toSeconds(), config, &made)) |w| {
+        try ctx.err.print("os: {s}\n", .{w});
         return null;
-    };
+    }
     if (config) |c| {
         if (!try restoreConfig(ctx, a, c, reason)) return null;
     }
@@ -206,7 +187,7 @@ pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    const boot = try generationsHere(&w) orelse return noGenerations(ctx);
+    const boot = try w.generations() orelse return noGenerations(ctx);
     var why: []const u8 = "";
     const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse {
         try ctx.err.print("os: {s}\n", .{why});
@@ -237,26 +218,26 @@ pub fn pinCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     for (args) |arg| {
         if (cli.eql(arg, "--remove")) {
             pin = false;
-        } else wanted = std.fmt.parseInt(u32, arg, 10) catch return cli.usageError(ctx, usage_text);
+        } else if (wanted == null) {
+            wanted = std.fmt.parseInt(u32, arg, 10) catch return cli.usageError(ctx, usage_text);
+        } else return cli.usageError(ctx, usage_text);
     }
     const n = wanted orelse return cli.usageError(ctx, usage_text);
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    _ = try generationsHere(&w) orelse return noGenerations(ctx);
-    for (try gens.readRecords(a, ctx.io, "/var")) |r| {
-        if (r.n != n) continue;
-        var changed = r;
-        changed.pinned = pin;
-        if (try gens.writeRecord(a, ctx.io, "/var", changed)) |why| {
-            try ctx.err.print("os: {s}\n", .{why});
-            return 1;
-        }
-        try ctx.out.print("generation {d} {s}.\n", .{ n, if (pin) "is pinned: garbage collection keeps it" else "isn't pinned any more" });
-        return 0;
+    _ = try w.generations() orelse return noGenerations(ctx);
+    var changed = generation.find(try gens.readRecords(a, ctx.io, "/var"), n) orelse {
+        try ctx.err.print("os: there's no generation {d}. `os history` lists them.\n", .{n});
+        return 1;
+    };
+    changed.pinned = pin;
+    if (try gens.writeRecord(a, ctx.io, "/var", changed)) |why| {
+        try ctx.err.print("os: {s}\n", .{why});
+        return 1;
     }
-    try ctx.err.print("os: there's no generation {d}. `os history` lists them.\n", .{n});
-    return 1;
+    try ctx.out.print("generation {d} {s}.\n", .{ n, if (pin) "is pinned: garbage collection keeps it" else "isn't pinned any more" });
+    return 0;
 }
 
 fn noGenerations(ctx: *Context) !u8 {

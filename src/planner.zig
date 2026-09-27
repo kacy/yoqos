@@ -142,8 +142,7 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
     for (ws) |w| {
         if (l.package(w.name) != null) continue;
         stale = true;
-        const at: ?diag.Span = w.src;
-        try diags.add(.lock_stale, at, "{s} isn't in machine.lock yet", .{w.name}, "run `os update` to resolve it into the lock");
+        try diags.add(.lock_stale, w.src, "{s} isn't in machine.lock yet", .{w.name}, "run `os update` to resolve it into the lock");
     }
     if (stale) return null;
 
@@ -168,7 +167,7 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
         }
         // packages that come from another key, like a service's, keep the
         // reason they were installed with.
-        if (want != null and want.?.cause != null) continue;
+        if (cause != null) continue;
         const want_reason: facts.Package.Reason = if (want != null) .explicit else .dependency;
         if (have.reason != want_reason) {
             try changes.append(a, .{ .op = .change, .kind = .reason, .subject = name, .from = @tagName(have.reason), .to = @tagName(want_reason) });
@@ -244,10 +243,6 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
     return .{ .changes = changes.items };
 }
 
-/// users the config declares get created, or brought to its shell and
-/// groups. the groups listed are all of them: others are left. users the
-/// config doesn't mention are left alone, since removing an account by
-/// accident costs too much.
 /// a file os writes, from `[files]` or made from another key.
 pub const DesiredFile = struct {
     path: []const u8,
@@ -260,13 +255,19 @@ pub const DesiredFile = struct {
 };
 
 /// mkinitcpio's drop-in that loads nvidia's modules early.
-pub const nvidia_initramfs_path = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf";
+const nvidia_initramfs_path = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf";
 
 /// where `[sysctl]` goes.
 pub const sysctl_path = "/etc/sysctl.d/99-yoq.conf";
 
 /// the modules nvidia's driver wants early.
 const nvidia_modules = [_][]const u8{ "nvidia", "nvidia_modeset", "nvidia_uvm", "nvidia_drm" };
+
+const nvidia_initramfs_content = blk: {
+    var s: []const u8 = "# written by os for [hardware] gpu = \"nvidia\".\nMODULES+=(" ++ nvidia_modules[0];
+    for (nvidia_modules[1..]) |m| s = s ++ " " ++ m;
+    break :blk s ++ ")\n";
+};
 
 /// every file the config wants: `[files]`, the one `[sysctl]` makes, and
 /// nvidia's initramfs drop-in unless the machine loads those modules
@@ -297,7 +298,7 @@ pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts
     if (gpu == .nvidia and std.mem.eql(u8, initramfs, "mkinitcpio") and !loaded) {
         try out.append(a, .{
             .path = nvidia_initramfs_path,
-            .content = "# written by os for [hardware] gpu = \"nvidia\".\nMODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)\n",
+            .content = nvidia_initramfs_content,
             .mode = config.File.default_mode,
             .cause = "hardware.gpu",
             .reboot = "initramfs",
@@ -354,6 +355,10 @@ fn normalMode(a: Allocator, mode: []const u8) ![]const u8 {
     return if (mode.len == 3) std.fmt.allocPrint(a, "0{s}", .{mode}) else mode;
 }
 
+/// users the config declares get created, or brought to its shell and
+/// groups. the groups listed are all of them: others are left. users the
+/// config doesn't mention are left alone, since removing an account by
+/// accident costs too much.
 fn planUsers(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
     for (c.users.entries.items) |e| {
         const name = e.name;
@@ -361,9 +366,7 @@ fn planUsers(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
         const cause = try std.fmt.allocPrint(a, "users.{s}", .{name});
         // each change is one step `apply` can take: a new user is created,
         // then gets its shell and groups like any other.
-        const found = for (f.users) |*u| {
-            if (std.mem.eql(u8, u.name, name)) break u;
-        } else null;
+        const found = lists.find(f.users, "name", name);
         if (found == null) try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = "new user", .cause = cause });
         if (e.value.shell) |sh| {
             const current = if (found) |u| u.shell orelse "" else "";
@@ -408,10 +411,7 @@ pub fn extraPackages(a: Allocator, c: *const config.Config, l: *const lock.Lock,
 }
 
 pub fn findWant(list: []const Want, name: []const u8) ?*const Want {
-    for (list) |*w| {
-        if (std.mem.eql(u8, w.name, name)) return w;
-    }
-    return null;
+    return lists.find(list, "name", name);
 }
 
 // -- output --
@@ -575,10 +575,11 @@ fn depSummary(w: *std.Io.Writer, p: *const Plan) !void {
 
 pub fn writeJson(w: *std.Io.Writer, a: Allocator, p: *const Plan) !void {
     const h = try p.hash();
+    const reasons = try p.rebootReasons(a);
     try output.writeDoc(w, schema, .{
         .hash = &h,
         .summary = .{ .add = p.count(.add), .change = p.count(.change), .remove = p.count(.remove) },
-        .reboot = .{ .needed = (try p.rebootReasons(a)).len > 0, .because = try p.rebootReasons(a) },
+        .reboot = .{ .needed = reasons.len > 0, .because = reasons },
         .changes = p.changes,
     });
 }

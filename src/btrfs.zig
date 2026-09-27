@@ -74,7 +74,7 @@ pub fn delete(path: []const u8) Error!void {
     try check(linux.ioctl(parent, snap_destroy, @intFromPtr(&args)));
 }
 
-pub fn isReadOnly(path: []const u8) Error!bool {
+fn isReadOnly(path: []const u8) Error!bool {
     const fd = try open(path);
     defer _ = linux.close(fd);
     var flags: u64 = 0;
@@ -163,7 +163,7 @@ test "not btrfs" {
 
 /// a small btrfs filesystem for tests, loop-mounted at a scratch path.
 /// needs root and mkfs.btrfs; null means the test should skip.
-pub const Scratch = struct {
+const Scratch = struct {
     dir: []const u8,
     image: []const u8,
 

@@ -1,8 +1,9 @@
 # spikes
 
 one-off experiments that answer a design question before code depends on
-it. they run on `spike-*` branches through `.github/workflows/spike.yml`,
-and print what happened instead of failing.
+it. they print what happened instead of failing. both below are answered;
+the workflow that ran them is gone, and the scripts stay as a record. a new
+spike can borrow the vm job in `.github/workflows/ci.yml`.
 
 ## grub one-shot boot on a btrfs root (2026-09-26)
 
@@ -20,6 +21,10 @@ root and `/boot` on btrfs, the esp at `/efi`.
 - `/efi` may be an automount. `findmnt` lists the autofs mount first,
   without a uuid.
 
+what shipped goes one step further: grub's files are reinstalled onto the
+esp and `os` writes the whole `grub.cfg` there, with the env file beside
+it, so no `/etc/grub.d` script is needed (`src/generation.zig`).
+
 ## packages into an alternate root (2026-09-26)
 
 `tests/spikes/alt-root.sh`: `os apply` of 21 packages, 481 with
@@ -34,7 +39,8 @@ dependencies, 4.4 gb, into an empty root, in about 40 seconds.
 - in both, one package's install script trips over an arithmetic error,
   and systemd skips its "running in chroot" steps as designed.
 
-so a staged root gets the api filesystems mounted, and its initramfs is
-built for the target: without autodetect, or with the root named. sysusers
-hands out uids in every new root, so new roots are seeded from the id map
-before any package installs.
+so when staged apply comes, a staged root gets the api filesystems
+mounted, and its initramfs is built for the target: without autodetect, or
+with the root named. sysusers hands out uids in every new root, so new
+roots should be seeded from the id map before any package installs. none
+of this is built yet: changes apply live for now.

@@ -19,7 +19,7 @@ pub const Step = struct {
     kind: Kind,
     what: []const u8,
     why: []const u8,
-    /// the step runs during a reboot, before services start.
+    /// the step is done now, and takes effect at the next boot.
     at_boot: bool = false,
 };
 
@@ -46,11 +46,11 @@ pub const Plan = struct {
 
 /// bootloaders with generations so far. systemd-boot, limine, and refind
 /// come later.
-pub const loaders = [_][]const u8{"grub"};
+const loaders = [_][]const u8{"grub"};
 
 /// root layouts enable-rollback knows how to convert: everything in the
 /// top level, as arch's cloud image has it, and archinstall's @.
-pub const layouts = [_][]const u8{ "/", "/@" };
+const layouts = [_][]const u8{ "/", "/@" };
 
 pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
     const b = f.boot;
@@ -72,7 +72,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .what = "esp",
         .ok = b.esp != null,
         .found = b.esp orelse "not mounted",
-        .fix = "mount the efi system partition at /efi or /boot/efi. the boot menu's one-shot choice lives there.",
+        .fix = "mount the efi system partition at /efi, /boot/efi, or /boot. the boot menu's one-shot choice lives there.",
     });
     const loader = b.loader orelse "unknown";
     const supported = for (loaders) |l| {
@@ -95,15 +95,14 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .found = layout,
         .fix = "enable-rollback converts a root in the btrfs top level, or archinstall's @ subvolume. other layouts come later.",
     });
-    const enabled = running_gen;
     try checks.append(a, .{
         .what = "generations",
-        .ok = !enabled,
-        .found = if (enabled) b.root_subvol.? else "none yet",
+        .ok = !running_gen,
+        .found = if (running_gen) b.root_subvol.? else "none yet",
         .fix = "this machine has generations already.",
     });
 
-    if (enabled) return .{ .checks = checks.items, .steps = &.{}, .running = b.root_subvol };
+    if (running_gen) return .{ .checks = checks.items, .steps = &.{}, .running = b.root_subvol };
 
     // everything is built from one snapshot of the running root, taken
     // first: generation 1, its /var, and its pacman database all come from
@@ -163,7 +162,7 @@ pub fn writeText(w: *std.Io.Writer, p: *const Plan) !void {
 
 const testing = std.testing;
 
-test "an archinstall machine on btrfs and grub is ready, with every step" {
+test "a machine on btrfs and grub is ready, with every step" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const f: facts.Facts = .{ .boot = .{

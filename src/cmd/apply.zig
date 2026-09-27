@@ -2,6 +2,7 @@
 //! applies, and then plans again to check that nothing's left.
 
 const std = @import("std");
+const rootfs = @import("../rootfs.zig");
 const cli = @import("../cli.zig");
 const alpm = @import("../alpm.zig");
 const apply = @import("../apply.zig");
@@ -14,6 +15,7 @@ const pipeline = @import("../pipeline.zig");
 const sync = @import("../sync.zig");
 const systemd = @import("../systemd.zig");
 const catalog = @import("../catalog.zig");
+const facts = @import("../facts.zig");
 const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
 const locking = @import("lock.zig");
@@ -25,7 +27,7 @@ pub fn applyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     for (args) |arg| {
         if (isYes(arg)) yes = true else return cli.usageError(ctx, "os apply [--yes]");
     }
-    if (try refused(ctx)) return 1;
+    if (try refused(ctx, applyBlocker(ctx))) return 1;
     const done = try run(ctx, yes, cli.inputs(ctx), .{});
     try recordGeneration(ctx, done, "apply");
     return done.code;
@@ -54,21 +56,35 @@ pub const Then = struct {
     /// whether applying can follow here: it's wanted, someone can say yes
     /// to it, and the output stays one json document.
     pub fn applies(t: Then, ctx: *Context) bool {
-        return t.apply and !ctx.json and (t.yes or ctx.interactive) and blocker(ctx) == null;
+        return t.apply and !ctx.json and (t.yes or ctx.interactive) and applyBlocker(ctx) == null;
     }
 };
 
-/// why apply can't run here at all, if it can't.
+/// why os can't change the machine here at all, if it can't.
 pub fn blocker(ctx: *Context) ?[]const u8 {
     if (!alpm.available) return "this build can't change packages. build with -Dalpm";
-    if (cli.eql(ctx.root, "/") and std.os.linux.geteuid() != 0) return "applying changes the machine, so it needs root";
+    if (cli.eql(ctx.root, "/") and std.os.linux.geteuid() != 0) return "changing the machine needs root";
     return null;
 }
 
-/// says why apply can't run here, for commands that only apply.
-pub fn refused(ctx: *Context) !bool {
-    const why = blocker(ctx) orelse return false;
-    try ctx.err.print("os: {s}.\n", .{why});
+/// why apply can't run here, if it can't: `blocker`, or a boot into an
+/// older generation's copy, which os remakes from its record.
+fn applyBlocker(ctx: *Context) ?[]const u8 {
+    if (blocker(ctx)) |why| return why;
+    if (cli.eql(ctx.root, "/") and bootedCopy(ctx.io)) return "this boot runs a copy of an older generation from the boot menu, and os remakes that copy from its record. `os rollback --to-booted` keeps it as a generation of its own; apply works after a reboot into it";
+    return null;
+}
+
+fn bootedCopy(io: std.Io) bool {
+    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer arena.deinit();
+    const subvol = observe.rootSubvol(arena.allocator(), io) catch return false;
+    return generation.bootCopyOf(subvol orelse return false) != null;
+}
+
+/// says `why`, if there is one, for commands that can't do anything else.
+pub fn refused(ctx: *Context, why: ?[]const u8) !bool {
+    try ctx.err.print("os: {s}.\n", .{why orelse return false});
     return true;
 }
 
@@ -107,17 +123,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.Render
     }
 
     if (!ctx.json) try planner.writeText(ctx.out, a, p, render);
-    if (!yes) {
-        if (!ctx.interactive) {
-            try ctx.err.writeAll("os: pass --yes to apply without a terminal.\n");
-            return .{ .code = 2, .matches = false };
-        }
-        try ctx.out.writeByte('\n');
-        if (!try cli.confirm(ctx, "apply this?")) {
-            try ctx.out.writeAll("nothing changed.\n");
-            return .{ .code = 0, .matches = false };
-        }
-    }
+    if (try cli.approve(ctx, yes, "apply", "apply this?")) |code| return .{ .code = code, .matches = false };
 
     const target = try targetFor(ctx, &w, &result.state.lock) orelse return Outcome.failed(&w);
     const units = liveUnits(ctx);
@@ -148,9 +154,9 @@ pub fn recordGeneration(ctx: *Context, done: Outcome, reason: []const u8) !void 
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    const f = try @import("../observe.zig").observe(a, ctx.io, .{ .packages = false, .units = false }, &w.diags);
+    const boot = try w.generations() orelse return;
     var why: []const u8 = "";
-    const m = try gens.Machine.open(a, ctx.io, f.boot, &why) orelse {
+    const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse {
         try ctx.err.print("os: applied, but not recorded as a generation: {s}\n", .{why});
         return;
     };
@@ -161,18 +167,22 @@ pub fn recordGeneration(ctx: *Context, done: Outcome, reason: []const u8) !void 
     }
     if (!ctx.json) try ctx.out.writeAll("recorded as a new generation; the boot menu has it.\n");
     try collectOld(ctx, &m, generation.default_keep);
-    if (done.needs_reboot) try armTrial(ctx, a, f.boot);
+    if (done.needs_reboot) try armTrial(ctx, a, boot);
 }
 
 /// a generation that needs a reboot boots once on trial: the next boot
 /// tries it, the default stays on the one before, and `os health` makes
 /// it the default once it has come up healthy.
-fn armTrial(ctx: *Context, a: Allocator, boot: @import("../facts.zig").Boot) !void {
+fn armTrial(ctx: *Context, a: Allocator, boot: facts.Boot) !void {
     const records = try gens.readRecords(a, ctx.io, "/var");
     if (records.len < 2) return;
     const n = records[records.len - 1].n;
-    const before = records[records.len - 2].n;
-    if (try gens.setEnv(a, ctx.io, boot.esp.?, &.{
+    // with a trial already waiting for a reboot, the fallback stays the
+    // generation before that one: the last that booted.
+    const pending = try gens.envValue(a, ctx.io, boot.esp.?, "yoq_default");
+    const last = records[records.len - 2].n;
+    const before = if (pending != null and std.mem.startsWith(u8, pending.?, "gen-")) std.fmt.parseInt(u32, pending.?["gen-".len..], 10) catch last else last;
+    if (try gens.editEnv(a, ctx.io, boot.esp.?, "set", &.{
         "yoq_next=head",
         try std.fmt.allocPrint(a, "yoq_default=gen-{d}", .{before}),
         try std.fmt.allocPrint(a, "yoq_trial={d}", .{n}),
@@ -220,7 +230,7 @@ fn offerRestarts(ctx: *Context, yes: bool) !void {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    const f = try cli.facts(&w) orelse return;
+    const f = try w.facts() orelse return;
     var names: std.ArrayList([]const u8) = .empty;
     for (f.units) |u| {
         if (u.stale and catalog.restartable(u.name)) try names.append(a, u.name);
@@ -305,8 +315,7 @@ fn targetFor(ctx: *Context, w: *cli.Work, l: *const lock.Lock) !?apply.Target {
 fn keyring(ctx: *Context, a: Allocator) !?[]const u8 {
     const dir = try cli.machinePath(ctx, a, "/etc/pacman.d/gnupg");
     if (cli.eql(ctx.root, "/")) return dir;
-    std.Io.Dir.cwd().access(ctx.io, dir, .{}) catch return null;
-    return dir;
+    return if (rootfs.pathExists(ctx.io, dir)) dir else null;
 }
 
 // -- tests --

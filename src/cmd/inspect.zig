@@ -2,6 +2,8 @@
 //! and `why`. none of them change anything.
 
 const std = @import("std");
+const rootfs = @import("../rootfs.zig");
+const gens = @import("../gens.zig");
 const cli = @import("../cli.zig");
 const facts = @import("../facts.zig");
 const planner = @import("../planner.zig");
@@ -38,8 +40,7 @@ pub fn factsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (try cli.noArgs(ctx, args, "os facts")) |code| return code;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
-    const f = try cli.facts(&w) orelse return w.fail();
-    if (w.failed()) return w.fail();
+    const f = try w.facts() orelse return w.fail();
 
     if (ctx.json) {
         try facts.write(ctx.out, &f);
@@ -89,11 +90,15 @@ pub fn statusCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const result = try w.plan(in) orelse return w.fail();
 
     const s = try status.summarize(result.allocator(), result.state.config(), &result.state.lock, &result.facts, &result.plan);
-    if (ctx.json) try status.writeJson(ctx.out, &s) else try status.writeText(ctx.out, &s);
-    // something os did on its own, like falling back from a generation.
-    const fs: @import("../rootfs.zig").Root = .{ .a = result.allocator(), .io = ctx.io, .dir = ctx.root };
-    const notice = try fs.read("var/lib/yoq/notice");
-    if (notice.len > 0 and !ctx.json) try ctx.out.print("\nnote: {s}", .{notice});
+    if (ctx.json) {
+        try status.writeJson(ctx.out, &s);
+    } else {
+        try status.writeText(ctx.out, &s);
+        // something os did on its own, like falling back from a generation.
+        const fs: rootfs.Root = .{ .a = result.allocator(), .io = ctx.io, .dir = ctx.root };
+        const notice = try fs.read(gens.notice_path[1..]);
+        if (notice.len > 0) try ctx.out.print("\nnote: {s}", .{notice});
+    }
     return if (s.failing.len > 0) 1 else 0;
 }
 

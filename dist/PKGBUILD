@@ -3,11 +3,12 @@
 pkgname=yoq-os-git
 pkgver=r0
 pkgrel=1
-pkgdesc='declarative arch linux with real rollback'
+pkgdesc='declarative arch linux with rollback'
 arch=(x86_64)
 url='https://github.com/kacy/yoqos'
 license=(MIT)
 depends=(pacman systemd-libs git shadow)
+optdepends=('grub: generations and rollback (os enable-rollback)')
 makedepends=(zig)
 provides=(yoq-os)
 conflicts=(yoq-os)

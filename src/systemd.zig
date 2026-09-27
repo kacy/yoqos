@@ -16,7 +16,7 @@ const impl = if (available) @import("systemd_c.zig") else struct {};
 pub const Error = error{ SystemdUnavailable, OutOfMemory };
 
 /// the kinds of units the config manages.
-pub const kinds = [_][]const u8{ ".service", ".timer", ".socket" };
+const kinds = [_][]const u8{ ".service", ".timer", ".socket" };
 
 pub fn managedKind(name: []const u8) bool {
     for (kinds) |k| {

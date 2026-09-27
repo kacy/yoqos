@@ -25,7 +25,7 @@ const Settings = struct {
     diags: *diag.List,
 
     fn failed(s: Settings, what: []const u8, p: []const u8) !bool {
-        try s.diags.add(.bad_value, null, "can't {s} {s}", .{ what, p }, null);
+        try s.diags.add(.apply_failed, null, "can't {s} {s}", .{ what, p }, null);
         return false;
     }
 
@@ -46,10 +46,10 @@ const Settings = struct {
     fn timezone(s: Settings, zone: []const u8) !bool {
         const target = try std.fmt.allocPrint(s.fs.a, "/usr/share/zoneinfo/{s}", .{zone});
         const cwd = std.Io.Dir.cwd();
-        cwd.access(s.fs.io, try s.fs.path(target[1..]), .{}) catch {
+        if (!s.fs.exists(target[1..])) {
             try s.diags.add(.bad_value, null, "there's no time zone called {s}", .{zone}, "zone names look like America/New_York; they're the files under /usr/share/zoneinfo");
             return false;
-        };
+        }
         const link = try s.fs.path("etc/localtime");
         const tmp = try std.fmt.allocPrint(s.fs.a, "{s}.os-tmp", .{link});
         cwd.deleteFile(s.fs.io, tmp) catch {};
@@ -61,7 +61,7 @@ const Settings = struct {
 
 /// `text` with `key=value` set: the existing line replaced, or a new one
 /// added at the end. other lines stay as they are.
-pub fn setShellVar(a: Allocator, text: []const u8, key: []const u8, value: []const u8) ![]u8 {
+fn setShellVar(a: Allocator, text: []const u8, key: []const u8, value: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     var found = false;
     var lines = std.mem.splitScalar(u8, text, '\n');

@@ -69,7 +69,6 @@ pub const Sandbox = struct {
     no_syscalls: bool = false,
 };
 
-/// a change to the packages installed in a root: what `os apply` does.
 /// the machine a transaction changes, and where its packages come from.
 pub const Target = struct {
     root: []const u8,
@@ -88,6 +87,7 @@ pub const Target = struct {
     sandbox: Sandbox = .{},
 };
 
+/// a change to the packages installed in a root: what `os apply` does.
 pub const Transaction = struct {
     target: Target,
     /// packages to install or upgrade, at exactly these versions.

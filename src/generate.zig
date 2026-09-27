@@ -10,6 +10,7 @@ const catalog = @import("catalog.zig");
 const lists = @import("lists.zig");
 const planner = @import("planner.zig");
 const show = @import("show.zig");
+const toml = @import("toml.zig");
 const lock = @import("lock.zig");
 const sync = @import("sync.zig");
 const Allocator = std.mem.Allocator;
@@ -77,14 +78,14 @@ pub fn importedPackages(a: Allocator, c: *const config.Config, f: *const facts.F
 pub fn machineToml(a: Allocator, c: *const config.Config, date: []const u8) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(a);
     const w = &out.writer;
-    w.print(
+    try w.print(
         \\# this machine, as `os init` found it on {s}. packages installed on
         \\# purpose are in imported.toml: move the ones you care about into
         \\# `packages` here, and drop the rest from there.
         \\include = ["imported.toml"]
         \\
-    , .{date}) catch return error.OutOfMemory;
-    show.writeToml(w, c, false) catch return error.OutOfMemory;
+    , .{date});
+    try show.writeToml(w, c, false);
     return out.written();
 }
 
@@ -93,23 +94,22 @@ pub fn machineToml(a: Allocator, c: *const config.Config, date: []const u8) ![]c
 pub fn importedToml(a: Allocator, packages: []const []const u8, date: []const u8, l: ?*const lock.Lock) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(a);
     const w = &out.writer;
-    w.print(
+    try w.print(
         \\# packages that were installed on purpose when `os init` ran on {s}.
         \\# their dependencies aren't listed; the lock records those. anything
         \\# deleted from here gets removed by the next apply.
         \\
-    , .{date}) catch return error.OutOfMemory;
-    const locked = l orelse {
-        var c: config.Config = .{};
-        for (packages) |p| try c.packages.add(a, .{ .name = p, .src = .{ .file = "imported.toml", .line = 0, .column = 0 } });
-        show.writeToml(w, &c, false) catch return error.OutOfMemory;
-        return out.written();
-    };
+    , .{date});
+    const grouped = l != null;
+    if (packages.len == 0 and !grouped) return out.written();
 
     const Entry = struct { repo: []const u8, name: []const u8 };
     const entries = try a.alloc(Entry, packages.len);
-    for (packages, entries) |p, *e| e.* = .{ .repo = if (locked.package(p)) |lp| lp.repo else "not in the lock", .name = p };
-    std.mem.sort(Entry, entries, {}, struct {
+    for (packages, entries) |p, *e| {
+        const lp = if (l) |locked| locked.package(p) else null;
+        e.* = .{ .repo = if (lp) |x| x.repo else "not in the lock", .name = p };
+    }
+    if (grouped) std.mem.sort(Entry, entries, {}, struct {
         fn lt(_: void, x: Entry, y: Entry) bool {
             const rx = sync.repoRank(x.repo);
             const ry = sync.repoRank(y.repo);
@@ -118,12 +118,14 @@ pub fn importedToml(a: Allocator, packages: []const []const u8, date: []const u8
             return if (by_repo != .eq) by_repo == .lt else std.mem.lessThan(u8, x.name, y.name);
         }
     }.lt);
-    w.writeAll("packages = [\n") catch return error.OutOfMemory;
+    try w.writeAll("packages = [\n");
     for (entries, 0..) |e, i| {
-        if (i == 0 or !std.mem.eql(u8, entries[i - 1].repo, e.repo)) w.print("  # {s}\n", .{e.repo}) catch return error.OutOfMemory;
-        w.print("  \"{s}\",\n", .{e.name}) catch return error.OutOfMemory;
+        if (grouped and (i == 0 or !std.mem.eql(u8, entries[i - 1].repo, e.repo))) try w.print("  # {s}\n", .{e.repo});
+        try w.writeAll("  ");
+        try toml.writeString(w, e.name);
+        try w.writeAll(",\n");
     }
-    w.writeAll("]\n") catch return error.OutOfMemory;
+    try w.writeAll("]\n");
     return out.written();
 }
 

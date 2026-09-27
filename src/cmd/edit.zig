@@ -70,8 +70,7 @@ pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const a = w.allocator();
     const wanted = try namesOf(ctx, a, args, "os adopt [package...]") orelse return 2;
     const state = try w.state() orelse return w.fail();
-    const f = try cli.facts(&w) orelse return w.fail();
-    if (w.failed()) return w.fail();
+    const f = try w.facts() orelse return w.fail();
 
     const extra = try planner.extraPackages(a, state.config(), &state.lock, &f);
     for (wanted) |name| {
@@ -82,13 +81,13 @@ pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             return 1;
         }
     }
-    // adopting records what's already installed; there's nothing to apply.
-    if (wanted.len > 0) return editConfig(ctx, .add, wanted, .{});
-    if (extra.len == 0) {
+    const names = if (wanted.len > 0) wanted else extra;
+    if (names.len == 0) {
         try ctx.out.writeAll("nothing to adopt: every installed package is in the config.\n");
         return 0;
     }
-    return editConfig(ctx, .add, extra, .{});
+    // adopting records what's already installed; there's nothing to apply.
+    return editConfig(ctx, .add, names, .{});
 }
 
 /// edits the config for `op` on each name, writes it, and brings the lock
@@ -156,22 +155,24 @@ fn relock(ctx: *Context, top: []const u8, next: bool) !Relocked {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
+    // under --json, stdout has the change document; notes go beside it.
+    const say = if (ctx.json) ctx.err else ctx.out;
     const old = try locking.readLock(ctx, a, top) orelse {
-        try ctx.out.writeAll("no machine.lock yet: `os update` resolves one.\n");
+        try say.writeAll("no machine.lock yet: `os update` resolves one.\n");
         return .skipped;
     };
     if (!alpm.available) {
-        try ctx.out.writeAll("this build can't resolve packages, so machine.lock wasn't updated.\n");
+        try say.writeAll("this build can't resolve packages, so machine.lock wasn't updated.\n");
         return .skipped;
     }
     const dbs = try sync.cached(a, ctx.io, try locking.repos(ctx, a), try locking.cacheDir(ctx, a), old.sync_date) orelse {
-        try ctx.out.print("no package databases cached for {s}: `os update` resolves against today's.\n", .{old.sync_date});
+        try say.print("no package databases cached for {s}: `os update` resolves against today's.\n", .{old.sync_date});
         return .skipped;
     };
     const loaded = try w.config() orelse return failed(&w);
     const l = try locking.resolveLock(ctx, &w, &loaded.config, top, dbs, old.sync_date, &.{}) orelse return failed(&w);
     _ = try locking.writeLock(ctx, a, top, &l) orelse return failed(&w);
-    try locking.reportLock(ctx, "updated machine.lock", try lock.diff(a, &old, &l), next);
+    if (!ctx.json) try locking.reportLock(ctx, "updated machine.lock", try lock.diff(a, &old, &l), next);
     return .locked;
 }
 

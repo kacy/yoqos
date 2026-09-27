@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const diag = @import("diag.zig");
+const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Pos = struct {
@@ -76,17 +77,12 @@ pub const Table = struct {
     };
 
     pub fn get(t: *const Table, key: []const u8) ?*Value {
-        for (t.entries.items) |*e| {
-            if (std.mem.eql(u8, e.key, key)) return &e.value;
-        }
-        return null;
+        const e = t.getEntry(key) orelse return null;
+        return &e.value;
     }
 
     pub fn getEntry(t: *const Table, key: []const u8) ?*Entry {
-        for (t.entries.items) |*e| {
-            if (std.mem.eql(u8, e.key, key)) return e;
-        }
-        return null;
+        return lists.find(t.entries.items, "key", key);
     }
 
     fn closed(t: *const Table) bool {
@@ -229,7 +225,7 @@ const Parser = struct {
             if (p.peek().? == '[') {
                 current = try p.parseHeader(root);
             } else {
-                try p.parseKeyValue(current);
+                try p.parseKeyValue(current, .dotted);
             }
             try p.expectLineEnd();
         }
@@ -365,14 +361,16 @@ const Parser = struct {
         return nt;
     }
 
-    fn parseKeyValue(p: *Parser, table: *Table) ParseError!void {
+    /// parses `key = value` into `table`. `origin` is what a dotted key's
+    /// parent tables are made with.
+    fn parseKeyValue(p: *Parser, table: *Table, origin: Table.Origin) ParseError!void {
         var parts: std.ArrayList(KeyPart) = .empty;
         try p.parseKey(&parts);
         if (p.peek() != '=') return p.failUnexpected("'=' after the key");
         p.advance();
         p.skipWs();
         const value = try p.parseValue();
-        try p.insertDotted(table, parts.items, value, .dotted);
+        try p.insertDotted(table, parts.items, value, origin);
     }
 
     /// sets `a.b.c = value` inside `table`, creating the parent tables with
@@ -472,13 +470,7 @@ const Parser = struct {
         }
         while (true) {
             if (p.peek() == '\n' or p.peek() == '\r') return p.fail(.toml_syntax, p.pos(), "an inline table has to stay on one line", .{});
-            var parts: std.ArrayList(KeyPart) = .empty;
-            try p.parseKey(&parts);
-            if (p.peek() != '=') return p.failUnexpected("'=' after the key");
-            p.advance();
-            p.skipWs();
-            const value = try p.parseValue();
-            try p.insertDotted(t, parts.items, value, .inline_dotted);
+            try p.parseKeyValue(t, .inline_dotted);
             p.skipWs();
             const c = p.peek() orelse return p.fail(.toml_syntax, start, "this inline table is never closed", .{});
             switch (c) {

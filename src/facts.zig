@@ -113,24 +113,15 @@ pub const Facts = struct {
     boot: Boot = .{},
 
     pub fn package(f: *const Facts, name: []const u8) ?*const Package {
-        for (f.packages) |*p| {
-            if (std.mem.eql(u8, p.name, name)) return p;
-        }
-        return null;
+        return lists.find(f.packages, "name", name);
     }
 
     pub fn file(f: *const Facts, path: []const u8) ?*const File {
-        for (f.files) |*x| {
-            if (std.mem.eql(u8, x.path, path)) return x;
-        }
-        return null;
+        return lists.find(f.files, "path", path);
     }
 
     pub fn unit(f: *const Facts, name: []const u8) ?*const Unit {
-        for (f.units) |*u| {
-            if (std.mem.eql(u8, u.name, name)) return u;
-        }
-        return null;
+        return lists.find(f.units, "name", name);
     }
 
     /// sorts every list by name so output and hashes don't depend on the

@@ -1,9 +1,10 @@
 //! generations on a running machine: the btrfs top level, the records in
 //! /var/lib/yoq/generations, and the boot menu on the esp. generation.zig
-//! has the pure parts. every function here returns null when it worked,
-//! or what went wrong.
+//! has the pure parts. functions that change something return null when
+//! it worked, or what went wrong.
 
 const std = @import("std");
+const rootfs = @import("rootfs.zig");
 const btrfs = @import("btrfs.zig");
 const exec = @import("exec.zig");
 const facts = @import("facts.zig");
@@ -59,29 +60,23 @@ pub const Machine = struct {
 
     /// starts a new generation from `source`, a generation's record or a
     /// copy of one: a writable root of its own, recorded and at the top of
-    /// the menu, so the next boot runs it. returns its number, or what
-    /// went wrong in `why`.
-    pub fn start(m: *const Machine, source: []const u8, reason: []const u8, time: i64, config: ?generation.Config, why: *[]const u8) !?u32 {
+    /// the menu, so the next boot runs it. its number goes in `made`. if a
+    /// step fails, the new generation goes, and the menu is as it was.
+    pub fn start(m: *const Machine, source: []const u8, reason: []const u8, time: i64, config: ?generation.Config, made: *u32) !?[]const u8 {
         const records = try readRecords(m.a, m.io, "/var");
         const n = next(records);
         const root = try std.fmt.allocPrint(m.a, "/{s}/{d}", .{ generation.roots_dir, n });
-        btrfs.snapshot(try m.at(&.{source}), try m.at(&.{root}), false) catch |e| {
-            why.* = try std.fmt.allocPrint(m.a, "can't copy {s}: {s}", .{ source, @errorName(e) });
+        btrfs.snapshot(try m.at(&.{source}), try m.at(&.{root}), false) catch |e| return try std.fmt.allocPrint(m.a, "can't copy {s}: {s}", .{ source, @errorName(e) });
+        // the esp's boot files change last: until then, the running root's
+        // entry still boots the kernel that matches it.
+        const why = try m.carry(root) orelse try m.add(records, root, reason, time, config) orelse try m.restoreBoot(root) orelse {
+            made.* = n;
             return null;
         };
-        if (try m.carry(root)) |w| {
-            why.* = w;
-            return null;
-        }
-        if (try m.restoreBoot(root)) |w| {
-            why.* = w;
-            return null;
-        }
-        if (try m.add(records, root, reason, time, config)) |w| {
-            why.* = w;
-            return null;
-        }
-        return n;
+        _ = try m.forget(n);
+        _ = try m.drop(try m.at(&.{root}));
+        _ = try m.writeMenu(m.boot.root_subvol.?, records);
+        return why;
     }
 
     /// the next generation, from the root at `root`: its read-only record,
@@ -122,10 +117,7 @@ pub const Machine = struct {
         if (kept.items.len == records.len) return null;
         for (records) |r| {
             if (generation.keeps(r, records, keep)) continue;
-            const name = try std.fmt.allocPrint(m.a, "{d}", .{r.n});
-            const saved = try m.at(&.{ generation.gens_dir, name });
-            btrfs.setReadOnly(saved, false) catch {};
-            if (try m.drop(saved)) |w| return w;
+            if (try m.forget(r.n)) |w| return w;
             const copy = try generation.bootCopy(m.a, r.n);
             if (!std.mem.eql(u8, copy, running)) {
                 if (try m.drop(try m.at(&.{copy}))) |w| return w;
@@ -137,17 +129,23 @@ pub const Machine = struct {
                 // several removed generations can share a root; drop it once.
                 try roots.append(m.a, r.root);
             }
-            const file = try std.fmt.allocPrint(m.a, "/var/lib/yoq/generations/{d}.json", .{r.n});
-            std.Io.Dir.cwd().deleteFile(m.io, file) catch {};
             try removed.append(m.a, r.n);
         }
         const newest = records[records.len - 1];
         return m.writeMenu(try std.fmt.allocPrint(m.a, "/{s}", .{newest.root}), kept.items);
     }
 
-    /// deletes a subvolume if it's there.
+    /// removes generation `n`'s record, then its read-only snapshot, so
+    /// a failure between the two leaves no record without a snapshot.
+    fn forget(m: *const Machine, n: u32) !?[]const u8 {
+        std.Io.Dir.cwd().deleteFile(m.io, try recordPath(m.a, "/var", n)) catch {};
+        return m.drop(try m.at(&.{ generation.gens_dir, try std.fmt.allocPrint(m.a, "{d}", .{n}) }));
+    }
+
+    /// deletes a subvolume if it's there, read-only or not.
     fn drop(m: *const Machine, path: []const u8) !?[]const u8 {
         if (!(btrfs.isSubvolume(path) catch false)) return null;
+        btrfs.setReadOnly(path, false) catch {};
         btrfs.delete(path) catch |e| return try std.fmt.allocPrint(m.a, "can't remove {s}: {s}", .{ path, @errorName(e) });
         return null;
     }
@@ -158,11 +156,9 @@ pub const Machine = struct {
     pub fn writeMenu(m: *const Machine, head: []const u8, records: []const generation.Record) !?[]const u8 {
         const cmdline = std.Io.Dir.cwd().readFileAlloc(m.io, "/proc/cmdline", m.a, .limited(4096)) catch "";
         var entries: std.ArrayList(generation.Entry) = .empty;
-        var newest: ?generation.Record = null;
-        for (records) |r| {
-            if (newest == null or r.n > newest.?.n) newest = r;
-        }
-        const latest = newest orelse return "no generations to put in the menu";
+        if (records.len == 0) return "no generations to put in the menu";
+        // records come sorted by number.
+        const latest = records[records.len - 1];
         var newest_entry = try m.entry("head", try title(m.a, latest), head, cmdline);
         newest_entry.on_esp = m.bootOnEsp();
         try entries.append(m.a, newest_entry);
@@ -181,7 +177,7 @@ pub const Machine = struct {
         }
         const cfg = try generation.grubConfig(m.a, .{ .esp_uuid = m.esp_uuid, .root_uuid = m.root_uuid, .default = "head", .entries = entries.items });
         const path = try std.fs.path.join(m.a, &.{ m.boot.esp.?, "grub/grub.cfg" });
-        std.Io.Dir.cwd().writeFile(m.io, .{ .sub_path = path, .data = cfg }) catch return try std.fmt.allocPrint(m.a, "can't write {s}", .{path});
+        rootfs.writeAtomic(m.io, path, cfg, null) catch return try std.fmt.allocPrint(m.a, "can't write {s}", .{path});
         return null;
     }
 
@@ -189,13 +185,9 @@ pub const Machine = struct {
     /// it always starts from the generation as it was. the copy that's
     /// running, if it's this one, is left alone.
     fn freshCopy(m: *const Machine, n: u32, copy: []const u8) !?[]const u8 {
-        if (m.boot.root_subvol) |running| {
-            if (std.mem.eql(u8, running, copy)) return null;
-        }
+        if (std.mem.eql(u8, m.boot.root_subvol.?, copy)) return null;
         const path = try m.at(&.{copy});
-        if (btrfs.isSubvolume(path) catch false) {
-            btrfs.delete(path) catch |e| return try std.fmt.allocPrint(m.a, "can't remove the old copy {s}: {s}", .{ copy, @errorName(e) });
-        }
+        if (try m.drop(path)) |w| return w;
         const saved = try m.at(&.{ generation.gens_dir, try std.fmt.allocPrint(m.a, "{d}", .{n}) });
         btrfs.snapshot(saved, path, false) catch |e| return try std.fmt.allocPrint(m.a, "can't copy generation {d}: {s}", .{ n, @errorName(e) });
         return m.carry(copy);
@@ -218,20 +210,18 @@ pub const Machine = struct {
         }
         for (paths.items) |rel| {
             const src = try std.fmt.allocPrint(m.a, "/{s}", .{rel});
-            std.Io.Dir.cwd().access(m.io, src, .{}) catch continue;
+            if (!rootfs.pathExists(m.io, src)) continue;
             const dest = try std.fs.path.join(m.a, &.{ root, rel });
             if (try m.run(&.{ "rm", "-rf", dest })) |w| return w;
             if (try m.run(&.{ "cp", "-a", src, dest })) |w| return w;
         }
-        const fs: @import("rootfs.zig").Root = .{ .a = m.a, .io = m.io, .dir = root };
-        const here: @import("rootfs.zig").Root = .{ .a = m.a, .io = m.io, .dir = "/" };
+        const fs: rootfs.Root = .{ .a = m.a, .io = m.io, .dir = root };
+        const here: rootfs.Root = .{ .a = m.a, .io = m.io, .dir = "/" };
         const merged = try mergeShadow(m.a, try here.read("etc/shadow"), try fs.read("etc/shadow"));
         fs.writeMode("etc/shadow", merged, 0o600) catch return try std.fmt.allocPrint(m.a, "can't write {s}/etc/shadow", .{root});
         return null;
     }
 
-    /// a menu entry for the root at `subvol`: its kernel, microcode, and
-    /// initramfs, from its own /boot.
     /// whether /boot is the esp, as archinstall sets it up. kernels then
     /// live outside every root, so each root keeps copies of its own in
     /// its /boot directory, under the mount, where grub can read them.
@@ -269,7 +259,7 @@ pub const Machine = struct {
         }
         for (new) |f| {
             const path = try std.fs.path.join(m.a, &.{ to, f });
-            if (std.Io.Dir.cwd().access(m.io, path, .{})) |_| continue else |_| {}
+            if (rootfs.pathExists(m.io, path)) continue;
             if (try m.run(&.{ "cp", try std.fs.path.join(m.a, &.{ from, f }), path })) |w| return w;
         }
         return null;
@@ -286,6 +276,8 @@ pub const Machine = struct {
         return names.items;
     }
 
+    /// a menu entry for the root at `subvol`: its kernel, microcode, and
+    /// initramfs, from its own /boot, or the esp's for the newest.
     fn entry(m: *const Machine, id: []const u8, name: []const u8, subvol: []const u8, cmdline: []const u8) !generation.Entry {
         var kernel: []const u8 = "vmlinuz-linux";
         var initrds: std.ArrayList([]const u8) = .empty;
@@ -322,7 +314,7 @@ pub fn writeNotice(a: Allocator, io: std.Io, text: []const u8) !?[]const u8 {
 }
 
 /// the env file on the esp that grub reads the menu's choices from.
-pub fn envPath(a: Allocator, esp: []const u8) ![]const u8 {
+fn envPath(a: Allocator, esp: []const u8) ![]const u8 {
     return std.fs.path.join(a, &.{ esp, "yoq/grubenv" });
 }
 
@@ -341,18 +333,17 @@ pub fn envValue(a: Allocator, io: std.Io, esp: []const u8, name: []const u8) !?[
 }
 
 /// sets values in the esp's env file: "name=value" each.
-pub fn setEnv(a: Allocator, io: std.Io, esp: []const u8, pairs: []const []const u8) !?[]const u8 {
+/// sets `name=value` pairs, or with "unset", removes names.
+pub fn editEnv(a: Allocator, io: std.Io, esp: []const u8, verb: []const u8, args: []const []const u8) !?[]const u8 {
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(a, &.{ "grub-editenv", try envPath(a, esp), "set" });
-    try argv.appendSlice(a, pairs);
+    try argv.appendSlice(a, &.{ "grub-editenv", try envPath(a, esp), verb });
+    try argv.appendSlice(a, args);
     return exec.run(a, io, argv.items);
 }
 
-pub fn unsetEnv(a: Allocator, io: std.Io, esp: []const u8, names: []const []const u8) !?[]const u8 {
-    var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(a, &.{ "grub-editenv", try envPath(a, esp), "unset" });
-    try argv.appendSlice(a, names);
-    return exec.run(a, io, argv.items);
+/// ends a trial boot, however it went: no fallback default any more.
+pub fn endTrial(a: Allocator, io: std.Io, esp: []const u8) !?[]const u8 {
+    return editEnv(a, io, esp, "unset", &.{ "yoq_default", "yoq_trial" });
 }
 
 /// machine state every root gets from the running system. ssh host keys
@@ -362,7 +353,7 @@ const carried = [_][]const u8{ "etc/machine-id", "etc/adjtime", "etc/subuid", "e
 /// `target`'s shadow file with the password hash, and when it last
 /// changed, taken from `current` for every user both have. users only in
 /// one of them stay as they are.
-pub fn mergeShadow(a: Allocator, current: []const u8, target: []const u8) ![]const u8 {
+fn mergeShadow(a: Allocator, current: []const u8, target: []const u8) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, target, "\n"), '\n');
     while (lines.next()) |line| {
@@ -409,7 +400,7 @@ fn title(a: Allocator, r: generation.Record) ![]const u8 {
 /// every generation's record under `var_dir`, by number.
 pub fn readRecords(a: Allocator, io: std.Io, var_dir: []const u8) ![]const generation.Record {
     var out: std.ArrayList(generation.Record) = .empty;
-    const dir_path = try std.fs.path.join(a, &.{ var_dir, "lib/yoq/generations" });
+    const dir_path = try std.fs.path.join(a, &.{ var_dir, generation.records_dir });
     var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return out.items;
     defer dir.close(io);
     var it = dir.iterate();
@@ -431,14 +422,16 @@ pub fn writeRecord(a: Allocator, io: std.Io, var_dir: []const u8, r: generation.
     var json: std.Io.Writer.Allocating = .init(a);
     try std.json.Stringify.value(r, .{}, &json.writer);
     try json.writer.writeByte('\n');
-    const dir = try std.fs.path.join(a, &.{ var_dir, "lib/yoq/generations" });
-    const path = try std.fmt.allocPrint(a, "{s}/{d}.json", .{ dir, r.n });
-    std.Io.Dir.cwd().createDirPath(io, dir) catch return try std.fmt.allocPrint(a, "can't create {s}", .{dir});
-    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = json.written() }) catch return try std.fmt.allocPrint(a, "can't write {s}", .{path});
+    const path = try recordPath(a, var_dir, r.n);
+    rootfs.writeAtomic(io, path, json.written(), null) catch return try std.fmt.allocPrint(a, "can't write {s}", .{path});
     return null;
 }
 
-pub fn uuidOf(a: Allocator, io: std.Io, device: []const u8, why: *[]const u8) !?[]const u8 {
+pub fn recordPath(a: Allocator, var_dir: []const u8, n: u32) ![]const u8 {
+    return std.fmt.allocPrint(a, "{s}/{s}/{d}.json", .{ var_dir, generation.records_dir, n });
+}
+
+fn uuidOf(a: Allocator, io: std.Io, device: []const u8, why: *[]const u8) !?[]const u8 {
     return switch (try exec.output(a, io, &.{ "blkid", "-s", "UUID", "-o", "value", device })) {
         .ok => |out| std.mem.trim(u8, out, " \n"),
         .failed => |w| {

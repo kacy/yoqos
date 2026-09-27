@@ -27,6 +27,7 @@ pub const Code = enum {
     alpm_failed,
     systemd_failed,
     protected_package,
+    apply_failed,
     unknown_service,
 };
 
@@ -165,6 +166,14 @@ pub const table = [_]Entry{
         .explanation = "the config leaves out a package the machine needs to boot or to manage packages, like " ++
             "base or pacman, so applying it would remove that package. usually the package was left out by " ++
             "mistake: add it to `packages`. to remove it anyway, say so with `[remove] packages = [\"base\"]`.",
+    },
+    .{
+        .code = .apply_failed,
+        .id = "E0127",
+        .title = "a change didn't apply",
+        .explanation = "os changed a file or ran a tool for a step of the plan, like useradd, sysctl, or " ++
+            "mkinitcpio, and that failed. the message has the file or the tool's own words. the steps before " ++
+            "it are done; fix the cause and run `os apply` again to finish.",
     },
     .{
         .code = .unknown_service,

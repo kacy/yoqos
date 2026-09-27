@@ -148,7 +148,7 @@ stop)
     rm -f "$dir/qemu.pid" "$dir/overlay.qcow2" "$dir/vars.fd"
     ;;
 *)
-    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac
