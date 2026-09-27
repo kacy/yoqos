@@ -20,8 +20,8 @@ pub fn historyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     if (try w.generations()) |boot| return listGenerations(ctx, w.allocator(), boot);
-    const loaded = try w.config() orelse return w.fail();
-    const entries = try logOf(ctx, w.allocator(), loaded.files.items[0]) orelse return 1;
+    // the config needn't load: history is how to find a good one.
+    const entries = try logOf(ctx, w.allocator(), ctx.config_path) orelse return 1;
     if (ctx.json) {
         try output.writeDoc(ctx.out, "yoq.history/1", .{ .entries = entries });
         return 0;
@@ -57,8 +57,8 @@ pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.err.writeAll("os: --to-booted keeps an older generation booted from the menu. this machine has no generations; `os enable-rollback` turns them on.\n");
         return 1;
     }
-    const loaded = try w.config() orelse return w.fail();
-    const top = loaded.files.items[0];
+    // the config needn't load: going back is how to fix one that doesn't.
+    const top = ctx.config_path;
     const dir = std.fs.path.dirnamePosix(top) orelse ".";
     const entries = try logOf(ctx, a, top) orelse return 1;
     const target = if (wanted) |n| blk: {
@@ -75,6 +75,9 @@ pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         break :blk entries[entries.len - 2];
     };
 
+    // edits made by hand go into history before the files change, so
+    // going back doesn't lose them.
+    try cli.record(ctx, a, top, "local edits before rollback");
     var why: []const u8 = "";
     const files = try ctx.history.files(a, dir, target.rev, &why) orelse {
         try ctx.err.print("os: can't read generation {d}: {s}\n", .{ target.n, why });
@@ -88,8 +91,8 @@ pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         if (!try cli.writeFile(ctx, try std.fs.path.join(a, &.{ staging, f.path }), f.bytes)) return 1;
     }
     var in = cli.inputs(ctx);
-    in.config_path = try std.fs.path.join(a, &.{ staging, top[dir.len + 1 ..] });
-    try ctx.out.print("rolling back to {d}: {s}\n\n", .{ target.n, target.message });
+    in.config_path = try std.fs.path.join(a, &.{ staging, std.fs.path.basenamePosix(top) });
+    if (!ctx.json) try ctx.out.print("rolling back to {d}: {s}\n\n", .{ target.n, target.message });
     const done = try applying.run(ctx, yes, in, .{});
     if (!done.matches) return done.code;
 
@@ -168,6 +171,8 @@ pub fn startFrom(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, target: 
         try ctx.err.print("os: {s}\n", .{w});
         return null;
     }
+    // a trial still waiting is overtaken: the next boot runs this.
+    if (try gens.endTrial(a, ctx.io, boot.esp.?)) |w| try ctx.err.print("os: couldn't end the pending trial: {s}\n", .{w});
     if (config) |c| {
         if (!try restoreConfig(ctx, a, c, reason)) return null;
     }
@@ -183,6 +188,8 @@ pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     while (it.next()) |arg| {
         if (!cli.eql(arg, "--keep")) return cli.usageError(ctx, usage_text);
         keep = std.fmt.parseInt(usize, it.next() orelse return cli.usageError(ctx, usage_text), 10) catch return cli.usageError(ctx, usage_text);
+        // the newest generation always stays.
+        if (keep == 0) return cli.usageError(ctx, usage_text);
     }
     var w: cli.Work = .init(ctx);
     defer w.deinit();

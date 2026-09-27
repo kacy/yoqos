@@ -42,7 +42,7 @@ jobs:
         with:
           version: 0.16.0
       - run: zig build test -Dalpm -Dsystemd --summary all
-      - run: zig build -Dalpm -Dsystemd
+      - run: zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline
       - name: init, lock, status, and plan against this machine
         run: tests/arch/smoke.sh ./zig-out/bin/os
 
@@ -65,7 +65,7 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - run: zig build -Dalpm -Dsystemd
+      - run: zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline
       - id: week
         run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
       # saved right after it's made, so a failing test doesn't mean
@@ -102,6 +102,9 @@ jobs:
     steps:
       - run: pacman -Syu --noconfirm --needed base-devel git zig
       - uses: actions/checkout@v4
+        with:
+          # pkgver counts commits.
+          fetch-depth: 0
       - name: build and install the package
         run: |
           useradd -m builder

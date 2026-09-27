@@ -3,6 +3,7 @@
 //! snapshot of the running root, which becomes the root at the next boot.
 
 const std = @import("std");
+const lists = @import("../lists.zig");
 const rootfs = @import("../rootfs.zig");
 const cli = @import("../cli.zig");
 const btrfs = @import("../btrfs.zig");
@@ -62,6 +63,8 @@ const Enabler = struct {
     /// running /var if it's a subvolume already.
     var_dir: []const u8 = "/var",
     moved_var: bool = false,
+    /// the data directories moved into subvolumes, for fstab.
+    moved_data: std.ArrayList(generation.DataDir) = .empty,
     moved_config: bool = false,
     /// how to take back what the steps did, newest last.
     undo: std.ArrayList(Undo) = .empty,
@@ -81,6 +84,7 @@ const Enabler = struct {
             const ok = switch (s.kind) {
                 .snapshot => try e.snapshot(),
                 .var_subvol => try e.moveVar(),
+                .data_subvols => try e.moveData(),
                 .pacman_db => try e.movePacmanDb(),
                 .config_dir => try e.moveConfig(),
                 .boot_entry => try e.seal() and try e.bootEntry(),
@@ -160,17 +164,39 @@ const Enabler = struct {
     /// generation 1's /var becomes @var: its contents move there, and
     /// fstab mounts it.
     fn moveVar(e: *Enabler) !bool {
-        const dest = try e.m.at(&.{generation.var_subvol});
-        if (!try e.tried(btrfs.create(dest), "create @var")) return false;
-        try e.laterDrop(dest);
-        const var_dir = try e.m.at(&.{ new_root, "var" });
-        // reflink where it can: journald's files are nocow, and btrfs won't
-        // clone those, so they're copied.
-        if (!try e.sh(&.{ "cp", "-a", "--reflink=auto", try std.fs.path.join(e.a, &.{ var_dir, "." }), dest })) return false;
-        if (!try e.sh(&.{ "find", var_dir, "-mindepth", "1", "-maxdepth", "1", "-exec", "rm", "-rf", "{}", "+" })) return false;
-        e.var_dir = dest;
+        if (!try e.moveInto("var", generation.var_subvol)) return false;
+        e.var_dir = try e.m.at(&.{generation.var_subvol});
         e.moved_var = true;
         return true;
+    }
+
+    /// generation 1's /home, /root, /srv, and /usr/local, where they're
+    /// inside the root, become subvolumes, and fstab mounts them.
+    fn moveData(e: *Enabler) !bool {
+        for (generation.data_dirs) |d| {
+            if (lists.contains(e.boot.data_apart, d.dir)) continue;
+            if (!try e.moveInto(d.dir, d.subvol)) return false;
+            try e.moved_data.append(e.a, d);
+        }
+        return true;
+    }
+
+    /// moves generation 1's `dir` into a new subvolume, `subvol`, in the
+    /// top level. reflinks where it can: journald's files are nocow, and
+    /// btrfs won't clone those, so they're copied.
+    fn moveInto(e: *Enabler, dir: []const u8, subvol: []const u8) !bool {
+        const dest = try e.m.at(&.{subvol});
+        if (!try e.tried(btrfs.create(dest), try std.fmt.allocPrint(e.a, "create {s}", .{subvol}))) return false;
+        try e.laterDrop(dest);
+        const src = try e.m.at(&.{ new_root, dir });
+        // a missing one, often /srv, still needs a place to mount.
+        if (!rootfs.pathExists(e.ctx.io, src) and !try e.sh(&.{ "mkdir", "-p", src })) return false;
+        if (!try e.sh(&.{ "cp", "-a", "--reflink=auto", try std.fs.path.join(e.a, &.{ src, "." }), dest })) return false;
+        // the subvolume's top is what's mounted, so it takes the directory's
+        // owner and mode: /root stays 0700.
+        if (!try e.sh(&.{ "chown", "--reference", src, dest })) return false;
+        if (!try e.sh(&.{ "chmod", "--reference", src, dest })) return false;
+        return e.sh(&.{ "find", src, "-mindepth", "1", "-maxdepth", "1", "-exec", "rm", "-rf", "{}", "+" });
     }
 
     /// the pacman database moves into generation 1's /usr, and /var keeps
@@ -184,6 +210,7 @@ const Enabler = struct {
             if (!try e.sh(&.{ "mv", db, moved })) return false;
         } else {
             const here = try e.m.at(&.{ e.boot.root_subvol.?, "usr/lib/sysimage/pacman" });
+            if (!try e.sh(&.{ "mkdir", "-p", std.fs.path.dirnamePosix(here).? })) return false;
             if (!try e.sh(&.{ "cp", "-a", "--reflink=auto", db, moved })) return false;
             if (!try e.sh(&.{ "cp", "-a", "--reflink=auto", db, here })) return false;
             // taken back newest first: the symlink goes, the database
@@ -219,6 +246,7 @@ const Enabler = struct {
         const fstab = try rewriteFstab(e.a, old, .{
             .uuid = e.m.root_uuid,
             .add_var = e.moved_var,
+            .data = e.moved_data.items,
             .bind_config = e.moved_config,
             .esp = .{ .uuid = e.m.esp_uuid, .point = e.boot.esp.? },
         });
@@ -245,7 +273,8 @@ const Enabler = struct {
     /// `os health` at each boot, which ends a trial one way or the other,
     /// and yoq-watchdog.timer reboots a trial boot that hangs before it.
     fn healthUnit(e: *Enabler) !bool {
-        const os_path = try std.process.executablePathAlloc(e.ctx.io, e.a);
+        // the packaged os outlasts a copy run from a build directory.
+        const os_path = if (rootfs.pathExists(e.ctx.io, "/usr/bin/os")) "/usr/bin/os" else try std.process.executablePathAlloc(e.ctx.io, e.a);
         const units = [_]struct { []const u8, []const u8, ?[]const u8 }{
             .{
                 "yoq-health.service",
@@ -385,6 +414,8 @@ const Enabler = struct {
 const Fstab = struct {
     uuid: []const u8,
     add_var: bool,
+    /// data directories that moved into subvolumes of their own.
+    data: []const generation.DataDir = &.{},
     /// /etc/yoq is a bind mount of the config in /var.
     bind_config: bool = false,
     /// the esp, which gets a line if none mounts it: without one it might
@@ -417,6 +448,7 @@ fn rewriteFstab(a: Allocator, text: []const u8, f: Fstab) ![]const u8 {
         try out.print(a, "{s} / btrfs {s} 0 0\n", .{ spec, root_opts });
     }
     if (f.add_var) try out.print(a, "UUID={s} /var btrfs {s},subvol=/{s} 0 0\n", .{ uuid, root_opts, generation.var_subvol });
+    for (f.data) |d| try out.print(a, "UUID={s} /{s} btrfs {s},subvol=/{s} 0 0\n", .{ uuid, d.dir, root_opts, d.subvol });
     if (f.bind_config) try out.print(a, "{s} /etc/yoq none bind,x-systemd.requires-mounts-for=/var 0 0\n", .{enable.config_home});
     if (f.esp) |esp| {
         if (!has_esp) try out.print(a, "UUID={s} {s} vfat rw,relatime,fmask=0077,dmask=0077 0 2\n", .{ esp.uuid, esp.point });
@@ -444,6 +476,7 @@ test "the new root's fstab" {
         \\UUID=abc / btrfs rw,relatime,compress=zstd:1 0 0
         \\UUID=efi /efi vfat rw 0 2
         \\UUID=abc /var btrfs rw,relatime,compress=zstd:1,subvol=/@var 0 0
+        \\UUID=abc /home btrfs rw,relatime,compress=zstd:1,subvol=/@home 0 0
         \\/var/lib/yoq/config /etc/yoq none bind,x-systemd.requires-mounts-for=/var 0 0
         \\
     , try rewriteFstab(a,
@@ -451,7 +484,7 @@ test "the new root's fstab" {
         \\UUID=abc / btrfs rw,relatime,compress=zstd:1,subvol=/@ 0 0
         \\UUID=efi /efi vfat rw 0 2
         \\
-    , .{ .uuid = "abc", .add_var = true, .bind_config = true, .esp = .{ .uuid = "efi", .point = "/efi" } }));
+    , .{ .uuid = "abc", .add_var = true, .data = &.{generation.data_dirs[0]}, .bind_config = true, .esp = .{ .uuid = "efi", .point = "/efi" } }));
     // no lines at all, as on an image that relies on automounts.
     try std.testing.expectEqualStrings(
         \\UUID=abc /var btrfs rw,relatime,subvol=/@var 0 0

@@ -48,6 +48,9 @@ pub const Context = struct {
     /// stdin and stdout are terminals and --json is off.
     in: ?*std.Io.Reader = null,
     interactive: bool = false,
+    /// this process runs under one of os's own transactions, as the drift
+    /// hook does then.
+    in_own_transaction: bool = false,
 };
 
 const Handler = *const fn (ctx: *Context, args: []const [:0]const u8) anyerror!u8;
@@ -162,11 +165,15 @@ const value_flags = .{
 /// `arg` isn't one.
 fn valueFlag(ctx: *Context, arg: []const u8, it: *ArgIter) !?void {
     inline for (value_flags) |f| {
+        // a value can't be empty, or another flag.
         if (eql(arg, f[0])) {
-            @field(ctx, f[1]) = it.next() orelse return error.MissingFlagValue;
+            const v = it.next() orelse return error.MissingFlagValue;
+            if (v.len == 0 or v[0] == '-') return error.MissingFlagValue;
+            @field(ctx, f[1]) = v;
             return {};
         }
         if (std.mem.startsWith(u8, arg, f[0] ++ "=")) {
+            if (arg.len == f[0].len + 1) return error.MissingFlagValue;
             @field(ctx, f[1]) = arg[f[0].len + 1 ..];
             return {};
         }
@@ -190,7 +197,8 @@ fn usage(w: *std.Io.Writer) !void {
     );
 }
 
-fn help(ctx: *Context, _: []const [:0]const u8) !u8 {
+fn help(ctx: *Context, args: []const [:0]const u8) !u8 {
+    if (try noArgs(ctx, args, "os help")) |code| return code;
     if (ctx.json) {
         const Entry = struct { name: []const u8, summary: []const u8 };
         var entries: [commands.len]Entry = undefined;
@@ -202,7 +210,8 @@ fn help(ctx: *Context, _: []const [:0]const u8) !u8 {
     return 0;
 }
 
-fn version(ctx: *Context, _: []const [:0]const u8) !u8 {
+fn version(ctx: *Context, args: []const [:0]const u8) !u8 {
+    if (try noArgs(ctx, args, "os version")) |code| return code;
     if (ctx.json) {
         try output.writeDoc(ctx.out, "yoq.version/1", .{ .version = build_options.version });
         return 0;
@@ -363,7 +372,7 @@ pub fn approve(ctx: *Context, yes: bool, what: []const u8, question: []const u8)
     }
     try ctx.out.writeByte('\n');
     if (try confirm(ctx, question)) return null;
-    try ctx.out.writeAll("nothing changed.\n");
+    try ctx.out.writeAll("the machine is as it was.\n");
     return 0;
 }
 
@@ -443,6 +452,8 @@ pub const TestRun = struct {
     fetcher: ?sync.Fetcher = null,
     /// the commits commands made.
     recorder: history.Recorder = .{ .gpa = std.testing.allocator },
+    /// run as if under one of os's own transactions.
+    in_own_transaction: bool = false,
     reader: std.Io.Reader = undefined,
     code: u8 = 0,
 
@@ -462,6 +473,7 @@ pub const TestRun = struct {
             .files = t.fs.files(),
             .fetcher = t.fetcher orelse offline,
             .history = t.recorder.history(),
+            .in_own_transaction = t.in_own_transaction,
         };
         t.recorder.fs = &t.fs;
         if (t.input) |text| {

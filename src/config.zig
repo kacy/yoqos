@@ -10,6 +10,7 @@ const toml = @import("toml.zig");
 const diag = @import("diag.zig");
 const catalog = @import("catalog.zig");
 const lists = @import("lists.zig");
+const planner = @import("planner.zig");
 const Allocator = std.mem.Allocator;
 
 pub const supported_version = 1;
@@ -436,9 +437,9 @@ pub fn validate(c: *const Config, diags: *diag.List) !void {
     for (c.services.entries.items) |e| {
         if (!knownService(c, e.name)) try unknownService(diags, e.name, e.value.src);
     }
-    if (c.system.hostname) |h| {
-        if (!validHostname(h.v)) {
-            try diags.add(.bad_value, h.src, "\"{s}\" isn't a valid hostname", .{h.v}, "use letters, digits, and dashes, up to 63 characters");
+    inline for (comptime keysOf(System)) |key| {
+        if (@field(c.system, key)) |v| {
+            if (systemProblem(key, v.v)) |hint| try diags.add(.bad_value, v.src, "\"{s}\" isn't a valid {s}", .{ v.v, key }, hint);
         }
     }
     for (c.boot.modules.items.items) |m| {
@@ -450,10 +451,16 @@ pub fn validate(c: *const Config, diags: *diag.List) !void {
     if (c.desktop.session_config) |sc| {
         if (c.desktop.session == null) try diags.add(.bad_value, sc.src, "session_config needs a session", .{}, "set `session = \"hyprland\"` in [desktop] too");
     }
+    // files os makes from other keys. a [files] entry for one of them
+    // would fight it on every apply.
+    const made = try planner.desiredFiles(diags.arena.allocator(), c, &.{});
     for (c.files.entries.items) |e| {
         const f = &e.value;
-        if (!std.fs.path.isAbsolute(e.name)) {
-            try diags.add(.bad_value, f.src, "\"{s}\" isn't an absolute path", .{e.name}, "files are keyed by their full path, like \"/etc/motd\"");
+        if (filePathProblem(e.name)) |hint| try diags.add(.bad_value, f.src, "\"{s}\" isn't a path os can write", .{e.name}, hint);
+        for (made) |m| {
+            const cause = m.cause orelse continue;
+            if (!std.mem.eql(u8, m.path, e.name)) continue;
+            try diags.addHint(.bad_value, f.src, "os writes {s} itself", .{e.name}, "`{s}` in the config makes this file; drop the [files] entry", .{cause});
         }
         if ((f.source == null) == (f.text == null)) {
             try diags.add(.bad_value, f.src, "{s} needs one of source or text", .{e.name}, "source names a file next to the config; text is the content itself");
@@ -469,7 +476,13 @@ pub fn validate(c: *const Config, diags: *diag.List) !void {
     }
     for (c.users.entries.items) |u| {
         if (!validUserName(u.name)) {
-            try diags.add(.bad_value, u.value.src, "\"{s}\" isn't a valid user name", .{u.name}, "start with a lowercase letter or _, then lowercase letters, digits, _ or -, up to 32 characters");
+            try diags.add(.bad_value, u.value.src, "\"{s}\" isn't a valid user name", .{u.name}, name_rule);
+        }
+        if (systemUser(u.name)) {
+            try diags.add(.bad_value, u.value.src, "os can't manage the system account \"{s}\"", .{u.name}, "os manages regular users, uid 1000 and up");
+        }
+        for (u.value.groups.items.items) |g| {
+            if (!validUserName(g.name)) try diags.add(.bad_value, g.src, "\"{s}\" isn't a valid group name", .{g.name}, name_rule);
         }
     }
 }
@@ -489,6 +502,20 @@ pub fn unknownService(diags: *diag.List, name: []const u8, at: ?diag.Span) !void
     } else {
         try diags.add(.unknown_service, at, "unknown service \"{s}\"", .{name}, "set its unit and package in [services.<name>]");
     }
+}
+
+/// why os can't write a file at `p`, or null if it can: it wants a plain
+/// absolute path, outside os's own state.
+fn filePathProblem(p: []const u8) ?[]const u8 {
+    if (p.len < 2 or p[0] != '/' or p[p.len - 1] == '/') return "files are keyed by their full path, like \"/etc/motd\"";
+    var parts = std.mem.splitScalar(u8, p[1..], '/');
+    while (parts.next()) |part| {
+        if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return "write the path without //, . or .. in it";
+    }
+    for ([_][]const u8{ "/etc/yoq", "/var/lib/yoq" }) |own| {
+        if (std.mem.startsWith(u8, p, own) and (p.len == own.len or p[own.len] == '/')) return "os keeps its own state there";
+    }
+    return null;
 }
 
 /// three or four octal digits, like "644" or "0600".
@@ -513,15 +540,49 @@ pub fn badPackageName(diags: *diag.List, name: []const u8, at: ?diag.Span) !void
     try diags.add(.bad_value, at, "\"{s}\" isn't a valid package name", .{name}, "use letters, digits, and @._+-, not starting with - or .");
 }
 
+/// why a `[system]` value can't be used, or null if it can. the values end
+/// up as lines in files like /etc/locale.conf, and the time zone as a path.
+pub fn systemProblem(key: []const u8, v: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, key, "hostname")) {
+        return if (validHostname(v)) null else "use dot-separated labels of letters, digits, and dashes, up to 63 characters each";
+    }
+    if (v.len == 0) return "leave it out instead";
+    for (v) |ch| {
+        if (std.ascii.isControl(ch)) return "control characters like newlines can't be in it";
+    }
+    if (std.mem.eql(u8, key, "timezone")) {
+        var parts = std.mem.splitScalar(u8, v, '/');
+        while (parts.next()) |part| {
+            if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return "zone names look like America/New_York";
+        }
+    }
+    return null;
+}
+
+/// a hostname or a dotted name like atlas.lan: labels of letters, digits,
+/// and dashes, not starting or ending with a dash.
 fn validHostname(h: []const u8) bool {
-    if (h.len == 0 or h.len > 63 or h[0] == '-' or h[h.len - 1] == '-') return false;
-    for (h) |ch| {
-        if (!std.ascii.isAlphanumeric(ch) and ch != '-') return false;
+    if (h.len == 0 or h.len > 253) return false;
+    var labels = std.mem.splitScalar(u8, h, '.');
+    while (labels.next()) |l| {
+        if (l.len == 0 or l.len > 63 or l[0] == '-' or l[l.len - 1] == '-') return false;
+        for (l) |ch| {
+            if (!std.ascii.isAlphanumeric(ch) and ch != '-') return false;
+        }
     }
     return true;
 }
 
-fn validUserName(n: []const u8) bool {
+/// accounts arch's own packages make, below uid 1000. the observer only
+/// sees regular users, so declaring one of these would never settle.
+pub fn systemUser(n: []const u8) bool {
+    return lists.contains(&.{ "root", "bin", "daemon", "mail", "ftp", "http", "nobody", "dbus", "polkitd", "git" }, n) or std.mem.startsWith(u8, n, "systemd-");
+}
+
+const name_rule = "start with a lowercase letter or _, then lowercase letters, digits, _ or -, up to 32 characters";
+
+/// shadow's rule for user and group names.
+pub fn validUserName(n: []const u8) bool {
     if (n.len == 0 or n.len > 32) return false;
     if (!std.ascii.isLower(n[0]) and n[0] != '_') return false;
     for (n[1..]) |ch| {
@@ -709,6 +770,80 @@ test "a session's config needs a session" {
     try validate(&f.part.config, &f.diags);
     try testing.expectEqual(1, f.diags.items.items.len);
     try f.expectDiag(0, .bad_value, 2, "session_config needs a session");
+}
+
+test "[files] can't name a file os writes itself" {
+    var f = try Fixture.init(
+        \\[sysctl]
+        \\"vm.swappiness" = 10
+        \\[files."/etc/sysctl.d/99-yoq.conf"]
+        \\text = "vm.swappiness = 60\n"
+        \\[files."/etc/motd"]
+        \\text = "hi\n"
+        \\
+    );
+    defer f.deinit();
+    try validate(&f.part.config, &f.diags);
+    try testing.expectEqual(1, f.diags.items.items.len);
+    try f.expectDiag(0, .bad_value, 3, "os writes /etc/sysctl.d/99-yoq.conf itself");
+    try testing.expectEqualStrings("`sysctl` in the config makes this file; drop the [files] entry", f.diags.items.items[0].hint.?);
+}
+
+test "[files] paths are plain and stay out of os's own state" {
+    for ([_][]const u8{ "etc/motd", "/", "/etc/../../tmp/x", "/etc/./motd", "/etc//motd", "/etc/motd/", "/etc/yoq/machine.toml", "/var/lib/yoq", "/var/lib/yoq/ids" }) |p| {
+        try testing.expect(filePathProblem(p) != null);
+    }
+    for ([_][]const u8{ "/etc/motd", "/etc/yoqx", "/var/lib/yoq-other/x", "/etc/..hidden" }) |p| {
+        try testing.expectEqual(null, filePathProblem(p));
+    }
+    var f = try Fixture.init("[files.\"/etc/../../tmp/x\"]\ntext = \"x\"\n");
+    defer f.deinit();
+    try validate(&f.part.config, &f.diags);
+    try testing.expectEqual(1, f.diags.items.items.len);
+    try f.expectDiag(0, .bad_value, 1, "\"/etc/../../tmp/x\" isn't a path os can write");
+}
+
+test "a console login needs no session" {
+    var f = try Fixture.init("[desktop]\nlogin = \"tty\"\n");
+    defer f.deinit();
+    try validate(&f.part.config, &f.diags);
+    try testing.expectEqual(0, f.diags.items.items.len);
+}
+
+test "group names follow the user name rules" {
+    var f = try Fixture.init("[users.kacy]\ngroups = [\"wheel\", \"-r\"]\n");
+    defer f.deinit();
+    try validate(&f.part.config, &f.diags);
+    try testing.expectEqual(1, f.diags.items.items.len);
+    try f.expectDiag(0, .bad_value, 2, "\"-r\" isn't a valid group name");
+}
+
+test "[system] values" {
+    try testing.expectEqual(null, systemProblem("hostname", "atlas.lan"));
+    try testing.expectEqual(null, systemProblem("hostname", "a-1.b"));
+    try testing.expect(systemProblem("hostname", "atlas.") != null);
+    try testing.expect(systemProblem("hostname", "a..b") != null);
+    try testing.expect(systemProblem("hostname", "a.-b") != null);
+    try testing.expectEqual(null, systemProblem("timezone", "America/New_York"));
+    try testing.expect(systemProblem("timezone", "/etc/passwd") != null);
+    try testing.expect(systemProblem("timezone", "../../etc/passwd") != null);
+    try testing.expectEqual(null, systemProblem("locale", "en_US.UTF-8"));
+    try testing.expect(systemProblem("locale", "C\nLD_PRELOAD=/x") != null);
+    try testing.expect(systemProblem("keymap", "us\r") != null);
+
+    var f = try Fixture.init("[system]\nhostname = \"atlas.lan\"\nlocale = \"C\\nX=1\"\n");
+    defer f.deinit();
+    try validate(&f.part.config, &f.diags);
+    try testing.expectEqual(1, f.diags.items.items.len);
+    try f.expectDiag(0, .bad_value, 3, "\"C\nX=1\" isn't a valid locale");
+}
+
+test "system accounts can't be declared" {
+    var f = try Fixture.init("[users.root]\nshell = \"zsh\"\n[users.kacy]\n");
+    defer f.deinit();
+    try validate(&f.part.config, &f.diags);
+    try testing.expectEqual(1, f.diags.items.items.len);
+    try f.expectDiag(0, .bad_value, 1, "os can't manage the system account \"root\"");
 }
 
 test "package names follow pacman's rules" {

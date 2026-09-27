@@ -28,6 +28,7 @@ pub fn main(init: std.process.Init) !void {
         .history = git.history(),
         .in = &in.interface,
         .interactive = tty,
+        .in_own_transaction = init.environ_map.get(@import("alpm.zig").own_env) != null,
         .gpa = init.gpa,
         .out = &out.interface,
         .err = &err.interface,

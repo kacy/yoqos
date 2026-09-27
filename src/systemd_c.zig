@@ -225,9 +225,25 @@ fn loadedUnits(a: Allocator, bus: ?*c.sd_bus, found: *std.StringArrayHashMapUnma
         const u = try entry(a, found, name);
         u.active = std.mem.eql(u8, active, "active");
         u.failed = std.mem.eql(u8, active, "failed");
-        if (u.active and std.mem.endsWith(u8, name, ".service")) u.main_pid = mainPid(bus, s[6]);
+        if (std.mem.endsWith(u8, name, ".service")) {
+            if (u.active) u.main_pid = mainPid(bus, s[6]) else u.ran = oneshotRan(bus, s[6]);
+        }
     }
     return true;
+}
+
+/// whether an inactive service is a oneshot whose last run succeeded.
+fn oneshotRan(bus: ?*c.sd_bus, path: [*c]const u8) bool {
+    return serviceProperty(bus, path, "Type", "oneshot") and serviceProperty(bus, path, "Result", "success");
+}
+
+fn serviceProperty(bus: ?*c.sd_bus, path: [*c]const u8, name: [*:0]const u8, want: []const u8) bool {
+    var err: c.sd_bus_error = std.mem.zeroes(c.sd_bus_error);
+    defer c.sd_bus_error_free(&err);
+    var value: [*c]u8 = null;
+    if (c.sd_bus_get_property_string(bus, manager[0], path, "org.freedesktop.systemd1.Service", name, &err, &value) < 0) return false;
+    defer std.c.free(value);
+    return std.mem.eql(u8, std.mem.span(value), want);
 }
 
 /// a service's main process, or 0 if it has none or systemd won't say.

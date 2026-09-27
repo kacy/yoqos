@@ -1,13 +1,15 @@
 # helpers the vm tests share. failures are named after the script that
-# sources this.
+# sources this. a failing command in a pipe fails the test.
+set -o pipefail
 vm=tests/vm/vm.sh
 name=$(basename "$0" .sh)
 
 # runs a command in the vm and compares what it prints.
 check() {
-    got=$("$vm" ssh "$1")
+    rc=0
+    got=$("$vm" ssh "$1") || rc=$?
     if [ "$got" != "$2" ]; then
-        echo "$name: $1 gave '$got', not '$2'"
+        echo "$name: $1 gave '$got' (exit $rc), not '$2'"
         exit 1
     fi
     echo "ok: $1 -> $got"
@@ -18,9 +20,10 @@ check_top() {
     check "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && { $1; }; umount /run/yoq-top" "$2"
 }
 
-# yoq-health runs after boot; wait for it to be done, but not forever.
+# yoq-health runs once per boot, after the rest; wait until it has run
+# this boot, but not forever.
 settled() {
-    "$vm" ssh "for i in \$(seq 150); do [ \"\$(systemctl show -p ActiveState --value yoq-health)\" = activating ] || exit 0; sleep 2; done; echo 'yoq-health still running after 5 minutes'; exit 1"
+    "$vm" ssh "for i in \$(seq 150); do [ \"\$(systemctl show -p ExecMainExitTimestampMonotonic --value yoq-health)\" != 0 ] && exit 0; sleep 2; done; echo 'no yoq-health run after 5 minutes'; exit 1"
 }
 
 # grub's env on the esp, on one line.

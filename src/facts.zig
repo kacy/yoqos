@@ -23,6 +23,9 @@ pub const Unit = struct {
     active: bool = false,
     /// the unit tried to run and failed.
     failed: bool = false,
+    /// a oneshot service that ran and finished well: inactive, and as it
+    /// should be.
+    ran: bool = false,
     /// a running service's main process, 0 if there isn't one.
     main_pid: u32 = 0,
     /// that process runs files an upgrade has since replaced, so it needs
@@ -38,6 +41,12 @@ pub const User = struct {
     primary_group: ?[]const u8 = null,
     /// the other groups the user is a member of, by name.
     groups: []const []const u8 = &.{},
+
+    /// a person's account, as opposed to a system one: uid 1000 up to
+    /// 60000, as useradd hands them out.
+    pub fn person(u: User) bool {
+        return u.uid >= 1000 and u.uid <= 60000;
+    }
 };
 
 /// a file os manages, as it is on the machine.
@@ -47,6 +56,8 @@ pub const File = struct {
     sha256: []const u8,
     /// octal permission bits, like "0644".
     mode: []const u8,
+    /// os wrote it: its first line says so.
+    ours: bool = false,
 };
 
 /// how the machine boots, for the rollback rung's checks.
@@ -63,6 +74,9 @@ pub const Boot = struct {
     root_subvol: ?[]const u8 = null,
     /// /var is a subvolume of its own.
     var_subvol: bool = false,
+    /// the other data directories (home, root, srv, usr/local) that are
+    /// mounted apart from the root.
+    data_apart: []const []const u8 = &.{},
     /// mkinitcpio's HOOKS.
     initramfs_hooks: []const []const u8 = &.{},
     /// the pacman database lives in /usr/lib/sysimage/pacman.

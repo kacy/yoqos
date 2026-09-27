@@ -3,6 +3,7 @@
 //! like the planner, it reads no files and runs nothing.
 
 const std = @import("std");
+const generation = @import("generation.zig");
 const facts = @import("facts.zig");
 const Allocator = std.mem.Allocator;
 
@@ -24,7 +25,7 @@ pub const Step = struct {
 };
 
 /// what the executor does for a step.
-pub const Kind = enum { var_subvol, pacman_db, config_dir, snapshot, boot_files, boot_entry };
+pub const Kind = enum { var_subvol, data_subvols, pacman_db, config_dir, snapshot, boot_files, boot_entry };
 
 /// where the config lives on the rollback rung: in /var, so no rollback
 /// takes it, and bind-mounted at /etc/yoq.
@@ -88,7 +89,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
     const known = for (layouts) |l| {
         if (std.mem.eql(u8, l, layout)) break true;
     } else false;
-    const running_gen = @import("generation.zig").running(b.root_subvol);
+    const running_gen = generation.running(b.root_subvol);
     try checks.append(a, .{
         .what = "root layout",
         .ok = known or running_gen,
@@ -117,6 +118,12 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .kind = .var_subvol,
         .what = "give generation 1 a /var of its own, as a subvolume",
         .why = "data in /var never rolls back",
+        .at_boot = true,
+    });
+    if (b.data_apart.len < generation.data_dirs.len) try steps.append(a, .{
+        .kind = .data_subvols,
+        .what = "give /home, /root, /srv, and /usr/local subvolumes of their own, where they aren't mounted apart already",
+        .why = "what's in them is data, and never rolls back",
         .at_boot = true,
     });
     if (!b.pacman_moved) try steps.append(a, .{
@@ -174,12 +181,13 @@ test "a machine on btrfs and grub is ready, with every step" {
     } };
     const p = try plan(arena.allocator(), &f);
     try testing.expect(p.ready());
-    try testing.expectEqual(6, p.steps.len);
+    try testing.expectEqual(7, p.steps.len);
     try testing.expectEqual(Kind.snapshot, p.steps[0].kind);
     try testing.expect(p.steps[1].at_boot);
-    try testing.expectEqual(Kind.config_dir, p.steps[3].kind);
-    try testing.expectEqual(Kind.boot_entry, p.steps[4].kind);
-    try testing.expectEqualStrings("install grub's boot files on the esp (/efi), reading that menu", p.steps[5].what);
+    try testing.expectEqual(Kind.data_subvols, p.steps[2].kind);
+    try testing.expectEqual(Kind.config_dir, p.steps[4].kind);
+    try testing.expectEqual(Kind.boot_entry, p.steps[5].kind);
+    try testing.expectEqualStrings("install grub's boot files on the esp (/efi), reading that menu", p.steps[6].what);
 }
 
 test "what stops a machine, and the steps it no longer needs" {
@@ -191,6 +199,7 @@ test "what stops a machine, and the steps it no longer needs" {
         .loader = "limine",
         .root_fs = "ext4",
         .var_subvol = true,
+        .data_apart = &.{ "home", "root", "srv", "usr/local" },
         .pacman_moved = true,
         .root_subvol = "/@/.snapshots/1/snapshot",
     } };

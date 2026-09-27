@@ -83,7 +83,9 @@ pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     }
     const names = if (wanted.len > 0) wanted else extra;
     if (names.len == 0) {
-        try ctx.out.writeAll("nothing to adopt: every installed package is in the config.\n");
+        if (ctx.json) {
+            try output.writeDoc(ctx.out, "yoq.change/1", .{ .file = ctx.config_path, .changed = false, .notes = &[_]change.Note{} });
+        } else try ctx.out.writeAll("nothing to adopt: every installed package is in the config.\n");
         return 0;
     }
     // adopting records what's already installed; there's nothing to apply.
@@ -104,12 +106,9 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
     if (w.failed()) return w.fail();
     if (outcome.changed()) {
         if (!try change.check(ctx.gpa, ctx.files, top, outcome.text, outcome.notes, &w.diags)) return w.fail();
-        if (!try cli.writeFile(ctx, top, outcome.text)) return 1;
     }
 
-    if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.change/1", .{ .file = top, .changed = outcome.changed(), .notes = outcome.notes });
-    } else for (outcome.notes) |n| {
+    if (!ctx.json) for (outcome.notes) |n| {
         switch (n.what) {
             .added => try ctx.out.print("+ packages \"{s}\"\n", .{n.name}),
             .removed => try ctx.out.print("- packages \"{s}\"\n", .{n.name}),
@@ -118,16 +117,26 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
             .chosen => try ctx.out.print("+ providers.{s} = \"{s}\"\n", .{ n.name, n.detail.? }),
             .unchanged => try ctx.out.print("  {s} is already set that way  ({s})\n", .{ n.name, n.detail.? }),
         }
-    }
+    };
     const now = then.applies(ctx);
     const message = try commitMessage(a, op, outcome.notes);
+    var locked: Relocked = .skipped;
     if (outcome.changed()) {
+        if (!try cli.writeFile(ctx, top, outcome.text)) return 1;
         if (!ctx.json) try ctx.out.print("\nsaved {s}.\n", .{top});
-        // services and packages both change what's wanted.
-        const locked = try relock(ctx, top, !now);
+        // services and packages both change what's wanted. a change the
+        // lock can't follow, like a package that doesn't exist, is taken
+        // back: the config stays one that plans.
+        locked = try relock(ctx, top, !now);
+        if (locked == .failed) {
+            _ = try cli.writeFile(ctx, top, text);
+            try ctx.err.print("os: {s} is back as it was.\n", .{top});
+            return 1;
+        }
         try cli.record(ctx, a, top, message);
-        if (locked != .locked) return @intFromBool(locked == .failed);
     }
+    if (ctx.json) try output.writeDoc(ctx.out, "yoq.change/1", .{ .file = top, .changed = outcome.changed(), .notes = outcome.notes });
+    if (outcome.changed() and locked != .locked) return 0;
     if (!now) return 0;
     // a name already in the config applies too: the machine may be behind.
     try ctx.out.writeByte('\n');

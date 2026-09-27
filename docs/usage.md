@@ -196,9 +196,14 @@ restart them. services a session depends on, like d-bus and display
 managers, are left for a reboot.
 
 `--yes` (or `-y`) skips the question; without a terminal, `apply` needs it.
-it needs root, and a build with libalpm. on a machine with generations, it
-won't run on a copy of an older generation booted from the menu, since that
-copy is remade from its record; `os rollback --to-booted` keeps it first.
+it needs root and a build with libalpm. on a machine with generations, it
+refuses to run on a copy of an older generation booted from the menu, since
+that copy is remade from its record (`os rollback --to-booted` keeps it
+first), and while a new generation is waiting for the next boot.
+
+a pacman hook or package script that fails after the packages changed makes
+`apply` exit with 1 and print what the hook or script said. the packages
+stay changed, so fix the cause and run `apply` again.
 
 read the plan before you say yes: `apply` removes every package the config
 doesn't ask for. the exception is a few core packages (`base`,
@@ -206,8 +211,8 @@ doesn't ask for. the exception is a few core packages (`base`,
 out, `plan` and `apply` stop with E0126, since that's almost always a
 mistake. to remove one on purpose, name it in `[remove]`.
 
-`apply` keeps a journal in `/var/lib/yoq/journal`. if one is cut off
-halfway, the next `apply` says so and starts from the machine as it is.
+`apply` keeps a journal in `/var/lib/yoq/journal`. if an apply is cut off
+halfway, the next one says so and starts from the machine as it is.
 
 ### add, remove, enable, disable
 
@@ -235,11 +240,13 @@ edit. they also stop after the edit with `--json`, without a terminal
 unless `--yes` is given, and when apply can't run here (not root, or a build
 without libalpm). `os apply` makes the change later.
 
-they also update the lock, since a service brings its package, resolving
-against the same package date the lock already has, so adding one package
-never upgrades anything else. that needs the package databases for that
-date, which `os update` downloads. if they aren't there, `add` says so,
-doesn't apply, and `os update` catches the lock up.
+they also update the lock, since a service brings its package. they
+resolve against the package date the lock already has, so adding one
+package never upgrades anything else. that needs the package databases for
+that date, which `os update` downloads. if they aren't there, `add` says
+so and doesn't apply, and `os update` brings the lock up to date later. a
+change the lock can't follow, like a package that doesn't exist, is taken
+back: the file stays as it was, and nothing is committed.
 
 `remove` works on packages from includes too: it adds them to `[remove]`
 rather than editing the included file. if a package comes from a service or
@@ -262,8 +269,11 @@ later.
 
 when a package depends on something several packages provide, like
 `initramfs` (mkinitcpio, booster, or dracut), `os update` asks which one you
-want and saves the answer in `[providers]`, so it only asks once. without a
-terminal, it stops and says which choices to make.
+want and saves the answer in `[providers]` as a commit of its own, so it
+only asks once. without a terminal, it stops and says which choices to make.
+
+`--dbs <dir>` resolves against databases you already have instead of
+downloading, and `--date yyyy-mm-dd` names the date they're from.
 
 an update can move hundreds of packages, so its plan is a summary:
 
@@ -319,9 +329,11 @@ rollback work on whole copies of the system instead; see
 
 `/etc/yoq` is a git repository. every change `os` makes there, from `init`,
 `add`, `remove`, `enable`, `disable`, `adopt`, `update`, and `rollback`, is a
-commit with a short message, like `add fd` (`adopt` commits as `add`). each
-commit is a generation of the machine's config, numbered from the first,
-and `*` marks the newest:
+commit with a short message, like `add fd` (`adopt` commits as `add`). if
+the config lives inside another repository, like a dotfiles one, `os`
+commits there, and only what's in the config's own directory. each commit
+is a generation of the machine's config, numbered from the first, and `*`
+marks the newest:
 
 ```
 $ os history
@@ -344,8 +356,9 @@ this rolls back packages, settings, services, users, and the files the
 config names, not files that package scripts changed, or anything else `os`
 doesn't manage.
 
-edits you make to the config by hand aren't committed for you, even after
-`os apply`, so commit them yourself if you want them in the history.
+edits you make to the config by hand aren't committed by `os apply`. `os
+rollback` commits them first, as "local edits before rollback", so going
+back never loses them.
 
 ## generations (early)
 
@@ -404,7 +417,7 @@ bluetooth = false
 | `include` | other config files to merge in, relative to this one |
 | `packages` | packages you want installed. dependencies come along on their own. |
 | `[providers]` | which package provides a virtual one, like `initramfs` |
-| `[system]` | `hostname`, `timezone`, `locale`, and `keymap` |
+| `[system]` | `hostname` (a plain name or a dotted one like `atlas.lan`), `timezone`, `locale`, and `keymap` |
 | `[boot]` | `kernel`: `linux` unless you say otherwise. `none` for a machine without its own kernel, like a container. `modules`: kernel modules to load at every boot, like `i2c-dev`. |
 | `[hardware]` | `cpu`: `amd` or `intel`. `gpu`: `amd`, `intel`, `nvidia`, or `none`. these bring in microcode and drivers. `nvidia` also loads its modules early, with a drop-in in `/etc/mkinitcpio.conf.d`, unless mkinitcpio.conf does already. |
 | `[desktop]` | `session`: `hyprland`. `audio`: `pipewire`. `login`: `greetd`, `sddm`, or `tty`. these bring in their packages; see [the desktop](#the-desktop). |
@@ -468,9 +481,12 @@ be installed, so add it to `packages`. `groups` is the whole list: `apply`
 adds the user to the groups missing and takes it out of the others. with
 no `groups` at all, its groups are left alone.
 
-`os` never deletes a user, and passwords stay yours to set with `passwd`.
-every uid `os` gives out is kept in `/var/lib/yoq/ids`, so a user created
-again gets its old uid back, and its files in `/home` are still its own.
+`os` manages people's accounts, not system ones: `root`, and accounts like
+`bin` or `systemd-*`, can't be declared. user and group names follow
+useradd's rules. `os` never deletes a user, and passwords stay yours to set
+with `passwd`. every uid `os` gives out is kept in `/var/lib/yoq/ids`, so a
+user created again gets its old uid back, and its files in `/home` are
+still its own.
 
 ### files and sysctl
 
@@ -489,13 +505,22 @@ text = "welcome to atlas\n"
 
 a `[files]` entry is a file `os` writes whole. `text` is the content itself;
 `source` names a file next to the config, relative to the config file that
-names it, so a repository can keep them together. `mode` is octal and
+names it, so a repository can keep them together. `mode` is octal, and
 `0644` unless you say otherwise. `os plan` shows a file that's missing, has
 different content, or has a different mode. files the config doesn't name
 are left alone, and so is a file you take out of the config.
 
+a path is absolute and plain: no `.` or `..` parts, no trailing `/`, and
+nothing under `/etc/yoq` or `/var/lib/yoq`, which are `os`'s own. it also
+can't be a file another key writes, like the sysctl file below.
+
 `[sysctl]` becomes one file, `/etc/sysctl.d/99-yoq.conf`, and `apply` loads
 it right away when systemd runs the machine.
+
+files `os` makes from other keys (the sysctl file, the module list, the
+greetd and tty login files, and nvidia's initramfs drop-in) start with a
+"written by os" line. once nothing asks for one, `apply` removes it. a file
+without that line, one you wrote yourself, is never removed.
 
 ### the desktop
 
@@ -508,15 +533,16 @@ session_config = "files/hyprland.conf"
 ```
 
 `session` and `audio` install what they need: hyprland and its portal, and
-pipewire with its pulseaudio stand-in and wireplumber.
+pipewire with pipewire-pulse and wireplumber.
 
 `login` picks how you get to the session:
 
 - `greetd` runs tuigreet on tty1, offering every installed wayland session.
   `os` writes `/etc/greetd/config.toml`.
 - `sddm` runs sddm, which finds hyprland's session on its own.
-- `tty` has no display manager: logging in on tty1 starts the session
-  through uwsm, from `/etc/profile.d/yoq-session.sh`.
+- `tty` has no display manager. with a `session`, logging in on tty1
+  starts it through uwsm, from `/etc/profile.d/yoq-session.sh`; without
+  one, it's a plain console login.
 
 a login choice owns the display manager. its own is enabled, and every
 other one `os` knows (gdm, greetd, lightdm, ly, sddm) is disabled, since
@@ -526,13 +552,13 @@ you're applying from, so the plan says a reboot is needed. with
 generations, that boot is a trial, and the health check wants the new
 display manager running. with no `login`, `os` leaves login alone.
 
-`session_config` names a hyprland config next to the machine's config, and
-`os` copies it as it is to `/etc/xdg/hypr/`, keeping its extension
+`session_config` names a hyprland config next to the machine's config.
+`os` copies it unchanged to `/etc/xdg/hypr/`, keeping its extension
 (`hyprland.conf`, or `hyprland.lua` for newer hyprland). hyprland reads it
 for anyone without a config of their own in `~/.config/hypr`, and a user
-config can pull it in with `source = /etc/xdg/hypr/hyprland.conf`. that
-makes it the machine's default, and part of every generation. the rest of
-your own settings stay in your home directory, where `os` doesn't reach.
+config can include it with `source = /etc/xdg/hypr/hyprland.conf`. that
+makes it the machine's default, and part of every generation. everything
+else in your home directory is yours; `os` doesn't touch it.
 
 ### omarchy
 
@@ -583,7 +609,9 @@ includes merge in order, and the including file always wins.
 - other values replace: the last one set wins.
 - `[remove] packages = ["nano"]` takes a package out of what the includes
   asked for.
-- `unset = ["desktop.audio"]` clears a key an include set.
+- `unset = ["desktop.audio"]` clears a key an include set. names with dots
+  work as written, `sysctl.vm.swappiness`, or quoted,
+  `sysctl."vm.swappiness"`.
 
 `os config show` prints the merged config, and `--resolved` adds the file
 and line every value came from:
@@ -610,7 +638,8 @@ error[E0213]: unknown service "sshd"
 ```
 
 `os explain E0213` prints the long explanation, and `os explain` lists every
-code.
+code. E0127 is a step of an apply that failed, like a file that couldn't be
+written or a tool that didn't work; the message has the details.
 
 ## scripting
 
@@ -628,7 +657,8 @@ exit codes:
 | 1 | the command ran into a problem, or found one: `status` with something failing, `why` with nothing needing the package |
 | 2 | the command line was wrong |
 
-global flags work before or after the command:
+global flags work before or after the command. a flag's value can't be
+empty or start with `-`:
 
 | flag | meaning |
 | --- | --- |

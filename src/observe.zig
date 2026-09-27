@@ -5,6 +5,7 @@
 //! the parsers take file contents and are pure; `observe` does the reading.
 
 const std = @import("std");
+const generation = @import("generation.zig");
 const facts = @import("facts.zig");
 const alpm = @import("alpm.zig");
 const drift = @import("drift.zig");
@@ -138,7 +139,7 @@ const Reader = struct {
         if (!std.mem.eql(u8, r.root, "/")) return b;
         b.uefi = r.exists("sys/firmware/efi");
         // an automounted esp only shows up in mountinfo once it's used.
-        for ([_][]const u8{ "efi/EFI", "boot/efi/EFI" }) |p| _ = r.exists(p);
+        for ([_][]const u8{ "efi/EFI", "boot/efi/EFI", "boot/EFI" }) |p| _ = r.exists(p);
         const ms = try mounts(r.a, try r.file("proc/self/mountinfo") orelse "");
         const root = mountAt(ms, "/") orelse return b;
         b.root_fs = root.fstype;
@@ -146,6 +147,12 @@ const Reader = struct {
         if (std.mem.eql(u8, root.fstype, "btrfs")) {
             b.root_subvol = root.root;
             if (mountAt(ms, "/var")) |v| b.var_subvol = std.mem.eql(u8, v.fstype, "btrfs") and !std.mem.eql(u8, v.root, root.root);
+            var apart: std.ArrayList([]const u8) = .empty;
+            for (generation.data_dirs) |d| {
+                const m = mountAt(ms, try std.fmt.allocPrint(r.a, "/{s}", .{d.dir})) orelse continue;
+                if (!std.mem.eql(u8, m.source, root.source) or !std.mem.eql(u8, m.root, root.root)) try apart.append(r.a, d.dir);
+            }
+            b.data_apart = apart.items;
         }
         for ([_][]const u8{ "/efi", "/boot/efi", "/boot" }) |p| {
             const m = mountAt(ms, p) orelse continue;
@@ -322,8 +329,14 @@ fn files(a: Allocator, io: std.Io, root: []const u8, paths: []const []const u8) 
     for (paths) |p| {
         const rel = std.mem.trimStart(u8, p, "/");
         const m = try fs.mode(rel) orelse continue;
-        const hex = facts.sha256Hex(try fs.read(rel));
-        try out.append(a, .{ .path = p, .sha256 = try a.dupe(u8, &hex), .mode = try std.fmt.allocPrint(a, "{o:0>4}", .{m}) });
+        const content = try fs.read(rel);
+        const hex = facts.sha256Hex(content);
+        try out.append(a, .{
+            .path = p,
+            .sha256 = try a.dupe(u8, &hex),
+            .mode = try std.fmt.allocPrint(a, "{o:0>4}", .{m}),
+            .ours = std.mem.startsWith(u8, content, "# written by os"),
+        });
     }
     return out.items;
 }
@@ -386,10 +399,6 @@ fn shellVar(text: []const u8, key: []const u8) ?[]const u8 {
     return null;
 }
 
-/// regular users: uid 1000 up to 60000, the range useradd hands out.
-const first_uid = 1000;
-const last_uid = 60000;
-
 /// users from /etc/passwd with their groups from /etc/group.
 pub fn users(a: Allocator, passwd: []const u8, group: []const u8) ![]facts.User {
     var out: std.ArrayList(facts.User) = .empty;
@@ -403,7 +412,6 @@ pub fn users(a: Allocator, passwd: []const u8, group: []const u8) ![]facts.User 
         _ = f.next();
         _ = f.next();
         const shell = f.next() orelse continue;
-        if (uid < first_uid or uid > last_uid) continue;
         var u: facts.User = .{ .name = name, .uid = uid, .shell = shell };
         try groupsOf(a, &u, gid, group);
         try out.append(a, u);
@@ -520,14 +528,19 @@ test "users and their groups" {
         \\guest:x:1001:
         \\
     );
-    try testing.expectEqual(2, us.len);
-    try testing.expectEqualStrings("kacy", us[0].name);
-    try testing.expectEqualStrings("/usr/bin/zsh", us[0].shell.?);
-    try testing.expectEqualStrings("kacy", us[0].primary_group.?);
-    try testing.expectEqual(2, us[0].groups.len);
-    try testing.expectEqualStrings("video", us[0].groups[0]);
-    try testing.expectEqualStrings("wheel", us[0].groups[1]);
-    try testing.expectEqual(1, us[1].groups.len);
+    // every account is read, so a declared one is found at any uid.
+    try testing.expectEqual(5, us.len);
+    var people: std.ArrayList(facts.User) = .empty;
+    for (us) |u| if (u.person()) try people.append(arena.allocator(), u);
+    try testing.expectEqual(2, people.items.len);
+    try testing.expectEqualStrings("kacy", people.items[0].name);
+    const kacy = people.items[0];
+    try testing.expectEqualStrings("/usr/bin/zsh", kacy.shell.?);
+    try testing.expectEqualStrings("kacy", kacy.primary_group.?);
+    try testing.expectEqual(2, kacy.groups.len);
+    try testing.expectEqualStrings("video", kacy.groups[0]);
+    try testing.expectEqualStrings("wheel", kacy.groups[1]);
+    try testing.expectEqual(1, people.items[1].groups.len);
 }
 
 test "observe a machine laid out in a directory" {

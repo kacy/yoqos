@@ -83,21 +83,44 @@ const Questions = struct {
     /// virtual packages with several providers and no choice in the config.
     open: std.ArrayList(api.Choice) = .empty,
     failed: bool = false,
+    /// installed packages the plan removes. one that conflicts with a
+    /// package being installed goes in the same transaction.
+    remove: []const []const u8 = &.{},
 
     fn answer(ctx: ?*anyopaque, q_ptr: [*c]c.alpm_question_t) callconv(.c) void {
         const self: *Questions = @ptrCast(@alignCast(ctx));
         const q: *c.alpm_question_t = q_ptr;
-        if (q.type != c.ALPM_QUESTION_SELECT_PROVIDER) {
-            // conflicts, replacements, and the like: the answer is always no.
-            q.any.answer = 0;
-            return;
+        switch (q.type) {
+            c.ALPM_QUESTION_SELECT_PROVIDER => {
+                const sp: *c.alpm_question_select_provider_t = &q.select_provider;
+                const depend: *c.alpm_depend_t = sp.depend;
+                self.selectProvider(sp, str(depend.name)) catch {
+                    self.failed = true;
+                };
+            },
+            c.ALPM_QUESTION_CONFLICT_PKG => {
+                const conflict: *c.alpm_conflict_t = q.conflict.conflict;
+                q.conflict.remove = @intFromBool(self.removes(str(c.alpm_pkg_get_name(conflict.package2))));
+            },
+            // pacman's default. the user approved the plan, so say which
+            // key and go on.
+            c.ALPM_QUESTION_IMPORT_KEY => {
+                std.debug.print("os: importing pgp key {s} ({s}) to check a package signature\n", .{ str(q.import_key.fingerprint), str(q.import_key.uid) });
+                q.import_key.import = 1;
+            },
+            // deletes the broken download, so the next run fetches it again.
+            c.ALPM_QUESTION_CORRUPTED_PKG => q.corrupted.remove = 1,
+            // replacements, ignored packages, and skipping targets would
+            // change what the lock says to install: no.
+            else => q.any.answer = 0,
         }
-        const sp: *c.alpm_question_select_provider_t = &q.select_provider;
-        const depend: *c.alpm_depend_t = sp.depend;
-        const dep = str(depend.name);
-        self.selectProvider(sp, dep) catch {
-            self.failed = true;
-        };
+    }
+
+    fn removes(self: *const Questions, name: []const u8) bool {
+        for (self.remove) |r| {
+            if (std.mem.eql(u8, r, name)) return true;
+        }
+        return false;
     }
 
     fn isOpen(self: *const Questions, name: []const u8) bool {
@@ -316,9 +339,7 @@ fn reportPrepare(h: Handle, data: ?*c.alpm_list_t, diags: *diag.List) !void {
 }
 
 /// copies each of `dbs` to <dbpath>/sync/<name>.db, where libalpm looks for
-/// sync databases. returns the path that failed, if one did.
-/// copies the sync databases into `dbpath`/sync. returns what went wrong,
-/// if something did.
+/// sync databases. returns what went wrong, if something did.
 fn copySyncDbs(a: Allocator, io: std.Io, dbs: []const api.SyncDb, dbpath: []const u8) Error!?[]const u8 {
     const cwd = std.Io.Dir.cwd();
     const sync_dir = try std.fs.path.join(a, &.{ dbpath, "sync" });
@@ -327,25 +348,38 @@ fn copySyncDbs(a: Allocator, io: std.Io, dbs: []const api.SyncDb, dbpath: []cons
         const bytes = cwd.readFileAlloc(io, db.path, a, .limited(256 << 20)) catch return try std.fmt.allocPrint(a, "can't read the {s} database at {s}", .{ db.name, db.path });
         const dest = try std.fmt.allocPrint(a, "{s}/{s}.db", .{ sync_dir, db.name });
         cwd.writeFile(io, .{ .sub_path = dest, .data = bytes }) catch return try std.fmt.allocPrint(a, "can't write {s}", .{dest});
+        // pacman -Sy asks mirrors for a database only if it's newer than
+        // this file, so the copy is dated 1970 and gets refreshed. an old
+        // signature beside it would no longer match.
+        cwd.setTimestamps(io, dest, .{ .modify_timestamp = .{ .new = .zero } }) catch return try std.fmt.allocPrint(a, "can't set the date on {s}", .{dest});
+        const sig = try std.fmt.allocPrint(a, "{s}.sig", .{dest});
+        cwd.deleteFile(io, sig) catch |e| if (e != error.FileNotFound) return try std.fmt.allocPrint(a, "can't remove {s}", .{sig});
     }
     return null;
 }
 
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+
 pub fn transact(a: Allocator, io: std.Io, t: api.Transaction, diags: *diag.List) Error!bool {
+    // hooks run as children and inherit this; the drift hook skips them.
+    _ = setenv(api.own_env, "1", 1);
     if (try copySyncDbs(a, io, t.target.dbs, t.target.dbpath)) |why| return fail(diags, "{s}", .{why});
     std.Io.Dir.cwd().createDirPath(io, t.target.cachedir) catch return fail(diags, "can't create {s}", .{t.target.cachedir});
 
     const h = try Handle.open(a, t.target.root, t.target.dbpath, diags) orelse return false;
     defer h.close();
     if (!try configure(h, a, t, diags)) return false;
-    var questions: Questions = .{ .a = a, .providers = &.{} };
+    var questions: Questions = .{ .a = a, .providers = &.{}, .remove = t.remove };
     _ = c.alpm_option_set_questioncb(h.h, Questions.answer, &questions);
-    _ = c.alpm_option_set_logcb(h.h, logErrors, diags);
+    var log: Log = .{ .a = a, .diags = diags };
+    _ = c.alpm_option_set_logcb(h.h, Log.message, &log);
+    _ = c.alpm_option_set_eventcb(h.h, Log.event, &log);
 
     // install first: removing can take away what downloading needs, like
-    // the tls certificates.
-    if (t.install.len > 0 and !try run(h, a, t, .install, diags)) return false;
-    if (t.remove.len > 0 and !try run(h, a, t, .remove, diags)) return false;
+    // the tls certificates. an install replaces a conflicting package the
+    // plan removes anyway, as pacman -S does.
+    if (t.install.len > 0 and !try run(h, a, t, .install, &log)) return false;
+    if (t.remove.len > 0 and !try run(h, a, t, .remove, &log)) return false;
 
     const local = c.alpm_get_localdb(h.h);
     for ([_]struct { []const []const u8, c.alpm_pkgreason_t }{
@@ -363,15 +397,83 @@ pub fn transact(a: Allocator, io: std.Io, t: api.Transaction, diags: *diag.List)
 const VaList = @typeInfo(@typeInfo(@typeInfo(c.alpm_cb_log).optional.child).pointer.child).@"fn".params[3].type.?;
 
 /// libalpm's error messages, like why a download failed, as diagnostics.
-fn logErrors(ctx: ?*anyopaque, level: c.alpm_loglevel_t, fmt: [*c]const u8, args: VaList) callconv(.c) void {
-    if (level != c.ALPM_LOG_ERROR) return;
-    const diags: *diag.List = @ptrCast(@alignCast(ctx));
-    var buf: [512]u8 = undefined;
-    const n = c.vsnprintf(&buf, buf.len, fmt, args);
-    if (n < 0) return;
-    const msg = std.mem.trimEnd(u8, buf[0..@min(@as(usize, @intCast(n)), buf.len - 1)], "\n");
-    diags.add(.alpm_failed, null, "{s}", .{msg}, null) catch {};
-}
+/// once packages start changing, an error is a hook or install script that
+/// failed, and it comes with what that printed.
+const Log = struct {
+    a: Allocator,
+    diags: *diag.List,
+    /// where `diags` stood when the transaction started, and when it
+    /// started changing packages.
+    start: usize = 0,
+    changing: ?usize = null,
+    /// the hook or package script running now, and its output so far.
+    running: []const u8 = "",
+    output: std.ArrayList(u8) = .empty,
+
+    fn message(ctx: ?*anyopaque, level: c.alpm_loglevel_t, fmt: [*c]const u8, args: VaList) callconv(.c) void {
+        if (level != c.ALPM_LOG_ERROR) return;
+        const self: *Log = @ptrCast(@alignCast(ctx));
+        var buf: [512]u8 = undefined;
+        const n = c.vsnprintf(&buf, buf.len, fmt, args);
+        if (n < 0) return;
+        self.add(std.mem.trimEnd(u8, buf[0..@min(@as(usize, @intCast(n)), buf.len - 1)], "\n")) catch {};
+    }
+
+    fn add(self: *Log, msg: []const u8) !void {
+        if (self.changing == null) return self.diags.add(.alpm_failed, null, "{s}", .{msg}, null);
+        const out = std.mem.trimEnd(u8, self.output.items, "\n");
+        try self.diags.add(.alpm_failed, null, "{s}: {s}", .{ self.running, msg }, if (out.len > 0) out else null);
+    }
+
+    fn event(ctx: ?*anyopaque, e_ptr: [*c]c.alpm_event_t) callconv(.c) void {
+        const self: *Log = @ptrCast(@alignCast(ctx));
+        const e: *c.alpm_event_t = e_ptr;
+        self.onEvent(e) catch {};
+    }
+
+    fn onEvent(self: *Log, e: *c.alpm_event_t) !void {
+        switch (e.type) {
+            // downloads are done by now. errors before this, like a mirror
+            // that failed before the next one worked, don't count if the
+            // transaction goes through.
+            c.ALPM_EVENT_HOOK_START, c.ALPM_EVENT_TRANSACTION_START => {
+                if (self.changing == null) self.changing = self.diags.items.items.len;
+            },
+            c.ALPM_EVENT_HOOK_RUN_START => try self.run(try std.fmt.allocPrint(self.a, "hook {s}", .{str(e.hook_run.name)})),
+            c.ALPM_EVENT_PACKAGE_OPERATION_START => {
+                const op = &e.package_operation;
+                const p = op.newpkg orelse op.oldpkg;
+                try self.run(try std.fmt.allocPrint(self.a, "the {s} package's script", .{str(c.alpm_pkg_get_name(p))}));
+            },
+            c.ALPM_EVENT_SCRIPTLET_INFO => {
+                try self.output.appendSlice(self.a, str(e.scriptlet_info.line));
+                if (!std.mem.endsWith(u8, self.output.items, "\n")) try self.output.append(self.a, '\n');
+            },
+            else => {},
+        }
+    }
+
+    fn run(self: *Log, what: []const u8) !void {
+        self.running = what;
+        self.output.clearRetainingCapacity();
+    }
+
+    /// before a transaction starts.
+    fn begin(self: *Log) void {
+        self.start = self.diags.items.items.len;
+        self.changing = null;
+    }
+
+    /// after a transaction went through: drops errors it recovered from
+    /// before packages changed. what's left failed afterwards.
+    fn committed(self: *Log) void {
+        const d = &self.diags.items;
+        const end = self.changing orelse d.items.len;
+        const later = d.items.len - end;
+        std.mem.copyForwards(diag.Diagnostic, d.items[self.start..], d.items[end..]);
+        d.shrinkRetainingCapacity(self.start + later);
+    }
+};
 
 /// pacman 7.1 split the sandbox switch in two, and dropped the old one from
 /// the library but not the header.
@@ -425,16 +527,22 @@ fn configure(h: Handle, a: Allocator, t: api.Transaction, diags: *diag.List) Err
 }
 
 /// one transaction: all the removals, or all the installs.
-fn run(h: Handle, a: Allocator, t: api.Transaction, step: Step, diags: *diag.List) Error!bool {
+fn run(h: Handle, a: Allocator, t: api.Transaction, step: Step, log: *Log) Error!bool {
+    const diags = log.diags;
+    log.begin();
     if (c.alpm_trans_init(h.h, 0) != 0) return fail(diags, "can't start the transaction: {s}", .{h.lastError()});
     defer _ = c.alpm_trans_release(h.h);
     switch (step) {
         .remove => {
             const local = c.alpm_get_localdb(h.h);
+            var any = false;
             for (t.remove) |name| {
                 const p = c.alpm_db_get_pkg(local, (try a.dupeZ(u8, name)).ptr) orelse continue;
                 if (c.alpm_remove_pkg(h.h, p) != 0) return fail(diags, "can't remove {s}: {s}", .{ name, h.lastError() });
+                any = true;
             }
+            // the install may have replaced them all already.
+            if (!any) return true;
         },
         .install => for (t.install) |want| {
             const p = try syncPackage(h, a, want, diags) orelse return false;
@@ -454,6 +562,7 @@ fn run(h: Handle, a: Allocator, t: api.Transaction, step: Step, diags: *diag.Lis
         }
         return fail(diags, "the transaction failed: {s}", .{h.lastError()});
     }
+    log.committed();
     return true;
 }
 

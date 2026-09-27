@@ -16,6 +16,17 @@ pub const roots_dir = "@roots";
 pub const gens_dir = "@gens";
 pub const var_subvol = "@var";
 
+/// data directories besides /var that no generation holds, and the
+/// subvolume each gets when it's inside the root.
+pub const DataDir = struct { dir: []const u8, subvol: []const u8 };
+
+pub const data_dirs = [_]DataDir{
+    .{ .dir = "home", .subvol = "@home" },
+    .{ .dir = "root", .subvol = "@root" },
+    .{ .dir = "srv", .subvol = "@srv" },
+    .{ .dir = "usr/local", .subvol = "@usrlocal" },
+};
+
 /// where the btrfs top level is mounted while os works on it.
 pub const top_mount = "/run/yoq/top";
 
@@ -175,8 +186,19 @@ pub fn grubConfig(a: Allocator, c: GrubConfig) ![]const u8 {
     for (c.entries) |e| {
         const dir = if (e.on_esp) "(${yoq_esp})" else if (std.mem.eql(u8, e.subvol, "/")) "/boot" else try std.fmt.allocPrint(a, "{s}/boot", .{e.subvol});
         // ${yoq_trial_arg} is "yoq.trial" on a trial boot, which starts
-        // the watchdog; empty otherwise.
-        w.print("\nmenuentry \"{s}\" --id {s} {{\n  linux {s}/{s} {s} ${{yoq_trial_arg}}\n  initrd", .{ e.title, e.id, dir, e.kernel, e.args }) catch return error.OutOfMemory;
+        // the watchdog; empty otherwise. the newest entry notes that it
+        // was tried, so a fallback after it counts, and an older entry
+        // picked by hand doesn't.
+        w.writeAll("\nmenuentry \"") catch return error.OutOfMemory;
+        // a title is a quoted grub string: quotes, backslashes, and $ would
+        // end it or expand.
+        for (e.title) |ch| {
+            if (ch == '"' or ch == '\\' or ch == '$') w.writeByte('\\') catch return error.OutOfMemory;
+            w.writeByte(ch) catch return error.OutOfMemory;
+        }
+        w.print("\" --id {s} {{\n", .{e.id}) catch return error.OutOfMemory;
+        if (std.mem.eql(u8, e.id, "head")) w.writeAll("  if [ \"${yoq_trial_arg}\" ]; then set yoq_tried=1; save_env -f (${yoq_esp})/yoq/grubenv yoq_tried; fi\n") catch return error.OutOfMemory;
+        w.print("  linux {s}/{s} {s} ${{yoq_trial_arg}}\n  initrd", .{ dir, e.kernel, e.args }) catch return error.OutOfMemory;
         for (e.initrds) |i| w.print(" {s}/{s}", .{ dir, i }) catch return error.OutOfMemory;
         w.writeAll("\n}\n") catch return error.OutOfMemory;
     }
@@ -255,4 +277,16 @@ test "grub's config on the esp" {
         \\}
         \\
     ));
+}
+
+test "a menu title can't end its quotes or expand" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const text = try grubConfig(arena.allocator(), .{
+        .esp_uuid = "e",
+        .root_uuid = "r",
+        .default = "head",
+        .entries = &.{.{ .id = "gen-2", .title = "add \"x\" $y", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{}, .args = "rw" }},
+    });
+    try testing.expect(std.mem.indexOf(u8, text, "menuentry \"add \\\"x\\\" \\$y\" --id gen-2 {") != null);
 }

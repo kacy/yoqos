@@ -3,10 +3,29 @@
 # machine, lock it, apply it, then add and remove a package with real
 # downloads and signature checks. used by ci in an arch container.
 set -eu
+set -o pipefail
 
 os=$1
 dir=$(mktemp -d)
 cfg=$dir/machine.toml
+
+# runs `os <args>` on the config and checks what it printed has $1. os
+# failing fails the test.
+says() {
+    want=$1
+    shift
+    "$os" --config "$cfg" "$@" > "$dir/out"
+    grep -q "$want" "$dir/out" || { echo "smoke: os $* didn't say '$want':"; cat "$dir/out"; exit 1; }
+}
+
+# whether status says $1. status exits 1 when something is failing, which
+# is fine here; anything worse fails the test.
+status_says() {
+    rc=0
+    "$os" --config "$cfg" status > "$dir/status" || rc=$?
+    [ "$rc" -le 1 ] || { echo "smoke: status exited $rc"; exit 1; }
+    grep -q "$1" "$dir/status"
+}
 
 "$os" --config "$cfg" init 2> "$dir/init.err"
 cat "$dir/init.err" >&2
@@ -22,20 +41,21 @@ if [ -s "$dir/answers" ]; then
     fi
 fi
 "$os" --config "$cfg" update
-"$os" --config "$cfg" status || true
+status_says . || true
+cat "$dir/status"
 "$os" --config "$cfg" plan -v
 "$os" --config "$cfg" --json plan > "$dir/plan.json"
 
 # the try gate: a config read from this machine plans nothing, unless a
 # provider had to be picked above.
-if [ ! -s "$dir/answers" ] && ! "$os" --config "$cfg" plan | grep -q "nothing to do"; then
+if [ ! -s "$dir/answers" ] && ! { "$os" --config "$cfg" plan > "$dir/out" && grep -q "nothing to do" "$dir/out"; }; then
     echo "try gate: the plan right after init isn't empty"
     exit 1
 fi
 
 # apply what the config says, then check nothing's left.
 "$os" --config "$cfg" apply --yes
-"$os" --config "$cfg" plan | grep -q "nothing to do"
+says "nothing to do" plan
 
 # a real package through the whole loop, checked with pacman itself.
 "$os" --config "$cfg" add --yes tree
@@ -44,19 +64,19 @@ pacman -Q tree
 pacman -Q tree
 "$os" --config "$cfg" apply --yes
 if pacman -Q tree 2>/dev/null; then echo "tree is still installed"; exit 1; fi
-"$os" --config "$cfg" plan | grep -q "nothing to do"
+says "nothing to do" plan
 
 # a user: created with its shell and groups, then moved between groups.
 printf '\n[users.yoqtest]\nshell = "bash"\ngroups = ["wheel"]\n' >> "$cfg"
 "$os" --config "$cfg" apply --yes
 getent passwd yoqtest | grep -q ':/usr/bin/bash$'
 id -nG yoqtest | grep -qw wheel
-"$os" --config "$cfg" plan | grep -q "nothing to do"
+says "nothing to do" plan
 sed -i 's/^groups = \["wheel"\]$/groups = ["video"]/' "$cfg"
 "$os" --config "$cfg" apply --yes
 id -nG yoqtest | grep -qw video
 if id -nG yoqtest | grep -qw wheel; then echo "yoqtest is still in wheel"; exit 1; fi
-"$os" --config "$cfg" plan | grep -q "nothing to do"
+says "nothing to do" plan
 
 # files and sysctl: written with their mode, and sysctl loaded where
 # systemd runs the machine.
@@ -66,7 +86,7 @@ grep -qx "managed by os" /etc/motd
 [ "$(stat -c %a /etc/motd)" = 600 ]
 grep -qx "vm.swappiness = 17" /etc/sysctl.d/99-yoq.conf
 if [ -d /run/systemd/system ]; then [ "$(sysctl -n vm.swappiness)" = 17 ]; fi
-"$os" --config "$cfg" plan | grep -q "nothing to do"
+says "nothing to do" plan
 
 # rollback: back past an add, then forward again, with history to match.
 "$os" --config "$cfg" add --yes tree
@@ -85,35 +105,34 @@ if [ -d /run/systemd/system ]; then
     "$os" --config "$cfg" enable --yes tailscale
     systemctl is-enabled tailscaled.service
     systemctl is-active tailscaled.service
-    "$os" --config "$cfg" plan | grep -q "nothing to do"
+    says "nothing to do" plan
     # an upgrade replacing tailscaled's binary under it: status says so,
     # the next apply that changes packages offers the restart, and a
     # restart clears it.
     cp /usr/bin/tailscaled /usr/bin/tailscaled.new
     mv -f /usr/bin/tailscaled.new /usr/bin/tailscaled
-    "$os" --config "$cfg" status | grep -q "running replaced files:.*tailscaled.service"
-    "$os" --config "$cfg" add --yes tree | grep -q "systemctl restart tailscaled.service"
+    status_says "running replaced files:.*tailscaled.service"
+    says "systemctl restart tailscaled.service" add --yes tree
     "$os" --config "$cfg" remove --yes tree
     systemctl restart tailscaled.service
-    if "$os" --config "$cfg" status | grep -q "running replaced files:.*tailscaled"; then echo "tailscaled still stale after a restart"; exit 1; fi
+    if status_says "running replaced files:.*tailscaled"; then echo "tailscaled still stale after a restart"; exit 1; fi
     "$os" --config "$cfg" disable --yes tailscale
     if systemctl is-active tailscaled.service; then echo "tailscaled is still running"; exit 1; fi
     if pacman -Q tailscale 2>/dev/null; then echo "tailscale is still installed"; exit 1; fi
-    "$os" --config "$cfg" plan | grep -q "nothing to do"
+    says "nothing to do" plan
 fi
 
 # update applies what it resolved; on the same day there's nothing to do.
-"$os" --config "$cfg" update --yes | tee "$dir/update.out"
-grep -q "nothing to do" "$dir/update.out"
+says "nothing to do" update --yes
 
 # drift: with os and its pacman hook installed the way a package would,
 # a direct `pacman -S` shows in status until os applies again.
 install -Dm755 "$os" /usr/bin/os
 install -Dm644 dist/yoq-drift.hook /usr/share/libalpm/hooks/yoq-drift.hook
 pacman -S --noconfirm --noprogressbar htop >/dev/null
-"$os" --config "$cfg" status | grep -q "touched with pacman since the last apply: htop"
+status_says "touched with pacman since the last apply: htop"
 "$os" --config "$cfg" apply --yes
-if "$os" --config "$cfg" status | grep -q "touched with pacman"; then echo "drift survived an apply"; exit 1; fi
+if status_says "touched with pacman"; then echo "drift survived an apply"; exit 1; fi
 rm /usr/share/libalpm/hooks/yoq-drift.hook
 
 # a config that leaves out base doesn't get to remove it.
@@ -122,8 +141,11 @@ printf 'version = 1\n[boot]\nkernel = "none"\n' > "$bare"
 if "$os" --config "$bare" plan 2> "$dir/bare.err"; then echo "planned removing base"; exit 1; fi
 grep -q E0126 "$dir/bare.err"
 
-# what enable-rollback makes of this machine. it only reports, for now.
-"$os" enable-rollback || true
+# what enable-rollback makes of this machine: ready or not, never a crash.
+rc=0
+"$os" --json enable-rollback > "$dir/enable.json" || rc=$?
+[ "$rc" -le 1 ] || { echo "smoke: enable-rollback exited $rc"; exit 1; }
+grep -q "yoq.enable-rollback/1" "$dir/enable.json"
 
 git -C "$dir" log --format=%s
 echo "smoke ok"

@@ -4,6 +4,7 @@
 //! only then writes it.
 
 const std = @import("std");
+const lists = @import("lists.zig");
 const compose = @import("compose.zig");
 const config = @import("config.zig");
 const planner = @import("planner.zig");
@@ -49,7 +50,9 @@ pub const Outcome = struct {
 pub fn plan(a: Allocator, c: *const config.Config, top: []const u8, text: []const u8, op: Op, names: []const []const u8, diags: *diag.List) !Outcome {
     var out = text;
     var notes: std.ArrayList(Note) = .empty;
-    for (names) |name| {
+    for (names, 0..) |name, i| {
+        // a name given twice is one change.
+        if (lists.contains(names[0..i], name)) continue;
         if ((op == .add or op == .remove) and !config.validPackageName(name)) {
             try config.badPackageName(diags, name, null);
             continue;

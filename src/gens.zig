@@ -4,6 +4,7 @@
 //! it worked, or what went wrong.
 
 const std = @import("std");
+const lists = @import("lists.zig");
 const rootfs = @import("rootfs.zig");
 const btrfs = @import("btrfs.zig");
 const exec = @import("exec.zig");
@@ -55,7 +56,7 @@ pub const Machine = struct {
         std.Io.Dir.cwd().deleteFile(m.io, notice_path) catch {};
         const records = try readRecords(m.a, m.io, "/var");
         if (try m.keepBoot(m.boot.root_subvol.?)) |w| return w;
-        return m.add(records, m.boot.root_subvol.?, reason, time, config);
+        return m.add(records, try m.free(records), m.boot.root_subvol.?, reason, time, config);
     }
 
     /// starts a new generation from `source`, a generation's record or a
@@ -64,25 +65,25 @@ pub const Machine = struct {
     /// step fails, the new generation goes, and the menu is as it was.
     pub fn start(m: *const Machine, source: []const u8, reason: []const u8, time: i64, config: ?generation.Config, made: *u32) !?[]const u8 {
         const records = try readRecords(m.a, m.io, "/var");
-        const n = next(records);
+        const n = try m.free(records);
         const root = try std.fmt.allocPrint(m.a, "/{s}/{d}", .{ generation.roots_dir, n });
         btrfs.snapshot(try m.at(&.{source}), try m.at(&.{root}), false) catch |e| return try std.fmt.allocPrint(m.a, "can't copy {s}: {s}", .{ source, @errorName(e) });
-        // the esp's boot files change last: until then, the running root's
-        // entry still boots the kernel that matches it.
-        const why = try m.carry(root) orelse try m.add(records, root, reason, time, config) orelse try m.restoreBoot(root) orelse {
+        // the esp's boot files change last, once the new root is recorded.
+        const why = try m.carry(root) orelse try m.add(records, n, root, reason, time, config) orelse try m.restoreBoot(root) orelse {
             made.* = n;
             return null;
         };
         _ = try m.forget(n);
         _ = try m.drop(try m.at(&.{root}));
         _ = try m.writeMenu(m.boot.root_subvol.?, records);
+        // the running root's kernel goes back on the esp, if it left.
+        _ = try m.restoreBoot(m.boot.root_subvol.?);
         return why;
     }
 
     /// the next generation, from the root at `root`: its read-only record,
     /// the record file, and the menu with `root` at the top.
-    fn add(m: *const Machine, records: []const generation.Record, root: []const u8, reason: []const u8, time: i64, config: ?generation.Config) !?[]const u8 {
-        const n = next(records);
+    fn add(m: *const Machine, records: []const generation.Record, n: u32, root: []const u8, reason: []const u8, time: i64, config: ?generation.Config) !?[]const u8 {
         const dest = try m.at(&.{ generation.gens_dir, try std.fmt.allocPrint(m.a, "{d}", .{n}) });
         btrfs.snapshot(try m.at(&.{root}), dest, true) catch |e| return try std.fmt.allocPrint(m.a, "can't snapshot {s}: {s}", .{ root, @errorName(e) });
         const rec: generation.Record = .{
@@ -106,17 +107,28 @@ pub const Machine = struct {
         const records = try readRecords(m.a, m.io, "/var");
         if (records.len == 0) return null;
         const running = m.boot.root_subvol.?;
+        // a pending trial falls back to this one, so it stays too.
+        const fallback = try trialFallback(m.a, m.io, m.boot.esp.?);
         var kept: std.ArrayList(generation.Record) = .empty;
         var roots: std.ArrayList([]const u8) = .empty;
         try roots.append(m.a, running[1..]);
         for (records) |r| {
-            if (!generation.keeps(r, records, keep)) continue;
+            if (!generation.keeps(r, records, keep) and r.n != fallback) continue;
             try kept.append(m.a, r);
             try roots.append(m.a, r.root);
         }
         if (kept.items.len == records.len) return null;
+        const head = try std.fmt.allocPrint(m.a, "/{s}", .{records[records.len - 1].root});
+        const failed = try m.dropOld(records, keep, fallback, running, &roots, removed);
+        // the menu follows what's left, even after a failure halfway.
+        const left = try readRecords(m.a, m.io, "/var");
+        if (try m.writeMenu(head, left)) |w| return failed orelse w;
+        return failed;
+    }
+
+    fn dropOld(m: *const Machine, records: []const generation.Record, keep: usize, fallback: u32, running: []const u8, roots: *std.ArrayList([]const u8), removed: *std.ArrayList(u32)) !?[]const u8 {
         for (records) |r| {
-            if (generation.keeps(r, records, keep)) continue;
+            if (generation.keeps(r, records, keep) or r.n == fallback) continue;
             if (try m.forget(r.n)) |w| return w;
             const copy = try generation.bootCopy(m.a, r.n);
             if (!std.mem.eql(u8, copy, running)) {
@@ -131,8 +143,18 @@ pub const Machine = struct {
             }
             try removed.append(m.a, r.n);
         }
-        const newest = records[records.len - 1];
-        return m.writeMenu(try std.fmt.allocPrint(m.a, "/{s}", .{newest.root}), kept.items);
+        return null;
+    }
+
+    /// the next generation number no subvolume has yet. a crash between a
+    /// snapshot and its record can leave one behind without a record.
+    fn free(m: *const Machine, records: []const generation.Record) !u32 {
+        var n = next(records);
+        while (true) : (n += 1) {
+            const name = try std.fmt.allocPrint(m.a, "{d}", .{n});
+            if (!rootfs.pathExists(m.io, try m.at(&.{ generation.gens_dir, name })) and
+                !rootfs.pathExists(m.io, try m.at(&.{ generation.roots_dir, name }))) return n;
+        }
     }
 
     /// removes generation `n`'s record, then its read-only snapshot, so
@@ -244,23 +266,23 @@ pub const Machine = struct {
     }
 
     /// makes the boot files in `to` match the ones in `from`. files that
-    /// already match stay, so snapshots keep sharing them.
+    /// already match stay, so snapshots keep sharing them. each new one is
+    /// copied beside its place and renamed in, and stale ones go last, so
+    /// a failure halfway never leaves a file cut short.
     fn copyBoot(m: *const Machine, from: []const u8, to: []const u8) !?[]const u8 {
         const old = try m.bootFiles(to) orelse return try std.fmt.allocPrint(m.a, "can't read {s}", .{to});
         const new = try m.bootFiles(from) orelse return try std.fmt.allocPrint(m.a, "can't read {s}", .{from});
-        for (old) |f| {
-            const path = try std.fs.path.join(m.a, &.{ to, f });
-            const same = for (new) |n| {
-                if (std.mem.eql(u8, n, f)) break try m.run(&.{ "cmp", "-s", path, try std.fs.path.join(m.a, &.{ from, f }) }) == null;
-            } else false;
-            if (!same) {
-                if (try m.run(&.{ "rm", "-f", path })) |w| return w;
-            }
-        }
         for (new) |f| {
-            const path = try std.fs.path.join(m.a, &.{ to, f });
-            if (rootfs.pathExists(m.io, path)) continue;
-            if (try m.run(&.{ "cp", try std.fs.path.join(m.a, &.{ from, f }), path })) |w| return w;
+            const src = try std.fs.path.join(m.a, &.{ from, f });
+            const dest = try std.fs.path.join(m.a, &.{ to, f });
+            if (rootfs.pathExists(m.io, dest) and try m.run(&.{ "cmp", "-s", src, dest }) == null) continue;
+            const tmp = try std.fmt.allocPrint(m.a, "{s}.yoq-new", .{dest});
+            if (try m.run(&.{ "cp", src, tmp })) |w| return w;
+            if (try m.run(&.{ "mv", "-f", tmp, dest })) |w| return w;
+        }
+        for (old) |f| {
+            if (lists.contains(new, f)) continue;
+            if (try m.run(&.{ "rm", "-f", try std.fs.path.join(m.a, &.{ to, f }) })) |w| return w;
         }
         return null;
     }
@@ -279,7 +301,7 @@ pub const Machine = struct {
     /// a menu entry for the root at `subvol`: its kernel, microcode, and
     /// initramfs, from its own /boot, or the esp's for the newest.
     fn entry(m: *const Machine, id: []const u8, name: []const u8, subvol: []const u8, cmdline: []const u8) !generation.Entry {
-        var kernel: []const u8 = "vmlinuz-linux";
+        var kernels: std.ArrayList([]const u8) = .empty;
         var initrds: std.ArrayList([]const u8) = .empty;
         const dir = if (std.mem.eql(u8, id, "head") and m.bootOnEsp()) "/boot" else try m.at(&.{ subvol, "boot" });
         var boot = std.Io.Dir.cwd().openDir(m.io, dir, .{ .iterate = true }) catch null;
@@ -287,10 +309,15 @@ pub const Machine = struct {
             defer b.close(m.io);
             var it = b.iterate();
             while (it.next(m.io) catch null) |f| {
-                if (std.mem.startsWith(u8, f.name, "vmlinuz-")) kernel = try m.a.dupe(u8, f.name);
+                if (std.mem.startsWith(u8, f.name, "vmlinuz-")) try kernels.append(m.a, try m.a.dupe(u8, f.name));
                 if (std.mem.endsWith(u8, f.name, "-ucode.img")) try initrds.append(m.a, try m.a.dupe(u8, f.name));
             }
         }
+        // the same pick every time the menu is written: arch's own kernel
+        // if it's there, or the first by name.
+        lists.sortStrings(kernels.items);
+        lists.sortStrings(initrds.items);
+        const kernel = if (lists.contains(kernels.items, "vmlinuz-linux") or kernels.items.len == 0) "vmlinuz-linux" else kernels.items[0];
         try initrds.append(m.a, try std.fmt.allocPrint(m.a, "initramfs-{s}.img", .{kernel["vmlinuz-".len..]}));
         return .{
             .id = id,
@@ -341,9 +368,16 @@ pub fn editEnv(a: Allocator, io: std.Io, esp: []const u8, verb: []const u8, args
     return exec.run(a, io, argv.items);
 }
 
+/// the generation a pending trial falls back to, or 0 with no trial.
+pub fn trialFallback(a: Allocator, io: std.Io, esp: []const u8) !u32 {
+    const default = try envValue(a, io, esp, "yoq_default") orelse return 0;
+    if (!std.mem.startsWith(u8, default, "gen-")) return 0;
+    return std.fmt.parseInt(u32, default["gen-".len..], 10) catch 0;
+}
+
 /// ends a trial boot, however it went: no fallback default any more.
 pub fn endTrial(a: Allocator, io: std.Io, esp: []const u8) !?[]const u8 {
-    return editEnv(a, io, esp, "unset", &.{ "yoq_default", "yoq_trial" });
+    return editEnv(a, io, esp, "unset", &.{ "yoq_default", "yoq_trial", "yoq_tried" });
 }
 
 /// machine state every root gets from the running system. ssh host keys

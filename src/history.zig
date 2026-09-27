@@ -48,7 +48,7 @@ pub const Git = struct {
 
     fn log(ctx: *anyopaque, a: Allocator, dir: []const u8, why: *[]const u8) error{OutOfMemory}!?[]const Entry {
         const g: *Git = @ptrCast(@alignCast(ctx));
-        const text = try g.output(a, &.{ "git", "-C", dir, "log", "--reverse", "--format=%H %s" }, why) orelse return null;
+        const text = try g.output(a, &.{ "git", "-C", dir, "log", "--reverse", "--format=%H %s", "--", "." }, why) orelse return null;
         var out: std.ArrayList(Entry) = .empty;
         var lines = std.mem.tokenizeScalar(u8, text, '\n');
         while (lines.next()) |line| {
@@ -61,9 +61,10 @@ pub const Git = struct {
     fn files(ctx: *anyopaque, a: Allocator, dir: []const u8, rev: []const u8, why: *[]const u8) error{OutOfMemory}!?[]const File {
         const g: *Git = @ptrCast(@alignCast(ctx));
         // ls-tree names paths from `dir`, and `rev:./path` reads them back.
-        const names = try g.output(a, &.{ "git", "-C", dir, "ls-tree", "-r", "--name-only", rev }, why) orelse return null;
+        // -z, so a name with odd characters comes back as it is, unquoted.
+        const names = try g.output(a, &.{ "git", "-C", dir, "ls-tree", "-r", "-z", "--name-only", rev }, why) orelse return null;
         var out: std.ArrayList(File) = .empty;
-        var lines = std.mem.tokenizeScalar(u8, names, '\n');
+        var lines = std.mem.tokenizeScalar(u8, names, 0);
         while (lines.next()) |name| {
             const spec = try std.fmt.allocPrint(a, "{s}:./{s}", .{ rev, name });
             const bytes = try g.output(a, &.{ "git", "-C", dir, "show", spec }, why) orelse return null;
@@ -74,17 +75,24 @@ pub const Git = struct {
 
     fn commit(ctx: *anyopaque, a: Allocator, dir: []const u8, message: []const u8, why: *[]const u8) error{OutOfMemory}!bool {
         const g: *Git = @ptrCast(@alignCast(ctx));
-        if (!try g.run(a, &.{ "git", "-C", dir, "init", "-q" }, why)) return false;
-        if (!try g.run(a, &.{ "git", "-C", dir, "add", "-A" }, why)) return false;
-        // nothing staged means nothing changed: done.
-        if (try g.succeeds(a, &.{ "git", "-C", dir, "diff", "--cached", "--quiet" })) return true;
+        // a config inside another repository, like a dotfiles one, is
+        // committed there, and only what's in its own directory. one that
+        // repository ignores gets its own.
+        const inside = try g.succeeds(a, &.{ "git", "-C", dir, "rev-parse", "--is-inside-work-tree" }) and
+            !try g.succeeds(a, &.{ "git", "-C", dir, "check-ignore", "-q", "." });
+        if (!inside) {
+            if (!try g.run(a, &.{ "git", "-C", dir, "init", "-q" }, why)) return false;
+        }
+        if (!try g.run(a, &.{ "git", "-C", dir, "add", "-A", "--", "." }, why)) return false;
+        // nothing staged here means nothing changed: done.
+        if (try g.succeeds(a, &.{ "git", "-C", dir, "diff", "--cached", "--quiet", "--", "." })) return true;
         // root's config often has no identity. commit as os then, rather
         // than fail.
         const named = try g.succeeds(a, &.{ "git", "-C", dir, "config", "user.email" });
         const argv: []const []const u8 = if (named)
-            &.{ "git", "-C", dir, "commit", "-q", "-m", message }
+            &.{ "git", "-C", dir, "commit", "-q", "-m", message, "--", "." }
         else
-            &.{ "git", "-C", dir, "-c", "user.name=os", "-c", "user.email=os@localhost", "commit", "-q", "-m", message };
+            &.{ "git", "-C", dir, "-c", "user.name=os", "-c", "user.email=os@localhost", "commit", "-q", "-m", message, "--", "." };
         return g.run(a, argv, why);
     }
 
@@ -113,6 +121,17 @@ pub const Git = struct {
 /// remembers commits instead of making them, for tests. with `fs` set,
 /// each commit also keeps a copy of the files under its directory, so the
 /// log and old files read back the way git's would.
+fn sameFiles(x: []const File, y: []const File) bool {
+    if (x.len != y.len) return false;
+    for (x) |f| {
+        const other = for (y) |g| {
+            if (std.mem.eql(u8, f.path, g.path)) break g;
+        } else return false;
+        if (!std.mem.eql(u8, f.bytes, other.bytes)) return false;
+    }
+    return true;
+}
+
 pub const Recorder = struct {
     messages: std.ArrayList([]const u8) = .empty,
     snapshots: std.ArrayList([]const File) = .empty,
@@ -138,7 +157,6 @@ pub const Recorder = struct {
 
     fn commit(ctx: *anyopaque, _: Allocator, dir: []const u8, message: []const u8, _: *[]const u8) error{OutOfMemory}!bool {
         const r: *Recorder = @ptrCast(@alignCast(ctx));
-        try r.messages.append(r.gpa, try r.gpa.dupe(u8, message));
         var snap: std.ArrayList(File) = .empty;
         if (r.fs) |fs| {
             var it = fs.map.iterator();
@@ -147,6 +165,16 @@ pub const Recorder = struct {
                 try snap.append(r.gpa, .{ .path = try r.gpa.dupe(u8, e.key_ptr.*[dir.len + 1 ..]), .bytes = try r.gpa.dupe(u8, e.value_ptr.*) });
             }
         }
+        // like git: nothing changed, nothing to commit.
+        if (r.snapshots.items.len > 0 and sameFiles(r.snapshots.items[r.snapshots.items.len - 1], snap.items)) {
+            for (snap.items) |f| {
+                r.gpa.free(f.path);
+                r.gpa.free(f.bytes);
+            }
+            snap.deinit(r.gpa);
+            return true;
+        }
+        try r.messages.append(r.gpa, try r.gpa.dupe(u8, message));
         try r.snapshots.append(r.gpa, try snap.toOwnedSlice(r.gpa));
         return true;
     }

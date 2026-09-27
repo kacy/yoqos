@@ -73,7 +73,7 @@ pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock
         const ok = switch (c.kind) {
             .setting => try settings.apply(a, io, t.root, c.subject, c.to.?, diags),
             .user => try users.apply(a, io, t.root, c, diags),
-            .file => try writeFile(a, io, t.root, files, c.subject, units, diags),
+            .file => if (c.op == .remove) try removeFile(a, io, t.root, c.subject, units, diags) else try writeFile(a, io, t.root, files, c.subject, units, diags),
             else => true,
         };
         if (!ok) return null;
@@ -109,6 +109,25 @@ fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.
         return true;
     if (try exec.run(a, io, then)) |why| {
         try diags.add(.apply_failed, null, "wrote {s}, but {s} failed: {s}", .{ path, then[0], why }, null);
+        return false;
+    }
+    return true;
+}
+
+/// removes a file os generated that nothing asks for now. a mkinitcpio
+/// drop-in going rebuilds the initramfs on a running machine.
+fn removeFile(a: Allocator, io: std.Io, root: []const u8, path: []const u8, live: bool, diags: *diag.List) !bool {
+    const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
+    std.Io.Dir.cwd().deleteFile(io, try fs.path(std.mem.trimStart(u8, path, "/"))) catch |e| switch (e) {
+        error.FileNotFound => {},
+        else => {
+            try diags.add(.apply_failed, null, "can't remove {s}", .{try fs.path(path)}, null);
+            return false;
+        },
+    };
+    if (!live or !std.mem.startsWith(u8, path, "/etc/mkinitcpio.conf.d/")) return true;
+    if (try exec.run(a, io, &.{ "mkinitcpio", "-P" })) |why| {
+        try diags.add(.apply_failed, null, "removed {s}, but mkinitcpio failed: {s}", .{ path, why }, null);
         return false;
     }
     return true;

@@ -3,6 +3,7 @@
 # boots a fresh vm, runs the arch smoke test in it, and stops the vm.
 # usage: tests/vm/test.sh <path to os>
 set -eu
+set -o pipefail
 
 vm=tests/vm/vm.sh
 os=$1
@@ -19,7 +20,9 @@ trap '"$vm" stop' EXIT
 
 # the binary is built against today's arch; bring the image up to date.
 # git is what an os package would depend on, for the config's history.
+# a new kernel needs a reboot before its modules load.
 "$vm" ssh pacman -Syu --noconfirm --noprogressbar --needed git >/dev/null
+"$vm" reboot
 
 "$vm" copy "$os" /usr/local/bin/os
 "$vm" copy tests/arch/smoke.sh /root/smoke.sh

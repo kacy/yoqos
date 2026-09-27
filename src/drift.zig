@@ -11,11 +11,11 @@ const Allocator = std.mem.Allocator;
 
 const path = "var/lib/yoq/drift";
 
-/// records a pacman transaction that touched `packages`, unless it's one
-/// an apply is running. a record that can't be written is dropped: the
-/// hook mustn't fail pacman.
+/// records a pacman transaction that touched `packages`. the hook leaves
+/// out os's own. a record that can't be written is dropped: the hook
+/// mustn't fail pacman.
 pub fn record(a: Allocator, io: std.Io, root: []const u8, time: i64, packages: []const []const u8) !void {
-    if (packages.len == 0 or try journal.unfinished(a, io, root) != null) return;
+    if (packages.len == 0) return;
     try journal.appendLine(a, io, root, path, facts.PacmanChange{ .time = time, .packages = packages });
 }
 
@@ -32,7 +32,7 @@ pub fn since(a: Allocator, io: std.Io, root: []const u8) ![]facts.PacmanChange {
     return out.items;
 }
 
-test "pacman's changes since the last apply, without os's own" {
+test "pacman's changes since the last apply" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
@@ -43,13 +43,15 @@ test "pacman's changes since the last apply, without os's own" {
 
     try record(a, io, root, 10, &.{"nano"});
     try journal.record(a, io, root, 20, "begin", "abc");
-    // os's own transaction runs the hook too.
-    try record(a, io, root, 21, &.{"git"});
     try journal.record(a, io, root, 22, "done", "abc");
     try record(a, io, root, 30, &.{ "htop", "btop" });
+    // an apply cut off halfway doesn't stop pacman's changes counting.
+    try journal.record(a, io, root, 40, "begin", "def");
+    try record(a, io, root, 50, &.{"vim"});
 
     const got = try since(a, io, root);
-    try std.testing.expectEqual(1, got.len);
+    try std.testing.expectEqual(2, got.len);
     try std.testing.expectEqual(30, got[0].time);
     try std.testing.expectEqualStrings("btop", got[0].packages[1]);
+    try std.testing.expectEqualStrings("vim", got[1].packages[0]);
 }

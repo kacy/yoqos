@@ -32,7 +32,9 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         } else if (eql(a, "--dbs")) {
             dbs_dir = it.next() orelse return cli.usageError(ctx, usage_text);
         } else if (eql(a, "--date")) {
-            date = it.next() orelse return cli.usageError(ctx, usage_text);
+            const d = it.next() orelse return cli.usageError(ctx, usage_text);
+            if (!validDate(d)) return cli.usageError(ctx, usage_text);
+            date = d;
         } else return cli.usageError(ctx, usage_text);
     }
     if (!alpm.available) {
@@ -81,6 +83,15 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     try applying.recordGeneration(ctx, outcome, message);
     if (ctx.json) try output.writeDoc(ctx.out, "yoq.update/1", .{ .lock = path, .sync_date = l.sync_date, .packages = l.packages.len, .diff = d, .news = posted });
     return outcome.code;
+}
+
+/// yyyy-mm-dd, the way sync dates are written.
+fn validDate(d: []const u8) bool {
+    if (d.len != 10 or d[4] != '-' or d[7] != '-') return false;
+    for (d, 0..) |ch, i| {
+        if (i != 4 and i != 7 and !std.ascii.isDigit(ch)) return false;
+    }
+    return true;
 }
 
 /// arch news posted after the old lock's date, up to the new one. a feed

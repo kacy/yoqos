@@ -63,15 +63,21 @@ pub fn pathExists(io: std.Io, path: []const u8) bool {
 
 /// replaces the file at `path` in one step, making its directory if
 /// needed, so a crash leaves the old or the new content, never half of
-/// each. `bits`, if given, are the new file's permissions.
+/// each. the new file has mode `bits`, or 0644, whatever the umask, and is
+/// on disk before it takes the old one's place.
 pub fn writeAtomic(io: std.Io, path: []const u8, bytes: []const u8, bits: ?u32) error{WriteFailed}!void {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const tmp = std.fmt.bufPrint(&buf, "{s}.os-tmp", .{path}) catch return error.WriteFailed;
     const cwd = std.Io.Dir.cwd();
     if (std.fs.path.dirnamePosix(path)) |d| cwd.createDirPath(io, d) catch return error.WriteFailed;
-    cwd.writeFile(io, .{ .sub_path = tmp, .data = bytes }) catch return error.WriteFailed;
     errdefer cwd.deleteFile(io, tmp) catch {};
-    if (bits) |m| cwd.setFilePermissions(io, tmp, @enumFromInt(m), .{}) catch return error.WriteFailed;
+    {
+        var f = cwd.createFile(io, tmp, .{}) catch return error.WriteFailed;
+        defer f.close(io);
+        f.writeStreamingAll(io, bytes) catch return error.WriteFailed;
+        f.sync(io) catch return error.WriteFailed;
+    }
+    cwd.setFilePermissions(io, tmp, @enumFromInt(bits orelse 0o644), .{}) catch return error.WriteFailed;
     cwd.rename(tmp, cwd, path, io) catch return error.WriteFailed;
 }
 

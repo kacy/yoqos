@@ -103,6 +103,8 @@ fn saveProviders(ctx: *Context, w: *cli.Work, top: []const u8, picked: []const l
     if (!try change.check(ctx.gpa, ctx.files, top, text, notes, &w.diags)) return false;
     if (!try cli.writeFile(ctx, top, text)) return false;
     if (!ctx.json) for (picked) |p| try ctx.out.print("+ providers.{s} = \"{s}\"\n", .{ p.name, p.chosen });
+    // a choice is kept, and committed, whatever happens after it.
+    try cli.record(ctx, a, top, "choose providers");
     return true;
 }
 

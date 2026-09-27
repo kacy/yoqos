@@ -15,12 +15,16 @@ const lock = @import("lock.zig");
 const sync = @import("sync.zig");
 const Allocator = std.mem.Allocator;
 
-/// the config for what `f` describes, without its packages.
+/// the config for what `f` describes, without its packages. values the
+/// config couldn't hold, like a user name shadow allows but os doesn't,
+/// are left out.
 pub fn fromFacts(a: Allocator, f: *const facts.Facts) !config.Config {
     const at: config.Src = .{ .file = "machine.toml", .line = 0, .column = 0 };
     var c: config.Config = .{ .version = .{ .v = config.supported_version, .src = at } };
     inline for (comptime config.keysOf(config.System)) |field| {
-        if (@field(f, field)) |v| @field(c.system, field) = .{ .v = v, .src = at };
+        if (@field(f, field)) |v| {
+            if (config.systemProblem(field, v) == null) @field(c.system, field) = .{ .v = v, .src = at };
+        }
     }
     // no kernel installed at all, as in a container, is worth saying.
     c.boot.kernel = .{ .v = catalog.no_kernel, .src = at };
@@ -44,9 +48,12 @@ pub fn fromFacts(a: Allocator, f: *const facts.Facts) !config.Config {
         break;
     }
     for (f.users) |u| {
+        if (!u.person() or !config.validUserName(u.name) or config.systemUser(u.name)) continue;
         var user: config.User = .{ .src = at };
         if (u.shell) |sh| user.shell = .{ .v = std.fs.path.basename(sh), .src = at };
-        for (u.groups) |g| try user.groups.add(a, .{ .name = g, .src = at });
+        for (u.groups) |g| {
+            if (config.validUserName(g)) try user.groups.add(a, .{ .name = g, .src = at });
+        }
         try c.users.entries.append(a, .{ .name = u.name, .value = user });
     }
     for (catalog.services) |s| {
@@ -220,6 +227,25 @@ test "hardware without its packages installed stays out of the config" {
     const c = try fromFacts(arena.allocator(), &f);
     try testing.expectEqual(null, c.hardware.cpu);
     try testing.expectEqual(null, c.hardware.gpu);
+}
+
+test "values the config can't hold are left out" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var users = [_]facts.User{
+        .{ .name = "kacy", .uid = 1000, .primary_group = "kacy", .groups = &.{ "-r", "wheel" } },
+        .{ .name = "Guest", .uid = 1001, .primary_group = "Guest" },
+    };
+    const f: facts.Facts = .{ .hostname = "atlas.lan", .locale = "C\nX=1", .users = &users };
+    const c = try fromFacts(arena.allocator(), &f);
+    try testing.expectEqualStrings("atlas.lan", c.system.hostname.?.v);
+    try testing.expectEqual(null, c.system.locale);
+    try testing.expectEqual(1, c.users.entries.items.len);
+    try testing.expectEqual(1, c.users.get("kacy").?.groups.items.items.len);
+    var diags: @import("diag.zig").List = .init(testing.allocator);
+    defer diags.deinit();
+    try config.validate(&c, &diags);
+    try testing.expectEqual(0, diags.items.items.len);
 }
 
 test "imported packages grouped by repository" {

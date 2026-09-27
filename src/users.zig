@@ -7,6 +7,7 @@
 //! it owns in /home stay its own.
 
 const std = @import("std");
+const lists = @import("lists.zig");
 const diag = @import("diag.zig");
 const observe = @import("observe.zig");
 const planner = @import("planner.zig");
@@ -151,11 +152,11 @@ test "users under a root: create, shell, groups, and the same uid again" {
         step("guest", .add, "join wheel"),
     }) |c| try expectOk(try apply(a, io, root, c, &diags), &diags);
     const r: rootfs.Root = .{ .a = a, .io = io, .dir = root };
-    const us = try observe.users(a, try r.read("etc/passwd"), try r.read("etc/group"));
-    try testing.expectEqual(1, us.len);
-    try testing.expectEqualStrings("guest", us[0].name);
-    try testing.expectEqualStrings("/usr/bin/zsh", us[0].shell.?);
-    try testing.expectEqualStrings("wheel", us[0].groups[0]);
+    const all = try observe.users(a, try r.read("etc/passwd"), try r.read("etc/group"));
+    const guest = lists.find(all, "name", "guest").?;
+    try testing.expect(guest.person());
+    try testing.expectEqualStrings("/usr/bin/zsh", guest.shell.?);
+    try testing.expectEqualStrings("wheel", guest.groups[0]);
     const uid = lookup(try r.read(ids_path), "guest").?;
 
     try expectOk(try apply(a, io, root, step("guest", .remove, "leave wheel"), &diags), &diags);
@@ -168,7 +169,6 @@ test "users under a root: create, shell, groups, and the same uid again" {
     try tmp.dir.writeFile(io, .{ .sub_path = "etc/passwd", .data = "root:x:0:0::/root:/bin/sh\nother:x:1001:1001::/:/bin/sh\n" });
     diags.items.clearRetainingCapacity();
     try expectOk(try apply(a, io, root, step("guest", .add, "new user"), &diags), &diags);
-    const again = try observe.users(a, try r.read("etc/passwd"), "");
-    try testing.expectEqualStrings("guest", again[1].name);
-    try testing.expectEqualStrings(uid, try std.fmt.allocPrint(a, "{d}", .{again[1].uid}));
+    const again = lists.find(try observe.users(a, try r.read("etc/passwd"), ""), "name", "guest").?;
+    try testing.expectEqualStrings(uid, try std.fmt.allocPrint(a, "{d}", .{again.uid}));
 }

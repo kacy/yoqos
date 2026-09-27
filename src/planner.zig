@@ -107,7 +107,8 @@ pub fn wants(a: Allocator, c: *const config.Config) ![]const Want {
     if (c.hardware.gpu) |v| for (catalog.gpuPackages(v.v)) |n| try addWant(a, &out, n, "hardware.gpu", v.src);
     if (c.desktop.session) |v| for (catalog.sessionPackages(v.v)) |n| try addWant(a, &out, n, "desktop.session", v.src);
     if (c.desktop.audio) |v| for (catalog.audioPackages(v.v)) |n| try addWant(a, &out, n, "desktop.audio", v.src);
-    if (c.desktop.login) |v| for (catalog.loginPackages(v.v)) |n| try addWant(a, &out, n, "desktop.login", v.src);
+    // a tty login without a session is a plain console: nothing to start.
+    if (c.desktop.login) |v| if (v.v != .tty or c.desktop.session != null) for (catalog.loginPackages(v.v)) |n| try addWant(a, &out, n, "desktop.login", v.src);
     for (c.services.entries.items) |e| {
         if (!e.value.isEnabled()) continue;
         try addWant(a, &out, e.value.packageFor(e.name), try std.fmt.allocPrint(a, "services.{s}", .{e.name}), e.value.src);
@@ -224,7 +225,8 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
         const have = f.unit(unit);
         if (enabled) {
             const is_enabled = if (have) |u| u.enabled else false;
-            const is_active = if (have) |u| u.active else false;
+            // a oneshot that ran and finished well counts as running.
+            const is_active = if (have) |u| u.active or u.ran else false;
             if (!is_enabled) {
                 try units.append(a, .{ .op = .add, .kind = .unit, .subject = unit, .to = if (is_active) "enable" else "enable, start", .cause = cause });
             } else if (!is_active) {
@@ -379,13 +381,21 @@ pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts
     return out.items;
 }
 
-/// the paths of every file the config might want, for the observer to
-/// hash.
+/// files os writes from other keys, each starting with a "written by os"
+/// line. one still there that nothing asks for any more is removed. the
+/// session's own config isn't here: it's the user's file.
+const generated_paths = [_][]const u8{ sysctl_path, modules_path, greetd_config_path, tty_session_path, nvidia_initramfs_path };
+
+/// the paths of every file the config might want, and every file os may
+/// have generated, for the observer to hash.
 pub fn filePaths(a: Allocator, c: *const config.Config) ![]const []const u8 {
     const want = try desiredFiles(a, c, &.{});
-    const out = try a.alloc([]const u8, want.len);
-    for (want, out) |d, *p| p.* = d.path;
-    return out;
+    var out: std.ArrayList([]const u8) = .empty;
+    for (want) |d| try out.append(a, d.path);
+    for (generated_paths) |p| {
+        if (!lists.contains(out.items, p)) try out.append(a, p);
+    }
+    return out.items;
 }
 
 /// files: written when missing or when their content differs, and their
@@ -417,6 +427,18 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
             ch.to = try std.fmt.allocPrint(a, "write, mode {s}", .{mode});
         }
         try files.append(a, ch);
+    }
+    for (generated_paths) |p| {
+        if (lists.find(want, "path", p) != null) continue;
+        const have = f.file(p) orelse continue;
+        if (!have.ours) continue;
+        try files.append(a, .{
+            .op = .remove,
+            .kind = .file,
+            .subject = p,
+            .to = "remove: os wrote it, and nothing asks for it now",
+            .reboot = if (std.mem.eql(u8, p, nvidia_initramfs_path)) "initramfs" else null,
+        });
     }
     lists.sortByField(Change, "subject", files.items);
     try changes.appendSlice(a, files.items);
@@ -1052,4 +1074,31 @@ test "kernel modules to load at boot" {
     try testing.expectEqual(1, want.len);
     try testing.expectEqualStrings(modules_path, want[0].path);
     try testing.expectEqualStrings("# written by os from [boot] modules in the config. edits here are overwritten.\ni2c-dev\nnct6775\n", want[0].content);
+}
+
+test "a file os generated goes when nothing asks for it, but one it didn't write stays" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("[boot]\nkernel = \"none\"\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
+    var files = [_]facts.File{
+        .{ .path = sysctl_path, .sha256 = "x", .mode = "0644", .ours = true },
+        .{ .path = greetd_config_path, .sha256 = "y", .mode = "0644", .ours = false },
+    };
+    const f: facts.Facts = .{ .files = &files };
+    const p = (try plan(t.a(), &c, &l, &f, &t.diags)).?;
+    try testing.expectEqual(1, p.changes.len);
+    try testing.expectEqual(Op.remove, p.changes[0].op);
+    try testing.expectEqualStrings(sysctl_path, p.changes[0].subject);
+}
+
+test "a oneshot service that ran and finished is as it should be" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("[boot]\nkernel = \"none\"\n[services.setup]\nunit = \"setup.service\"\npackage = \"setup\"\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{lockPkg("setup", "1", &.{})} };
+    var have = [_]facts.Package{.{ .name = "setup", .version = "1" }};
+    var units = [_]facts.Unit{.{ .name = "setup.service", .enabled = true, .ran = true }};
+    const f: facts.Facts = .{ .packages = &have, .units = &units };
+    try testing.expect((try plan(t.a(), &c, &l, &f, &t.diags)).?.empty());
 }

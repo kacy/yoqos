@@ -19,6 +19,7 @@ const facts = @import("../facts.zig");
 const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
 const locking = @import("lock.zig");
+const diag = @import("../diag.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
@@ -71,15 +72,25 @@ pub fn blocker(ctx: *Context) ?[]const u8 {
 /// older generation's copy, which os remakes from its record.
 fn applyBlocker(ctx: *Context) ?[]const u8 {
     if (blocker(ctx)) |why| return why;
-    if (cli.eql(ctx.root, "/") and bootedCopy(ctx.io)) return "this boot runs a copy of an older generation from the boot menu, and os remakes that copy from its record. `os rollback --to-booted` keeps it as a generation of its own; apply works after a reboot into it";
-    return null;
+    if (!cli.eql(ctx.root, "/")) return null;
+    return switch (bootState(ctx.io)) {
+        .normal => null,
+        .copy => "this boot runs a copy of an older generation from the boot menu, and os remakes that copy from its record. `os rollback --to-booted` keeps it as a generation of its own; apply works after a reboot into it",
+        .pending => "a new generation, from a rollback or enable-rollback, is waiting for the next boot, and an apply now would land on the root being left. reboot first",
+    };
 }
 
-fn bootedCopy(io: std.Io) bool {
+/// how this boot stands with generations: running a menu copy of an
+/// older one, or with a newer one waiting for the next boot.
+fn bootState(io: std.Io) enum { normal, copy, pending } {
     var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     defer arena.deinit();
-    const subvol = observe.rootSubvol(arena.allocator(), io) catch return false;
-    return generation.bootCopyOf(subvol orelse return false) != null;
+    const a = arena.allocator();
+    const subvol = (observe.rootSubvol(a, io) catch return .normal) orelse return .normal;
+    if (generation.bootCopyOf(subvol) != null) return .copy;
+    const records = gens.readRecords(a, io, "/var") catch return .normal;
+    if (records.len == 0) return .normal;
+    return if (std.mem.eql(u8, records[records.len - 1].root, subvol[1..])) .normal else .pending;
 }
 
 /// says `why`, if there is one, for commands that can't do anything else.
@@ -130,12 +141,14 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.Render
     const hash = try p.hash();
     try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "begin", &hash);
     const files = try planner.desiredFiles(a, result.state.config(), &result.facts);
+    const problems = w.diags.items.items.len;
     const done = try apply.run(a, ctx.io, p, &result.state.lock, files, target, units, &w.diags) orelse {
         try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "failed", &hash);
         return Outcome.failed(&w);
     };
     try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "done", &hash);
-    const code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units);
+    var code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units);
+    if (w.diags.items.items.len > problems) code = try scriptsFailed(ctx, w.diags.items.items[problems..]);
     if (units and !ctx.json and changesPackages(p)) try offerRestarts(ctx, yes);
     return .{
         .code = code,
@@ -143,6 +156,22 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.Render
         .changed_generation = cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol),
         .needs_reboot = (try p.rebootReasons(a)).len > 0,
     };
+}
+
+/// an apply that worked can still leave `problems`: hooks or package
+/// scripts that failed after the packages changed, like a mkinitcpio hook.
+/// they're warnings, since the change is made, but the run fails so nobody
+/// takes it for a clean one.
+fn scriptsFailed(ctx: *Context, problems: []const diag.Diagnostic) !u8 {
+    for (problems) |d| {
+        try ctx.err.print("warning: {s}\n", .{d.message});
+        if (d.hint) |out| {
+            var lines = std.mem.splitScalar(u8, out, '\n');
+            while (lines.next()) |line| try ctx.err.print("   | {s}\n", .{line});
+        }
+    }
+    try ctx.err.writeAll("os: the packages changed, but a hook or package script failed. fix what it says, then run it again or reinstall the package.\n");
+    return 1;
 }
 
 /// after a run that changed a machine with generations, and after the
@@ -178,10 +207,10 @@ fn armTrial(ctx: *Context, a: Allocator, boot: facts.Boot) !void {
     if (records.len < 2) return;
     const n = records[records.len - 1].n;
     // with a trial already waiting for a reboot, the fallback stays the
-    // generation before that one: the last that booted.
-    const pending = try gens.envValue(a, ctx.io, boot.esp.?, "yoq_default");
-    const last = records[records.len - 2].n;
-    const before = if (pending != null and std.mem.startsWith(u8, pending.?, "gen-")) std.fmt.parseInt(u32, pending.?["gen-".len..], 10) catch last else last;
+    // generation before that one, the last that booted, while it's there.
+    const pending = try gens.trialFallback(a, ctx.io, boot.esp.?);
+    const before = if (pending != 0 and generation.find(records, pending) != null) pending else records[records.len - 2].n;
+    _ = try gens.editEnv(a, ctx.io, boot.esp.?, "unset", &.{"yoq_tried"});
     if (try gens.editEnv(a, ctx.io, boot.esp.?, "set", &.{
         "yoq_next=head",
         try std.fmt.allocPrint(a, "yoq_default=gen-{d}", .{before}),
@@ -376,7 +405,7 @@ test "apply installs, sets, and removes, and the plan comes back empty" {
     const update = [_][:0]const u8{ "--root", root, "update", "--dbs", cache, "--date", "2026-09-25" };
     t.input = "n\n";
     try t.exec(&update);
-    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "nothing changed.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "the machine is as it was.") != null);
     try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.git]") == null);
     t.input = null;
     try t.exec(&(update ++ .{"--yes"}));
@@ -384,4 +413,35 @@ test "apply installs, sets, and removes, and the plan comes back empty" {
     try std.testing.expectEqual(0, t.code);
     try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.git]") != null);
     try cwd.access(io, try std.fs.path.join(a, &.{ root, "usr/share/doc/git/README" }), .{});
+}
+
+test "a hook that fails after the packages change fails the apply, with a warning" {
+    if (!alpm.available) return error.SkipZigTest;
+    if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const m = try @import("../test_helpers.zig").FixtureMachine.init(a, tmp);
+    const hooks = try std.fs.path.join(a, &.{ m.root, "etc/pacman.d/hooks" });
+    try std.Io.Dir.cwd().createDirPath(io, hooks);
+    try std.Io.Dir.cwd().writeFile(io, .{
+        .sub_path = try std.fs.path.join(a, &.{ hooks, "90-fails.hook" }),
+        .data = "[Trigger]\nOperation = Install\nType = Package\nTarget = git\n\n[Action]\nWhen = PostTransaction\nExec = /usr/bin/no-such-command\n",
+    });
+
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put(m.conf_path, m.conf);
+    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n");
+    try t.exec(&.{ "--root", m.root, "update", "--dbs", m.cache, "--date", "2026-09-25", "--no-apply" });
+    try std.testing.expectEqual(0, t.code);
+    try t.exec(&.{ "--root", m.root, "apply", "--yes" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "warning: hook 90-fails.hook: command failed to execute correctly\n   | call to execv failed"));
+    try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "os: the packages changed, but a hook or package script failed.") != null);
+    // the packages did change.
+    try std.Io.Dir.cwd().access(io, try std.fs.path.join(a, &.{ m.root, "usr/share/doc/git/README" }), .{});
 }

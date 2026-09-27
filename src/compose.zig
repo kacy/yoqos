@@ -153,11 +153,19 @@ const Loader = struct {
     }
 
     /// clears a key that an include set. the path names a key the way the
-    /// config file would, like "desktop.audio" or "users.guest".
+    /// config file would, like "desktop.audio" or "users.guest". a quoted
+    /// part, like sysctl."vm.swappiness", keeps its dots.
     fn unset(l: *Loader, c: *Config, u: config.Str) !void {
         var segs: std.ArrayList([]const u8) = .empty;
-        var it = std.mem.splitScalar(u8, u.v, '.');
-        while (it.next()) |seg| try segs.append(l.a, seg);
+        var start: usize = 0;
+        var in_quotes = false;
+        for (u.v, 0..) |ch, i| {
+            if (ch == '"') in_quotes = !in_quotes;
+            if (ch != '.' or in_quotes) continue;
+            try segs.append(l.a, unquote(u.v[start..i]));
+            start = i + 1;
+        }
+        try segs.append(l.a, unquote(u.v[start..]));
         if (!clear(Config, c, segs.items)) {
             try l.diags.add(.bad_value, u.src, "\"{s}\" isn't a key that unset can clear", .{u.v}, "name a key like \"desktop.audio\" or \"users.guest\"");
         }
@@ -178,12 +186,26 @@ fn clear(comptime T: type, target: ?*T, segs: []const []const u8) bool {
     }
     if (T == config.Set or @typeInfo(T) == .optional) return false;
     if (comptime config.isNamed(T)) {
-        if (segs.len == 1) {
-            if (target) |t| _ = t.remove(segs[0]);
-            return true;
+        // names may hold dots, like "vm.swappiness": the longest run of
+        // segments that names an entry wins.
+        if (target) |t| {
+            var k = segs.len;
+            while (k > 0) : (k -= 1) {
+                for (t.entries.items) |*e| {
+                    if (!joinedEql(e.name, segs[0..k])) continue;
+                    if (k == segs.len) {
+                        _ = t.remove(e.name);
+                        return true;
+                    }
+                    if (comptime config.isVal(T.Value)) break;
+                    return clear(T.Value, &e.value, segs[k..]);
+                }
+            }
         }
+        // no such entry: nothing to clear, but the path is still checked.
+        if (segs.len == 1) return true;
         if (comptime config.isVal(T.Value)) return false;
-        return clear(T.Value, if (target) |t| t.get(segs[0]) else null, segs[1..]);
+        return clear(T.Value, null, segs[1..]);
     }
     inline for (comptime config.keysOf(T)) |name| {
         if (std.mem.eql(u8, segs[0], name)) {
@@ -191,6 +213,25 @@ fn clear(comptime T: type, target: ?*T, segs: []const []const u8) bool {
         }
     }
     return false;
+}
+
+fn unquote(s: []const u8) []const u8 {
+    if (s.len >= 2 and s[0] == '"' and s[s.len - 1] == '"') return s[1 .. s.len - 1];
+    return s;
+}
+
+/// whether `name` is `segs` joined with dots.
+fn joinedEql(name: []const u8, segs: []const []const u8) bool {
+    var rest = name;
+    for (segs, 0..) |s, i| {
+        if (i > 0) {
+            if (rest.len == 0 or rest[0] != '.') return false;
+            rest = rest[1..];
+        }
+        if (!std.mem.startsWith(u8, rest, s)) return false;
+        rest = rest[s.len..];
+    }
+    return rest.len == 0;
 }
 
 /// lays `src` over `dst`: sets merge, named tables merge entry by entry, and
@@ -480,6 +521,35 @@ test "unset reaches every kind of key" {
     try testing.expectEqualStrings("zsh", c.users.get("kacy").?.shell.?.v);
     try testing.expectEqual(0, c.users.get("kacy").?.groups.items.items.len);
     try testing.expectEqualStrings("other.service", c.services.get("custom").?.unit.?.v);
+}
+
+test "unset finds names with dots in them" {
+    var r: Run = .{};
+    defer r.deinit();
+    try r.fs.put("base.toml",
+        \\[sysctl]
+        \\"vm.swappiness" = 10
+        \\"vm.dirty_ratio" = 5
+        \\"kernel.printk" = "3 3 3 3"
+        \\[files."/etc/motd.d/x.conf"]
+        \\text = "hi\n"
+        \\[files."/etc/issue"]
+        \\text = "atlas\n"
+        \\mode = "0600"
+        \\
+    );
+    try r.fs.put("machine.toml",
+        \\include = ["base.toml"]
+        \\unset = ["sysctl.vm.swappiness", "sysctl.\"kernel.printk\"", "files./etc/motd.d/x.conf", "files./etc/issue.mode"]
+        \\
+    );
+    const c = try r.load("machine.toml");
+    try r.expectClean();
+    try testing.expectEqual(null, c.sysctl.get("vm.swappiness"));
+    try testing.expectEqual(null, c.sysctl.get("kernel.printk"));
+    try testing.expectEqualStrings("5", c.sysctl.get("vm.dirty_ratio").?.v.text);
+    try testing.expectEqual(null, c.files.get("/etc/motd.d/x.conf"));
+    try testing.expectEqualStrings("0644", c.files.get("/etc/issue").?.modeOf());
 }
 
 test "unset rejects paths that aren't keys" {

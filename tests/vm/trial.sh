@@ -11,7 +11,7 @@ show_env
 "$vm" reboot
 settled
 check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'the default now'" 1
-check "grub-editenv $VM_ESP/yoq/grubenv list | grep -c -e ^yoq_trial -e ^yoq_default || true" 0
+check "grub-editenv $VM_ESP/yoq/grubenv list > /tmp/env && { grep -c -e ^yoq_trial -e ^yoq_default /tmp/env || true; }" 0
 
 # an unhealthy trial: a service the config turns on that only starts
 # while a marker file exists. the trial boot runs without the marker.
@@ -30,7 +30,7 @@ check "findmnt -no FSROOT /" "/@roots/boot-$before"
 # and says what happened.
 settled
 check "/usr/local/bin/os history | tail -n 1 | grep -c 'fell back from'" 1
-check "grub-editenv $VM_ESP/yoq/grubenv list | grep -c -e ^yoq_trial -e ^yoq_default || true" 0
+check "grub-editenv $VM_ESP/yoq/grubenv list > /tmp/env && { grep -c -e ^yoq_trial -e ^yoq_default /tmp/env || true; }" 0
 check "/usr/local/bin/os status | grep -c '^note: generation'" 1
 check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 

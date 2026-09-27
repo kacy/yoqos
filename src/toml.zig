@@ -527,7 +527,11 @@ const Parser = struct {
             'u', 'U' => {
                 const n: usize = if (e == 'u') 4 else 8;
                 if (p.i + n > p.src.len) return p.fail(.toml_syntax, at, "unfinished unicode escape", .{});
-                const cp = std.fmt.parseInt(u21, p.src[p.i .. p.i + n], 16) catch
+                const digits = p.src[p.i .. p.i + n];
+                for (digits) |d| {
+                    if (!std.ascii.isHex(d)) return p.fail(.toml_syntax, at, "invalid unicode escape", .{});
+                }
+                const cp = std.fmt.parseInt(u21, digits, 16) catch
                     return p.fail(.toml_syntax, at, "invalid unicode escape", .{});
                 var buf: [4]u8 = undefined;
                 const len = std.unicode.utf8Encode(cp, &buf) catch
@@ -1116,6 +1120,9 @@ test "invalid documents" {
         "a = '''x''''''\n",
         "\"\"\"key\"\"\" = 1\n",
         "a = \"\\uD800\"\n",
+        "a = \"\\u+041\"\n",
+        "a = \"\\u_041\"\n",
+        "a = \"\\U+001F600\"\n",
         "a = tru\n",
         "a = truex\n",
         "a = [1 2]\n",

@@ -117,11 +117,8 @@ pub fn addToList(a: Allocator, text_in: []const u8, path: []const []const u8, ke
     const q = try quoted(a, item);
     const list = try std.fmt.allocPrint(a, "[{s}]", .{q});
 
-    const t = d.table(path) orelse return try appendSection(a, text, path, key, list);
-    const v = t.get(key) orelse {
-        const line = try std.fmt.allocPrint(a, "{s} = {s}\n", .{ try keyText(a, key), list });
-        return try splice(a, text, d.newKeyLine(t), 0, line);
-    };
+    const t = d.table(path) orelse return try addKey(a, &d, path, key, list);
+    const v = t.get(key) orelse return try addKey(a, &d, path, key, list);
     if (v.data != .array) return error.BadToml;
     const items = v.data.array.items.items;
     for (items) |it| {
@@ -134,6 +131,19 @@ pub fn addToList(a: Allocator, text_in: []const u8, path: []const []const u8, ke
     const last = items[items.len - 1];
     if (std.mem.indexOfScalar(u8, text[open..close], '\n') == null) {
         return try splice(a, text, last.span.end, 0, try std.fmt.allocPrint(a, ", {s}", .{q}));
+    }
+
+    // the last item shares the closing bracket's line: the new item goes
+    // right after it, on its own line if the last item is on its own line.
+    if (std.mem.indexOfScalar(u8, text[last.span.end..close], '\n') == null) {
+        const indent = text[d.lineStart(last.span.start.offset)..last.span.start.offset];
+        const sep = if (std.mem.trim(u8, indent, " \t").len == 0)
+            try std.fmt.allocPrint(a, "\n{s}", .{indent})
+        else
+            " ";
+        const comma = std.mem.indexOfScalarPos(u8, text[0..close], last.span.end, ',');
+        if (comma) |c| return try splice(a, text, c + 1, 0, try std.fmt.allocPrint(a, "{s}{s}", .{ sep, q }));
+        return try splice(a, text, last.span.end, 0, try std.fmt.allocPrint(a, ",{s}{s}", .{ sep, q }));
     }
 
     // a list over several lines: a new line before the closing bracket,
@@ -166,9 +176,15 @@ fn skipBlanks(text: []const u8, from: usize, limit: usize) usize {
     return i;
 }
 
-/// removes `item` from the string list `key` in the table at `path`.
+/// removes every `item` from the string list `key` in the table at `path`.
 /// returns null if it isn't there.
 pub fn removeFromList(a: Allocator, text: []const u8, path: []const []const u8, key: []const u8, item: []const u8) Error!?[]u8 {
+    var out: ?[]u8 = null;
+    while (try removeOne(a, out orelse text, path, key, item)) |t| out = t;
+    return out;
+}
+
+fn removeOne(a: Allocator, text: []const u8, path: []const []const u8, key: []const u8, item: []const u8) Error!?[]u8 {
     var d = try Doc.init(a, text);
     defer d.deinit();
     const t = d.table(path) orelse return null;
@@ -215,15 +231,24 @@ fn setKey(a: Allocator, text_in: []const u8, path: []const []const u8, key: []co
     const text = try ensureNewline(a, text_in);
     var d = try Doc.init(a, text);
     defer d.deinit();
-    const k = try keyText(a, key);
+    if (d.table(path)) |t| {
+        if (t.get(key)) |v| {
+            const old = text[v.span.start.offset..v.span.end];
+            if (std.mem.eql(u8, old, value)) return null;
+            return try splice(a, text, v.span.start.offset, old.len, value);
+        }
+    }
+    return try addKey(a, &d, path, key, value);
+}
 
+/// adds `key = value`, a key the table at `path` doesn't have yet, written
+/// the way the table is: in its braces, as another dotted key, or on a new
+/// line. a missing table gets a section at the end.
+fn addKey(a: Allocator, d: *const Doc, path: []const []const u8, key: []const u8, value: []const u8) Error![]u8 {
+    const text = d.text;
+    const k = try keyText(a, key);
     const found = d.find(path) orelse return try appendSection(a, text, path, key, value);
     const t = found.table;
-    if (t.get(key)) |v| {
-        const old = text[v.span.start.offset..v.span.end];
-        if (std.mem.eql(u8, old, value)) return null;
-        return try splice(a, text, v.span.start.offset, old.len, value);
-    }
     switch (t.origin) {
         .inline_table, .inline_dotted => {
             const v = found.value.?;
@@ -327,6 +352,16 @@ test "add to a list over several lines" {
     );
 }
 
+test "add to a list whose last item shares the closing bracket's line" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectEdit(addToList(a, "packages = [\n  \"base\",\n  \"linux-firmware\"]\n", &.{}, "packages", "git"), "packages = [\n  \"base\",\n  \"linux-firmware\",\n  \"git\"]\n");
+    try expectEdit(addToList(a, "packages = [\"base\",\n  \"nano\"]  # tools\n", &.{}, "packages", "git"), "packages = [\"base\",\n  \"nano\",\n  \"git\"]  # tools\n");
+    try expectEdit(addToList(a, "packages = [\n  \"base\", \"nano\"]\n", &.{}, "packages", "git"), "packages = [\n  \"base\", \"nano\", \"git\"]\n");
+    try expectEdit(addToList(a, "packages = [\n  \"base\",\n  \"nano\", ]\n", &.{}, "packages", "git"), "packages = [\n  \"base\",\n  \"nano\",\n  \"git\" ]\n");
+}
+
 test "add creates the list after version and include" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -341,6 +376,9 @@ test "add to [remove], creating it" {
     const a = arena.allocator();
     try expectEdit(addToList(a, "packages = [\"git\"]\n", &.{"remove"}, "packages", "nano"), "packages = [\"git\"]\n\n[remove]\npackages = [\"nano\"]\n");
     try expectEdit(addToList(a, "[remove]\naur = [\"x\"]\n\n[system]\n", &.{"remove"}, "packages", "nano"), "[remove]\naur = [\"x\"]\npackages = [\"nano\"]\n\n[system]\n");
+    // inline and dotted forms
+    try expectEdit(addToList(a, "remove = { aur = [] }\npackages = [\"git\"]\n", &.{"remove"}, "packages", "nano"), "remove = { aur = [], packages = [\"nano\"] }\npackages = [\"git\"]\n");
+    try expectEdit(addToList(a, "remove.aur = []\npackages = [\"git\"]\n", &.{"remove"}, "packages", "nano"), "remove.aur = []\nremove.packages = [\"nano\"]\npackages = [\"git\"]\n");
 }
 
 test "remove from lists" {
@@ -352,6 +390,7 @@ test "remove from lists" {
     try expectEdit(removeFromList(a, "packages = [\"nano\"]\n", &.{}, "packages", "nano"), "packages = []\n");
     try expectEdit(removeFromList(a, "packages = [\n  \"git\",\n  \"nano\",  # editor\n  \"vim\",\n]\n", &.{}, "packages", "nano"), "packages = [\n  \"git\",\n  \"vim\",\n]\n");
     try expectEdit(removeFromList(a, "packages = [\"git\"]\n", &.{}, "packages", "nano"), null);
+    try expectEdit(removeFromList(a, "packages = [\"base\",\"nano\",\"nano\"]\n", &.{}, "packages", "nano"), "packages = [\"base\"]\n");
 }
 
 test "enable and disable services" {

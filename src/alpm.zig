@@ -13,6 +13,10 @@ const diag = @import("diag.zig");
 const Allocator = std.mem.Allocator;
 
 pub const available = build_options.alpm;
+
+/// set in the environment of os's own transactions, so the drift hook,
+/// which pacman runs as a child, can tell them from pacman run by hand.
+pub const own_env = "YOQ_APPLY";
 const impl = if (available) @import("alpm_c.zig") else struct {};
 
 pub const Error = error{ AlpmUnavailable, OutOfMemory };
@@ -100,7 +104,8 @@ pub const Transaction = struct {
 
 /// runs `t`: installs and upgrades first, then removals, then reasons.
 /// returns false, with reasons in `diags`, if any step failed; steps
-/// already committed stay committed.
+/// already committed stay committed. a hook or package script that fails
+/// doesn't stop a transaction: it returns true with the failure in `diags`.
 pub fn transact(a: Allocator, io: std.Io, t: Transaction, diags: *diag.List) Error!bool {
     return if (comptime available) impl.transact(a, io, t, diags) else error.AlpmUnavailable;
 }
@@ -246,6 +251,23 @@ test "missing packages, missing dependencies, and conflicts" {
     try t3.expectDiag(.unresolvable, "vim and neovim conflict");
 }
 
+test "copied sync databases look old to pacman -Sy, with no stale signature" {
+    if (!available) return error.SkipZigTest;
+    var t: Fixture = .{};
+    defer t.deinit();
+    try t.init();
+    const a = t.arena.allocator();
+    const cwd = std.Io.Dir.cwd();
+    const sync_dir = try std.fs.path.join(a, &.{ t.scratch, "db", "sync" });
+    try cwd.createDirPath(testing.io, sync_dir);
+    const sig = try std.fs.path.join(a, &.{ sync_dir, "core.db.sig" });
+    try cwd.writeFile(testing.io, .{ .sub_path = sig, .data = "old" });
+    _ = (try t.resolve(&.{"git"}, &.{})).lock;
+    const st = try cwd.statFile(testing.io, try std.fs.path.join(a, &.{ sync_dir, "core.db" }), .{});
+    try testing.expectEqual(0, st.mtime.nanoseconds);
+    try testing.expectError(error.FileNotFound, cwd.access(testing.io, sig, .{}));
+}
+
 test "local packages from a database directory" {
     if (!available) return error.SkipZigTest;
     var t: Fixture = .{};
@@ -282,6 +304,44 @@ test "without -Dalpm everything says so" {
     try testing.expectError(error.AlpmUnavailable, localPackages(testing.allocator, "/", "/var/lib/pacman", &diags));
 }
 
+/// an empty root with a local database, and a transaction on it that gets
+/// packages from the fixture repos.
+fn fixtureRoot(t: *Fixture) !Transaction {
+    const a = t.arena.allocator();
+    const io = testing.io;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = buf[0..try std.process.currentPath(io, &buf)];
+    const root = try std.fs.path.join(a, &.{ cwd, t.scratch, "target" });
+    const dbpath = try std.fs.path.join(a, &.{ root, "var/lib/pacman" });
+    const local = try std.fs.path.join(a, &.{ dbpath, "local" });
+    try std.Io.Dir.cwd().createDirPath(io, local);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fs.path.join(a, &.{ local, "ALPM_DB_VERSION" }), .data = "9\n" });
+
+    const dbs = try a.alloc(SyncDb, fixture_dbs.len);
+    for (fixture_dbs, dbs) |f, *d| {
+        const server = try std.fmt.allocPrint(a, "file://{s}/tests/alpm/repos/{s}", .{ cwd, f.name });
+        d.* = .{ .name = f.name, .path = f.path, .servers = try a.dupe([]const u8, &.{server}) };
+    }
+    return .{ .target = .{
+        .root = root,
+        .dbpath = dbpath,
+        .dbs = dbs,
+        .cachedir = try std.fs.path.join(a, &.{ root, "var/cache/pkg" }),
+        .gpgdir = null,
+    } };
+}
+
+/// installs `wants` and what they need into the fixture root.
+fn installFixture(t: *Fixture, base: Transaction, wants: []const []const u8) !void {
+    var install = base;
+    install.install = (try t.resolve(wants, &.{})).lock.packages;
+    install.explicit = wants;
+    if (!try transact(t.arena.allocator(), testing.io, install, &t.diags)) {
+        for (t.diags.items.items) |d| std.debug.print("{s}\n", .{d.message});
+        return error.TestUnexpectedResult;
+    }
+}
+
 test "install a locked closure into a root, then remove part of it" {
     if (!available) return error.SkipZigTest;
     // installing sets file ownership, which takes root.
@@ -292,32 +352,14 @@ test "install a locked closure into a root, then remove part of it" {
     const a = t.arena.allocator();
     const io = testing.io;
     const l = (try t.resolve(&.{"git"}, &.{})).lock;
+    const base = try fixtureRoot(&t);
+    const root = base.target.root;
+    const dbpath = base.target.dbpath;
 
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd = buf[0..try std.process.currentPath(io, &buf)];
-    const root = try std.fs.path.join(a, &.{ cwd, t.scratch, "target" });
-    const dbpath = try std.fs.path.join(a, &.{ root, "var/lib/pacman" });
-    const local = try std.fs.path.join(a, &.{ dbpath, "local" });
-    try std.Io.Dir.cwd().createDirPath(io, local);
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fs.path.join(a, &.{ local, "ALPM_DB_VERSION" }), .data = "9\n" });
-
-    var dbs: [fixture_dbs.len]SyncDb = undefined;
-    for (fixture_dbs, &dbs) |f, *d| {
-        const server = try std.fmt.allocPrint(a, "file://{s}/tests/alpm/repos/{s}", .{ cwd, f.name });
-        d.* = .{ .name = f.name, .path = f.path, .servers = try a.dupe([]const u8, &.{server}) };
-    }
     var deps: std.ArrayList([]const u8) = .empty;
     for (l.packages) |p| {
         if (!std.mem.eql(u8, p.name, "git")) try deps.append(a, p.name);
     }
-    const base: Transaction = .{ .target = .{
-        .root = root,
-        .dbpath = dbpath,
-        .dbs = &dbs,
-        .cachedir = try std.fs.path.join(a, &.{ root, "var/cache/pkg" }),
-        .gpgdir = null,
-    } };
-
     var install = base;
     install.install = l.packages;
     install.explicit = &.{"git"};
@@ -341,4 +383,63 @@ test "install a locked closure into a root, then remove part of it" {
     try testing.expect(try transact(a, io, remove, &t.diags));
     have = (try localPackages(a, root, dbpath, &t.diags)).?;
     try testing.expectEqual(l.packages.len - 5, have.len);
+}
+
+test "a package replaces one it conflicts with that the plan removes" {
+    if (!available) return error.SkipZigTest;
+    if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
+    var t: Fixture = .{};
+    defer t.deinit();
+    try t.init();
+    const a = t.arena.allocator();
+    const base = try fixtureRoot(&t);
+    try installFixture(&t, base, &.{"neovim"});
+
+    var swap = base;
+    swap.install = (try t.resolve(&.{"vim"}, &.{})).lock.packages;
+    swap.remove = &.{ "neovim", "luajit", "libuv" };
+    if (!try transact(a, testing.io, swap, &t.diags)) {
+        for (t.diags.items.items) |d| std.debug.print("{s}\n", .{d.message});
+        return error.TestUnexpectedResult;
+    }
+    var f: facts.Facts = .{ .packages = (try localPackages(a, base.target.root, base.target.dbpath, &t.diags)).? };
+    f.normalize();
+    try testing.expect(f.package("vim") != null);
+    try testing.expect(f.package("neovim") == null);
+    try testing.expect(f.package("luajit") == null);
+
+    // a conflict with a package the plan keeps still fails.
+    var t2: Fixture = .{};
+    defer t2.deinit();
+    try t2.init();
+    const base2 = try fixtureRoot(&t2);
+    try installFixture(&t2, base2, &.{"neovim"});
+    var keep = base2;
+    keep.install = (try t2.resolve(&.{"vim"}, &.{})).lock.packages;
+    try testing.expect(!try transact(t2.arena.allocator(), testing.io, keep, &t2.diags));
+}
+
+test "a hook that fails after packages change is reported, with its output" {
+    if (!available) return error.SkipZigTest;
+    if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
+    var t: Fixture = .{};
+    defer t.deinit();
+    try t.init();
+    const a = t.arena.allocator();
+    const base = try fixtureRoot(&t);
+    const hooks = try std.fs.path.join(a, &.{ base.target.root, "etc/pacman.d/hooks" });
+    try std.Io.Dir.cwd().createDirPath(testing.io, hooks);
+    try std.Io.Dir.cwd().writeFile(testing.io, .{
+        .sub_path = try std.fs.path.join(a, &.{ hooks, "90-fails.hook" }),
+        .data = "[Trigger]\nOperation = Install\nType = Package\nTarget = glibc\n\n[Action]\nWhen = PostTransaction\nExec = /usr/bin/no-such-command\n",
+    });
+    var install = base;
+    install.install = (try t.resolve(&.{"glibc"}, &.{})).lock.packages;
+    // the packages are in; the hook's failure is left in diags.
+    try testing.expect(try transact(a, testing.io, install, &t.diags));
+    try testing.expectEqual(1, t.diags.items.items.len);
+    const d = t.diags.items.items[0];
+    try testing.expectEqualStrings("hook 90-fails.hook: command failed to execute correctly", d.message);
+    try testing.expect(std.mem.startsWith(u8, d.hint.?, "call to execv failed"));
+    try std.Io.Dir.cwd().access(testing.io, try std.fs.path.join(a, &.{ base.target.root, "usr/share/doc/glibc/README" }), .{});
 }

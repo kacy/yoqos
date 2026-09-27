@@ -7,8 +7,11 @@ pkgdesc='declarative arch linux with rollback'
 arch=(x86_64)
 url='https://github.com/kacy/yoqos'
 license=(MIT)
-depends=(pacman systemd-libs git shadow)
-optdepends=('grub: generations and rollback (os enable-rollback)')
+# what os links, and the tools it runs.
+depends=(glibc pacman systemd systemd-libs git shadow util-linux coreutils findutils diffutils procps-ng)
+optdepends=('grub: generations and rollback (os enable-rollback)'
+            'efibootmgr: grub-install on machines that boot grub by name'
+            'mkinitcpio: initramfs changes for gpu drivers')
 makedepends=(zig)
 provides=(yoq-os)
 conflicts=(yoq-os)

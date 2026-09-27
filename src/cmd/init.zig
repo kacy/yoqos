@@ -7,6 +7,7 @@ const cli = @import("../cli.zig");
 const facts = @import("../facts.zig");
 const alpm = @import("../alpm.zig");
 const compose = @import("../compose.zig");
+const config = @import("../config.zig");
 const generate = @import("../generate.zig");
 const sync = @import("../sync.zig");
 const locking = @import("lock.zig");
@@ -28,6 +29,9 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
     const date = try locking.today(ctx.io, a);
     const c = try generate.fromFacts(a, &f);
+    // nothing is written unless the config would load.
+    try config.validate(&c, &w.diags);
+    if (w.failed()) return w.fail();
     const imported = try generate.importedPackages(a, &c, &f);
     const dir = std.fs.path.dirnamePosix(top) orelse ".";
     const imported_path = try std.fs.path.join(a, &.{ dir, "imported.toml" });
@@ -42,7 +46,7 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var enabled: usize = 0;
     for (f.units) |u| enabled += @intFromBool(u.enabled);
     if (!ctx.json) {
-        try ctx.out.print("read this machine: {d} explicit packages, {d} enabled units, {d} users", .{ explicitCount(&f), enabled, f.users.len });
+        try ctx.out.print("read this machine: {d} explicit packages, {d} enabled units, {d} users", .{ explicitCount(&f), enabled, people(&f) });
         if (f.cpu) |cpu| try ctx.out.print(", {s} cpu", .{cpu});
         if (c.hardware.gpu) |g| try ctx.out.print(", {s} gpu", .{@tagName(g.v)});
         try ctx.out.print(".\n\nwrote {s}\nwrote {s}  ({d} packages)\n", .{ top, imported_path, imported.len });
@@ -94,6 +98,12 @@ fn reportLater(ctx: *Context, w: *cli.Work) !?[]const u8 {
     return null;
 }
 
+fn people(f: *const facts.Facts) usize {
+    var n: usize = 0;
+    for (f.users) |u| n += @intFromBool(u.person());
+    return n;
+}
+
 fn explicitCount(f: *const facts.Facts) usize {
     var n: usize = 0;
     for (f.packages) |p| n += @intFromBool(p.reason == .explicit);
@@ -108,7 +118,7 @@ test "init writes a config that loads, and refuses to overwrite one" {
     var t: TestRun = .{};
     defer t.deinit();
     try t.fs.put("f.json",
-        \\{"schema":"yoq.facts/1","hostname":"atlas","timezone":"UTC","cpu":"intel",
+        \\{"schema":"yoq.facts/1","hostname":"atlas.lan","timezone":"UTC","cpu":"intel",
         \\ "packages":[{"name":"base","version":"3"},{"name":"linux","version":"6"},{"name":"intel-ucode","version":"1"},
         \\             {"name":"git","version":"2"},{"name":"glibc","version":"2","reason":"dependency"}],
         \\ "units":[{"name":"sshd.service","enabled":true,"active":true}],
@@ -124,7 +134,7 @@ test "init writes a config that loads, and refuses to overwrite one" {
     try std.testing.expect(std.mem.indexOf(u8, imported, "  \"base\",\n  \"git\",\n]") != null);
     const machine = t.fs.get("/etc/yoq/machine.toml").?;
     try std.testing.expect(std.mem.indexOf(u8, machine, "[services.ssh]\nenabled = true\n") != null);
-    try std.testing.expect(std.mem.startsWith(u8, t.recorder.messages.items[0], "init: atlas as found on "));
+    try std.testing.expect(std.mem.startsWith(u8, t.recorder.messages.items[0], "init: atlas.lan as found on "));
 
     try t.exec(&.{ "--facts", "f.json", "init" });
     try std.testing.expectEqual(1, t.code);

@@ -31,8 +31,21 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         return 0;
     };
     const trial = std.fmt.parseInt(u32, trial_text, 10) catch return 0;
-    const record = generation.find(try gens.readRecords(a, ctx.io, "/var"), trial) orelse return 0;
-    if (!std.mem.eql(u8, boot.root_subvol.?[1..], record.root)) return fellBack(ctx, a, boot, trial);
+    const record = generation.find(try gens.readRecords(a, ctx.io, "/var"), trial) orelse {
+        // a trial whose generation is gone can't be judged; end it.
+        _ = try gens.endTrial(a, ctx.io, esp);
+        return 0;
+    };
+    if (!std.mem.eql(u8, boot.root_subvol.?[1..], record.root)) {
+        // an older entry picked by hand before the trial ran isn't a
+        // failed trial: the next boot tries it again.
+        if (try gens.envValue(a, ctx.io, esp, "yoq_tried") == null) {
+            _ = try gens.editEnv(a, ctx.io, esp, "set", &.{"yoq_next=head"});
+            try ctx.out.print("generation {d} hasn't been tried yet; the next boot tries it.\n", .{trial});
+            return 0;
+        }
+        return fellBack(ctx, a, boot, trial);
+    }
 
     const problems = try check(ctx, a);
     if (problems.len == 0) {
@@ -63,7 +76,6 @@ fn fellBack(ctx: *Context, a: Allocator, boot: facts.Boot, trial: u32) !u8 {
     };
     const reason = try std.fmt.allocPrint(a, "fell back from {d} to {d}", .{ trial, n });
     const made = try rollback.startFrom(ctx, a, boot, target, running, reason) orelse return 1;
-    _ = try gens.endTrial(a, ctx.io, boot.esp.?);
     const notice = try std.fmt.allocPrint(a, "generation {d} didn't come up healthy, so this machine went back to generation {d}. it's generation {d} now, with its config. `os rollback {d}` tries {d} again.\n", .{ trial, n, made, trial, trial });
     if (try gens.writeNotice(a, ctx.io, notice)) |why| try ctx.err.print("os: {s}\n", .{why});
     try ctx.out.writeAll(notice);
