@@ -7,6 +7,13 @@ set -eu
 vm=tests/vm/vm.sh
 os=$1
 
+# where the image keeps its esp, and the root it boots before generations.
+case ${VM_IMAGE:-cloud} in
+archinstall) VM_ESP=/boot VM_ROOT=/@ ;;
+*) VM_ESP=/efi VM_ROOT=/ ;;
+esac
+export VM_ESP VM_ROOT
+
 "$vm" start
 trap '"$vm" stop' EXIT
 

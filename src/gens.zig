@@ -53,6 +53,7 @@ pub const Machine = struct {
     pub fn record(m: *const Machine, reason: []const u8, time: i64, config: ?generation.Config) !?[]const u8 {
         std.Io.Dir.cwd().deleteFile(m.io, notice_path) catch {};
         const records = try readRecords(m.a, m.io, "/var");
+        if (try m.keepBoot(m.boot.root_subvol.?)) |w| return w;
         return m.add(records, m.boot.root_subvol.?, reason, time, config);
     }
 
@@ -69,6 +70,10 @@ pub const Machine = struct {
             return null;
         };
         if (try m.carry(root)) |w| {
+            why.* = w;
+            return null;
+        }
+        if (try m.restoreBoot(root)) |w| {
             why.* = w;
             return null;
         }
@@ -158,7 +163,9 @@ pub const Machine = struct {
             if (newest == null or r.n > newest.?.n) newest = r;
         }
         const latest = newest orelse return "no generations to put in the menu";
-        try entries.append(m.a, try m.entry("head", try title(m.a, latest), head, cmdline));
+        var newest_entry = try m.entry("head", try title(m.a, latest), head, cmdline);
+        newest_entry.on_esp = m.bootOnEsp();
+        try entries.append(m.a, newest_entry);
         var i = records.len;
         while (i > 0) {
             i -= 1;
@@ -225,10 +232,65 @@ pub const Machine = struct {
 
     /// a menu entry for the root at `subvol`: its kernel, microcode, and
     /// initramfs, from its own /boot.
+    /// whether /boot is the esp, as archinstall sets it up. kernels then
+    /// live outside every root, so each root keeps copies of its own in
+    /// its /boot directory, under the mount, where grub can read them.
+    pub fn bootOnEsp(m: *const Machine) bool {
+        return std.mem.eql(u8, m.boot.esp orelse "", "/boot");
+    }
+
+    /// copies the esp's boot files into the root at `subvol`, so its
+    /// snapshots boot the kernel that matches their modules.
+    pub fn keepBoot(m: *const Machine, subvol: []const u8) !?[]const u8 {
+        if (!m.bootOnEsp()) return null;
+        return m.copyBoot("/boot", try m.at(&.{ subvol, "boot" }));
+    }
+
+    /// puts the boot files kept in the root at `subvol` back on the esp,
+    /// for a root that's about to be the newest.
+    fn restoreBoot(m: *const Machine, subvol: []const u8) !?[]const u8 {
+        if (!m.bootOnEsp()) return null;
+        return m.copyBoot(try m.at(&.{ subvol, "boot" }), "/boot");
+    }
+
+    /// makes the boot files in `to` match the ones in `from`. files that
+    /// already match stay, so snapshots keep sharing them.
+    fn copyBoot(m: *const Machine, from: []const u8, to: []const u8) !?[]const u8 {
+        const old = try m.bootFiles(to) orelse return try std.fmt.allocPrint(m.a, "can't read {s}", .{to});
+        const new = try m.bootFiles(from) orelse return try std.fmt.allocPrint(m.a, "can't read {s}", .{from});
+        for (old) |f| {
+            const path = try std.fs.path.join(m.a, &.{ to, f });
+            const same = for (new) |n| {
+                if (std.mem.eql(u8, n, f)) break try m.run(&.{ "cmp", "-s", path, try std.fs.path.join(m.a, &.{ from, f }) }) == null;
+            } else false;
+            if (!same) {
+                if (try m.run(&.{ "rm", "-f", path })) |w| return w;
+            }
+        }
+        for (new) |f| {
+            const path = try std.fs.path.join(m.a, &.{ to, f });
+            if (std.Io.Dir.cwd().access(m.io, path, .{})) |_| continue else |_| {}
+            if (try m.run(&.{ "cp", try std.fs.path.join(m.a, &.{ from, f }), path })) |w| return w;
+        }
+        return null;
+    }
+
+    fn bootFiles(m: *const Machine, path: []const u8) !?[]const []const u8 {
+        var dir = std.Io.Dir.cwd().openDir(m.io, path, .{ .iterate = true }) catch return null;
+        defer dir.close(m.io);
+        var names: std.ArrayList([]const u8) = .empty;
+        var it = dir.iterate();
+        while (it.next(m.io) catch null) |f| {
+            if (f.kind == .file and generation.bootFile(f.name)) try names.append(m.a, try m.a.dupe(u8, f.name));
+        }
+        return names.items;
+    }
+
     fn entry(m: *const Machine, id: []const u8, name: []const u8, subvol: []const u8, cmdline: []const u8) !generation.Entry {
         var kernel: []const u8 = "vmlinuz-linux";
         var initrds: std.ArrayList([]const u8) = .empty;
-        var boot = std.Io.Dir.cwd().openDir(m.io, try m.at(&.{ subvol, "boot" }), .{ .iterate = true }) catch null;
+        const dir = if (std.mem.eql(u8, id, "head") and m.bootOnEsp()) "/boot" else try m.at(&.{ subvol, "boot" });
+        var boot = std.Io.Dir.cwd().openDir(m.io, dir, .{ .iterate = true }) catch null;
         if (boot) |*b| {
             defer b.close(m.io);
             var it = b.iterate();

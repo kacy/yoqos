@@ -19,14 +19,14 @@ check() {
 
 # enable-rollback failing at its last step, grub-install, takes back every
 # step before it: no subvolumes, the esp as it was, the machine as it was.
-esp=$("$vm" ssh "find /efi -type f -exec sha256sum {} + | sort | sha256sum")
+esp=$("$vm" ssh "find $VM_ESP -type f -exec sha256sum {} + | sort | sha256sum")
 "$vm" ssh "mkdir -p /tmp/fail && printf '#!/bin/sh\\necho no grub today >&2\\nexit 1\\n' > /tmp/fail/grub-install && chmod +x /tmp/fail/grub-install"
 if "$vm" ssh "PATH=/tmp/fail:\$PATH /usr/local/bin/os enable-rollback --yes"; then echo "enable-rollback should have failed"; exit 1; fi
-check "mkdir -p /run/yoq-check && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-check && ls -d /run/yoq-check/@* 2>/dev/null | wc -l; umount /run/yoq-check" 0
-check "find /efi -type f -exec sha256sum {} + | sort | sha256sum" "$esp"
+check "mkdir -p /run/yoq-check && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-check && ls -d /run/yoq-check/@roots /run/yoq-check/@gens /run/yoq-check/@var 2>/dev/null | wc -l; umount /run/yoq-check" 0
+check "find $VM_ESP -type f -exec sha256sum {} + | sort | sha256sum" "$esp"
 check "test -d /etc/yoq/.git && echo config here" "config here"
 "$vm" reboot
-check "findmnt -no FSROOT /" /
+check "findmnt -no FSROOT /" "$VM_ROOT"
 
 "$vm" ssh /usr/local/bin/os enable-rollback --yes
 "$vm" reboot
@@ -34,7 +34,7 @@ check "findmnt -no FSROOT /" /
 check "findmnt -no FSROOT /" /@roots/1
 check "findmnt -no FSROOT /var" /@var
 check "readlink /var/lib/pacman" /usr/lib/sysimage/pacman
-check "findmnt -no FSTYPE /efi" vfat
+check "findmnt -no FSTYPE $VM_ESP" vfat
 check "findmnt -no FSROOT /etc/yoq" /@var/lib/yoq/config
 check "git -C /etc/yoq log --format=%s -1" "init: yoq-test as found on $(date -u +%Y-%m-%d)"
 check "pacman -Q pacman >/dev/null && echo pacman works" "pacman works"
@@ -46,11 +46,11 @@ check "/usr/local/bin/os enable-rollback" "generations are on: this machine runs
 # an apply makes generation 2, and the menu keeps generation 1.
 "$vm" ssh "/usr/local/bin/os add --yes tree" | tail -n 3
 check "ls /var/lib/yoq/generations | tr '\\n' ' '" "1.json 2.json "
-check "grep -c -e '--id head' -e '--id gen-1' /efi/grub/grub.cfg" 2
+check "grep -c -e '--id head' -e '--id gen-1' $VM_ESP/grub/grub.cfg" 2
 
 # generation 1, booted once from the menu: a fresh copy of it, from
 # before tree.
-"$vm" ssh "grub-editenv /efi/yoq/grubenv set yoq_next=gen-1"
+"$vm" ssh "grub-editenv $VM_ESP/yoq/grubenv set yoq_next=gen-1"
 "$vm" reboot
 check "findmnt -no FSROOT /" /@roots/boot-1
 check "pacman -Q tree >/dev/null 2>&1 || echo no tree" "no tree"
@@ -75,7 +75,7 @@ check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 "$vm" ssh "/usr/local/bin/os history"
 
 # an older generation booted from the menu, and kept.
-"$vm" ssh "grub-editenv /efi/yoq/grubenv set yoq_next=gen-2"
+"$vm" ssh "grub-editenv $VM_ESP/yoq/grubenv set yoq_next=gen-2"
 "$vm" reboot
 check "findmnt -no FSROOT /" /@roots/boot-2
 "$vm" ssh "/usr/local/bin/os rollback --to-booted --yes"

@@ -151,6 +151,11 @@ const Enabler = struct {
         const root = try e.m.at(&.{new_root});
         if (!try e.tried(btrfs.snapshot(try e.m.at(&.{e.boot.root_subvol.?}), root, false), "snapshot the running root")) return false;
         try e.later(.{ .subvol = root });
+        // with the esp at /boot, both roots in the menu keep the kernel
+        // they boot with. the running root's /boot was an empty mount point.
+        if (try e.m.keepBoot(new_root)) |why| return e.failed("{s}", .{why});
+        if (e.m.bootOnEsp()) try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "find", try e.m.at(&.{ e.boot.root_subvol.?, "boot" }), "-maxdepth", "1", "-type", "f", "-delete" }) });
+        if (try e.m.keepBoot(e.boot.root_subvol.?)) |why| return e.failed("{s}", .{why});
         return true;
     }
 
@@ -303,13 +308,7 @@ const Enabler = struct {
     fn bootFiles(e: *Enabler) !bool {
         const esp = e.boot.esp.?;
         // what the firmware boots now, kept until grub-install is done.
-        const efi = try std.fs.path.join(e.a, &.{ esp, "EFI" });
-        const backup = "/run/yoq/efi-backup";
-        if (!try e.sh(&.{ "rm", "-rf", backup })) return false;
-        if (!try e.sh(&.{ "cp", "-a", efi, backup })) return false;
-        // taken back newest first: the new EFI goes, then the copy returns.
-        try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "cp", "-a", backup, efi }) });
-        try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rm", "-rf", efi }) });
+        if (!try e.keep(try std.fs.path.join(e.a, &.{ esp, "EFI" }), "/run/yoq/efi-backup")) return false;
         var argv: std.ArrayList([]const u8) = .empty;
         try argv.appendSlice(e.a, &.{ "grub-install", "--target=x86_64-efi", try std.fmt.allocPrint(e.a, "--efi-directory={s}", .{esp}), try std.fmt.allocPrint(e.a, "--boot-directory={s}", .{esp}) });
         if (try e.grubId(esp)) |id| {
@@ -338,9 +337,9 @@ const Enabler = struct {
         const esp = e.boot.esp.?;
         // the menu goes where grub-install will point grub. nothing reads
         // it until then, and taking back this step removes it.
+        // with the esp at /boot, grub's own menu is already there.
         const grub_dir = try std.fs.path.join(e.a, &.{ esp, "grub" });
-        const had_grub_dir = if (std.Io.Dir.cwd().access(e.ctx.io, grub_dir, .{})) |_| true else |_| false;
-        if (!had_grub_dir) try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rm", "-rf", grub_dir }) });
+        if (!try e.keep(grub_dir, "/run/yoq/grub-backup")) return false;
         if (!try e.sh(&.{ "mkdir", "-p", grub_dir })) return false;
         const env_dir = try std.fs.path.join(e.a, &.{ esp, "yoq" });
         try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rm", "-rf", env_dir }) });
@@ -348,6 +347,19 @@ const Enabler = struct {
         if (try e.m.writeMenu(new_root, records)) |why| return e.failed("{s}", .{why});
         if (!try e.sh(&.{ "mkdir", "-p", try std.fs.path.join(e.a, &.{ esp, "yoq" }) })) return false;
         return e.sh(&.{ "grub-editenv", try std.fs.path.join(e.a, &.{ esp, "yoq/grubenv" }), "create" });
+    }
+
+    /// copies `dir` to `backup`, if it's there, so taking back the steps
+    /// puts it back as it was; if it isn't, taking back removes it.
+    fn keep(e: *Enabler, dir: []const u8, backup: []const u8) !bool {
+        if (std.Io.Dir.cwd().access(e.ctx.io, dir, .{})) |_| {
+            if (!try e.sh(&.{ "rm", "-rf", backup })) return false;
+            if (!try e.sh(&.{ "cp", "-a", dir, backup })) return false;
+            // taken back newest first: the new one goes, then the copy returns.
+            try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "cp", "-a", backup, dir }) });
+        } else |_| {}
+        try e.later(.{ .run = try e.a.dupe([]const u8, &.{ "rm", "-rf", dir }) });
+        return true;
     }
 
     fn sh(e: *Enabler, argv: []const []const u8) !bool {

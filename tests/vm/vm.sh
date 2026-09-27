@@ -1,15 +1,19 @@
 #!/bin/sh
-# a throwaway arch vm for tests: arch's cloud image (grub on btrfs), booted
-# under uefi with kvm, on a copy-on-write overlay so every start is fresh.
+# a throwaway arch vm for tests, booted under uefi with kvm, on a
+# copy-on-write overlay so every start is fresh. VM_IMAGE picks the base:
 #
-#   vm.sh image              download the base image, once
+#   cloud        arch's cloud image: grub on btrfs, the root in the top level
+#   archinstall  archinstall's defaults: the esp at /boot, grub, and btrfs
+#                with @, @home, @log, and @pkg
+#
+#   vm.sh image              make the base image, once
 #   vm.sh start              boot a fresh overlay and wait for ssh
 #   vm.sh ssh <command>      run a command in the vm as root
 #   vm.sh copy <file> <dest> copy a file into the vm
 #   vm.sh reboot             reboot and wait for ssh
 #   vm.sh stop               power off and throw the overlay away
 #
-# needs qemu, edk2-ovmf, xorriso, and openssh. VM_DIR sets where the image
+# needs qemu, edk2-ovmf, xorriso, and openssh. VM_DIR sets where the images
 # and the running vm's files live.
 set -eu
 
@@ -17,6 +21,7 @@ dir=${VM_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/yoq-vm}
 image_url=https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 ovmf=${OVMF_DIR:-/usr/share/edk2/x64}
 port=${VM_SSH_PORT:-2222}
+image=${VM_IMAGE:-cloud}
 
 ssh_opts="-i $dir/key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
 
@@ -53,26 +58,77 @@ EOF
     xorriso -as mkisofs -quiet -o "$dir/seed.iso" -V cidata -J -r "$dir/seed/user-data" "$dir/seed/meta-data"
 }
 
-case ${1:-} in
-image)
-    mkdir -p "$dir"
-    [ -f "$dir/base.qcow2" ] || curl -fsSL -o "$dir/base.qcow2" "$image_url"
-    ;;
-start)
-    [ -f "$dir/base.qcow2" ] || { echo "vm: no base image; run vm.sh image" >&2; exit 1; }
+# whether qemu is still running. it removes its pid file when it stops.
+running() {
+    [ -f "$dir/qemu.pid" ] && kill -0 "$(cat "$dir/qemu.pid")" 2>/dev/null
+}
+
+# boots <disk> with the firmware variables in <vars>, plus any extra qemu
+# arguments, and waits for ssh.
+boot() {
+    disk=$1 vars=$2
+    shift 2
     seed
-    qemu-img create -q -f qcow2 -b "$dir/base.qcow2" -F qcow2 "$dir/overlay.qcow2" 12G
-    cp "$ovmf/OVMF_VARS.4m.fd" "$dir/vars.fd"
     qemu-system-x86_64 -enable-kvm -cpu host -machine q35 -smp 2 -m 2048 \
         -drive if=pflash,format=raw,readonly=on,file="$ovmf/OVMF_CODE.4m.fd" \
-        -drive if=pflash,format=raw,file="$dir/vars.fd" \
-        -drive if=virtio,file="$dir/overlay.qcow2" \
+        -drive if=pflash,format=raw,file="$vars" \
+        -drive if=virtio,file="$disk" \
         -drive media=cdrom,file="$dir/seed.iso" \
         -netdev user,id=net,hostfwd=tcp:127.0.0.1:"$port"-:22 -device virtio-net-pci,netdev=net \
         -display none -serial file:"$dir/console.log" \
-        -daemonize -pidfile "$dir/qemu.pid"
+        -daemonize -pidfile "$dir/qemu.pid" "$@"
     wait_boot ""
-    run cloud-init status --wait >/dev/null || true
+    run cloud-init status --wait >/dev/null 2>&1 || true
+}
+
+# a fresh overlay on the base image. its firmware variables come from the
+# image when it has its own boot entry, as archinstall's does.
+fresh() {
+    qemu-img create -q -f qcow2 -b "$dir/$1.qcow2" -F qcow2 "$dir/overlay.qcow2" 16G
+    if [ -f "$dir/$1.vars" ]; then cp "$dir/$1.vars" "$dir/vars.fd"; else cp "$ovmf/OVMF_VARS.4m.fd" "$dir/vars.fd"; fi
+}
+
+# archinstall, run in the cloud vm against a second disk with the config
+# in archinstall.json. the disk and the firmware variables it wrote are the
+# image.
+archinstall() {
+    VM_IMAGE=cloud "$0" image
+    fresh cloud
+    qemu-img create -q -f qcow2 "$dir/archinstall.part" 16G
+    boot "$dir/overlay.qcow2" "$dir/vars.fd" -drive if=virtio,file="$dir/archinstall.part"
+    here=$(dirname "$0")
+    sed "s|KEY|$(cat "$dir/key.pub")|" "$here/archinstall.json" > "$dir/archinstall.json"
+    printf '{"root_enc_password": "%s"}\n' "$root_hash" > "$dir/creds.json"
+    scp -q $ssh_opts -P "$port" "$dir/archinstall.json" root@127.0.0.1:/root/config.json
+    scp -q $ssh_opts -P "$port" "$dir/creds.json" root@127.0.0.1:/root/creds.json
+    run pacman -Syu --noconfirm --noprogressbar --needed archinstall >/dev/null
+    run archinstall --config /root/config.json --creds /root/creds.json --silent --skip-version-check
+    run "umount -R /mnt/archinstall 2>/dev/null; sync"
+    kill "$(cat "$dir/qemu.pid")"
+    for _ in $(seq 60); do running || break; sleep 1; done
+    if running; then echo "vm: qemu didn't stop" >&2; exit 1; fi
+    mv "$dir/archinstall.part" "$dir/archinstall.qcow2"
+    mv "$dir/vars.fd" "$dir/archinstall.vars"
+    rm -f "$dir/qemu.pid" "$dir/overlay.qcow2"
+}
+
+# the test image's root password, "yoq". tests log in with the key.
+root_hash='$6$yoqtest$1O8KkkgUFxpfgynUcFNHA3HfsIzEwgQTT08V4e4qLTP41SDhe6dXugxAvBde5MUV0ZSq9J/0tyDLUqA..mecu0'
+
+case ${1:-} in
+image)
+    mkdir -p "$dir"
+    [ -f "$dir/$image.qcow2" ] && exit 0
+    case $image in
+    cloud) curl -fsSL -o "$dir/cloud.qcow2" "$image_url" ;;
+    archinstall) archinstall ;;
+    *) echo "vm: no image called $image" >&2; exit 2 ;;
+    esac
+    ;;
+start)
+    [ -f "$dir/$image.qcow2" ] || { echo "vm: no $image image; run vm.sh image" >&2; exit 1; }
+    fresh "$image"
+    boot "$dir/overlay.qcow2" "$dir/vars.fd"
     ;;
 ssh)
     shift
@@ -92,7 +148,7 @@ stop)
     rm -f "$dir/qemu.pid" "$dir/overlay.qcow2" "$dir/vars.fd"
     ;;
 *)
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac

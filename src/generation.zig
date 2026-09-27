@@ -74,7 +74,18 @@ pub const Entry = struct {
     kernel: []const u8,
     initrds: []const []const u8,
     args: []const u8,
+    /// the kernel and initramfs come from the esp, not the root's /boot:
+    /// the newest entry, when /boot is the esp.
+    on_esp: bool = false,
 };
+
+/// a file in /boot that belongs to the root beside it: a kernel, a
+/// microcode image, or an initramfs. fallback images are left out; they're
+/// large and no menu entry uses them.
+pub fn bootFile(name: []const u8) bool {
+    if (std.mem.startsWith(u8, name, "vmlinuz-") or std.mem.endsWith(u8, name, "-ucode.img")) return true;
+    return std.mem.startsWith(u8, name, "initramfs-") and std.mem.endsWith(u8, name, ".img") and !std.mem.endsWith(u8, name, "-fallback.img");
+}
 
 /// the writable copy the menu boots for an older generation.
 pub fn bootCopy(a: Allocator, n: u32) ![]const u8 {
@@ -148,11 +159,11 @@ pub fn grubConfig(a: Allocator, c: GrubConfig) ![]const u8 {
         \\
     , .{ c.timeout, c.default, c.esp_uuid, c.root_uuid }) catch return error.OutOfMemory;
     for (c.entries) |e| {
-        const dir = if (std.mem.eql(u8, e.subvol, "/")) "" else e.subvol;
+        const dir = if (e.on_esp) "(${yoq_esp})" else if (std.mem.eql(u8, e.subvol, "/")) "/boot" else try std.fmt.allocPrint(a, "{s}/boot", .{e.subvol});
         // ${yoq_trial_arg} is "yoq.trial" on a trial boot, which starts
         // the watchdog; empty otherwise.
-        w.print("\nmenuentry \"{s}\" --id {s} {{\n  linux {s}/boot/{s} {s} ${{yoq_trial_arg}}\n  initrd", .{ e.title, e.id, dir, e.kernel, e.args }) catch return error.OutOfMemory;
-        for (e.initrds) |i| w.print(" {s}/boot/{s}", .{ dir, i }) catch return error.OutOfMemory;
+        w.print("\nmenuentry \"{s}\" --id {s} {{\n  linux {s}/{s} {s} ${{yoq_trial_arg}}\n  initrd", .{ e.title, e.id, dir, e.kernel, e.args }) catch return error.OutOfMemory;
+        for (e.initrds) |i| w.print(" {s}/{s}", .{ dir, i }) catch return error.OutOfMemory;
         w.writeAll("\n}\n") catch return error.OutOfMemory;
     }
     return out.written();
@@ -185,6 +196,11 @@ test "a generation's kernel command line" {
     try testing.expectEqualStrings("/@roots/boot-2", try bootCopy(arena.allocator(), 2));
 }
 
+test "which files in /boot a root keeps" {
+    for ([_][]const u8{ "vmlinuz-linux", "vmlinuz-linux-lts", "amd-ucode.img", "initramfs-linux.img" }) |f| try testing.expect(bootFile(f));
+    for ([_][]const u8{ "initramfs-linux-fallback.img", "grub", "EFI", "loader.conf" }) |f| try testing.expect(!bootFile(f));
+}
+
 test "grub's config on the esp" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -197,6 +213,15 @@ test "grub's config on the esp" {
             .{ .id = "before", .title = "the system before generations", .subvol = "/", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "root=UUID=1df77bf6 rootflags=subvol=/ rw" },
         },
     });
+    const on_esp = try grubConfig(arena.allocator(), .{
+        .esp_uuid = "41B2-0FB5",
+        .root_uuid = "1df77bf6",
+        .default = "head",
+        .entries = &.{
+            .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/1", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw", .on_esp = true },
+        },
+    });
+    try testing.expect(std.mem.endsWith(u8, on_esp, "  linux (${yoq_esp})/vmlinuz-linux rw ${yoq_trial_arg}\n  initrd (${yoq_esp})/initramfs-linux.img\n}\n"));
     try testing.expect(std.mem.indexOf(u8, text, "set default=\"gen-1\"\nsearch --no-floppy --fs-uuid --set=yoq_esp 41B2-0FB5\n") != null);
     try testing.expect(std.mem.indexOf(u8, text, "load_env -f (${yoq_esp})/yoq/grubenv yoq_next yoq_default\n") != null);
     try testing.expect(std.mem.indexOf(u8, text, "set fallback=\"${yoq_default}\"") != null);

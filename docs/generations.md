@@ -17,7 +17,7 @@ it needs:
 
 - a btrfs root, either in the top level of the filesystem (like arch's
   cloud image) or in archinstall's `@` subvolume
-- uefi, with the esp mounted at `/efi` or `/boot/efi`
+- uefi, with the esp mounted at `/efi`, `/boot/efi`, or `/boot`
 - grub
 
 then it takes one snapshot of the running root and builds generation 1
@@ -59,6 +59,13 @@ own state: every new root, and every copy the menu boots, gets the running
 system's passwords, ssh host keys, machine id, clock setting, id ranges,
 and pacman keyring. users and everything else in `/etc` are the
 generation's own.
+
+when the esp is `/boot`, as archinstall sets it up, the kernel and
+initramfs live on the esp, outside every root. so each generation keeps
+copies of its own in its root's `/boot` directory, under the esp's mount,
+where grub can read them. the top entry boots from the esp itself, so a
+kernel that `pacman` installs directly is the one it boots. going back to
+an older generation puts that generation's kernel back on the esp.
 
 ## going back
 

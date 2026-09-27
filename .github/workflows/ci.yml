@@ -50,6 +50,12 @@ jobs:
     # a booted arch vm under kvm: systemd running and a real bootloader.
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [cloud, archinstall]
+    env:
+      VM_IMAGE: ${{ matrix.image }}
     container:
       image: archlinux:latest
       options: --device /dev/kvm
@@ -62,11 +68,28 @@ jobs:
       - run: zig build -Dalpm -Dsystemd
       - id: week
         run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
+      # saved right after it's made, so a failing test doesn't mean
+      # building the image again. the ssh key goes with it: the
+      # archinstall image only lets that key in.
+      - id: image
+        uses: actions/cache/restore@v4
         with:
-          path: ~/.cache/yoq-vm/base.qcow2
-          key: arch-cloudimg-${{ steps.week.outputs.week }}
+          path: |
+            ~/.cache/yoq-vm/${{ matrix.image }}.qcow2
+            ~/.cache/yoq-vm/${{ matrix.image }}.vars
+            ~/.cache/yoq-vm/key
+            ~/.cache/yoq-vm/key.pub
+          key: vm2-${{ matrix.image }}-${{ steps.week.outputs.week }}-${{ hashFiles('tests/vm/vm.sh', 'tests/vm/archinstall.json') }}
       - run: tests/vm/vm.sh image
+      - if: steps.image.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cache/yoq-vm/${{ matrix.image }}.qcow2
+            ~/.cache/yoq-vm/${{ matrix.image }}.vars
+            ~/.cache/yoq-vm/key
+            ~/.cache/yoq-vm/key.pub
+          key: vm2-${{ matrix.image }}-${{ steps.week.outputs.week }}-${{ hashFiles('tests/vm/vm.sh', 'tests/vm/archinstall.json') }}
       - run: tests/vm/test.sh ./zig-out/bin/os
       - if: failure()
         run: tail -n 60 ~/.cache/yoq-vm/console.log || true
