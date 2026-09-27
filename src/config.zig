@@ -122,6 +122,7 @@ pub const Cpu = enum { amd, intel };
 pub const Gpu = enum { amd, intel, nvidia, none };
 pub const Session = enum { hyprland };
 pub const Audio = enum { pipewire };
+pub const Login = enum { greetd, sddm, tty };
 
 pub const System = struct {
     hostname: ?Str = null,
@@ -148,6 +149,8 @@ pub const User = struct {
 pub const Desktop = struct {
     session: ?Val(Session) = null,
     audio: ?Val(Audio) = null,
+    /// how a person logs in: a display manager, or a console on tty1.
+    login: ?Val(Login) = null,
 };
 
 pub const Service = struct {

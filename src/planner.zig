@@ -107,6 +107,7 @@ pub fn wants(a: Allocator, c: *const config.Config) ![]const Want {
     if (c.hardware.gpu) |v| for (catalog.gpuPackages(v.v)) |n| try addWant(a, &out, n, "hardware.gpu", v.src);
     if (c.desktop.session) |v| for (catalog.sessionPackages(v.v)) |n| try addWant(a, &out, n, "desktop.session", v.src);
     if (c.desktop.audio) |v| for (catalog.audioPackages(v.v)) |n| try addWant(a, &out, n, "desktop.audio", v.src);
+    if (c.desktop.login) |v| for (catalog.loginPackages(v.v)) |n| try addWant(a, &out, n, "desktop.login", v.src);
     for (c.services.entries.items) |e| {
         if (!e.value.isEnabled()) continue;
         try addWant(a, &out, e.value.packageFor(e.name), try std.fmt.allocPrint(a, "services.{s}", .{e.name}), e.value.src);
@@ -235,6 +236,18 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
             }
         }
     }
+    // a login choice owns the display manager: its own is enabled, the
+    // others disabled. neither starts nor stops now, since that would end
+    // the session applying it; the next boot does.
+    if (c.desktop.login) |login| {
+        const own = catalog.loginUnit(login.v);
+        for (catalog.display_managers) |dm| {
+            const want = own != null and std.mem.eql(u8, own.?, dm);
+            const on = if (f.unit(dm)) |u| u.enabled else false;
+            if (want == on) continue;
+            try units.append(a, .{ .op = if (want) .add else .remove, .kind = .unit, .subject = dm, .to = if (want) "enable" else "disable", .cause = "desktop.login", .reboot = "display manager" });
+        }
+    }
     lists.sortByField(Change, "subject", units.items);
     try changes.appendSlice(a, units.items);
     try planUsers(a, c, f, &changes);
@@ -269,7 +282,33 @@ const nvidia_initramfs_content = blk: {
     break :blk s ++ ")\n";
 };
 
-/// every file the config wants: `[files]`, the one `[sysctl]` makes, and
+const greetd_config_path = "/etc/greetd/config.toml";
+
+/// tuigreet on tty1, offering every installed wayland session.
+const greetd_config =
+    \\# written by os for [desktop] login = "greetd". edits here are overwritten.
+    \\[terminal]
+    \\vt = 1
+    \\
+    \\[default_session]
+    \\command = "tuigreet --time --remember --remember-session --sessions /usr/share/wayland-sessions"
+    \\user = "greeter"
+    \\
+;
+
+const tty_session_path = "/etc/profile.d/yoq-session.sh";
+
+/// logging in on tty1 starts the session through uwsm.
+const tty_session =
+    \\# written by os for [desktop] login = "tty". edits here are overwritten.
+    \\if [ -z "$WAYLAND_DISPLAY" ] && [ "$(tty)" = /dev/tty1 ] && uwsm check may-start; then
+    \\    exec uwsm start {s}
+    \\fi
+    \\
+;
+
+/// every file the config wants: `[files]`, the one `[sysctl]` makes, the
+/// login files `[desktop] login` makes, and
 /// nvidia's initramfs drop-in unless the machine loads those modules
 /// already, as `f` shows.
 pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts) ![]const DesiredFile {
@@ -288,6 +327,16 @@ pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts
         for (keys) |k| try text.print(a, "{s} = {s}\n", .{ k, c.sysctl.get(k).?.v.text });
         try out.append(a, .{ .path = sysctl_path, .content = text.items, .mode = config.File.default_mode, .cause = "sysctl" });
     }
+    if (c.desktop.login) |login| switch (login.v) {
+        .greetd => try out.append(a, .{ .path = greetd_config_path, .content = greetd_config, .mode = config.File.default_mode, .cause = "desktop.login" }),
+        .tty => if (c.desktop.session) |s| try out.append(a, .{
+            .path = tty_session_path,
+            .content = try std.fmt.allocPrint(a, tty_session, .{catalog.sessionDesktop(s.v)}),
+            .mode = config.File.default_mode,
+            .cause = "desktop.login",
+        }),
+        .sddm => {},
+    };
     // nvidia's driver wants its modules in the initramfs. amd and intel
     // come with mkinitcpio's kms hook already.
     const gpu = if (c.hardware.gpu) |g| g.v else .none;
@@ -917,4 +966,46 @@ test "a machine without a kernel" {
     var have = [_]facts.Package{.{ .name = "git", .version = "1" }};
     const f: facts.Facts = .{ .packages = &have };
     try testing.expect((try plan(t.a(), &c, &l, &f, &t.diags)).?.empty());
+}
+
+test "a login choice owns the display manager, and changes it at the next boot" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("[desktop]\nsession = \"hyprland\"\nlogin = \"greetd\"\n");
+    const names = [_][]const u8{ "greetd", "greetd-tuigreet", "hyprland", "linux", "xdg-desktop-portal-hyprland" };
+    var locked: [names.len]lock.Package = undefined;
+    var have: [names.len]facts.Package = undefined;
+    for (names, &locked, &have) |n, *l, *h| {
+        l.* = lockPkg(n, "1", &.{});
+        h.* = .{ .name = n, .version = "1" };
+    }
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &locked };
+    var units = [_]facts.Unit{
+        .{ .name = "greetd.service", .enabled = false, .active = false },
+        .{ .name = "sddm.service", .enabled = true, .active = true },
+    };
+    const f: facts.Facts = .{ .packages = &have, .units = &units };
+    const p = (try plan(t.a(), &c, &l, &f, &t.diags)).?;
+    var out: std.Io.Writer.Allocating = .init(t.a());
+    try writeText(&out.writer, t.a(), &p, .{});
+    try testing.expectEqualStrings(
+        \\services
+        \\  + greetd.service: enable  (desktop.login)
+        \\  - sddm.service: disable  (desktop.login)
+        \\files
+        \\  + /etc/greetd/config.toml: write, mode 0644  (desktop.login)
+        \\
+        \\plan: 2 to add, 0 to change, 1 to remove · reboot needed: display manager
+        \\
+    , out.written());
+}
+
+test "logging in on tty1 starts the session through uwsm" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("[desktop]\nsession = \"hyprland\"\nlogin = \"tty\"\n");
+    const want = try desiredFiles(t.a(), &c, &.{});
+    try testing.expectEqual(1, want.len);
+    try testing.expectEqualStrings("/etc/profile.d/yoq-session.sh", want[0].path);
+    try testing.expect(std.mem.indexOf(u8, want[0].content, "exec uwsm start hyprland.desktop\n") != null);
 }

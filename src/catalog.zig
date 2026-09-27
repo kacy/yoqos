@@ -82,6 +82,34 @@ pub fn audioPackages(audio: anytype) []const []const u8 {
     };
 }
 
+pub fn loginPackages(login: anytype) []const []const u8 {
+    return switch (login) {
+        .greetd => &.{ "greetd", "greetd-tuigreet" },
+        .sddm => &.{"sddm"},
+        .tty => &.{"uwsm"},
+    };
+}
+
+/// the display manager a login choice enables, if it uses one.
+pub fn loginUnit(login: anytype) ?[]const u8 {
+    return switch (login) {
+        .greetd => "greetd.service",
+        .sddm => "sddm.service",
+        .tty => null,
+    };
+}
+
+/// the display managers os knows. a login choice turns off every one it
+/// doesn't use, since only one can be the display manager.
+pub const display_managers = [_][]const u8{ "gdm.service", "greetd.service", "lightdm.service", "ly.service", "sddm.service" };
+
+/// the wayland session file a session installs, for starting it on a tty.
+pub fn sessionDesktop(session: anytype) []const u8 {
+    return switch (session) {
+        .hyprland => "hyprland.desktop",
+    };
+}
+
 pub const default_kernel = "linux";
 
 /// `[boot] kernel = "none"`: a machine without its own kernel, like a

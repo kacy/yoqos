@@ -1,0 +1,30 @@
+#!/bin/sh
+# [desktop] login in a vm with generations: a display manager changes at
+# the next boot, on trial, and the health check wants it running. runs
+# after trial.sh, in the same vm.
+set -eu
+. tests/vm/lib.sh
+
+"$vm" reboot
+settled
+"$vm" ssh "printf '\\n[desktop]\\nlogin = \"greetd\"\\n' >> /etc/yoq/machine.toml && /usr/local/bin/os update --yes" | tail -n 3
+check "cat /etc/greetd/config.toml | grep -c tuigreet" 1
+# enabled, not started: starting a display manager mid-apply isn't safe.
+check "systemctl is-enabled greetd.service" enabled
+check "systemctl is-active greetd.service || true" inactive
+check "grub-editenv $VM_ESP/yoq/grubenv list | grep -c ^yoq_trial" 1
+"$vm" reboot
+settled
+check "systemctl is-active display-manager.service" active
+check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'the default now'" 1
+
+# a console login instead: nothing wants greetd now, so it's disabled and
+# removed.
+"$vm" ssh "sed -i 's/^login = \"greetd\"/login = \"tty\"/' /etc/yoq/machine.toml && /usr/local/bin/os update --yes" | tail -n 3
+check "pacman -Q greetd >/dev/null 2>&1 || echo gone" gone
+check "test -e /etc/systemd/system/display-manager.service || echo none" none
+"$vm" reboot
+settled
+check "systemctl is-active greetd.service || true" inactive
+check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
+echo "desktop ok"

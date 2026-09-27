@@ -34,5 +34,6 @@ limine) tests/vm/manage.sh "bootloader: limine" ;;
 *)
     tests/vm/rollback.sh
     tests/vm/trial.sh
+    tests/vm/desktop.sh
     ;;
 esac

@@ -386,6 +386,7 @@ gpu = "nvidia"
 [desktop]
 session = "hyprland"
 audio = "pipewire"
+login = "greetd"
 
 [users.kacy]
 shell = "zsh"
@@ -406,7 +407,7 @@ bluetooth = false
 | `[system]` | `hostname`, `timezone`, `locale`, and `keymap` |
 | `[boot]` | `kernel`: `linux` unless you say otherwise. `none` for a machine without its own kernel, like a container. |
 | `[hardware]` | `cpu`: `amd` or `intel`. `gpu`: `amd`, `intel`, `nvidia`, or `none`. these bring in microcode and drivers. `nvidia` also loads its modules early, with a drop-in in `/etc/mkinitcpio.conf.d`, unless mkinitcpio.conf does already. |
-| `[desktop]` | `session`: `hyprland`. `audio`: `pipewire`. these bring in their packages. |
+| `[desktop]` | `session`: `hyprland`. `audio`: `pipewire`. `login`: `greetd`, `sddm`, or `tty`. these bring in their packages; see [the desktop](#the-desktop). |
 | `[users.<name>]` | `shell`, and `groups`: the full list of groups beyond the user's own |
 | `[services]` | `<name> = true` or `false`, for the services listed below |
 | `[files."<path>"]` | a file `os` writes whole: `text` or `source`, and `mode` |
@@ -495,6 +496,37 @@ are left alone, and so is a file you take out of the config.
 
 `[sysctl]` becomes one file, `/etc/sysctl.d/99-yoq.conf`, and `apply` loads
 it right away when systemd runs the machine.
+
+### the desktop
+
+```toml
+[desktop]
+session = "hyprland"
+audio = "pipewire"
+login = "greetd"
+```
+
+`session` and `audio` install what they need: hyprland and its portal, and
+pipewire with its pulseaudio stand-in and wireplumber.
+
+`login` picks how you get to the session:
+
+- `greetd` runs tuigreet on tty1, offering every installed wayland session.
+  `os` writes `/etc/greetd/config.toml`.
+- `sddm` runs sddm, which finds hyprland's session on its own.
+- `tty` has no display manager: logging in on tty1 starts the session
+  through uwsm, from `/etc/profile.d/yoq-session.sh`.
+
+a login choice owns the display manager. its own is enabled, and every
+other one `os` knows (gdm, greetd, lightdm, ly, sddm) is disabled, since
+only one can be the display manager. the switch happens at the next boot:
+starting or stopping a display manager during `apply` would end the session
+you're applying from, so the plan says a reboot is needed. with
+generations, that boot is a trial, and the health check wants the new
+display manager running. with no `login`, `os` leaves login alone.
+
+your own hyprland settings stay in your home directory; `os` doesn't manage
+them.
 
 ### includes
 
