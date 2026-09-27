@@ -1,6 +1,6 @@
 .{
     .name = .yoqos,
-    .version = "0.0.0",
+    .version = "0.1.0",
     .fingerprint = 0x2fffc77f94162495,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},

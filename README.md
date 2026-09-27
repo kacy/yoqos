@@ -40,6 +40,7 @@ layout.
 
 - [docs/usage.md](docs/usage.md): installing, every command, and the config
   format
+- [CHANGELOG.md](CHANGELOG.md): what each release has
 - [docs/generations.md](docs/generations.md): how generations and rollback
   work, and what they don't do yet
 

@@ -36,15 +36,26 @@ enable-rollback` adds whole-system generations; see
 
 ## installing
 
-`dist/PKGBUILD` in the repository builds the `yoq-os-git` package, with the
-`os` command and a pacman hook that records direct `pacman` use for `os
-status`. it builds from the repository's `main` branch on github;
-`YOQ_SOURCE` points it at a local clone instead:
+each release on github has an arch package and a tarball, with a
+`sha256sums.txt` beside them:
+
+```
+sudo pacman -U yoq-os-0.1.0-1-x86_64.pkg.tar.zst
+```
+
+the package holds the `os` command, a pacman hook that records direct
+`pacman` use for `os status`, the profiles in `/usr/share/yoq/profiles`,
+and these docs. the tarball holds the same files, laid out like `/usr`.
+
+to build it yourself, `dist/PKGBUILD` makes `yoq-os-git` from the
+repository's `main` branch, or `yoq-os` from a release tag with
+`YOQ_VERSION`. `YOQ_SOURCE` points it at a local clone instead of github:
 
 ```
 cd dist
-makepkg -si
-YOQ_SOURCE=file://$PWD/.. makepkg -si   # build this checkout
+makepkg -si                              # yoq-os-git, from main
+YOQ_VERSION=0.1.0 makepkg -si            # yoq-os 0.1.0, from v0.1.0
+YOQ_SOURCE=file://$PWD/.. makepkg -si    # this checkout
 ```
 
 ## building by hand

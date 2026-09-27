@@ -1,0 +1,72 @@
+name: release
+
+# a tag like v0.1.0 on a commit ci has passed makes a release: the tag has
+# to match build.zig.zon's version, and the notes come from CHANGELOG.md.
+# run by hand, it does everything but publish, as a dry run.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - run: pacman -Syu --noconfirm --needed base-devel git zig github-cli libarchive systemd-libs
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: the tag matches the version
+        id: version
+        run: |
+          version=$(sed -n 's/^ *\.version = "\(.*\)",$/\1/p' build.zig.zon)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME, but build.zig.zon says $version"; exit 1; }
+          else
+            # a dry run tags the checkout locally, for the package's source.
+            git config --global user.email ci@localhost
+            git config --global user.name ci
+            git config --global --add safe.directory "$GITHUB_WORKSPACE"
+            git tag -f "v$version"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: zig build test -Dalpm -Dsystemd --summary all
+      - name: build the release binary
+        run: zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline --prefix out
+      - name: the binary says its version
+        run: '[ "$(out/bin/os version)" = "os ${{ steps.version.outputs.version }}" ]'
+      - name: a tarball, laid out like /usr
+        run: |
+          dir=yoq-os-${{ steps.version.outputs.version }}-x86_64
+          install -Dm755 out/bin/os "$dir/bin/os"
+          install -Dm644 dist/yoq-drift.hook "$dir/share/libalpm/hooks/yoq-drift.hook"
+          install -Dm644 -t "$dir/share/yoq/profiles" dist/profiles/*.toml
+          install -Dm644 -t "$dir/share/doc/yoq-os" README.md CHANGELOG.md docs/*.md
+          install -Dm644 LICENSE "$dir/share/licenses/yoq-os/LICENSE"
+          tar -czf "$dir.tar.gz" "$dir"
+      - name: the arch package
+        run: |
+          useradd -m builder
+          install -d -o builder /home/builder/pkg
+          install -m644 -o builder dist/PKGBUILD /home/builder/pkg/PKGBUILD
+          git config --system --add safe.directory '*'
+          su builder -c "cd ~/pkg && YOQ_SOURCE=file://$GITHUB_WORKSPACE YOQ_VERSION=${{ steps.version.outputs.version }} makepkg --noconfirm"
+          cp /home/builder/pkg/yoq-os-*.pkg.tar.zst .
+          pacman -U --noconfirm yoq-os-*.pkg.tar.zst
+          [ "$(os version)" = "os ${{ steps.version.outputs.version }}" ]
+      - name: notes from the changelog
+        run: |
+          awk -v v="## ${{ steps.version.outputs.version }}" '$0 == v { on = 1; next } /^## / { on = 0 } on' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "CHANGELOG.md has no section for ${{ steps.version.outputs.version }}"; exit 1; }
+      - name: publish
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum yoq-os-*.tar.gz yoq-os-*.pkg.tar.zst > sha256sums.txt
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "${{ steps.version.outputs.version }}" --notes-file notes.md \
+            yoq-os-*.tar.gz yoq-os-*.pkg.tar.zst sha256sums.txt

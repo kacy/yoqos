@@ -1,7 +1,19 @@
-# the os command from this repository's main branch. YOQ_SOURCE points it
-# at another clone, like ci's own checkout: YOQ_SOURCE=file:///path/to/yoqos
-pkgname=yoq-os-git
-pkgver=r0
+# the os command. by default, yoq-os-git from this repository's main
+# branch; with YOQ_VERSION=0.1.0, yoq-os from the tag v0.1.0. YOQ_SOURCE
+# points either at another clone, like ci's own checkout:
+#   YOQ_SOURCE=file:///path/to/yoqos
+if [ -n "${YOQ_VERSION:-}" ]; then
+  pkgname=yoq-os
+  pkgver=$YOQ_VERSION
+  _ref="#tag=v$YOQ_VERSION"
+  conflicts=(yoq-os-git)
+else
+  pkgname=yoq-os-git
+  pkgver=r0
+  _ref=
+  provides=(yoq-os)
+  conflicts=(yoq-os)
+fi
 pkgrel=1
 pkgdesc='declarative arch linux with rollback'
 arch=(x86_64)
@@ -13,20 +25,23 @@ optdepends=('grub: generations and rollback (os enable-rollback)'
             'efibootmgr: grub-install on machines that boot grub by name'
             'mkinitcpio: initramfs changes for gpu drivers')
 makedepends=(zig)
-provides=(yoq-os)
-conflicts=(yoq-os)
-source=("yoqos::git+${YOQ_SOURCE:-https://github.com/kacy/yoqos.git}")
+# zig's own debug info stays in the binary; there's no separate package.
+options=(!debug)
+source=("yoqos::git+${YOQ_SOURCE:-https://github.com/kacy/yoqos.git}$_ref")
 sha256sums=(SKIP)
 
-pkgver() {
-  cd yoqos
-  printf 'r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
-}
+if [ -z "${YOQ_VERSION:-}" ]; then
+  pkgver() {
+    cd yoqos
+    printf 'r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+  }
+fi
 
 build() {
   cd yoqos
   export ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache"
-  zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe --prefix "$srcdir/out"
+  # a baseline cpu, so the package runs on any x86_64 machine.
+  zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline --prefix "$srcdir/out"
 }
 
 check() {
@@ -40,6 +55,6 @@ package() {
   install -Dm755 "$srcdir/out/bin/os" "$pkgdir/usr/bin/os"
   install -Dm644 dist/yoq-drift.hook "$pkgdir/usr/share/libalpm/hooks/yoq-drift.hook"
   install -Dm644 -t "$pkgdir/usr/share/yoq/profiles" dist/profiles/*.toml
-  install -Dm644 docs/usage.md "$pkgdir/usr/share/doc/$pkgname/usage.md"
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md docs/*.md
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
