@@ -112,4 +112,5 @@ jobs:
           pacman -U --noconfirm /home/builder/pkg/yoq-os-git-*.pkg.tar.zst
           os version
           test -f /usr/share/libalpm/hooks/yoq-drift.hook
+          test -f /usr/share/yoq/profiles/omarchy.toml
           pacman -Qi yoq-os-git

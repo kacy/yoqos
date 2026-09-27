@@ -1,0 +1,6 @@
+version = 1
+include = ["../../../dist/profiles/omarchy.toml"]
+packages = ["base"]
+
+[system]
+hostname = "omarchy"

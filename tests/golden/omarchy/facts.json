@@ -1,0 +1,139 @@
+{
+  "schema": "yoq.facts/1",
+  "time": 1790294400,
+  "hostname": "omarchy",
+  "packages": [
+    {
+      "name": "avahi",
+      "version": "1.0-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "base",
+      "version": "1.0-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "bluez",
+      "version": "1.0-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "cups",
+      "version": "1.0-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "docker",
+      "version": "1.0-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "hyprland",
+      "version": "1.0-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "linux",
+      "version": "1.0-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "networkmanager",
+      "version": "1.0-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "pipewire",
+      "version": "1.0-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "pipewire-pulse",
+      "version": "1.0-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "power-profiles-daemon",
+      "version": "1.0-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "sddm",
+      "version": "1.0-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "systemd",
+      "version": "1.0-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "ufw",
+      "version": "1.0-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "wireplumber",
+      "version": "1.0-1",
+      "reason": "explicit"
+    },
+    {
+      "name": "xdg-desktop-portal-hyprland",
+      "version": "1.0-1",
+      "reason": "explicit"
+    }
+  ],
+  "units": [
+    {
+      "name": "NetworkManager.service",
+      "enabled": true,
+      "active": true
+    },
+    {
+      "name": "avahi-daemon.service",
+      "enabled": true,
+      "active": true
+    },
+    {
+      "name": "bluetooth.service",
+      "enabled": true,
+      "active": true
+    },
+    {
+      "name": "cups.service",
+      "enabled": true,
+      "active": true
+    },
+    {
+      "name": "docker.socket",
+      "enabled": true,
+      "active": true
+    },
+    {
+      "name": "power-profiles-daemon.service",
+      "enabled": true,
+      "active": true
+    },
+    {
+      "name": "sddm.service",
+      "enabled": true,
+      "active": true
+    },
+    {
+      "name": "systemd-oomd.service",
+      "enabled": true,
+      "active": true
+    },
+    {
+      "name": "systemd-resolved.service",
+      "enabled": true,
+      "active": true
+    },
+    {
+      "name": "ufw.service",
+      "enabled": true,
+      "active": true
+    }
+  ]
+}

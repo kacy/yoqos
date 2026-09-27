@@ -273,6 +273,9 @@ const nvidia_initramfs_path = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf";
 /// where `[sysctl]` goes.
 pub const sysctl_path = "/etc/sysctl.d/99-yoq.conf";
 
+/// where `[boot] modules` goes.
+pub const modules_path = "/etc/modules-load.d/99-yoq.conf";
+
 /// the modules nvidia's driver wants early.
 const nvidia_modules = [_][]const u8{ "nvidia", "nvidia_modeset", "nvidia_uvm", "nvidia_drm" };
 
@@ -337,6 +340,26 @@ pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts
         }),
         .sddm => {},
     };
+    // hyprland reads /etc/xdg/hypr when a user has no config of their
+    // own. the file keeps its extension: .conf, or .lua for newer ones.
+    if (c.desktop.session_content) |content| {
+        const ext = std.fs.path.extension(c.desktop.session_config.?.v);
+        try out.append(a, .{
+            .path = try std.fmt.allocPrint(a, "/etc/xdg/hypr/hyprland{s}", .{if (ext.len > 0) ext else ".conf"}),
+            .content = content,
+            .mode = config.File.default_mode,
+            .cause = "desktop.session_config",
+        });
+    }
+    if (c.boot.modules.items.items.len > 0) {
+        const names = try a.alloc([]const u8, c.boot.modules.items.items.len);
+        for (c.boot.modules.items.items, names) |it, *n| n.* = it.name;
+        lists.sortStrings(names);
+        var text: std.ArrayList(u8) = .empty;
+        try text.appendSlice(a, "# written by os from [boot] modules in the config. edits here are overwritten.\n");
+        for (names) |n| try text.print(a, "{s}\n", .{n});
+        try out.append(a, .{ .path = modules_path, .content = text.items, .mode = config.File.default_mode, .cause = "boot.modules" });
+    }
     // nvidia's driver wants its modules in the initramfs. amd and intel
     // come with mkinitcpio's kms hook already.
     const gpu = if (c.hardware.gpu) |g| g.v else .none;
@@ -1008,4 +1031,25 @@ test "logging in on tty1 starts the session through uwsm" {
     try testing.expectEqual(1, want.len);
     try testing.expectEqualStrings("/etc/profile.d/yoq-session.sh", want[0].path);
     try testing.expect(std.mem.indexOf(u8, want[0].content, "exec uwsm start hyprland.desktop\n") != null);
+}
+
+test "the session's own config lands where hyprland looks without a user one" {
+    var t: T = .{};
+    defer t.deinit();
+    var c = try t.cfg("[desktop]\nsession = \"hyprland\"\nsession_config = \"files/hyprland.lua\"\n");
+    c.desktop.session_content = "-- mine\n";
+    const want = try desiredFiles(t.a(), &c, &.{});
+    try testing.expectEqual(1, want.len);
+    try testing.expectEqualStrings("/etc/xdg/hypr/hyprland.lua", want[0].path);
+    try testing.expectEqualStrings("-- mine\n", want[0].content);
+}
+
+test "kernel modules to load at boot" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("[boot]\nmodules = [\"nct6775\", \"i2c-dev\"]\n");
+    const want = try desiredFiles(t.a(), &c, &.{});
+    try testing.expectEqual(1, want.len);
+    try testing.expectEqualStrings(modules_path, want[0].path);
+    try testing.expectEqualStrings("# written by os from [boot] modules in the config. edits here are overwritten.\ni2c-dev\nnct6775\n", want[0].content);
 }

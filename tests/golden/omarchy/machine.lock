@@ -1,0 +1,84 @@
+# machine.lock: written by os. don't edit it by hand.
+version = 1
+sync_date = "2026-09-25"
+keyring = "20260901-1"
+
+[packages.avahi]
+version = "1.0-1"
+repo = "extra"
+sha256 = "5c1a4cd50c038a9b107b367ff5c1b7aff7a1cf9cd30379958e59b861c94dabb7"
+
+[packages.base]
+version = "1.0-1"
+repo = "extra"
+sha256 = "cae662172fd450bb0cd710a769079c05bfc5d8e35efa6576edc7d0377afdd4a2"
+
+[packages.bluez]
+version = "1.0-1"
+repo = "extra"
+sha256 = "52856879d4bfa1d564480850a56b0885e1c52a805af96fffe84122afc9b1c52b"
+
+[packages.cups]
+version = "1.0-1"
+repo = "extra"
+sha256 = "43b69e82bee632b30b91215b8578b7700077dbad5fe72a7329b5597333cb483e"
+
+[packages.docker]
+version = "1.0-1"
+repo = "extra"
+sha256 = "d548c5b83fa61d8e3bd86ad42a7ffea9b7c86e3f9d8095c1577d3e1270bb9420"
+
+[packages.hyprland]
+version = "1.0-1"
+repo = "extra"
+sha256 = "b9ef8ac5b89b3136a2786cbcc6fc6c39ee35655fecc356a6420b31e0386bd9ef"
+
+[packages.linux]
+version = "1.0-1"
+repo = "extra"
+sha256 = "caf90169eefa5f807d577486b9f795ab86ae2983c5c20806cff959117e90af18"
+
+[packages.networkmanager]
+version = "1.0-1"
+repo = "extra"
+sha256 = "305b1e7fdb8531a9a42882ff10e54cef125c1dcf48d5c141c5feb0277069eba6"
+
+[packages.pipewire]
+version = "1.0-1"
+repo = "extra"
+sha256 = "68eb6beb63efaebc7ff2cb57b4ffa3ceb0dbbc7925a9c64b3811d8d19fca4cbb"
+
+[packages.pipewire-pulse]
+version = "1.0-1"
+repo = "extra"
+sha256 = "398a74e1aa45343bd3e37eec5fa8dd178b069dbe22f7e4f8fe36e08e3d78d049"
+
+[packages.power-profiles-daemon]
+version = "1.0-1"
+repo = "extra"
+sha256 = "b4143ed5d77514323d76f8ac8838223e9ec79bbc676c605103ff76d2f01845a5"
+
+[packages.sddm]
+version = "1.0-1"
+repo = "extra"
+sha256 = "f9f056579b7a44876fdd8f8d6e8223e7be55d66e4b32a2c2a9fc0eec5454e65d"
+
+[packages.systemd]
+version = "1.0-1"
+repo = "extra"
+sha256 = "e0031c189e34e10d9c202fa8d75f72d3296a239164fe6b07e7dc206c7b723d98"
+
+[packages.ufw]
+version = "1.0-1"
+repo = "extra"
+sha256 = "948b0ea85700f2c1a8c0d3eaad142134d7d311878711d97cf7441623fd71c297"
+
+[packages.wireplumber]
+version = "1.0-1"
+repo = "extra"
+sha256 = "8da3830bc070b75c573fe721dddce6cb49be5f0797c3976a1d3a525cc7013cf3"
+
+[packages.xdg-desktop-portal-hyprland]
+version = "1.0-1"
+repo = "extra"
+sha256 = "efd1cf4ba70dd428de7e5e5c5a40c23e6ab3091ddfabc7e075b618c3fe01075d"

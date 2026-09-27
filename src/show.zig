@@ -282,5 +282,8 @@ test "json carries values and sources" {
     try testing.expectEqualStrings("base.toml", pkgs[0].object.get("file").?.string);
     try testing.expectEqualStrings("nvidia", root.get("hardware").?.object.get("gpu").?.object.get("value").?.string);
     try testing.expect(root.get("services").?.object.get("ssh").?.object.get("enabled").?.object.get("value").?.bool);
-    try testing.expect(root.get("boot").?.object.count() == 0);
+    // unset values are left out; sets are always there.
+    const boot = root.get("boot").?.object;
+    try testing.expectEqual(null, boot.get("kernel"));
+    try testing.expectEqual(0, boot.get("modules").?.array.items.len);
 }

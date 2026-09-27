@@ -104,7 +104,7 @@ pub fn isVal(comptime T: type) bool {
 /// fields that aren't config keys: where a value came from, and what
 /// loading works out from the keys.
 fn isHidden(comptime name: []const u8) bool {
-    return lists.contains(&.{ "src", "removed", "content" }, name);
+    return lists.contains(&.{ "src", "removed", "content", "session_content" }, name);
 }
 
 /// the config keys of a section: its fields, minus the hidden ones.
@@ -133,6 +133,8 @@ pub const System = struct {
 
 pub const Boot = struct {
     kernel: ?Str = null,
+    /// kernel modules loaded at every boot, like i2c-dev.
+    modules: Set = .{},
 };
 
 pub const Hardware = struct {
@@ -151,6 +153,11 @@ pub const Desktop = struct {
     audio: ?Val(Audio) = null,
     /// how a person logs in: a display manager, or a console on tty1.
     login: ?Val(Login) = null,
+    /// the session's own config, like hyprland.conf: a file next to the
+    /// config, copied as it is.
+    session_config: ?Str = null,
+    /// what `session_config` holds, read when the config loaded. not a key.
+    session_content: ?[]const u8 = null,
 };
 
 pub const Service = struct {
@@ -434,6 +441,15 @@ pub fn validate(c: *const Config, diags: *diag.List) !void {
             try diags.add(.bad_value, h.src, "\"{s}\" isn't a valid hostname", .{h.v}, "use letters, digits, and dashes, up to 63 characters");
         }
     }
+    for (c.boot.modules.items.items) |m| {
+        const ok = m.name.len > 0 and for (m.name) |ch| {
+            if (!std.ascii.isAlphanumeric(ch) and ch != '_' and ch != '-') break false;
+        } else true;
+        if (!ok) try diags.add(.bad_value, m.src, "\"{s}\" isn't a kernel module name", .{m.name}, "module names are letters, digits, dashes, and underscores, like i2c-dev");
+    }
+    if (c.desktop.session_config) |sc| {
+        if (c.desktop.session == null) try diags.add(.bad_value, sc.src, "session_config needs a session", .{}, "set `session = \"hyprland\"` in [desktop] too");
+    }
     for (c.files.entries.items) |e| {
         const f = &e.value;
         if (!std.fs.path.isAbsolute(e.name)) {
@@ -677,6 +693,22 @@ test "validate catches unknown services and bad names" {
     try f.expectDiag(1, .unknown_service, 8, "unknown service \"mystery\"");
     try f.expectDiag(2, .bad_value, 2, "\"-atlas\" isn't a valid hostname");
     try f.expectDiag(3, .bad_value, 3, "\"Kacy\" isn't a valid user name");
+}
+
+test "kernel module names" {
+    var f = try Fixture.init("[boot]\nmodules = [\"i2c-dev\", \"nct6775\", \"bad name\"]\n");
+    defer f.deinit();
+    try validate(&f.part.config, &f.diags);
+    try testing.expectEqual(1, f.diags.items.items.len);
+    try f.expectDiag(0, .bad_value, 2, "\"bad name\" isn't a kernel module name");
+}
+
+test "a session's config needs a session" {
+    var f = try Fixture.init("[desktop]\nsession_config = \"files/hyprland.conf\"\n");
+    defer f.deinit();
+    try validate(&f.part.config, &f.diags);
+    try testing.expectEqual(1, f.diags.items.items.len);
+    try f.expectDiag(0, .bad_value, 2, "session_config needs a session");
 }
 
 test "package names follow pacman's rules" {

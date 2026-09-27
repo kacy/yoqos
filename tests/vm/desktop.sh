@@ -27,4 +27,8 @@ check "test -e /etc/systemd/system/display-manager.service || echo none" none
 settled
 check "systemctl is-active greetd.service || true" inactive
 check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
+# a kernel module to load at boot, loaded right away too.
+"$vm" ssh "printf '\n[boot]\nmodules = [\"i2c-dev\"]\n' >> /etc/yoq/machine.toml && /usr/local/bin/os apply --yes" | tail -n 2
+check "lsmod | grep -c '^i2c_dev '" 1
+check "cat /etc/modules-load.d/99-yoq.conf | tail -n 1" i2c-dev
 echo "desktop ok"

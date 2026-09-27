@@ -1,0 +1,35 @@
+# the system side of an omarchy machine: its desktop, login, and services,
+# the way omarchy's installer sets them up. packages aren't here, since
+# `os init` on an omarchy machine imports the ones it has. include it ahead
+# of the rest:
+#
+#   include = ["/usr/share/yoq/profiles/omarchy.toml", "imported.toml"]
+#
+# services omarchy turns on only for some hardware, like thermald, stay in
+# the machine's own config.
+version = 1
+
+[desktop]
+session = "hyprland"
+audio = "pipewire"
+login = "sddm"
+
+[services]
+avahi = true
+bluetooth = true
+cups = true
+networkmanager = true
+power-profiles = true
+resolved = true
+
+[services.docker]
+unit = "docker.socket"
+package = "docker"
+
+[services.oomd]
+unit = "systemd-oomd.service"
+package = "systemd"
+
+[services.ufw]
+unit = "ufw.service"
+package = "ufw"

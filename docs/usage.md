@@ -405,7 +405,7 @@ bluetooth = false
 | `packages` | packages you want installed. dependencies come along on their own. |
 | `[providers]` | which package provides a virtual one, like `initramfs` |
 | `[system]` | `hostname`, `timezone`, `locale`, and `keymap` |
-| `[boot]` | `kernel`: `linux` unless you say otherwise. `none` for a machine without its own kernel, like a container. |
+| `[boot]` | `kernel`: `linux` unless you say otherwise. `none` for a machine without its own kernel, like a container. `modules`: kernel modules to load at every boot, like `i2c-dev`. |
 | `[hardware]` | `cpu`: `amd` or `intel`. `gpu`: `amd`, `intel`, `nvidia`, or `none`. these bring in microcode and drivers. `nvidia` also loads its modules early, with a drop-in in `/etc/mkinitcpio.conf.d`, unless mkinitcpio.conf does already. |
 | `[desktop]` | `session`: `hyprland`. `audio`: `pipewire`. `login`: `greetd`, `sddm`, or `tty`. these bring in their packages; see [the desktop](#the-desktop). |
 | `[users.<name>]` | `shell`, and `groups`: the full list of groups beyond the user's own |
@@ -504,6 +504,7 @@ it right away when systemd runs the machine.
 session = "hyprland"
 audio = "pipewire"
 login = "greetd"
+session_config = "files/hyprland.conf"
 ```
 
 `session` and `audio` install what they need: hyprland and its portal, and
@@ -525,8 +526,41 @@ you're applying from, so the plan says a reboot is needed. with
 generations, that boot is a trial, and the health check wants the new
 display manager running. with no `login`, `os` leaves login alone.
 
-your own hyprland settings stay in your home directory; `os` doesn't manage
-them.
+`session_config` names a hyprland config next to the machine's config, and
+`os` copies it as it is to `/etc/xdg/hypr/`, keeping its extension
+(`hyprland.conf`, or `hyprland.lua` for newer hyprland). hyprland reads it
+for anyone without a config of their own in `~/.config/hypr`, and a user
+config can pull it in with `source = /etc/xdg/hypr/hyprland.conf`. that
+makes it the machine's default, and part of every generation. the rest of
+your own settings stay in your home directory, where `os` doesn't reach.
+
+### omarchy
+
+the package ships a profile with the system side of an omarchy machine:
+hyprland with pipewire, sddm for login, and the services omarchy's
+installer turns on (avahi, bluetooth, cups, docker's socket, networkmanager,
+power-profiles-daemon, resolved, systemd-oomd, and ufw). it leaves packages
+to `os init`, which imports the ones the machine has:
+
+```toml
+include = ["/usr/share/yoq/profiles/omarchy.toml", "imported.toml"]
+```
+
+on an omarchy install, that plans nothing. omarchy's own updates
+(`omarchy-update` and its migrations) still change the machine behind
+`os`'s back, so `os status` shows them as drift until `os adopt` or the next
+apply settles it. omarchy boots with limine, so generations wait for limine
+support; the manage rung works today.
+
+### kernel modules
+
+```toml
+[boot]
+modules = ["i2c-dev", "nct6775"]
+```
+
+`modules` becomes `/etc/modules-load.d/99-yoq.conf`, which systemd reads at
+every boot, and `apply` loads the list right away on a running machine.
 
 ### includes
 

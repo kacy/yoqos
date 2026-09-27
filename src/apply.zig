@@ -83,8 +83,8 @@ pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock
 }
 
 /// writes a managed file whole, with its mode. on a running machine
-/// (`live`, as for units) the sysctl file is loaded right away, and a
-/// mkinitcpio drop-in rebuilds the initramfs.
+/// (`live`, as for units) the sysctl file and the module list are loaded
+/// right away, and a mkinitcpio drop-in rebuilds the initramfs.
 fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.DesiredFile, path: []const u8, live: bool, diags: *diag.List) !bool {
     const d = for (files) |d| {
         if (std.mem.eql(u8, d.path, path)) break d;
@@ -101,6 +101,8 @@ fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.
     if (!live) return true;
     const then: []const []const u8 = if (std.mem.eql(u8, path, planner.sysctl_path))
         &.{ "sysctl", "-p", path }
+    else if (std.mem.eql(u8, path, planner.modules_path))
+        &.{ "systemctl", "restart", "systemd-modules-load.service" }
     else if (std.mem.startsWith(u8, path, "/etc/mkinitcpio.conf.d/"))
         &.{ "mkinitcpio", "-P" }
     else

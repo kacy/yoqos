@@ -118,23 +118,30 @@ const Loader = struct {
         return merged;
     }
 
-    /// reads what each `[files]` entry holds. a source is relative to the
-    /// file that names it, which its span records.
+    /// reads what each `[files]` entry and the desktop's `session_config`
+    /// hold.
     fn fileContents(l: *Loader, c: *Config) !void {
         for (c.files.entries.items) |*e| {
             const f = &e.value;
             if (f.text) |t| f.content = t.v;
-            const source = f.source orelse continue;
-            const dir = std.fs.path.dirnamePosix(source.src.file) orelse ".";
-            const path = try std.fs.path.resolvePosix(l.a, &.{ dir, source.v });
-            f.content = l.files.read(l.a, path) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => {
-                    try l.diags.add(.source_missing, source.src, "{s} can't be read, for {s}", .{ path, e.name }, null);
-                    continue;
-                },
-            };
+            if (f.source) |source| f.content = try l.readSource(source, e.name);
         }
+        const d = &c.desktop;
+        if (d.session_config) |source| d.session_content = try l.readSource(source, "desktop.session_config");
+    }
+
+    /// a file named next to the config, relative to the file that names
+    /// it, which its span records. null after saying it can't be read.
+    fn readSource(l: *Loader, source: config.Str, what: []const u8) !?[]const u8 {
+        const dir = std.fs.path.dirnamePosix(source.src.file) orelse ".";
+        const path = try std.fs.path.resolvePosix(l.a, &.{ dir, source.v });
+        return l.files.read(l.a, path) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                try l.diags.add(.source_missing, source.src, "{s} can't be read, for {s}", .{ path, what }, null);
+                return null;
+            },
+        };
     }
 
     fn cycle(l: *Loader, start: usize, path: []const u8, from: Src) error{OutOfMemory}!?Config {
@@ -514,4 +521,20 @@ test "files read their source next to the file that names them" {
     try r.fs.put("/etc/yoq/machine.toml", "[files.\"/etc/motd\"]\nsource = \"gone\"\n");
     _ = try r.load("/etc/yoq/machine.toml");
     try testing.expectEqual(diag.Code.source_missing, r.diags.items.items[0].code);
+}
+
+test "the session's config is read next to the file that names it" {
+    var r: Run = .{};
+    defer r.deinit();
+    try r.fs.put("/etc/yoq/profiles/desktop.toml",
+        \\[desktop]
+        \\session = "hyprland"
+        \\session_config = "hyprland.conf"
+        \\
+    );
+    try r.fs.put("/etc/yoq/profiles/hyprland.conf", "monitor = , preferred, auto, 1\n");
+    try r.fs.put("/etc/yoq/machine.toml", "include = [\"profiles/desktop.toml\"]\n");
+    const c = try r.load("/etc/yoq/machine.toml");
+    try r.expectClean();
+    try testing.expectEqualStrings("monitor = , preferred, auto, 1\n", c.desktop.session_content.?);
 }
