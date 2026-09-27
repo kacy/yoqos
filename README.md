@@ -66,8 +66,11 @@ zig build test -Dalpm -Dsystemd
 
 `tests/vm/test.sh zig-out/bin/os` boots an arch vm under kvm and runs the
 whole loop in it: the manage rung, enable-rollback, rollback, and trial
-boots. `VM_IMAGE=archinstall` runs it on an image archinstall installs
-instead of arch's cloud image. ci runs both on every push.
+boots. `VM_IMAGE` picks the machine: arch's cloud image (the default), or
+one archinstall installs, with its default btrfs layout (`archinstall`), an
+ext4 root (`ext4`), or limine and snapper, like omarchy's boot setup
+(`limine`). the last two stay on the manage rung. ci runs all four on every
+push.
 
 ## what's next
 

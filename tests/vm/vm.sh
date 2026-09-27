@@ -6,6 +6,8 @@
 #   archinstall  archinstall's defaults: the esp at /boot, grub, and btrfs
 #                with @, @home, @log, and @pkg
 #   ext4         archinstall's layout with an ext4 root: no generations
+#   limine       archinstall with limine and snapper, like omarchy's boot
+#                setup: generations wait for limine support
 #
 #   vm.sh image              make the base image, once
 #   vm.sh start              boot a fresh overlay and wait for ssh
@@ -125,6 +127,8 @@ image)
     archinstall) archinstall ;;
     ext4) archinstall -e 's|"fs_type": "btrfs"|"fs_type": "ext4"|' -e 's|"mountpoint": null|"mountpoint": "/"|' \
         -e 's|"compress=zstd"||' -e 's|"btrfs": \[{.*}\]|"btrfs": []|' ;;
+    limine) archinstall -e 's|"bootloader": "Grub"|"bootloader": "Limine"|' \
+        -e 's|"config_type": "default_layout",|"config_type": "default_layout", "btrfs_options": { "snapshot_config": { "type": "Snapper" } },|' ;;
     *) echo "vm: no image called $image" >&2; exit 2 ;;
     esac
     ;;
@@ -151,7 +155,7 @@ stop)
     rm -f "$dir/qemu.pid" "$dir/overlay.qcow2" "$dir/vars.fd"
     ;;
 *)
-    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac

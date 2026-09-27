@@ -57,6 +57,6 @@
   "timezone": "UTC",
   "custom_commands": [
     "install -d -m 700 /root/.ssh && echo 'KEY' > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys",
-    "sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=\"/GRUB_CMDLINE_LINUX_DEFAULT=\"console=tty0 console=ttyS0,115200 /' /etc/default/grub && grub-mkconfig -o /boot/grub/grub.cfg"
+    "if [ -f /etc/default/grub ]; then sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=\"/GRUB_CMDLINE_LINUX_DEFAULT=\"console=tty0 console=ttyS0,115200 /' /etc/default/grub && grub-mkconfig -o /boot/grub/grub.cfg; fi; for f in /boot/EFI/*/limine.conf; do if [ -f \"$f\" ]; then sed -i 's/^\\( *cmdline: .*\\)$/\\1 console=tty0 console=ttyS0,115200/' \"$f\"; fi; done"
   ]
 }

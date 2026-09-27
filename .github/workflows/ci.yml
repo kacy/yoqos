@@ -53,7 +53,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [cloud, archinstall, ext4]
+        image: [cloud, archinstall, ext4, limine]
     env:
       VM_IMAGE: ${{ matrix.image }}
     container:

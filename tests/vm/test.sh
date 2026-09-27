@@ -9,7 +9,7 @@ os=$1
 
 # where the image keeps its esp, and the root it boots before generations.
 case ${VM_IMAGE:-cloud} in
-archinstall | ext4) VM_ESP=/boot VM_ROOT=/@ ;;
+archinstall | ext4 | limine) VM_ESP=/boot VM_ROOT=/@ ;;
 *) VM_ESP=/efi VM_ROOT=/ ;;
 esac
 export VM_ESP VM_ROOT
@@ -26,10 +26,13 @@ trap '"$vm" stop' EXIT
 "$vm" ssh mkdir -p /root/dist
 "$vm" copy dist/yoq-drift.hook /root/dist/yoq-drift.hook
 "$vm" ssh "cd /root && sh smoke.sh /usr/local/bin/os"
-if [ "${VM_IMAGE:-cloud}" = ext4 ]; then
-    # no btrfs, no generations: enable-rollback says so and changes nothing.
-    tests/vm/manage.sh
-else
+# machines that can't have generations yet: enable-rollback says which
+# check fails, and changes nothing.
+case ${VM_IMAGE:-cloud} in
+ext4) tests/vm/manage.sh "root filesystem: ext4" ;;
+limine) tests/vm/manage.sh "bootloader: limine" ;;
+*)
     tests/vm/rollback.sh
     tests/vm/trial.sh
-fi
+    ;;
+esac

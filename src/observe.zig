@@ -171,10 +171,23 @@ const Reader = struct {
             for (in_esp) |c| {
                 if (r.exists(try std.fs.path.join(r.a, &.{ e[1..], c[0] }))) return c[1];
             }
+            if (try r.limineIn(try std.fs.path.join(r.a, &.{ e[1..], "EFI" }))) return "limine";
         }
         if (r.exists("boot/limine.conf")) return "limine";
         if (r.exists("boot/grub/grub.cfg")) return "grub";
         return null;
+    }
+
+    /// whether a directory under `efi` has a limine.conf, as archinstall's
+    /// EFI/arch-limine does.
+    fn limineIn(r: Reader, efi: []const u8) !bool {
+        var dir = std.Io.Dir.cwd().openDir(r.io, try r.path(efi), .{ .iterate = true }) catch return false;
+        defer dir.close(r.io);
+        var it = dir.iterate();
+        while (it.next(r.io) catch null) |d| {
+            if (d.kind == .directory and r.exists(try std.fs.path.join(r.a, &.{ efi, d.name, "limine.conf" }))) return true;
+        }
+        return false;
     }
 
     fn exists(r: Reader, rel: []const u8) bool {
@@ -578,4 +591,20 @@ test "files with a new upstream default beside them" {
     try testing.expectEqual(2, f.pacnew.len);
     try testing.expectEqualStrings("/etc/pacman.conf", f.pacnew[0]);
     try testing.expectEqualStrings("/etc/ssh/sshd_config", f.pacnew[1]);
+}
+
+test "which bootloader an esp at /boot holds" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const io = testing.io;
+    const r: Reader = .{ .a = arena.allocator(), .io = io, .root = try std.fmt.allocPrint(arena.allocator(), ".zig-cache/tmp/{s}", .{tmp.sub_path}) };
+    try testing.expectEqual(null, try r.loader("/boot"));
+    try tmp.dir.createDirPath(io, "boot/grub");
+    try tmp.dir.writeFile(io, .{ .sub_path = "boot/grub/grub.cfg", .data = "" });
+    try testing.expectEqualStrings("grub", (try r.loader("/boot")).?);
+    try tmp.dir.createDirPath(io, "boot/EFI/arch-limine");
+    try tmp.dir.writeFile(io, .{ .sub_path = "boot/EFI/arch-limine/limine.conf", .data = "" });
+    try testing.expectEqualStrings("limine", (try r.loader("/boot")).?);
 }
