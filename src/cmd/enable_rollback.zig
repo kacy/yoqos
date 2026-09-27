@@ -232,29 +232,70 @@ const Enabler = struct {
         return true;
     }
 
-    /// yoq-health.service in generation 1, enabled: it runs `os health`
-    /// at each boot, which ends a trial boot one way or the other.
+    /// the units generation 1 gets, enabled: yoq-health.service runs
+    /// `os health` at each boot, which ends a trial one way or the other,
+    /// and yoq-watchdog.timer reboots a trial boot that hangs before it.
     fn healthUnit(e: *Enabler) !bool {
         const os_path = try std.process.executablePathAlloc(e.ctx.io, e.a);
+        const units = [_]struct { []const u8, []const u8, ?[]const u8 }{
+            .{
+                "yoq-health.service",
+                try std.fmt.allocPrint(e.a,
+                    \\[Unit]
+                    \\Description=Check that a generation on trial came up healthy
+                    \\After=multi-user.target graphical.target
+                    \\
+                    \\[Service]
+                    \\Type=oneshot
+                    \\ExecStart={s} health
+                    \\
+                    \\[Install]
+                    \\WantedBy=multi-user.target
+                    \\
+                , .{os_path}),
+                "multi-user.target",
+            },
+            .{
+                "yoq-watchdog.timer",
+                \\[Unit]
+                \\Description=Reboot a generation on trial that doesn't finish booting
+                \\ConditionKernelCommandLine=yoq.trial
+                \\
+                \\[Timer]
+                \\OnBootSec=5min
+                \\AccuracySec=10s
+                \\
+                \\[Install]
+                \\WantedBy=timers.target
+                \\
+                ,
+                "timers.target",
+            },
+            .{
+                "yoq-watchdog.service",
+                \\[Unit]
+                \\Description=Reboot a generation on trial that didn't finish booting
+                \\SuccessAction=reboot-force
+                \\
+                \\[Service]
+                \\Type=oneshot
+                \\ExecStart=/usr/bin/true
+                \\
+                ,
+                null,
+            },
+        };
         const dir = try e.m.at(&.{ new_root, "etc/systemd/system" });
-        const unit = try std.fs.path.join(e.a, &.{ dir, "yoq-health.service" });
-        const text = try std.fmt.allocPrint(e.a,
-            \\# written by os enable-rollback.
-            \\[Unit]
-            \\Description=Check that a generation on trial came up healthy
-            \\After=multi-user.target
-            \\
-            \\[Service]
-            \\Type=oneshot
-            \\ExecStart={s} health
-            \\
-            \\[Install]
-            \\WantedBy=multi-user.target
-            \\
-        , .{os_path});
-        if (!try e.sh(&.{ "mkdir", "-p", try std.fs.path.join(e.a, &.{ dir, "multi-user.target.wants" }) })) return false;
-        std.Io.Dir.cwd().writeFile(e.ctx.io, .{ .sub_path = unit, .data = text }) catch return e.failed("can't write {s}", .{unit});
-        return e.sh(&.{ "ln", "-sf", "../yoq-health.service", try std.fs.path.join(e.a, &.{ dir, "multi-user.target.wants/yoq-health.service" }) });
+        for (units) |u| {
+            const path = try std.fs.path.join(e.a, &.{ dir, u[0] });
+            const text = try std.fmt.allocPrint(e.a, "# written by os enable-rollback.\n{s}", .{u[1]});
+            std.Io.Dir.cwd().writeFile(e.ctx.io, .{ .sub_path = path, .data = text }) catch return e.failed("can't write {s}", .{path});
+            const target = u[2] orelse continue;
+            const wants = try std.fs.path.join(e.a, &.{ dir, try std.fmt.allocPrint(e.a, "{s}.wants", .{target}) });
+            if (!try e.sh(&.{ "mkdir", "-p", wants })) return false;
+            if (!try e.sh(&.{ "ln", "-sf", try std.fmt.allocPrint(e.a, "../{s}", .{u[0]}), try std.fs.path.join(e.a, &.{ wants, u[0] }) })) return false;
+        }
+        return true;
     }
 
     /// grub's files on the esp, so the menu lives outside every

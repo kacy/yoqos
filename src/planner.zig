@@ -528,13 +528,20 @@ fn packageSummary(w: *std.Io.Writer, p: *const Plan) !void {
     }
     if (n[0] + n[1] + n[2] == 0) return;
     try w.print("packages\n  upgrades {d}    new {d}    removed {d}   (-v lists them)\n", .{ n[1], n[0], n[2] });
-    var first = true;
+    var shown: usize = 0;
     for (p.changes) |c| {
         if ((c.kind != .package and c.kind != .dependency) or c.op != .change or !notable(c)) continue;
-        try w.print("  {s:<9}{s} {s} -> {s}\n", .{ if (first) "notable" else "", c.subject, c.from.?, c.to.? });
-        first = false;
+        if (shown < max_notable) {
+            try w.print("  {s:<9}{s} {s} -> {s}\n", .{ if (shown == 0) "notable" else "", c.subject, c.from.?, c.to.? });
+        }
+        shown += 1;
     }
+    if (shown > max_notable) try w.print("           and {d} more\n", .{shown - max_notable});
 }
+
+/// enough to see what matters and still fit the screen with the news and
+/// the prompt.
+const max_notable = 8;
 
 /// an upgrade worth a look: one that needs a reboot, one the catalog
 /// flags, like graphics and boot, or a new major version.
@@ -827,6 +834,25 @@ test "the update summary counts packages and names the notable ones" {
         \\plan: 1 to add, 4 to change, 1 to remove · reboot needed: kernel
         \\
     , out.written());
+}
+
+test "the update summary stops naming notable packages after a screenful" {
+    var t: T = .{};
+    defer t.deinit();
+    var changes: [10]Change = undefined;
+    for (&changes, 0..) |*c, i| {
+        c.* = .{ .op = .change, .kind = .dependency, .subject = try std.fmt.allocPrint(t.a(), "lib{d}", .{i}), .from = "1.0-1", .to = "2.0-1" };
+    }
+    const p: Plan = .{ .changes = &changes };
+    var out: std.Io.Writer.Allocating = .init(t.a());
+    try writeText(&out.writer, t.a(), &p, .{ .summary = true });
+    try testing.expect(std.mem.endsWith(u8, out.written(),
+        \\           lib7 1.0-1 -> 2.0-1
+        \\           and 2 more
+        \\
+        \\plan: 0 to add, 10 to change, 0 to remove · no reboot
+        \\
+    ));
 }
 
 test "nvidia's initramfs drop-in, unless the machine loads the modules already" {

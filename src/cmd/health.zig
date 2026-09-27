@@ -18,6 +18,9 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer w.deinit();
     const a = w.allocator();
     const boot = try rollback.generationsHere(&w) orelse return 0;
+    // the boot finished, so a trial's watchdog stands down. this runs on
+    // every boot, so a stray one can't reboot a healthy machine.
+    _ = try exec.run(a, ctx.io, &.{ "systemctl", "stop", "yoq-watchdog.timer" });
     const esp = boot.esp orelse return 0;
     const trial_text = try gens.envValue(a, ctx.io, esp, "yoq_trial") orelse {
         try ctx.out.writeAll("no generation on trial.\n");
@@ -59,7 +62,7 @@ fn fellBack(ctx: *Context, a: Allocator, boot: @import("../facts.zig").Boot, tri
         _ = try gens.unsetEnv(a, ctx.io, boot.esp.?, &.{ "yoq_default", "yoq_trial" });
         return 1;
     };
-    const reason = try std.fmt.allocPrint(a, "fell back from {d} to {d}: {s}", .{ trial, n, target.reason });
+    const reason = try std.fmt.allocPrint(a, "fell back from {d} to {d}", .{ trial, n });
     const made = try rollback.startFrom(ctx, a, boot, target, running, reason) orelse return 1;
     _ = try gens.unsetEnv(a, ctx.io, boot.esp.?, &.{ "yoq_default", "yoq_trial" });
     const notice = try std.fmt.allocPrint(a, "generation {d} didn't come up healthy, so this machine went back to generation {d}. it's generation {d} now, with its config. `os rollback {d}` tries {d} again.\n", .{ trial, n, made, trial, trial });
@@ -83,6 +86,14 @@ fn check(ctx: *Context, a: Allocator) ![]const []const u8 {
     for ([_][]const u8{ "maintenance", "offline", "stopping", "unknown" }) |bad| {
         if (std.mem.eql(u8, state, bad)) try out.append(a, try std.fmt.allocPrint(a, "systemd is in {s}", .{state}));
     }
+    // a machine with a display manager has to have it running.
+    if (std.Io.Dir.cwd().access(ctx.io, "/etc/systemd/system/display-manager.service", .{})) |_| {
+        const dm = switch (try exec.output(a, ctx.io, &.{ "systemctl", "is-active", "display-manager.service" })) {
+            .ok => |t| std.mem.trim(u8, t, " \n"),
+            .failed => |t| std.mem.trim(u8, t, " \n"),
+        };
+        if (!std.mem.eql(u8, dm, "active")) try out.append(a, try std.fmt.allocPrint(a, "the display manager is {s}", .{dm}));
+    } else |_| {}
     // configured services that aren't running show up as unit changes.
     var w: cli.Work = .init(ctx);
     defer w.deinit();

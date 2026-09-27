@@ -53,4 +53,45 @@ check "/usr/local/bin/os history | tail -n 1 | grep -c 'fell back from'" 1
 check "grub-editenv /efi/yoq/grubenv list | grep -c -e ^yoq_trial -e ^yoq_default || true" 0
 check "/usr/local/bin/os status | grep -c '^note: generation'" 1
 check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
+
+# a trial boot that hangs before it's up: the watchdog reboots it, and the
+# machine falls back the same way. first onto the generation just adopted.
+"$vm" reboot
+settled
+"$vm" ssh "/usr/local/bin/os add --yes intel-ucode" | tail -n 1
+before=$("$vm" ssh "ls /var/lib/yoq/generations | sort -n | tail -n 2 | head -n 1 | cut -d. -f1")
+"$vm" ssh "printf '[Unit]\nDescription=hang\nBefore=multi-user.target\n[Service]\nType=oneshot\nTimeoutStartSec=infinity\nExecStart=/usr/bin/sleep infinity\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/yoq-hang.service && systemctl enable -q yoq-hang.service"
+env
+"$vm" reboot || true
+for _ in $(seq 60); do
+    root=$(timeout 20 "$vm" ssh "findmnt -no FSROOT /" 2>/dev/null || true)
+    [ "$root" = "/@roots/boot-$before" ] && break
+    sleep 10
+done
+if [ "$root" != "/@roots/boot-$before" ]; then
+    echo "trial: the hung trial boot didn't fall back; what it shows:"
+    "$vm" ssh "cat /proc/cmdline; systemctl is-active yoq-watchdog.timer yoq-hang.service multi-user.target; systemctl list-timers --all --no-pager | grep -i yoq; journalctl -b -u yoq-watchdog.timer -u yoq-watchdog.service --no-pager -o cat | tail -n 5" || true
+fi
+check "findmnt -no FSROOT /" "/@roots/boot-$before"
+settled
+check "/usr/local/bin/os history | tail -n 1 | grep -c 'fell back from'" 1
+
+# a trial whose kernel can't boot: no initramfs, so it can't mount its
+# root. grub's fallback or panic=10 brings back the generation before.
+"$vm" reboot
+settled
+"$vm" ssh "/usr/local/bin/os add --yes intel-ucode" | tail -n 1
+check "grub-editenv /efi/yoq/grubenv list | grep -c ^yoq_trial" 1
+before=$("$vm" ssh "ls /var/lib/yoq/generations | sort -n | tail -n 2 | head -n 1 | cut -d. -f1")
+"$vm" ssh "mv /boot/initramfs-linux.img /boot/initramfs-linux.img.away"
+env
+"$vm" reboot || true
+for _ in $(seq 60); do
+    root=$(timeout 20 "$vm" ssh "findmnt -no FSROOT /" 2>/dev/null || true)
+    [ "$root" = "/@roots/boot-$before" ] && break
+    sleep 10
+done
+check "findmnt -no FSROOT /" "/@roots/boot-$before"
+settled
+check "/usr/local/bin/os history | tail -n 1 | grep -c 'fell back from'" 1
 echo "trial ok"

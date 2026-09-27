@@ -99,9 +99,14 @@ reboot to finish. the next boot tries generation 5 once; if it doesn't come up h
 
 the next boot runs the new generation, and the boot menu's default stays
 on the one before. once the machine is up, `yoq-health.service` checks
-it: systemd isn't in maintenance, and every service the config turns on is
-running. healthy, and the new generation becomes the default. not
-healthy, and it reboots into the generation before.
+it: systemd isn't in maintenance, the display manager started if there is
+one, and every service the config turns on is running. healthy, and the new
+generation becomes the default. not healthy, and it reboots into the
+generation before.
+
+a trial boot that hangs without panicking, say on a service that never
+finishes starting, gets five minutes. then `yoq-watchdog.timer` reboots
+it, and grub picks the generation before.
 
 if the new generation can't boot at all, grub falls back to the default on
 its own, and a kernel panic reboots after 10 seconds into it. either way,
@@ -134,9 +139,10 @@ os gc --keep 2       # clean up now, keeping the newest two
   the session you were in has the broken update. building the next
   generation separately, and booting it once to check it, is planned.
 - **the health check is simple.** it asks whether systemd is in
-  maintenance and whether the config's services are running. a desktop
-  that doesn't come up, or a network that doesn't, passes. a boot that
-  hangs without panicking waits for you to pick an entry in the menu.
+  maintenance, whether the display manager started, and whether the
+  config's services are running. a network that doesn't come up passes
+  unless a service the config turns on needs it. a desktop that starts but
+  shows nothing useful passes too.
 - **state carries at the moment of the rollback.** a password you change
   after `os rollback` but before the reboot stays behind. carrying again at
   shutdown is planned.
@@ -148,8 +154,7 @@ os gc --keep 2       # clean up now, keeping the newest two
 ## later
 
 - carrying state again at shutdown, and the uid map for system users
-- health checks for the display manager and the network, and a watchdog
-  for boots that hang
+- a network check for configs that declare one
 - systemd-boot, limine, and refind
 - more root layouts
 - building the next generation apart from the running system, so a bad

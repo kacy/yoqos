@@ -91,6 +91,8 @@ pub fn kernelArgs(a: Allocator, cmdline: []const u8, root_uuid: []const u8, subv
     var words = std.mem.tokenizeAny(u8, cmdline, " \t\n");
     while (words.next()) |w| {
         if (std.mem.startsWith(u8, w, "BOOT_IMAGE=") or std.mem.startsWith(u8, w, "initrd=") or std.mem.startsWith(u8, w, "root=")) continue;
+        // grub adds this on a trial boot; it's never part of an entry.
+        if (std.mem.eql(u8, w, "yoq.trial")) continue;
         if (std.mem.startsWith(u8, w, "rootflags=")) {
             var opts = std.mem.tokenizeScalar(u8, w["rootflags=".len..], ',');
             while (opts.next()) |o| {
@@ -136,6 +138,7 @@ pub fn grubConfig(a: Allocator, c: GrubConfig) ![]const u8 {
         \\    set fallback="${{yoq_default}}"
         \\  fi
         \\  if [ "${{yoq_next}}" ]; then
+        \\    if [ "${{yoq_default}}" ]; then set yoq_trial_arg="yoq.trial"; fi
         \\    set default="${{yoq_next}}"
         \\    set yoq_next=
         \\    save_env -f (${{yoq_esp}})/yoq/grubenv yoq_next
@@ -146,7 +149,9 @@ pub fn grubConfig(a: Allocator, c: GrubConfig) ![]const u8 {
     , .{ c.timeout, c.default, c.esp_uuid, c.root_uuid }) catch return error.OutOfMemory;
     for (c.entries) |e| {
         const dir = if (std.mem.eql(u8, e.subvol, "/")) "" else e.subvol;
-        w.print("\nmenuentry \"{s}\" --id {s} {{\n  linux {s}/boot/{s} {s}\n  initrd", .{ e.title, e.id, dir, e.kernel, e.args }) catch return error.OutOfMemory;
+        // ${yoq_trial_arg} is "yoq.trial" on a trial boot, which starts
+        // the watchdog; empty otherwise.
+        w.print("\nmenuentry \"{s}\" --id {s} {{\n  linux {s}/boot/{s} {s} ${{yoq_trial_arg}}\n  initrd", .{ e.title, e.id, dir, e.kernel, e.args }) catch return error.OutOfMemory;
         for (e.initrds) |i| w.print(" {s}/boot/{s}", .{ dir, i }) catch return error.OutOfMemory;
         w.writeAll("\n}\n") catch return error.OutOfMemory;
     }
@@ -174,7 +179,7 @@ test "which generations collection keeps" {
 test "a generation's kernel command line" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const cmdline = "BOOT_IMAGE=/boot/vmlinuz-linux root=UUID=abc rw net.ifnames=0 rootflags=compress=zstd:1,subvol=/@ console=ttyS0,115200\n";
+    const cmdline = "BOOT_IMAGE=/boot/vmlinuz-linux root=UUID=abc rw net.ifnames=0 rootflags=compress=zstd:1,subvol=/@ console=ttyS0,115200 yoq.trial\n";
     try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/1,compress=zstd:1 rw net.ifnames=0 console=ttyS0,115200 panic=10", try kernelArgs(arena.allocator(), cmdline, "abc", "/@roots/1"));
     try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/ rw panic=30", try kernelArgs(arena.allocator(), "rw panic=30", "abc", "/"));
     try testing.expectEqualStrings("/@roots/boot-2", try bootCopy(arena.allocator(), 2));
@@ -199,12 +204,12 @@ test "grub's config on the esp" {
         \\search --no-floppy --fs-uuid --set=root 1df77bf6
         \\
         \\menuentry "yoq 1 · 2026-09-26 · enable-rollback" --id gen-1 {
-        \\  linux /@roots/1/boot/vmlinuz-linux root=UUID=1df77bf6 rootflags=subvol=/@roots/1 rw
+        \\  linux /@roots/1/boot/vmlinuz-linux root=UUID=1df77bf6 rootflags=subvol=/@roots/1 rw ${yoq_trial_arg}
         \\  initrd /@roots/1/boot/amd-ucode.img /@roots/1/boot/initramfs-linux.img
         \\}
         \\
         \\menuentry "the system before generations" --id before {
-        \\  linux /boot/vmlinuz-linux root=UUID=1df77bf6 rootflags=subvol=/ rw
+        \\  linux /boot/vmlinuz-linux root=UUID=1df77bf6 rootflags=subvol=/ rw ${yoq_trial_arg}
         \\  initrd /boot/initramfs-linux.img
         \\}
         \\
