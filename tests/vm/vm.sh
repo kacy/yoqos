@@ -5,6 +5,7 @@
 #   cloud        arch's cloud image: grub on btrfs, the root in the top level
 #   archinstall  archinstall's defaults: the esp at /boot, grub, and btrfs
 #                with @, @home, @log, and @pkg
+#   ext4         archinstall's layout with an ext4 root: no generations
 #
 #   vm.sh image              make the base image, once
 #   vm.sh start              boot a fresh overlay and wait for ssh
@@ -89,15 +90,15 @@ fresh() {
 }
 
 # archinstall, run in the cloud vm against a second disk with the config
-# in archinstall.json. the disk and the firmware variables it wrote are the
-# image.
+# in archinstall.json, edited by the sed arguments given. the disk and the
+# firmware variables it wrote are the image.
 archinstall() {
     VM_IMAGE=cloud "$0" image
     fresh cloud
-    qemu-img create -q -f qcow2 "$dir/archinstall.part" 16G
-    boot "$dir/overlay.qcow2" "$dir/vars.fd" -drive if=virtio,file="$dir/archinstall.part"
+    qemu-img create -q -f qcow2 "$dir/$image.part" 16G
+    boot "$dir/overlay.qcow2" "$dir/vars.fd" -drive if=virtio,file="$dir/$image.part"
     here=$(dirname "$0")
-    sed "s|KEY|$(cat "$dir/key.pub")|" "$here/archinstall.json" > "$dir/archinstall.json"
+    sed -e "s|KEY|$(cat "$dir/key.pub")|" "$@" "$here/archinstall.json" > "$dir/archinstall.json"
     printf '{"root_enc_password": "%s"}\n' "$root_hash" > "$dir/creds.json"
     scp -q $ssh_opts -P "$port" "$dir/archinstall.json" root@127.0.0.1:/root/config.json
     scp -q $ssh_opts -P "$port" "$dir/creds.json" root@127.0.0.1:/root/creds.json
@@ -107,8 +108,8 @@ archinstall() {
     kill "$(cat "$dir/qemu.pid")"
     for _ in $(seq 60); do running || break; sleep 1; done
     if running; then echo "vm: qemu didn't stop" >&2; exit 1; fi
-    mv "$dir/archinstall.part" "$dir/archinstall.qcow2"
-    mv "$dir/vars.fd" "$dir/archinstall.vars"
+    mv "$dir/$image.part" "$dir/$image.qcow2"
+    mv "$dir/vars.fd" "$dir/$image.vars"
     rm -f "$dir/qemu.pid" "$dir/overlay.qcow2"
 }
 
@@ -122,6 +123,8 @@ image)
     case $image in
     cloud) curl -fsSL -o "$dir/cloud.qcow2" "$image_url" ;;
     archinstall) archinstall ;;
+    ext4) archinstall -e 's|"fs_type": "btrfs"|"fs_type": "ext4"|' -e 's|"mountpoint": null|"mountpoint": "/"|' \
+        -e 's|"compress=zstd"||' -e 's|"btrfs": \[{.*}\]|"btrfs": []|' ;;
     *) echo "vm: no image called $image" >&2; exit 2 ;;
     esac
     ;;
@@ -148,7 +151,7 @@ stop)
     rm -f "$dir/qemu.pid" "$dir/overlay.qcow2" "$dir/vars.fd"
     ;;
 *)
-    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac
