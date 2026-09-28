@@ -21,6 +21,9 @@ pub const Package = struct {
     /// names of the packages this one depends on, as resolved: a
     /// dependency on a virtual package names the provider that was picked.
     depends: []const []const u8 = &.{},
+    /// for a package os built from the aur: the commit of the recipe it
+    /// was built from.
+    recipe: ?[]const u8 = null,
 };
 
 pub const Provider = struct {
@@ -75,6 +78,11 @@ pub fn write(w: *std.Io.Writer, l: *const Lock) !void {
         try w.writeAll("\nsha256 = ");
         try toml.writeString(w, p.sha256);
         try w.writeByte('\n');
+        if (p.recipe) |rc| {
+            try w.writeAll("recipe = ");
+            try toml.writeString(w, rc);
+            try w.writeByte('\n');
+        }
         if (p.depends.len > 0) {
             try w.writeAll("depends = [");
             for (p.depends, 0..) |d, i| {
@@ -231,7 +239,7 @@ const Reader = struct {
     fn package(r: *Reader, e: *const toml.Entry) Error!Package {
         const t = try r.table(&e.value, e.key);
         const prefix = try std.fmt.allocPrint(r.a, "packages.{s}.", .{e.key});
-        try r.onlyKeys(t, &.{ "version", "repo", "sha256", "depends" }, prefix);
+        try r.onlyKeys(t, &.{ "version", "repo", "sha256", "depends", "recipe" }, prefix);
         var p: Package = .{
             .name = try r.a.dupe(u8, e.key),
             .version = try r.str(t, "version", prefix),
@@ -239,6 +247,7 @@ const Reader = struct {
             .sha256 = try r.str(t, "sha256", prefix),
         };
         if (!validSha256(p.sha256)) return r.bad(t.get("sha256").?.span, "{s}sha256 isn't a sha-256 hash", .{prefix});
+        if (t.get("recipe") != null) p.recipe = try r.str(t, "recipe", prefix);
         if (t.get("depends")) |dv| {
             if (dv.data != .array) return r.wrong(dv, "depends", prefix, "a list");
             const items = dv.data.array.items.items;
@@ -327,6 +336,15 @@ const example =
     \\"
     \\depends = ["glibc"]
     \\
+    \\[packages.yay-bin]
+    \\version = "12.5.0-1"
+    \\repo = "yoq-aur"
+    \\sha256 = "
+++ hash_b ++
+    \\"
+    \\recipe = "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
+    \\depends = ["glibc"]
+    \\
 ;
 
 test "parse and write round-trip exactly" {
@@ -338,8 +356,9 @@ test "parse and write round-trip exactly" {
     const l = (try parse(arena.allocator(), "machine.lock", example, &diags)).?;
     try testing.expectEqual(0, diags.items.items.len);
     try testing.expectEqualStrings("2026-09-25", l.sync_date);
-    try testing.expectEqual(3, l.packages.len);
+    try testing.expectEqual(4, l.packages.len);
     try testing.expectEqualStrings("2.42-1", l.package("glibc").?.version);
+    try testing.expectEqualStrings("0a1b2c3d4e5f60718293a4b5c6d7e8f901234567", l.package("yay-bin").?.recipe.?);
     try testing.expectEqual(null, l.package("vim"));
     try testing.expectEqualStrings("jre-openjdk", l.providers[0].chosen);
 

@@ -4,6 +4,7 @@
 const std = @import("std");
 const rootfs = @import("../rootfs.zig");
 const cli = @import("../cli.zig");
+const config = @import("../config.zig");
 const alpm = @import("../alpm.zig");
 const apply = @import("../apply.zig");
 const journal = @import("../journal.zig");
@@ -136,7 +137,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.Render
     if (!ctx.json) try planner.writeText(ctx.out, a, p, render);
     if (try cli.approve(ctx, yes, "apply", "apply this?")) |code| return .{ .code = code, .matches = false };
 
-    const target = try targetFor(ctx, &w, &result.state.lock) orelse return Outcome.failed(&w);
+    const target = try targetFor(ctx, &w, result.state.config(), &result.state.lock) orelse return Outcome.failed(&w);
     const units = liveUnits(ctx);
     const hash = try p.hash();
     try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "begin", &hash);
@@ -314,9 +315,9 @@ fn verify(ctx: *Context, in: pipeline.Inputs, applied: usize, skipped: []const p
 
 /// the machine to change, and the package databases for the lock's own
 /// date, with the servers packages come from.
-fn targetFor(ctx: *Context, w: *cli.Work, l: *const lock.Lock) !?apply.Target {
+fn targetFor(ctx: *Context, w: *cli.Work, c: *const config.Config, l: *const lock.Lock) !?apply.Target {
     const a = w.allocator();
-    const pc = try locking.pacman(ctx, a);
+    const pc = try locking.pacman(ctx, a, c);
     const rs = pc.repos;
     const cache = try locking.cacheDir(ctx, a);
     const dbs = try sync.cached(a, ctx.io, rs, cache, l.sync_date) orelse blk: {

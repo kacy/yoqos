@@ -83,6 +83,28 @@ pub const Boot = struct {
     pacman_moved: bool = false,
 };
 
+/// the file os writes the config's repositories to, and the line in
+/// pacman.conf that reads it.
+pub const repos_conf = "/etc/pacman.d/yoq-repos.conf";
+pub const repos_include = "Include = " ++ repos_conf;
+
+/// how pacman is set up for the config's own repositories.
+pub const Pacman = struct {
+    /// pacman.conf includes the file os writes them to.
+    includes_repos: bool = false,
+    /// the signing keys the config names that pacman's keyring has.
+    keys: []const []const u8 = &.{},
+    /// the repositories pacman.conf declares itself, not through os's file.
+    repos: []const []const u8 = &.{},
+};
+
+/// what the observer should look at beyond the machine itself, because
+/// the config asks about it: files to hash, and signing keys to look for.
+pub const Wanted = struct {
+    files: []const []const u8 = &.{},
+    keys: []const []const u8 = &.{},
+};
+
 /// the hash files are compared by.
 pub fn sha256Hex(bytes: []const u8) [64]u8 {
     var digest: [32]u8 = undefined;
@@ -125,6 +147,7 @@ pub const Facts = struct {
     /// `<path>.pacnew`, by the path of the file itself.
     pacnew: []const []const u8 = &.{},
     boot: Boot = .{},
+    pacman: Pacman = .{},
 
     pub fn package(f: *const Facts, name: []const u8) ?*const Package {
         return lists.find(f.packages, "name", name);

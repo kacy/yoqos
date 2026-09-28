@@ -3,6 +3,7 @@
 //! or no one to ask, it only writes the lock.
 
 const std = @import("std");
+const aur = @import("../aur.zig");
 const cli = @import("../cli.zig");
 const alpm = @import("../alpm.zig");
 const config = @import("../config.zig");
@@ -18,15 +19,18 @@ const eql = cli.eql;
 const Allocator = std.mem.Allocator;
 
 pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os update [--yes] [--no-apply] [-v] [--dbs <dir>] [--date yyyy-mm-dd]";
+    const usage_text = "os update [--yes] [--trust-aur] [--no-apply] [-v] [--dbs <dir>] [--date yyyy-mm-dd]";
     var dbs_dir: ?[]const u8 = null;
     var date: ?[]const u8 = null;
     var then: applying.Then = .{ .apply = true };
     var verbose = false;
+    var trust_aur = false;
     var it: cli.ArgIter = .{ .args = args };
     while (it.next()) |a| {
         if (then.flag(a)) {
             continue;
+        } else if (eql(a, "--trust-aur")) {
+            trust_aur = true;
         } else if (eql(a, "-v") or eql(a, "--verbose")) {
             verbose = true;
         } else if (eql(a, "--dbs")) {
@@ -48,14 +52,19 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const loaded = try w.config() orelse return w.fail();
     const top = loaded.files.items[0];
     const sync_date = date orelse try locking.today(ctx.io, a);
+    const old_lock = try locking.readLock(ctx, a, top);
+    const old: ?*const lock.Lock = if (old_lock) |*o| o else null;
+    // aur packages are built first, into the local repository resolution
+    // reads.
+    const recipes = try buildAur(ctx, &w, &loaded.config, old, trust_aur) orelse return 1;
     const dbs = if (dbs_dir) |dir|
         try syncDbs(ctx, a, dir) orelse return 1
     else
-        try sync.databases(a, ctx.io, ctx.fetcher, try locking.repos(ctx, a), try locking.cacheDir(ctx, a), sync_date, &w.diags) orelse return w.fail();
+        try sync.databases(a, ctx.io, ctx.fetcher, try locking.repos(ctx, a, &loaded.config), try locking.cacheDir(ctx, a), sync_date, &w.diags) orelse return w.fail();
 
-    const old = try locking.readLock(ctx, a, top);
-    const l = try locking.resolveLock(ctx, &w, &loaded.config, top, dbs, sync_date, &.{}) orelse return w.fail();
-    const d = try lock.diff(a, if (old) |*o| o else null, &l);
+    var l = try locking.resolveLock(ctx, &w, &loaded.config, top, dbs, sync_date, &.{}) orelse return w.fail();
+    try locking.pinRecipes(a, &l, recipes, old);
+    const d = try lock.diff(a, old, &l);
     const now = then.applies(ctx);
     const posted = if (old) |o| try newsSince(ctx, a, o.sync_date, l.sync_date) else &.{};
     if (!ctx.json) {
@@ -83,6 +92,68 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     try applying.recordGeneration(ctx, outcome, message);
     if (ctx.json) try output.writeDoc(ctx.out, "yoq.update/1", .{ .lock = path, .sync_date = l.sync_date, .packages = l.packages.len, .diff = d, .news = posted });
     return outcome.code;
+}
+
+/// fetches every aur recipe the config lists, has each new or changed
+/// one reviewed, and builds them, needs first. returns each built
+/// package's recipe commit, or null after saying why it stopped.
+fn buildAur(ctx: *Context, w: *cli.Work, c: *const config.Config, old: ?*const lock.Lock, trust: bool) !?locking.Recipes {
+    const a = w.allocator();
+    var out: locking.Recipes = .empty;
+    if (c.aur.items.items.len == 0) return out;
+    // builds need root, for the chroot; say so before fetching anything.
+    if (try applying.refused(ctx, applying.blocker(ctx))) return null;
+    const b: aur.Builder = .{ .a = a, .io = ctx.io, .dirs = try aur.Dirs.under(a, ctx.root), .url = ctx.aur_url };
+    var infos: std.ArrayList(aur.SrcInfo) = .empty;
+    for (c.aur.items.items) |it| {
+        var why: []const u8 = "";
+        const commit = try b.fetch(it.name, &why) orelse {
+            try ctx.err.print("os: can't fetch {s}'s recipe: {s}\n", .{ it.name, why });
+            return null;
+        };
+        const info = try b.srcInfo(it.name, commit) orelse {
+            try ctx.err.print("os: {s}'s recipe has no .SRCINFO at {s}\n", .{ it.name, commit[0..@min(12, commit.len)] });
+            return null;
+        };
+        // a recipe is reviewed when it's new, or changed since the lock.
+        const was = if (old) |o| if (o.package(it.name)) |p| p.recipe else null else null;
+        if (was == null or !eql(was.?, commit)) {
+            if (!try approve(ctx, a, b, it.name, was, commit, trust)) return null;
+        }
+        try infos.append(a, info);
+    }
+    var why: []const u8 = "";
+    const order = try aur.buildOrder(a, infos.items, &why) orelse {
+        try ctx.err.print("os: these aur packages need each other: {s}\n", .{why});
+        return null;
+    };
+    for (order) |info| {
+        if (!ctx.json) try ctx.out.print("building {s} {s}-{s} from the aur...\n", .{ info.pkgbase, info.pkgver, info.pkgrel });
+        if (try b.build(info)) |problem| {
+            try ctx.err.print("os: building {s} failed: {s}\n", .{ info.pkgbase, problem });
+            return null;
+        }
+        for (info.pkgnames) |name| try out.put(a, name, info.commit);
+    }
+    return out;
+}
+
+/// shows what to review in `name`'s recipe and asks. a script passes
+/// --trust-aur instead: --yes alone doesn't build an unreviewed recipe.
+fn approve(ctx: *Context, a: Allocator, b: aur.Builder, name: []const u8, was: ?[]const u8, commit: []const u8, trust: bool) !bool {
+    const what = if (was == null) "new" else "changed";
+    if (trust) {
+        if (!ctx.json) try ctx.out.print("{s}'s recipe is {s}; building it, as --trust-aur says.\n", .{ name, what });
+        return true;
+    }
+    if (!ctx.interactive) {
+        try ctx.err.print("os: {s}'s aur recipe is {s}. review it in a terminal, or pass --trust-aur to build it unreviewed.\n", .{ name, what });
+        return false;
+    }
+    try ctx.out.print("\n{s}'s recipe is {s}. aur recipes run as code when they build, so read it first:\n\n{s}\n", .{ name, what, try b.review(name, was, commit) });
+    if (try cli.confirm(ctx, try std.fmt.allocPrint(a, "build {s}?", .{name}))) return true;
+    try ctx.out.writeAll("the machine is as it was.\n");
+    return false;
 }
 
 /// yyyy-mm-dd, the way sync dates are written.

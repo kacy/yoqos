@@ -13,6 +13,7 @@ const config = @import("config.zig");
 const lock = @import("lock.zig");
 const facts = @import("facts.zig");
 const catalog = @import("catalog.zig");
+const aur = @import("aur.zig");
 const diag = @import("diag.zig");
 const output = @import("output.zig");
 const lists = @import("lists.zig");
@@ -35,6 +36,11 @@ pub const Kind = enum {
     unit,
     /// a user being created or changed. `from` and `to` say how.
     user,
+    /// a repository's signing key, imported into pacman's keyring and
+    /// trusted. the subject is its fingerprint.
+    key,
+    /// pacman.conf, reading the file os writes the repositories to.
+    pacman_conf,
     /// a file os writes whole: its content, its mode, or both.
     file,
 };
@@ -101,6 +107,9 @@ pub const Want = struct {
 pub fn wants(a: Allocator, c: *const config.Config) ![]const Want {
     var out: std.ArrayList(Want) = .empty;
     for (c.packages.items.items) |it| try addWant(a, &out, it.name, null, it.src);
+    for (c.aur.items.items) |it| try addWant(a, &out, it.name, "aur", it.src);
+    // building aur packages needs devtools' makechrootpkg.
+    if (c.aur.items.items.len > 0) try addWant(a, &out, "devtools", "aur", c.aur.items.items[0].src);
     const kernel = if (c.boot.kernel) |k| k.v else catalog.default_kernel;
     if (!std.mem.eql(u8, kernel, catalog.no_kernel)) try addWant(a, &out, kernel, "boot.kernel", if (c.boot.kernel) |k| k.src else null);
     if (c.hardware.cpu) |v| for (catalog.cpuPackages(v.v)) |n| try addWant(a, &out, n, "hardware.cpu", v.src);
@@ -254,8 +263,33 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
     try changes.appendSlice(a, units.items);
     try planUsers(a, c, f, &changes);
     try planFiles(a, c, f, &changes);
+    const before = diags.items.items.len;
+    try planRepos(a, c, f, &changes, diags);
+    if (diags.items.items.len > before) return null;
 
     return .{ .changes = changes.items };
+}
+
+/// whether the config has repositories of its own for pacman: declared
+/// ones, or the local one aur packages are built into.
+fn ownRepos(c: *const config.Config) bool {
+    return c.repos.entries.items.len > 0 or c.aur.items.items.len > 0;
+}
+
+/// pacman reads the config's repositories through one include line, and
+/// trusts each one's key. one pacman.conf declares too would be there
+/// twice, which pacman refuses.
+fn planRepos(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change), diags: *diag.List) !void {
+    if (!ownRepos(c)) return;
+    for (c.repos.entries.items) |e| {
+        if (lists.contains(f.pacman.repos, e.name)) try diags.add(.bad_value, e.value.src, "repos.{s} is in /etc/pacman.conf too", .{e.name}, "take it out of pacman.conf; os writes it to /etc/pacman.d/yoq-repos.conf");
+    }
+    if (!f.pacman.includes_repos) try changes.append(a, .{ .op = .change, .kind = .pacman_conf, .subject = "/etc/pacman.conf", .to = "add " ++ facts.repos_include, .cause = "repos" });
+    for (c.repos.entries.items) |e| {
+        const k = e.value.key orelse continue;
+        if (lists.contains(f.pacman.keys, k.v)) continue;
+        try changes.append(a, .{ .op = .add, .kind = .key, .subject = k.v, .to = "import and trust", .cause = try std.fmt.allocPrint(a, "repos.{s}", .{e.name}) });
+    }
 }
 
 /// a file os writes, from `[files]` or made from another key.
@@ -342,6 +376,23 @@ pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts
         }),
         .sddm => {},
     };
+    // once pacman.conf reads the repositories' file, it stays, empty if
+    // need be: pacman fails on an include that's gone.
+    if (ownRepos(c) or f.pacman.includes_repos) {
+        var text: std.ArrayList(u8) = .empty;
+        try text.appendSlice(a, "# written by os from [repos] in the config. edits here are overwritten.\n");
+        for (c.repos.entries.items) |e| {
+            // one without a server was reported when the config loaded.
+            const server = e.value.server orelse continue;
+            // with a key, packages must be signed by it; without one,
+            // they aren't checked.
+            const siglevel = if (e.value.key != null) "Required DatabaseOptional" else "Optional TrustAll";
+            try text.print(a, "\n[{s}]\nSigLevel = {s}\nServer = {s}\n", .{ e.name, siglevel, server.v });
+        }
+        // the aur packages os builds, unsigned, in a local repository.
+        if (c.aur.items.items.len > 0) try text.print(a, "\n[{s}]\nSigLevel = Optional TrustAll\nServer = file://{s}\n", .{ aur.repo_name, aur.repo_dir });
+        try out.append(a, .{ .path = facts.repos_conf, .content = text.items, .mode = config.File.default_mode, .cause = "repos" });
+    }
     // hyprland reads /etc/xdg/hypr when a user has no config of their
     // own. the file keeps its extension: .conf, or .lua for newer ones.
     if (c.desktop.session_content) |content| {
@@ -386,9 +437,17 @@ pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts
 /// session's own config isn't here: it's the user's file.
 const generated_paths = [_][]const u8{ sysctl_path, modules_path, greetd_config_path, tty_session_path, nvidia_initramfs_path };
 
-/// the paths of every file the config might want, and every file os may
-/// have generated, for the observer to hash.
-pub fn filePaths(a: Allocator, c: *const config.Config) ![]const []const u8 {
+/// what the observer should look at for this config: every file it might
+/// want or os may have generated, and the repositories' signing keys.
+pub fn wanted(a: Allocator, c: *const config.Config) !facts.Wanted {
+    var keys: std.ArrayList([]const u8) = .empty;
+    for (c.repos.entries.items) |e| {
+        if (e.value.key) |k| try keys.append(a, k.v);
+    }
+    return .{ .files = try filePaths(a, c), .keys = keys.items };
+}
+
+fn filePaths(a: Allocator, c: *const config.Config) ![]const []const u8 {
     const want = try desiredFiles(a, c, &.{});
     var out: std.ArrayList([]const u8) = .empty;
     for (want) |d| try out.append(a, d.path);
@@ -538,7 +597,7 @@ pub fn writeText(w: *std.Io.Writer, a: Allocator, p: *const Plan, opts: RenderOp
             try depSummary(w, p);
         }
     }
-    inline for (.{ .{ "system", Kind.setting }, .{ "users", Kind.user }, .{ "services", Kind.unit }, .{ "files", Kind.file } }) |section| {
+    inline for (.{ .{ "system", Kind.setting }, .{ "users", Kind.user }, .{ "services", Kind.unit }, .{ "files", Kind.file }, .{ "repositories", Kind.pacman_conf }, .{ "keys", Kind.key } }) |section| {
         if (has(p, section[1])) {
             try w.writeAll(section[0] ++ "\n");
             for (p.changes) |c| {
@@ -597,7 +656,7 @@ fn line(w: *std.Io.Writer, c: Change) !void {
                 try w.print("{s}: {s}", .{ key, c.to.? });
             }
         },
-        .unit, .file => try w.print("{s}: {s}", .{ c.subject, c.to.? }),
+        .unit, .file, .key, .pacman_conf => try w.print("{s}: {s}", .{ c.subject, c.to.? }),
         .user => if (c.from != null and c.to != null) {
             // "shell bash -> shell zsh" reads better as "shell bash -> zsh".
             const from = c.from.?;
@@ -1101,4 +1160,50 @@ test "a oneshot service that ran and finished is as it should be" {
     var units = [_]facts.Unit{.{ .name = "setup.service", .enabled = true, .ran = true }};
     const f: facts.Facts = .{ .packages = &have, .units = &units };
     try testing.expect((try plan(t.a(), &c, &l, &f, &t.diags)).?.empty());
+}
+
+test "a repository from the config: its file, pacman.conf's include, and its key" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg(
+        \\[boot]
+        \\kernel = "none"
+        \\[repos.chaotic-aur]
+        \\server = "https://cdn-mirror.chaotic.cx/$repo/$arch"
+        \\key = "EF925EA60F33D0CB85C44AD13056513887B78AEB"
+        \\
+    );
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
+    const p = (try plan(t.a(), &c, &l, &.{}, &t.diags)).?;
+    var out: std.Io.Writer.Allocating = .init(t.a());
+    try writeText(&out.writer, t.a(), &p, .{});
+    try testing.expectEqualStrings(
+        \\files
+        \\  + /etc/pacman.d/yoq-repos.conf: write, mode 0644  (repos)
+        \\repositories
+        \\  ~ /etc/pacman.conf: add Include = /etc/pacman.d/yoq-repos.conf  (repos)
+        \\keys
+        \\  + EF925EA60F33D0CB85C44AD13056513887B78AEB: import and trust  (repos.chaotic-aur)
+        \\
+        \\plan: 2 to add, 1 to change, 0 to remove · no reboot
+        \\
+    , out.written());
+    const want = try desiredFiles(t.a(), &c, &.{});
+    try testing.expect(std.mem.indexOf(u8, want[0].content, "[chaotic-aur]\nSigLevel = Required DatabaseOptional\nServer = https://cdn-mirror.chaotic.cx/$repo/$arch\n") != null);
+
+    // once pacman.conf has the include and the keyring the key, nothing's left
+    // but the file.
+    var files = [_]facts.File{.{ .path = facts.repos_conf, .sha256 = &facts.sha256Hex(want[0].content), .mode = "0644", .ours = true }};
+    const f: facts.Facts = .{ .files = &files, .pacman = .{ .includes_repos = true, .keys = &.{"EF925EA60F33D0CB85C44AD13056513887B78AEB"} } };
+    try testing.expect((try plan(t.a(), &c, &l, &f, &t.diags)).?.empty());
+}
+
+test "a repository pacman.conf declares too is reported, not written twice" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("[boot]\nkernel = \"none\"\n[repos.omarchy]\nserver = \"https://pkgs.omarchy.org/$arch\"\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
+    const f: facts.Facts = .{ .pacman = .{ .repos = &.{ "core", "extra", "omarchy" } } };
+    try testing.expectEqual(null, try plan(t.a(), &c, &l, &f, &t.diags));
+    try testing.expectEqualStrings("repos.omarchy is in /etc/pacman.conf too", t.diags.items.items[0].message);
 }

@@ -14,6 +14,12 @@ pub const Repo = struct {
     name: []const u8,
     /// server urls with `$repo` and `$arch` still in them, in order.
     servers: []const []const u8,
+    /// its packages are signed and checked: false for `SigLevel = Optional`
+    /// or `Never`.
+    signed: bool = true,
+    /// a repository os keeps in a local directory, like its aur builds: its
+    /// database is read where it is, not downloaded per date.
+    local: bool = false,
 };
 
 /// arch's repositories in the order pacman.conf lists them.
@@ -53,37 +59,59 @@ pub fn pacmanConf(a: Allocator, files: compose.Files, root: []const u8) !Pacman 
         .{ .name = "core", .servers = &.{} },
         .{ .name = "extra", .servers = &.{} },
     } };
-    var p: Pacman = .{ .repos = &.{} };
-    var out: std.ArrayList(Repo) = .empty;
-    var servers: std.ArrayList([]const u8) = .empty;
-    var section: []const u8 = "";
-    var lines = std.mem.splitScalar(u8, conf, '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len > 1 and line[0] == '[' and line[line.len - 1] == ']') {
-            if (isRepo(section)) try out.append(a, .{ .name = section, .servers = try servers.toOwnedSlice(a) });
-            section = line[1 .. line.len - 1];
-            continue;
-        }
-        const key, const value = setting(raw) orelse continue;
-        if (std.mem.eql(u8, section, "options")) {
-            if (std.mem.eql(u8, key, "DownloadUser")) p.download_user = value;
-            if (std.mem.eql(u8, key, "DisableSandbox")) p.sandbox = .{ .no_filesystem = true, .no_syscalls = true };
-            if (std.mem.eql(u8, key, "DisableSandboxFilesystem")) p.sandbox.no_filesystem = true;
-            if (std.mem.eql(u8, key, "DisableSandboxSyscalls")) p.sandbox.no_syscalls = true;
-        } else if (isRepo(section)) {
-            if (std.mem.eql(u8, key, "Server")) {
-                try servers.append(a, value);
-            } else if (std.mem.eql(u8, key, "Include")) {
-                const text = try readUnder(a, files, root, value) orelse continue;
-                try mirrorlist(a, text, &servers);
+    var r: ConfReader = .{ .a = a, .files = files, .root = root };
+    try r.feed(conf, 0);
+    try r.close();
+    r.p.repos = r.out.items;
+    return r.p;
+}
+
+/// pacman.conf's lines, in order. an included file reads as if its lines
+/// were where the `Include` is, as pacman does: a mirrorlist adds servers,
+/// and a file with sections adds repositories.
+const ConfReader = struct {
+    a: Allocator,
+    files: compose.Files,
+    root: []const u8,
+    p: Pacman = .{ .repos = &.{} },
+    out: std.ArrayList(Repo) = .empty,
+    servers: std.ArrayList([]const u8) = .empty,
+    section: []const u8 = "",
+    signed: bool = true,
+
+    fn feed(r: *ConfReader, text: []const u8, depth: usize) !void {
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            if (line.len > 1 and line[0] == '[' and line[line.len - 1] == ']') {
+                try r.close();
+                r.section = line[1 .. line.len - 1];
+                continue;
+            }
+            const key, const value = setting(raw) orelse continue;
+            if (std.mem.eql(u8, key, "Include")) {
+                // deep enough for any real pacman.conf, and no loops.
+                if (depth < 4) try r.feed(try readUnder(r.a, r.files, r.root, value) orelse continue, depth + 1);
+            } else if (std.mem.eql(u8, r.section, "options")) {
+                if (std.mem.eql(u8, key, "DownloadUser")) r.p.download_user = value;
+                if (std.mem.eql(u8, key, "DisableSandbox")) r.p.sandbox = .{ .no_filesystem = true, .no_syscalls = true };
+                if (std.mem.eql(u8, key, "DisableSandboxFilesystem")) r.p.sandbox.no_filesystem = true;
+                if (std.mem.eql(u8, key, "DisableSandboxSyscalls")) r.p.sandbox.no_syscalls = true;
+            } else if (isRepo(r.section) and std.mem.eql(u8, key, "Server")) {
+                try r.servers.append(r.a, value);
+            } else if (isRepo(r.section) and std.mem.eql(u8, key, "SigLevel")) {
+                r.signed = std.mem.indexOf(u8, value, "Optional") == null and std.mem.indexOf(u8, value, "Never") == null;
             }
         }
     }
-    if (isRepo(section)) try out.append(a, .{ .name = section, .servers = try servers.toOwnedSlice(a) });
-    p.repos = out.items;
-    return p;
-}
+
+    /// ends the section being read, keeping it if it's a repository.
+    fn close(r: *ConfReader) !void {
+        if (isRepo(r.section)) try r.out.append(r.a, .{ .name = r.section, .servers = try r.servers.toOwnedSlice(r.a), .signed = r.signed });
+        r.section = "";
+        r.signed = true;
+    }
+};
 
 fn isRepo(section: []const u8) bool {
     return section.len > 0 and !std.mem.eql(u8, section, "options");
@@ -103,15 +131,6 @@ fn setting(raw: []const u8) ?struct { []const u8, []const u8 } {
     if (line.len == 0 or line[0] == '#') return null;
     const eq = std.mem.indexOfScalar(u8, line, '=') orelse return .{ line, "" };
     return .{ std.mem.trim(u8, line[0..eq], " \t"), std.mem.trim(u8, line[eq + 1 ..], " \t") };
-}
-
-/// the `Server =` lines of a mirrorlist file.
-fn mirrorlist(a: Allocator, text: []const u8, out: *std.ArrayList([]const u8)) !void {
-    var lines = std.mem.splitScalar(u8, text, '\n');
-    while (lines.next()) |line| {
-        const key, const value = setting(line) orelse continue;
-        if (std.mem.eql(u8, key, "Server")) try out.append(a, value);
-    }
 }
 
 /// a server url with `$repo` and `$arch` filled in: the repository's
@@ -178,6 +197,12 @@ pub fn databases(a: Allocator, io: std.Io, fetcher: Fetcher, rs: []const Repo, c
     };
     const out = try a.alloc(alpm.SyncDb, rs.len);
     for (rs, out) |r, *db| {
+        if (try localDb(a, r)) |path| {
+            db.* = .{ .name = r.name, .path = path };
+            if (rootfs.pathExists(io, path)) continue;
+            try diags.add(.alpm_failed, null, "the local repository {s} has no database at {s}", .{ r.name, path }, null);
+            return null;
+        }
         db.* = .{ .name = r.name, .path = try cachePath(a, cache, date, r.name) };
         if (rootfs.pathExists(io, db.path)) continue;
         const bytes = try fetchRepo(a, fetcher, r) orelse {
@@ -196,6 +221,7 @@ pub fn withServers(a: Allocator, dbs: []const alpm.SyncDb, rs: []const Repo) ![]
     for (out) |*db| {
         for (rs) |r| {
             if (!std.mem.eql(u8, r.name, db.name)) continue;
+            db.signed = r.signed;
             const templates = serversOf(r);
             const urls = try a.alloc([]const u8, templates.len);
             for (templates, urls) |t, *u| u.* = try serverUrl(a, t, r.name);
@@ -210,10 +236,16 @@ pub fn withServers(a: Allocator, dbs: []const alpm.SyncDb, rs: []const Repo) ![]
 pub fn cached(a: Allocator, io: std.Io, rs: []const Repo, cache: []const u8, date: []const u8) !?[]const alpm.SyncDb {
     const out = try a.alloc(alpm.SyncDb, rs.len);
     for (rs, out) |r, *db| {
-        db.* = .{ .name = r.name, .path = try cachePath(a, cache, date, r.name) };
+        db.* = .{ .name = r.name, .path = try localDb(a, r) orelse try cachePath(a, cache, date, r.name) };
         if (!rootfs.pathExists(io, db.path)) return null;
     }
     return out;
+}
+
+/// a local repository's database, where it is.
+fn localDb(a: Allocator, r: Repo) !?[]const u8 {
+    if (!r.local or r.servers.len == 0 or !std.mem.startsWith(u8, r.servers[0], "file://")) return null;
+    return try std.fmt.allocPrint(a, "{s}/{s}.db", .{ r.servers[0]["file://".len..], r.name });
 }
 
 /// the repository's servers, or the fallback if pacman.conf names none.
@@ -277,11 +309,22 @@ test "repositories and servers from pacman.conf" {
     try testing.expectEqualStrings("core", rs[0].name);
     try testing.expectEqual(2, rs[0].servers.len);
     try testing.expectEqualStrings("omarchy", rs[2].name);
+    try testing.expect(rs[0].signed and !rs[2].signed);
     try testing.expectEqualStrings("https://pkgs.omarchy.org/$arch", rs[2].servers[0]);
 
     const a = arena.allocator();
     try testing.expectEqualStrings("https://two.example/extra/os/" ++ arch ++ "/extra.db", try dbUrl(a, rs[1].servers[1], "extra"));
     try testing.expectEqualStrings("https://pkgs.omarchy.org/" ++ arch ++ "/omarchy.db", try dbUrl(a, rs[2].servers[0], "omarchy"));
+
+    // an included file with sections of its own adds repositories, the
+    // way os's /etc/pacman.d/yoq-repos.conf does.
+    try fs.put("/inc/etc/pacman.d/yoq-repos.conf", "[chaotic-aur]\nServer = https://cdn.example/$repo/$arch\n");
+    try fs.put("/inc/etc/pacman.conf", "[options]\n[core]\nServer = https://a.example/$repo\nInclude = /etc/pacman.d/yoq-repos.conf\n");
+    const inc = (try pacmanConf(a, fs.files(), "/inc")).repos;
+    try testing.expectEqual(2, inc.len);
+    try testing.expectEqual(1, inc[0].servers.len);
+    try testing.expectEqualStrings("chaotic-aur", inc[1].name);
+    try testing.expectEqualStrings("https://cdn.example/$repo/$arch", inc[1].servers[0]);
 
     // no pacman.conf: core and extra, from the fallback server.
     const bare = (try pacmanConf(a, fs.files(), "/elsewhere")).repos;

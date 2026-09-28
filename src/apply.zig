@@ -4,6 +4,7 @@
 //! without systemd, `run` hands the units back as skipped.
 
 const std = @import("std");
+const facts = @import("facts.zig");
 const alpm = @import("alpm.zig");
 const diag = @import("diag.zig");
 const lock = @import("lock.zig");
@@ -44,7 +45,7 @@ fn transaction(a: Allocator, p: *const planner.Plan, l: *const lock.Lock, t: Tar
             .remove => try remove.append(a, c.subject),
         },
         .reason => try (if (std.mem.eql(u8, c.to.?, "explicit")) &explicit else &dependency).append(a, c.subject),
-        .setting, .unit, .user, .file => {},
+        .setting, .unit, .user, .file, .key, .pacman_conf => {},
     };
     return .{
         .target = t,
@@ -65,6 +66,16 @@ pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock
         if (!applies(c.kind, units)) try skipped.append(a, c);
     }
     if (units and !try changeUnits(a, p, true, diags)) return null;
+    // repositories' keys and pacman.conf come first: packages from those
+    // repositories are checked against the keys.
+    for (p.changes) |c| {
+        const ok = switch (c.kind) {
+            .key => try importKey(a, io, t.root, c.subject, diags),
+            .pacman_conf => try includeRepos(a, io, t.root, diags),
+            else => true,
+        };
+        if (!ok) return null;
+    }
     const tx = try transaction(a, p, l, t);
     if (tx.install.len + tx.remove.len + tx.explicit.len + tx.dependency.len > 0) {
         if (!try alpm.transact(a, io, tx, diags)) return null;
@@ -111,6 +122,33 @@ fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.
         try diags.add(.apply_failed, null, "wrote {s}, but {s} failed: {s}", .{ path, then[0], why }, null);
         return false;
     }
+    return true;
+}
+
+/// fetches a signing key into pacman's keyring and signs it locally, the
+/// way pacman-key's own instructions add a repository's key.
+fn importKey(a: Allocator, io: std.Io, root: []const u8, fingerprint: []const u8, diags: *diag.List) !bool {
+    const gpgdir = try std.fs.path.join(a, &.{ root, "etc/pacman.d/gnupg" });
+    for ([_][]const u8{ "--recv-keys", "--lsign-key" }) |verb| {
+        if (try exec.run(a, io, &.{ "pacman-key", "--gpgdir", gpgdir, verb, fingerprint })) |why| {
+            try diags.add(.apply_failed, null, "can't add the key {s} to pacman's keyring: {s}", .{ fingerprint, why }, "check the fingerprint, and that the keyserver in /etc/pacman.d/gnupg/gpg.conf can be reached");
+            return false;
+        }
+    }
+    return true;
+}
+
+/// adds the line that reads the repositories' file to pacman.conf, at the
+/// end, after arch's own repositories.
+fn includeRepos(a: Allocator, io: std.Io, root: []const u8, diags: *diag.List) !bool {
+    const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
+    const conf = try fs.read("etc/pacman.conf");
+    const sep: []const u8 = if (conf.len > 0 and conf[conf.len - 1] != '\n') "\n" else "";
+    const mode = try fs.mode("etc/pacman.conf") orelse 0o644;
+    fs.writeMode("etc/pacman.conf", try std.mem.concat(a, u8, &.{ conf, sep, "\n# the repositories in os's config.\n", facts.repos_include, "\n" }), mode) catch {
+        try diags.add(.apply_failed, null, "can't write {s}", .{try fs.path("etc/pacman.conf")}, null);
+        return false;
+    };
     return true;
 }
 
@@ -197,16 +235,16 @@ test "files are written with their mode, and the plan comes back empty" {
     for (c.files.entries.items) |*e| e.value.content = e.value.text.?.v;
     const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
     const files = try planner.desiredFiles(a, &c, &.{});
-    const paths = try planner.filePaths(a, &c);
+    const want = try planner.wanted(a, &c);
     const observe = @import("observe.zig");
 
-    var f = try observe.observe(a, io, .{ .root = root, .packages = false, .units = false, .files = paths }, &diags);
+    var f = try observe.observe(a, io, .{ .root = root, .packages = false, .units = false, .wanted = want }, &diags);
     const p = (try planner.plan(a, &c, &l, &f, &diags)).?;
     try testing.expectEqual(2, p.changes.len);
     const t: Target = .{ .root = root, .dbpath = "", .dbs = &.{}, .cachedir = "", .gpgdir = null };
     _ = (try run(a, io, &p, &l, files, t, false, &diags)).?;
 
-    f = try observe.observe(a, io, .{ .root = root, .packages = false, .units = false, .files = paths }, &diags);
+    f = try observe.observe(a, io, .{ .root = root, .packages = false, .units = false, .wanted = want }, &diags);
     try testing.expect((try planner.plan(a, &c, &l, &f, &diags)).?.empty());
     try testing.expectEqualStrings("0600", f.file("/etc/ssh/sshd_config.d/10-local.conf").?.mode);
     try testing.expectEqualStrings("0644", f.file(planner.sysctl_path).?.mode);

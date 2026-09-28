@@ -29,6 +29,7 @@ pub fn main(init: std.process.Init) !void {
         .in = &in.interface,
         .interactive = tty,
         .in_own_transaction = init.environ_map.get(@import("alpm.zig").own_env) != null,
+        .aur_url = init.environ_map.get("YOQ_AUR") orelse @import("aur.zig").default_url,
         .gpa = init.gpa,
         .out = &out.interface,
         .err = &err.interface,
@@ -56,6 +57,7 @@ test {
     _ = @import("lock.zig");
     _ = @import("users.zig");
     _ = @import("rootfs.zig");
+    _ = @import("aur.zig");
     _ = @import("exec.zig");
     _ = @import("news.zig");
     _ = @import("journal.zig");

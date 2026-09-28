@@ -14,11 +14,7 @@ pub const Output = union(enum) {
 
 /// runs `argv` and waits for it.
 pub fn output(a: Allocator, io: std.Io, argv: []const []const u8) error{OutOfMemory}!Output {
-    const r = std.process.run(a, io, .{ .argv = argv }) catch |e| return .{ .failed = switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        error.FileNotFound => try std.fmt.allocPrint(a, "can't run {s}: it isn't installed", .{argv[0]}),
-        else => try std.fmt.allocPrint(a, "can't run {s}: {s}", .{ argv[0], @errorName(e) }),
-    } };
+    const r = std.process.run(a, io, .{ .argv = argv }) catch |e| return .{ .failed = try spawnFailed(a, argv, e) };
     if (r.term == .exited and r.term.exited == 0) return .{ .ok = r.stdout };
     const out = std.mem.trim(u8, if (r.stderr.len > 0) r.stderr else r.stdout, " \n");
     return .{ .failed = if (out.len > 0) out else try std.fmt.allocPrint(a, "{s} failed", .{argv[0]}) };
@@ -26,6 +22,40 @@ pub fn output(a: Allocator, io: std.Io, argv: []const []const u8) error{OutOfMem
 
 /// runs `argv` for its effect. returns null when it succeeds, or what went
 /// wrong.
+/// runs `argv` like `run`, and keeps everything it printed, both streams,
+/// in the file at `log`. a failure says where the log is, with its last
+/// lines, since a build's reason can be on either stream.
+pub fn runLogged(a: Allocator, io: std.Io, argv: []const []const u8, log: []const u8) error{OutOfMemory}!?[]const u8 {
+    const r = std.process.run(a, io, .{ .argv = argv }) catch |e| return try spawnFailed(a, argv, e);
+    const both = try std.mem.concat(a, u8, &.{ r.stdout, r.stderr });
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = log, .data = both }) catch {};
+    if (r.term == .exited and r.term.exited == 0) return null;
+    return try std.fmt.allocPrint(a, "{s} failed; its whole output is in {s}. the end of it:\n{s}", .{ argv[0], log, lastLines(both, 20) });
+}
+
+/// why `argv` couldn't start.
+fn spawnFailed(a: Allocator, argv: []const []const u8, e: anyerror) error{OutOfMemory}![]const u8 {
+    return switch (e) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.FileNotFound => try std.fmt.allocPrint(a, "can't run {s}: it isn't installed", .{argv[0]}),
+        else => try std.fmt.allocPrint(a, "can't run {s}: {s}", .{ argv[0], @errorName(e) }),
+    };
+}
+
+/// the last `n` lines of `text`.
+fn lastLines(text: []const u8, n: usize) []const u8 {
+    const t = std.mem.trimEnd(u8, text, "\n");
+    var start = t.len;
+    var seen: usize = 0;
+    while (start > 0) : (start -= 1) {
+        if (t[start - 1] == '\n') {
+            seen += 1;
+            if (seen == n) break;
+        }
+    }
+    return t[start..];
+}
+
 pub fn run(a: Allocator, io: std.Io, argv: []const []const u8) error{OutOfMemory}!?[]const u8 {
     return switch (try output(a, io, argv)) {
         .ok => null,

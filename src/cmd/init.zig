@@ -83,7 +83,7 @@ fn lockNew(ctx: *Context, w: *cli.Work, loaded: *const compose.Loaded, date: []c
         return null;
     }
     const top = loaded.files.items[0];
-    const dbs = try sync.databases(a, ctx.io, ctx.fetcher, try locking.repos(ctx, a), try locking.cacheDir(ctx, a), date, &w.diags) orelse return reportLater(ctx, w);
+    const dbs = try sync.databases(a, ctx.io, ctx.fetcher, try locking.repos(ctx, a, &loaded.config), try locking.cacheDir(ctx, a), date, &w.diags) orelse return reportLater(ctx, w);
     const l = try locking.resolveLock(ctx, w, &loaded.config, top, dbs, date, installed) orelse return reportLater(ctx, w);
     return locking.writeLock(ctx, a, top, &l);
 }

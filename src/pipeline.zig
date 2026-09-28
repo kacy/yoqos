@@ -60,10 +60,10 @@ pub fn load(gpa: Allocator, files: compose.Files, config_path: []const u8, lock_
 }
 
 /// facts read from the file at `path` if given, else observed from the
-/// machine under `root`, hashing the `managed` files. observer problems go
-/// to `diags`.
-pub fn getFacts(files: compose.Files, io: std.Io, a: Allocator, path: ?[]const u8, root: []const u8, managed: []const []const u8, diags: *diag.List) Error!facts.Facts {
-    const p = path orelse return observe.observe(a, io, .{ .root = root, .files = managed }, diags);
+/// machine under `root`, looking at what the config wants. observer
+/// problems go to `diags`.
+pub fn getFacts(files: compose.Files, io: std.Io, a: Allocator, path: ?[]const u8, root: []const u8, wanted: facts.Wanted, diags: *diag.List) Error!facts.Facts {
+    const p = path orelse return observe.observe(a, io, .{ .root = root, .wanted = wanted }, diags);
     const bytes = files.read(a, p) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.FactsUnreadable,
@@ -99,7 +99,7 @@ pub fn buildPlan(gpa: Allocator, io: std.Io, files: compose.Files, in: Inputs, d
     var state = try load(gpa, files, in.config_path, in.lock_path, diags) orelse return null;
     errdefer state.deinit();
     const a = state.arena.allocator();
-    const f = try getFacts(files, io, a, in.facts_path, in.root, try planner.filePaths(a, state.config()), diags);
+    const f = try getFacts(files, io, a, in.facts_path, in.root, try planner.wanted(a, state.config()), diags);
     if (diags.items.items.len > 0) {
         state.deinit();
         return null;

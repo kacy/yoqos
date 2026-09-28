@@ -278,6 +278,9 @@ the question. with `--no-apply`, with `--json`, or without a terminal and
 `--yes`, it only writes the new lock, and `os apply` makes the change
 later.
 
+the config's aur packages are fetched and built first, each new or changed
+recipe after a review of its own; see [aur packages](#aur-packages).
+
 when a package depends on something several packages provide, like
 `initramfs` (mkinitcpio, booster, or dracut), `os update` asks which one you
 want and saves the answer in `[providers]` as a commit of its own, so it
@@ -436,8 +439,10 @@ bluetooth = false
 | `[services]` | `<name> = true` or `false`, for the services listed below |
 | `[files."<path>"]` | a file `os` writes whole: `text` or `source`, and `mode` |
 | `[sysctl]` | kernel settings, like `"vm.swappiness" = 10` |
+| `[repos.<name>]` | a package repository beyond arch's own: `server`, and `key` |
+| `aur` | packages to build from the aur; see [aur packages](#aur-packages) |
 
-`aur` and `[state]` are read but not used yet.
+`[state]` is read but not used yet.
 
 a key that implies packages, like `gpu = "nvidia"` or `ssh = true`, doesn't
 need those packages in `packages` too. the plan shows them with the key that
@@ -598,6 +603,58 @@ modules = ["i2c-dev", "nct6775"]
 
 `modules` becomes `/etc/modules-load.d/99-yoq.conf`, which systemd reads at
 every boot, and `apply` loads the list right away on a running machine.
+
+### repositories
+
+```toml
+[repos.chaotic-aur]
+server = "https://cdn-mirror.chaotic.cx/$repo/$arch"
+key = "EF925EA60F33D0CB85C44AD13056513887B78AEB"
+```
+
+a repository here works like one in pacman.conf, and travels with the
+config to a new machine. it can't be in both: move it out of pacman.conf
+when you move it into the config, or `os plan` says so. `os` writes every configured repository to
+`/etc/pacman.d/yoq-repos.conf` and adds one line to the end of pacman.conf
+that includes it, so plain `pacman` sees them too, after arch's own. `key`
+is the full fingerprint of the key its packages are signed with: `os`
+imports it into pacman's keyring and signs it locally, and packages from
+the repository must then be signed by it. without a key, its packages
+aren't checked, the way pacman's `SigLevel = Optional TrustAll` works.
+
+`os update` resolves against a new repository before any apply, so adding
+one and updating is enough. the lock pins each package by hash, but a
+repository like this keeps no history, so going back to an older lock
+relies on the packages still being in the local cache.
+
+### aur packages
+
+```toml
+aur = ["yay-bin"]
+```
+
+`os add --aur yay-bin` adds one for you, and `os remove --aur yay-bin`
+takes it out. adding one saves the config and stops there; the next `os
+update` reviews and builds it.
+
+`os update` fetches each recipe from the aur with git and builds it with
+devtools' `makechrootpkg` in a clean chroot of its own, under
+`/var/cache/yoq/aur`, as an unprivileged `yoq-build` user. what it builds
+goes into a local repository, `yoq-aur`, that `os` reads like any other,
+and the lock pins each package by hash and by the recipe commit it was
+built from. a recipe that hasn't changed isn't built again.
+
+aur recipes run as code when they build, so `os update` shows a recipe
+before building it: the first time, every file in it, with the PKGBUILD
+and any install script in full, and after that, what changed since the
+locked commit. each one is a question of its own;
+`--yes` alone doesn't build an unreviewed recipe. without a terminal, `os
+update` stops, unless `--trust-aur` says to build them as they are.
+
+an aur package that needs another aur package needs that one in `aur` too;
+`os` builds them in order. an `aur` list brings in devtools, which the
+builds need, and they build against today's arch packages. `os add`, `os remove`, and the like keep the
+recipes the lock already has; only `os update` builds.
 
 ### includes
 

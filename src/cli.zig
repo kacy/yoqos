@@ -51,6 +51,9 @@ pub const Context = struct {
     /// this process runs under one of os's own transactions, as the drift
     /// hook does then.
     in_own_transaction: bool = false,
+    /// where aur recipes are fetched from; YOQ_AUR points it elsewhere, as
+    /// tests do.
+    aur_url: []const u8 = @import("aur.zig").default_url,
 };
 
 const Handler = *const fn (ctx: *Context, args: []const [:0]const u8) anyerror!u8;
@@ -267,7 +270,7 @@ pub const Work = struct {
     /// observer problems are in `diags`.
     pub fn facts(w: *Work) !?facts_mod.Facts {
         const ctx = w.ctx;
-        const f = pipeline.getFacts(ctx.files, ctx.io, w.allocator(), ctx.facts_path, ctx.root, &.{}, &w.diags) catch |e| {
+        const f = pipeline.getFacts(ctx.files, ctx.io, w.allocator(), ctx.facts_path, ctx.root, .{}, &w.diags) catch |e| {
             try factsError(ctx, e, ctx.facts_path);
             return null;
         };

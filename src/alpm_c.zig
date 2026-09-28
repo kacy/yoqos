@@ -518,7 +518,8 @@ fn configure(h: Handle, a: Allocator, t: api.Transaction, diags: *diag.List) Err
         level = c.ALPM_SIG_PACKAGE | c.ALPM_SIG_DATABASE | c.ALPM_SIG_DATABASE_OPTIONAL;
     }
     for (t.target.dbs) |db| {
-        const d = c.alpm_register_syncdb(h.h, (try a.dupeZ(u8, db.name)).ptr, level) orelse return fail(diags, "can't load the {s} database: {s}", .{ db.name, h.lastError() });
+        const optional = c.ALPM_SIG_PACKAGE_OPTIONAL | c.ALPM_SIG_PACKAGE_MARGINAL_OK | c.ALPM_SIG_PACKAGE_UNKNOWN_OK | c.ALPM_SIG_DATABASE_OPTIONAL | c.ALPM_SIG_DATABASE_MARGINAL_OK | c.ALPM_SIG_DATABASE_UNKNOWN_OK;
+        const d = c.alpm_register_syncdb(h.h, (try a.dupeZ(u8, db.name)).ptr, if (db.signed or level == 0) level else optional) orelse return fail(diags, "can't load the {s} database: {s}", .{ db.name, h.lastError() });
         for (db.servers) |server| {
             if (c.alpm_db_add_server(d, (try a.dupeZ(u8, server)).ptr) != 0) return fail(diags, "bad server {s}", .{server});
         }

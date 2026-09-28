@@ -29,6 +29,9 @@ pub const SyncDb = struct {
     /// where the repository's packages download from, most preferred first:
     /// directories like https://geo.mirror.pkgbuild.com/core/os/x86_64.
     servers: []const []const u8 = &.{},
+    /// its packages are signed and checked. a repository that isn't, like
+    /// os's own aur builds, is read as pacman's `Optional TrustAll`.
+    signed: bool = true,
 };
 
 pub const ResolveInput = struct {

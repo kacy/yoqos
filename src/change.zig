@@ -19,6 +19,8 @@ pub const Note = struct {
     what: What,
     /// where the existing setting comes from, or what implies the package.
     detail: ?[]const u8 = null,
+    /// the change is to the `aur` list, not `packages`.
+    aur: bool = false,
 
     pub const What = enum {
         added,
@@ -47,7 +49,8 @@ pub const Outcome = struct {
 
 /// works out the new text for `op` on each name. problems, like removing a
 /// package nothing asks for, go to `diags`.
-pub fn plan(a: Allocator, c: *const config.Config, top: []const u8, text: []const u8, op: Op, names: []const []const u8, diags: *diag.List) !Outcome {
+/// with `aur`, add and remove edit the `aur` list instead of `packages`.
+pub fn plan(a: Allocator, c: *const config.Config, top: []const u8, text: []const u8, op: Op, names: []const []const u8, aur: bool, diags: *diag.List) !Outcome {
     var out = text;
     var notes: std.ArrayList(Note) = .empty;
     for (names, 0..) |name, i| {
@@ -58,8 +61,8 @@ pub fn plan(a: Allocator, c: *const config.Config, top: []const u8, text: []cons
             continue;
         }
         const note: ?Note = switch (op) {
-            .add => try add(a, c, &out, name),
-            .remove => try remove(a, c, top, &out, name, diags),
+            .add => try add(a, c, &out, name, aur),
+            .remove => try remove(a, c, top, &out, name, aur, diags),
             .enable, .disable => try service(a, c, &out, name, op == .enable, diags),
         };
         if (note) |n| try notes.append(a, n);
@@ -71,21 +74,31 @@ fn at(a: Allocator, src: config.Src) ![]const u8 {
     return std.fmt.allocPrint(a, "{s}:{d}", .{ src.file, src.line });
 }
 
-fn add(a: Allocator, c: *const config.Config, text: *[]const u8, name: []const u8) !Note {
-    if (c.packages.indexOf(name)) |i| return .{ .name = name, .what = .unchanged, .detail = try at(a, c.packages.items.items[i].src) };
-    text.* = (try edit.addToList(a, text.*, &.{}, "packages", name)).?;
-    return .{ .name = name, .what = .added };
+fn add(a: Allocator, c: *const config.Config, text: *[]const u8, name: []const u8, aur: bool) !Note {
+    const set = if (aur) &c.aur else &c.packages;
+    if (set.indexOf(name)) |i| return .{ .name = name, .what = .unchanged, .detail = try at(a, set.items.items[i].src), .aur = aur };
+    text.* = (try edit.addToList(a, text.*, &.{}, listKey(aur), name)).?;
+    return .{ .name = name, .what = .added, .aur = aur };
 }
 
-fn remove(a: Allocator, c: *const config.Config, top: []const u8, text: *[]const u8, name: []const u8, diags: *diag.List) !?Note {
-    if (c.packages.indexOf(name)) |i| {
+fn listKey(aur: bool) []const u8 {
+    return if (aur) "aur" else "packages";
+}
+
+fn remove(a: Allocator, c: *const config.Config, top: []const u8, text: *[]const u8, name: []const u8, aur: bool, diags: *diag.List) !?Note {
+    const set = if (aur) &c.aur else &c.packages;
+    if (set.indexOf(name)) |i| {
         // a set keeps its first source, so an include shows up here even if
         // the top file lists the package too. take it out of both.
-        const src = c.packages.items.items[i].src;
-        if (try edit.removeFromList(a, text.*, &.{}, "packages", name)) |t| text.* = t;
-        if (std.mem.eql(u8, src.file, top)) return .{ .name = name, .what = .removed };
-        text.* = (try edit.addToList(a, text.*, &.{"remove"}, "packages", name)) orelse text.*;
-        return .{ .name = name, .what = .excluded, .detail = try at(a, src) };
+        const src = set.items.items[i].src;
+        if (try edit.removeFromList(a, text.*, &.{}, listKey(aur), name)) |t| text.* = t;
+        if (std.mem.eql(u8, src.file, top)) return .{ .name = name, .what = .removed, .aur = aur };
+        text.* = (try edit.addToList(a, text.*, &.{"remove"}, listKey(aur), name)) orelse text.*;
+        return .{ .name = name, .what = .excluded, .detail = try at(a, src), .aur = aur };
+    }
+    if (aur) {
+        try diags.add(.bad_value, null, "nothing in the config asks for {s} from the aur", .{name}, null);
+        return null;
     }
     const ws = try planner.wants(a, c);
     if (planner.findWant(ws, name)) |w| {
@@ -127,8 +140,8 @@ pub fn check(gpa: Allocator, files: compose.Files, path: []const u8, text: []con
     const c = &loaded.config;
     for (notes) |n| {
         const ok = switch (n.what) {
-            .added => c.packages.contains(n.name),
-            .removed, .excluded => !c.packages.contains(n.name),
+            .added => (if (n.aur) &c.aur else &c.packages).contains(n.name),
+            .removed, .excluded => !(if (n.aur) &c.aur else &c.packages).contains(n.name),
             .enabled, .disabled => if (c.services.get(n.name)) |s| s.enabled != null and s.enabled.?.v == (n.what == .enabled) else false,
             .chosen => if (c.providers.get(n.name)) |p| std.mem.eql(u8, p.v, n.detail.?) else false,
             .unchanged => true,

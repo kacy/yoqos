@@ -32,7 +32,10 @@ trap '"$vm" stop' EXIT
 # machines that can't have generations yet: enable-rollback says which
 # check fails, and changes nothing.
 case ${VM_IMAGE:-cloud} in
-ext4) tests/vm/manage.sh "root filesystem: ext4" ;;
+ext4)
+    tests/vm/manage.sh "root filesystem: ext4"
+    tests/vm/aur.sh
+    ;;
 limine) tests/vm/manage.sh "bootloader: limine" ;;
 *)
     tests/vm/rollback.sh

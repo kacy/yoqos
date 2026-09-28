@@ -5,6 +5,7 @@
 //! the parsers take file contents and are pure; `observe` does the reading.
 
 const std = @import("std");
+const exec = @import("exec.zig");
 const generation = @import("generation.zig");
 const facts = @import("facts.zig");
 const alpm = @import("alpm.zig");
@@ -23,8 +24,8 @@ pub const Options = struct {
     /// read units from the running systemd. only for the running machine,
     /// and off in builds without libsystemd.
     units: bool = systemd.available,
-    /// the files to hash, by their absolute paths on the machine.
-    files: []const []const u8 = &.{},
+    /// the files to hash and keys to look for, from the config.
+    wanted: facts.Wanted = .{},
 };
 
 pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error{OutOfMemory}!facts.Facts {
@@ -41,7 +42,8 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
         f.users = try users(a, passwd, try r.file("etc/group") orelse "");
     }
     f.pacman_changes = try drift.since(a, io, opts.root);
-    f.files = try files(a, io, opts.root, opts.files);
+    f.files = try files(a, io, opts.root, opts.wanted.files);
+    f.pacman = try pacmanSetup(a, io, r, opts.wanted.keys);
     f.initramfs_modules = try r.mkinitcpio("MODULES");
     const dbpath = try pacmanDb(a, io, opts.root);
     f.boot = try r.boot(dbpath);
@@ -339,6 +341,29 @@ fn files(a: Allocator, io: std.Io, root: []const u8, paths: []const []const u8) 
         });
     }
     return out.items;
+}
+
+/// whether pacman.conf reads os's repositories, and which of `keys` the
+/// keyring has.
+fn pacmanSetup(a: Allocator, io: std.Io, r: Reader, keys: []const []const u8) !facts.Pacman {
+    var out: facts.Pacman = .{};
+    var repos: std.ArrayList([]const u8) = .empty;
+    if (try r.file("etc/pacman.conf")) |conf| {
+        var lines = std.mem.splitScalar(u8, conf, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            out.includes_repos = out.includes_repos or std.mem.eql(u8, line, facts.repos_include);
+            if (line.len > 2 and line[0] == '[' and line[line.len - 1] == ']' and !std.mem.eql(u8, line, "[options]")) try repos.append(a, line[1 .. line.len - 1]);
+        }
+    }
+    out.repos = repos.items;
+    var have: std.ArrayList([]const u8) = .empty;
+    const gpgdir = try r.path("etc/pacman.d/gnupg");
+    for (keys) |k| {
+        if (try exec.run(a, io, &.{ "pacman-key", "--gpgdir", gpgdir, "--list-keys", k }) == null) try have.append(a, k);
+    }
+    out.keys = have.items;
+    return out;
 }
 
 /// pacman's database directory under `root`: in /usr on the rollback rung,

@@ -4,8 +4,10 @@
 //! from.
 
 const std = @import("std");
+const lists = @import("../lists.zig");
 const cli = @import("../cli.zig");
 const alpm = @import("../alpm.zig");
+const aur = @import("../aur.zig");
 const config = @import("../config.zig");
 const lock = @import("../lock.zig");
 const change = @import("../change.zig");
@@ -108,6 +110,20 @@ fn saveProviders(ctx: *Context, w: *cli.Work, top: []const u8, picked: []const l
     return true;
 }
 
+/// the recipe commit each aur package was built from, by package name.
+pub const Recipes = std.StringHashMapUnmanaged([]const u8);
+
+/// gives each package from os's aur repository its recipe commit: the one
+/// it was just built from, or else the one the old lock has for it.
+pub fn pinRecipes(a: Allocator, l: *lock.Lock, built: Recipes, old: ?*const lock.Lock) !void {
+    const pkgs = try a.dupe(lock.Package, l.packages);
+    for (pkgs) |*p| {
+        if (!std.mem.eql(u8, p.repo, aur.repo_name)) continue;
+        p.recipe = built.get(p.name) orelse if (old) |o| if (o.package(p.name)) |op| op.recipe else null else null;
+    }
+    l.packages = pkgs;
+}
+
 /// the current lock, or null if there isn't a readable one. a lock that
 /// doesn't parse is treated as missing, with a warning: it's generated,
 /// so resolving a new one replaces it.
@@ -146,13 +162,33 @@ pub fn reportLock(ctx: *Context, what: []const u8, d: lock.Diff, next: bool) !vo
 
 /// the repositories in the machine's pacman.conf, or core and extra from
 /// arch's main mirror if there isn't one.
-pub fn repos(ctx: *Context, a: Allocator) ![]const sync.Repo {
-    return (try pacman(ctx, a)).repos;
+pub fn repos(ctx: *Context, a: Allocator, c: *const config.Config) ![]const sync.Repo {
+    return (try pacman(ctx, a, c)).repos;
 }
 
-/// the machine's pacman.conf, as far as `os` uses it.
-pub fn pacman(ctx: *Context, a: Allocator) !sync.Pacman {
-    return sync.pacmanConf(a, ctx.files, ctx.root);
+/// the machine's pacman.conf, as far as `os` uses it, with the config's
+/// own repositories after arch's: the ones pacman.conf doesn't list yet,
+/// before an apply writes them there.
+pub fn pacman(ctx: *Context, a: Allocator, c: *const config.Config) !sync.Pacman {
+    var p = try sync.pacmanConf(a, ctx.files, ctx.root);
+    var all: std.ArrayList(sync.Repo) = .empty;
+    // os's aur repository, which pacman.conf may name through os's own
+    // file, is always the local one below, when there's one at all.
+    for (p.repos) |r| {
+        if (!std.mem.eql(u8, r.name, aur.repo_name)) try all.append(a, r);
+    }
+    for (c.repos.entries.items) |e| {
+        const server = e.value.server orelse continue;
+        if (lists.find(all.items, "name", e.name) != null) continue;
+        try all.append(a, .{ .name = e.name, .servers = try a.dupe([]const u8, &.{server.v}), .signed = e.value.key != null });
+    }
+    // aur packages come from the local repository os builds them into.
+    if (c.aur.items.items.len > 0) {
+        const dir = try cli.machinePath(ctx, a, aur.repo_dir);
+        try all.append(a, .{ .name = aur.repo_name, .servers = try a.dupe([]const u8, &.{try std.fmt.allocPrint(a, "file://{s}", .{dir})}), .signed = false, .local = true });
+    }
+    p.repos = all.items;
+    return p;
 }
 
 /// where downloaded package databases are kept, one directory per date.

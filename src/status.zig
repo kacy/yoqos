@@ -71,7 +71,7 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
     }
     var pacnew: std.ArrayList([]const u8) = .empty;
     var pacnew_managed: std.ArrayList([]const u8) = .empty;
-    const managed = try planner.filePaths(a, c);
+    const managed = (try planner.wanted(a, c)).files;
     for (f.pacnew) |path| try (if (lists.contains(managed, path)) &pacnew_managed else &pacnew).append(a, path);
     var orphans: usize = 0;
     for (p.changes) |ch| switch (ch.kind) {
@@ -88,7 +88,8 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
         .setting => try settings.append(a, ch.subject),
         .unit => try units.append(a, ch.subject),
         .user => if (!lists.contains(users.items, ch.subject)) try users.append(a, ch.subject),
-        .file => try files.append(a, ch.subject),
+        .file, .pacman_conf => try files.append(a, ch.subject),
+        .key => try settings.append(a, try std.fmt.allocPrint(a, "key {s}", .{ch.subject})),
     };
 
     var failing: std.ArrayList([]const u8) = .empty;

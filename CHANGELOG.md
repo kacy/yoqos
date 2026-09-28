@@ -1,5 +1,18 @@
 # changelog
 
+## unreleased
+
+- `[repos.<name>]` declares a package repository with its server and
+  signing key. `os` writes it for pacman, includes it from pacman.conf, and
+  trusts the key.
+- `aur = [...]`, or `os add --aur`, builds packages from the aur in a clean
+  chroot with makechrootpkg, after a review of each new or changed recipe,
+  into a local repository. the lock pins their recipe commits.
+- a pacman.conf repository with `SigLevel = Optional` or `Never` is read
+  that way, instead of as signed.
+- pacman.conf's includes are read the way pacman reads them, so an included
+  file can hold whole repositories.
+
 ## 0.1.0
 
 the first release. `os` runs an arch machine from one config file, and on a

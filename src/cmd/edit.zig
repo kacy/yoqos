@@ -31,18 +31,21 @@ pub fn disableCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
 fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
     const usage_text = switch (op) {
-        inline else => |o| "os " ++ @tagName(o) ++ (if (o == .add or o == .remove) " <package>..." else " <service>...") ++ " [--yes] [--no-apply]",
+        inline else => |o| "os " ++ @tagName(o) ++ (if (o == .add or o == .remove) " [--aur] <package>..." else " <service>...") ++ " [--yes] [--no-apply]",
     };
     var then: Then = .{ .apply = true };
+    var aur = false;
     var rest: std.ArrayList([:0]const u8) = .empty;
     defer rest.deinit(ctx.gpa);
     for (args) |arg| {
-        if (!then.flag(arg)) try rest.append(ctx.gpa, arg);
+        if ((op == .add or op == .remove) and cli.eql(arg, "--aur")) {
+            aur = true;
+        } else if (!then.flag(arg)) try rest.append(ctx.gpa, arg);
     }
     if (rest.items.len == 0) return cli.usageError(ctx, usage_text);
     const names = try namesOf(ctx, ctx.gpa, rest.items, usage_text) orelse return 2;
     defer ctx.gpa.free(names);
-    return editConfig(ctx, op, names, then);
+    return editConfig(ctx, op, names, then, aur);
 }
 
 const Then = applying.Then;
@@ -89,12 +92,12 @@ pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         return 0;
     }
     // adopting records what's already installed; there's nothing to apply.
-    return editConfig(ctx, .add, names, .{});
+    return editConfig(ctx, .add, names, .{}, false);
 }
 
 /// edits the config for `op` on each name, writes it, and brings the lock
 /// along.
-fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: Then) !u8 {
+fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: Then, aur: bool) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
@@ -102,7 +105,7 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
     const top = loaded.files.items[0];
     const text = try cli.readFile(ctx, a, top) orelse return 1;
 
-    const outcome = try change.plan(a, &loaded.config, top, text, op, names, &w.diags);
+    const outcome = try change.plan(a, &loaded.config, top, text, op, names, aur, &w.diags);
     if (w.failed()) return w.fail();
     if (outcome.changed()) {
         if (!try change.check(ctx.gpa, ctx.files, top, outcome.text, outcome.notes, &w.diags)) return w.fail();
@@ -110,24 +113,27 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
 
     if (!ctx.json) for (outcome.notes) |n| {
         switch (n.what) {
-            .added => try ctx.out.print("+ packages \"{s}\"\n", .{n.name}),
-            .removed => try ctx.out.print("- packages \"{s}\"\n", .{n.name}),
-            .excluded => try ctx.out.print("+ remove.packages \"{s}\"  (set in {s})\n", .{ n.name, n.detail.? }),
+            .added => try ctx.out.print("+ {s} \"{s}\"\n", .{ listName(n), n.name }),
+            .removed => try ctx.out.print("- {s} \"{s}\"\n", .{ listName(n), n.name }),
+            .excluded => try ctx.out.print("+ remove.{s} \"{s}\"  (set in {s})\n", .{ listName(n), n.name, n.detail.? }),
             .enabled, .disabled => try ctx.out.print("~ services.{s} = {}\n", .{ n.name, n.what == .enabled }),
             .chosen => try ctx.out.print("+ providers.{s} = \"{s}\"\n", .{ n.name, n.detail.? }),
             .unchanged => try ctx.out.print("  {s} is already set that way  ({s})\n", .{ n.name, n.detail.? }),
         }
     };
-    const now = then.applies(ctx);
+    // an aur package is built by an update, after a review; a relock
+    // can't resolve it before then, so there's none, and nothing applies.
+    const build_first = aur and op == .add;
+    const now = then.applies(ctx) and !build_first;
     const message = try commitMessage(a, op, outcome.notes);
     var locked: Relocked = .skipped;
     if (outcome.changed()) {
         if (!try cli.writeFile(ctx, top, outcome.text)) return 1;
-        if (!ctx.json) try ctx.out.print("\nsaved {s}.\n", .{top});
+        if (!ctx.json) try ctx.out.print("\nsaved {s}.{s}\n", .{ top, if (build_first) " `os update` reviews and builds aur packages, and applies them." else "" });
         // services and packages both change what's wanted. a change the
         // lock can't follow, like a package that doesn't exist, is taken
         // back: the config stays one that plans.
-        locked = try relock(ctx, top, !now);
+        if (!build_first) locked = try relock(ctx, top, !now);
         if (locked == .failed) {
             _ = try cli.writeFile(ctx, top, text);
             try ctx.err.print("os: {s} is back as it was.\n", .{top});
@@ -151,7 +157,12 @@ fn commitMessage(a: std.mem.Allocator, op: change.Op, notes: []const change.Note
     for (notes) |n| {
         if (n.what != .unchanged) try names.append(a, n.name);
     }
-    return std.fmt.allocPrint(a, "{s} {s}", .{ @tagName(op), try std.mem.join(a, ", ", names.items) });
+    const from_aur = notes.len > 0 and notes[0].aur;
+    return std.fmt.allocPrint(a, "{s} {s}{s}", .{ @tagName(op), try std.mem.join(a, ", ", names.items), if (from_aur) " (aur)" else "" });
+}
+
+fn listName(n: change.Note) []const u8 {
+    return if (n.aur) "aur" else "packages";
 }
 
 const Relocked = enum { locked, skipped, failed };
@@ -174,12 +185,15 @@ fn relock(ctx: *Context, top: []const u8, next: bool) !Relocked {
         try say.writeAll("this build can't resolve packages, so machine.lock wasn't updated.\n");
         return .skipped;
     }
-    const dbs = try sync.cached(a, ctx.io, try locking.repos(ctx, a), try locking.cacheDir(ctx, a), old.sync_date) orelse {
+    const loaded = try w.config() orelse return failed(&w);
+    const dbs = try sync.cached(a, ctx.io, try locking.repos(ctx, a, &loaded.config), try locking.cacheDir(ctx, a), old.sync_date) orelse {
         try say.print("no package databases cached for {s}: `os update` resolves against today's.\n", .{old.sync_date});
         return .skipped;
     };
-    const loaded = try w.config() orelse return failed(&w);
-    const l = try locking.resolveLock(ctx, &w, &loaded.config, top, dbs, old.sync_date, &.{}) orelse return failed(&w);
+    var l = try locking.resolveLock(ctx, &w, &loaded.config, top, dbs, old.sync_date, &.{}) orelse return failed(&w);
+    // aur packages keep the recipes they were built from; only an update
+    // builds new ones.
+    try locking.pinRecipes(a, &l, .empty, &old);
     _ = try locking.writeLock(ctx, a, top, &l) orelse return failed(&w);
     if (!ctx.json) try locking.reportLock(ctx, "updated machine.lock", try lock.diff(a, &old, &l), next);
     return .locked;
@@ -325,4 +339,18 @@ test "empty and flag-like names are usage errors, not crashes" {
     try std.testing.expectEqual(2, t.code);
     try t.exec(&.{ "adopt", "-x" });
     try std.testing.expectEqual(2, t.code);
+}
+
+test "add --aur puts a package in the aur list and leaves building to update" {
+    var t: cli.TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "version = 1\npackages = [\"git\"]\n");
+    try t.exec(&.{ "add", "--aur", "yay-bin" });
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expectEqualStrings("version = 1\naur = [\"yay-bin\"]\npackages = [\"git\"]\n", t.fs.map.get("/etc/yoq/machine.toml").?);
+    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "+ aur \"yay-bin\"") != null);
+    try std.testing.expectEqualStrings("add yay-bin (aur)", t.recorder.messages.items[0]);
+
+    try t.exec(&.{ "remove", "--aur", "nope" });
+    try std.testing.expectEqual(1, t.code);
 }

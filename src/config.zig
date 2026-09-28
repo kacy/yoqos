@@ -191,6 +191,17 @@ pub const State = struct {
     carry: Set = .{},
 };
 
+/// a package repository beyond arch's own, like chaotic-aur, keyed by its
+/// name.
+pub const Repo = struct {
+    src: Src,
+    /// where its packages are, with `$repo` and `$arch` as pacman has them.
+    server: ?Str = null,
+    /// the full fingerprint of the key its packages are signed with. with
+    /// none, its packages aren't checked.
+    key: ?Str = null,
+};
+
 /// a file os writes whole, keyed by its absolute path.
 pub const File = struct {
     src: Src,
@@ -224,6 +235,7 @@ pub const Config = struct {
     services: Named(Service) = .{},
     state: State = .{},
     files: Named(File) = .{},
+    repos: Named(Repo) = .{},
     /// kernel settings, written to one file in /etc/sysctl.d.
     sysctl: Named(Val(Loose)) = .{},
     /// every package a `[remove]` names, in this file or an include. not a
@@ -440,6 +452,26 @@ pub fn validate(c: *const Config, diags: *diag.List) !void {
     inline for (comptime keysOf(System)) |key| {
         if (@field(c.system, key)) |v| {
             if (systemProblem(key, v.v)) |hint| try diags.add(.bad_value, v.src, "\"{s}\" isn't a valid {s}", .{ v.v, key }, hint);
+        }
+    }
+    for (c.repos.entries.items) |e| {
+        const r = &e.value;
+        const name_ok = e.name.len > 0 and for (e.name) |ch| {
+            if (!std.ascii.isAlphanumeric(ch) and ch != '-' and ch != '_' and ch != '.') break false;
+        } else true;
+        if (!name_ok or lists.contains(&.{ "options", "core", "extra", "multilib", "core-testing", "extra-testing", "multilib-testing" }, e.name)) {
+            try diags.add(.bad_value, r.src, "\"{s}\" can't be a repository's name here", .{e.name}, "use letters, digits, dashes, dots, and underscores, and not one of arch's own repositories");
+        }
+        if (r.server) |sv| {
+            if (!std.mem.startsWith(u8, sv.v, "https://") and !std.mem.startsWith(u8, sv.v, "http://") and !std.mem.startsWith(u8, sv.v, "file://")) {
+                try diags.add(.bad_value, sv.src, "\"{s}\" isn't a server url", .{sv.v}, "servers start with https://, http://, or file://, like pacman.conf's");
+            }
+        } else try diags.add(.bad_value, r.src, "repos.{s} needs a server", .{e.name}, "like `server = \"https://example.org/$repo/$arch\"`");
+        if (r.key) |k| {
+            const hex = k.v.len == 40 and for (k.v) |ch| {
+                if (!std.ascii.isHex(ch)) break false;
+            } else true;
+            if (!hex) try diags.add(.bad_value, k.src, "\"{s}\" isn't a key fingerprint", .{k.v}, "use the full 40-character fingerprint, like pacman-key --list-keys shows");
         }
     }
     for (c.boot.modules.items.items) |m| {
@@ -754,6 +786,26 @@ test "validate catches unknown services and bad names" {
     try f.expectDiag(1, .unknown_service, 8, "unknown service \"mystery\"");
     try f.expectDiag(2, .bad_value, 2, "\"-atlas\" isn't a valid hostname");
     try f.expectDiag(3, .bad_value, 3, "\"Kacy\" isn't a valid user name");
+}
+
+test "repositories name a server, and a key by its fingerprint" {
+    var f = try Fixture.init(
+        \\[repos.chaotic-aur]
+        \\server = "https://cdn-mirror.chaotic.cx/$repo/$arch"
+        \\key = "3056513887B78AEB"
+        \\[repos.core]
+        \\server = "ftp://x"
+        \\[repos.mine]
+        \\key = "EF925EA60F33D0CB85C44AD13056513887B78AEB"
+        \\
+    );
+    defer f.deinit();
+    try validate(&f.part.config, &f.diags);
+    try testing.expectEqual(4, f.diags.items.items.len);
+    try f.expectDiag(0, .bad_value, 3, "\"3056513887B78AEB\" isn't a key fingerprint");
+    try f.expectDiag(1, .bad_value, 4, "\"core\" can't be a repository's name here");
+    try f.expectDiag(2, .bad_value, 5, "\"ftp://x\" isn't a server url");
+    try f.expectDiag(3, .bad_value, 6, "repos.mine needs a server");
 }
 
 test "kernel module names" {
