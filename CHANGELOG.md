@@ -12,6 +12,15 @@
   that way, instead of as signed.
 - pacman.conf's includes are read the way pacman reads them, so an included
   file can hold whole repositories.
+- generations work with limine and refind, besides grub. limine gets its
+  entries in a section of its own config, kernels copied to the esp, and
+  trial boots through its one-shot entry. refind reads each generation's
+  kernel from btrfs, and a generation that won't start is picked from its
+  menu by hand.
+- `enable-rollback` stops snap-pac's snapshots of the root, since each
+  change is a generation already.
+- `os` runs `/usr/bin/mkinitcpio` itself, not a wrapper earlier in `PATH`
+  that might stop to ask a question.
 
 ## 0.1.0
 

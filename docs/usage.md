@@ -10,8 +10,8 @@ to use it today.
 up to date, tells you what's different, and applies the difference. `os
 apply` installs and removes packages, sets the `[system]` settings, turns
 services on and off, creates users and sets their shells and groups, and
-writes files and sysctl settings. on a btrfs root with grub, `os
-enable-rollback` adds whole-system generations; see
+writes files and sysctl settings. on a btrfs root with grub, limine, or
+refind, `os enable-rollback` adds whole-system generations; see
 [generations.md](generations.md).
 
 | command | what it does |
@@ -22,7 +22,7 @@ enable-rollback` adds whole-system generations; see
 | `os apply` | makes those changes, after asking |
 | `os history` | the generations |
 | `os rollback` | goes back to an earlier generation |
-| `os enable-rollback` | turns on whole-system generations (btrfs and grub) |
+| `os enable-rollback` | turns on whole-system generations (btrfs, with grub, limine, or refind) |
 | `os gc`, `os pin` | clean up old generations, or keep one |
 | `os update` | resolves the config against today's arch packages into the lock |
 | `os add`, `os remove` | edit the package list, and the lock with it |
@@ -376,9 +376,10 @@ back never loses them.
 
 ## generations (early)
 
-on a btrfs root with grub, `os enable-rollback` turns the machine's history
-into generations: whole copies of the system you can boot from the menu. it
-shows its checks and steps and asks first; `--yes` skips the question.
+on a btrfs root with grub, limine, or refind, `os enable-rollback` turns
+the machine's history into generations: whole copies of the system you can
+boot from the menu. it shows its checks and steps and asks first; `--yes`
+skips the question.
 there, `os rollback [n]` starts an older generation as a new one for the
 next boot, `os rollback --to-booted` keeps the one you booted from the menu,
 `os gc [--keep n]` removes old ones, and `os pin <n>` keeps one.
@@ -591,8 +592,9 @@ include = ["/usr/share/yoq/profiles/omarchy.toml", "imported.toml"]
 on an omarchy install, that plans nothing. omarchy's own updates
 (`omarchy-update` and its migrations) still change the machine behind
 `os`'s back, so `os status` shows them as drift until `os adopt` or the next
-apply settles it. omarchy boots with limine, so generations wait for limine
-support; the manage rung works today.
+apply settles it. generations work with omarchy's limine, but omarchy's own
+limine tools can drop `os`'s entries from `limine.conf` until the next
+change writes them again; see [generations.md](generations.md#bootloaders).
 
 ### kernel modules
 

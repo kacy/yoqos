@@ -68,6 +68,11 @@ pub const Boot = struct {
     esp_device: ?[]const u8 = null,
     /// "grub", "systemd-boot", "limine", or "refind".
     loader: ?[]const u8 = null,
+    /// the config limine or refind reads, which os adds its entries to.
+    loader_conf: ?[]const u8 = null,
+    /// the btrfs default subvolume is the top level, where refind's
+    /// driver starts its paths.
+    top_is_default: bool = true,
     root_fs: ?[]const u8 = null,
     root_device: ?[]const u8 = null,
     /// the root's btrfs subvolume: "/@", or "/" for the top level.
@@ -81,6 +86,8 @@ pub const Boot = struct {
     initramfs_hooks: []const []const u8 = &.{},
     /// the pacman database lives in /usr/lib/sysimage/pacman.
     pacman_moved: bool = false,
+    /// snapper has a config for the root, which snap-pac snapshots.
+    snapper_root: bool = false,
 };
 
 /// the file os writes the config's repositories to, and the line in

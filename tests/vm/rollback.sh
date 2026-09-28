@@ -12,12 +12,19 @@ today=$(date -u +%Y-%m-%d)
 # ask for; one apply settles them.
 "$vm" ssh "/usr/local/bin/os apply --yes" | tail -n 2
 
-# enable-rollback failing at its last step, grub-install, takes back every
-# step before it: no subvolumes, the esp as it was, the machine as it was.
+# enable-rollback failing at its last step takes back every step before
+# it: no subvolumes, the esp as it was, the machine as it was. the last
+# step is grub-install for grub, and the menu for the others, where a
+# command only it runs fails.
+case $VM_LOADER in
+grub) last=grub-install ;;
+limine) last=sha256sum ;;
+refind) last=install ;;
+esac
 esp=$("$vm" ssh "find $VM_ESP -type f -exec sha256sum {} + | sort | sha256sum")
-"$vm" ssh "mkdir -p /tmp/fail && printf '#!/bin/sh\\necho no grub today >&2\\nexit 1\\n' > /tmp/fail/grub-install && chmod +x /tmp/fail/grub-install"
-# it has to get as far as grub-install, or there's nothing to take back.
-check "PATH=/tmp/fail:\$PATH /usr/local/bin/os enable-rollback --yes >/tmp/enable.out 2>&1; echo \$?; grep -c 'no grub today' /tmp/enable.out" "1
+"$vm" ssh "mkdir -p /tmp/fail && printf '#!/bin/sh\\necho not today >&2\\nexit 1\\n' > /tmp/fail/$last && chmod +x /tmp/fail/$last"
+# it has to get that far, or there's nothing to take back.
+check "PATH=/tmp/fail:\$PATH /usr/local/bin/os enable-rollback --yes >/tmp/enable.out 2>&1; echo \$?; grep -c 'not today' /tmp/enable.out" "1
 1"
 check_top "ls -d /run/yoq-top/@roots /run/yoq-top/@gens /run/yoq-top/@var 2>/dev/null | wc -l" 0
 check "find $VM_ESP -type f -exec sha256sum {} + | sort | sha256sum" "$esp"
@@ -47,14 +54,15 @@ check "/usr/local/bin/os enable-rollback" "generations are on: this machine runs
 # an apply makes generation 2, and the menu keeps generation 1.
 "$vm" ssh "/usr/local/bin/os add --yes tree" | tail -n 3
 check "ls /var/lib/yoq/generations | tr '\\n' ' '" "1.json 2.json "
-check "grep -c -e '--id head' -e '--id gen-1' $VM_ESP/grub/grub.cfg" 2
+menu_generations 2
 
 # generation 1, booted once from the menu: a fresh copy of it, from
 # before tree.
-"$vm" ssh "grub-editenv $VM_ESP/yoq/grubenv set yoq_next=gen-1"
+boot_once 1
 "$vm" reboot
 check "findmnt -no FSROOT /" /@roots/boot-1
 check "pacman -Q tree >/dev/null 2>&1 || echo no tree" "no tree"
+boot_done
 
 # and the next boot is the running generation again.
 "$vm" reboot
@@ -80,7 +88,7 @@ check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 "$vm" ssh "/usr/local/bin/os history"
 
 # an older generation booted from the menu, and kept.
-"$vm" ssh "grub-editenv $VM_ESP/yoq/grubenv set yoq_next=gen-2"
+boot_once 2
 "$vm" reboot
 check "findmnt -no FSROOT /" /@roots/boot-2
 "$vm" ssh "/usr/local/bin/os rollback --to-booted --yes"
@@ -98,4 +106,10 @@ check "/usr/local/bin/os gc --keep 1" "removed generations: 3."
 check "ls /var/lib/yoq/generations | tr '\\n' ' '" "1.json 2.json 4.json "
 check_top "ls /run/yoq-top/@gens /run/yoq-top/@roots | tr '\\n' ' '" "/run/yoq-top/@gens: 1 2 4  /run/yoq-top/@roots: 1 4 boot-1 boot-2 "
 "$vm" ssh "/usr/local/bin/os history"
+
+# refind can't boot a generation once, so a change that needs a reboot
+# says how to go back by hand.
+if [ "$VM_LOADER" = refind ]; then
+    check "/usr/local/bin/os add --yes amd-ucode | grep -c 'pick generation'" 1
+fi
 echo "rollback ok"

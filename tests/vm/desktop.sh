@@ -12,7 +12,7 @@ check "cat /etc/greetd/config.toml | grep -c tuigreet" 1
 # enabled, not started: starting a display manager mid-apply isn't safe.
 check "systemctl is-enabled greetd.service" enabled
 check "systemctl is-active greetd.service || true" inactive
-check "grub-editenv $VM_ESP/yoq/grubenv list | grep -c ^yoq_trial" 1
+on_trial yes
 "$vm" reboot
 settled
 check "systemctl is-active display-manager.service" active

@@ -11,7 +11,7 @@ show_env
 "$vm" reboot
 settled
 check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'the default now'" 1
-check "grub-editenv $VM_ESP/yoq/grubenv list > /tmp/env && { grep -c -e ^yoq_trial -e ^yoq_default /tmp/env || true; }" 0
+on_trial no
 
 # an unhealthy trial: a service the config turns on that only starts
 # while a marker file exists. the trial boot runs without the marker.
@@ -30,7 +30,7 @@ check "findmnt -no FSROOT /" "/@roots/boot-$before"
 # and says what happened.
 settled
 check "/usr/local/bin/os history | tail -n 1 | grep -c 'fell back from'" 1
-check "grub-editenv $VM_ESP/yoq/grubenv list > /tmp/env && { grep -c -e ^yoq_trial -e ^yoq_default /tmp/env || true; }" 0
+on_trial no
 check "/usr/local/bin/os status | grep -c '^note: generation'" 1
 check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 
@@ -52,14 +52,14 @@ check "findmnt -no FSROOT /" "/@roots/boot-$before"
 settled
 check "/usr/local/bin/os history | tail -n 1 | grep -c 'fell back from'" 1
 
-# a trial whose kernel can't boot: no initramfs, so it can't mount its
-# root. grub's fallback or panic=10 brings back the generation before.
+# a trial whose kernel can't boot: its initramfs is garbage, so it can't
+# mount its root, and panic=10 brings back the generation before.
 "$vm" reboot
 settled
 "$vm" ssh "/usr/local/bin/os add --yes intel-ucode" | tail -n 1
-check "grub-editenv $VM_ESP/yoq/grubenv list | grep -c ^yoq_trial" 1
+on_trial yes
 before=$(second_newest)
-"$vm" ssh "mv /boot/initramfs-linux.img /boot/initramfs-linux.img.away"
+"$vm" ssh "echo not an initramfs > /boot/initramfs-linux.img"
 show_env
 "$vm" reboot || true
 wait_root "/@roots/boot-$before"

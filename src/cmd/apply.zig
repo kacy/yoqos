@@ -19,6 +19,7 @@ const catalog = @import("../catalog.zig");
 const facts = @import("../facts.zig");
 const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
+const trial = @import("../trial.zig");
 const locking = @import("lock.zig");
 const diag = @import("../diag.zig");
 const Context = cli.Context;
@@ -207,16 +208,16 @@ fn armTrial(ctx: *Context, a: Allocator, boot: facts.Boot) !void {
     const records = try gens.readRecords(a, ctx.io, "/var");
     if (records.len < 2) return;
     const n = records[records.len - 1].n;
+    const store = trial.Store.of(a, ctx.io, boot) orelse return;
     // with a trial already waiting for a reboot, the fallback stays the
     // generation before that one, the last that booted, while it's there.
-    const pending = try gens.trialFallback(a, ctx.io, boot.esp.?);
+    const pending = if (try store.current()) |t| t.fallback else 0;
     const before = if (pending != 0 and generation.find(records, pending) != null) pending else records[records.len - 2].n;
-    _ = try gens.editEnv(a, ctx.io, boot.esp.?, "unset", &.{"yoq_tried"});
-    if (try gens.editEnv(a, ctx.io, boot.esp.?, "set", &.{
-        "yoq_next=head",
-        try std.fmt.allocPrint(a, "yoq_default=gen-{d}", .{before}),
-        try std.fmt.allocPrint(a, "yoq_trial={d}", .{n}),
-    })) |problem| {
+    if (!store.automatic()) {
+        if (!ctx.json) try ctx.out.print("reboot to finish. if generation {d} doesn't start, pick generation {d} in the boot menu, then `os rollback --to-booted`.\n", .{ n, before });
+        return;
+    }
+    if (try store.arm(n, generation.find(records, before).?)) |problem| {
         try ctx.err.print("os: couldn't set up the trial boot: {s}. the next boot runs generation {d} without a fallback.\n", .{ problem, n });
         return;
     }

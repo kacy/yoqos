@@ -10,6 +10,8 @@ const btrfs = @import("btrfs.zig");
 const exec = @import("exec.zig");
 const facts = @import("facts.zig");
 const generation = @import("generation.zig");
+const menu = @import("menu.zig");
+const trial = @import("trial.zig");
 const Allocator = std.mem.Allocator;
 
 /// a machine on the rollback rung, with its btrfs top level mounted.
@@ -17,6 +19,7 @@ pub const Machine = struct {
     a: Allocator,
     io: std.Io,
     boot: facts.Boot,
+    loader: menu.Loader,
     root_uuid: []const u8,
     esp_uuid: []const u8,
     top: []const u8 = generation.top_mount,
@@ -27,8 +30,9 @@ pub const Machine = struct {
             .a = a,
             .io = io,
             .boot = boot,
-            .root_uuid = try uuidOf(a, io, boot.root_device.?, why) orelse return null,
-            .esp_uuid = try uuidOf(a, io, boot.esp_device.?, why) orelse return null,
+            .loader = menu.Loader.of(boot) orelse return fail(why, "no bootloader os can write a menu for"),
+            .root_uuid = try blkid(a, io, boot.root_device.?, "UUID", why) orelse return null,
+            .esp_uuid = try blkid(a, io, boot.esp_device.?, "UUID", why) orelse return null,
         };
         if (try m.run(&.{ "mkdir", "-p", m.top })) |w| return fail(why, w);
         if (try m.run(&.{ "mount", "-o", "subvolid=5", boot.root_device.?, m.top })) |w| return fail(why, w);
@@ -108,7 +112,8 @@ pub const Machine = struct {
         if (records.len == 0) return null;
         const running = m.boot.root_subvol.?;
         // a pending trial falls back to this one, so it stays too.
-        const fallback = try trialFallback(m.a, m.io, m.boot.esp.?);
+        const pending = if (trial.Store.of(m.a, m.io, m.boot)) |s| try s.current() else null;
+        const fallback = if (pending) |t| t.fallback else 0;
         var kept: std.ArrayList(generation.Record) = .empty;
         var roots: std.ArrayList([]const u8) = .empty;
         try roots.append(m.a, running[1..]);
@@ -177,12 +182,12 @@ pub const Machine = struct {
     /// record, then the system from before generations.
     pub fn writeMenu(m: *const Machine, head: []const u8, records: []const generation.Record) !?[]const u8 {
         const cmdline = std.Io.Dir.cwd().readFileAlloc(m.io, "/proc/cmdline", m.a, .limited(4096)) catch "";
-        var entries: std.ArrayList(generation.Entry) = .empty;
+        var entries: std.ArrayList(menu.Entry) = .empty;
         if (records.len == 0) return "no generations to put in the menu";
         // records come sorted by number.
         const latest = records[records.len - 1];
         var newest_entry = try m.entry("head", try title(m.a, latest), head, cmdline);
-        newest_entry.on_esp = m.bootOnEsp();
+        if (m.bootOnEsp()) newest_entry.esp_dir = "";
         try entries.append(m.a, newest_entry);
         var i = records.len;
         while (i > 0) {
@@ -197,10 +202,97 @@ pub const Machine = struct {
             const from = r.from orelse continue;
             try entries.append(m.a, try m.entry("before", "the system before generations", from, cmdline));
         }
-        const cfg = try generation.grubConfig(m.a, .{ .esp_uuid = m.esp_uuid, .root_uuid = m.root_uuid, .default = "head", .entries = entries.items });
-        const path = try std.fs.path.join(m.a, &.{ m.boot.esp.?, "grub/grub.cfg" });
-        rootfs.writeAtomic(m.io, path, cfg, null) catch return try std.fmt.allocPrint(m.a, "can't write {s}", .{path});
+        return switch (m.loader) {
+            .grub => m.write(try std.fs.path.join(m.a, &.{ m.boot.esp.?, "grub/grub.cfg" }), try menu.grub(m.a, .{ .esp_uuid = m.esp_uuid, .root_uuid = m.root_uuid, .default = "head", .entries = entries.items })),
+            .limine => m.writeLimine(entries.items),
+            .refind => m.writeRefind(entries.items),
+        };
+    }
+
+    fn write(m: *const Machine, path: []const u8, text: []const u8) !?[]const u8 {
+        rootfs.writeAtomic(m.io, path, text, null) catch return try std.fmt.allocPrint(m.a, "can't write {s}", .{path});
         return null;
+    }
+
+    /// the loader's own config, which os adds its entries to.
+    fn loaderConf(m: *const Machine) !?[]const u8 {
+        const path = m.boot.loader_conf orelse return null;
+        return std.Io.Dir.cwd().readFileAlloc(m.io, path, m.a, .limited(1 << 20)) catch null;
+    }
+
+    /// limine reads only fat, so entries whose files are in a root's /boot
+    /// get copies on the esp, named by content so generations share them.
+    /// copies no entry uses any more go.
+    fn writeLimine(m: *const Machine, entries: []menu.Entry) !?[]const u8 {
+        const conf = try m.loaderConf() orelse return "can't read limine.conf";
+        const dir = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir });
+        if (try m.run(&.{ "mkdir", "-p", dir })) |w| return w;
+        var used: std.ArrayList([]const u8) = .empty;
+        var why: []const u8 = "";
+        for (entries) |*e| {
+            if (e.esp_dir != null) continue;
+            const from = try m.at(&.{ e.subvol, "boot" });
+            e.kernel = try m.espCopy(from, e.kernel, &used, &why) orelse return why;
+            const initrds = try m.a.alloc([]const u8, e.initrds.len);
+            for (e.initrds, initrds) |i, *out| out.* = try m.espCopy(from, i, &used, &why) orelse return why;
+            e.initrds = initrds;
+            e.esp_dir = esp_boot_dir;
+        }
+        if (try m.write(m.boot.loader_conf.?, try menu.spliceLimine(m.a, conf, try menu.limine(m.a, entries)))) |w| return w;
+        var d = std.Io.Dir.cwd().openDir(m.io, dir, .{ .iterate = true }) catch return null;
+        defer d.close(m.io);
+        var it = d.iterate();
+        while (it.next(m.io) catch null) |f| {
+            if (!lists.contains(used.items, f.name)) d.deleteFile(m.io, f.name) catch {};
+        }
+        return null;
+    }
+
+    /// copies `name` from `from` into the esp's boot directory, as
+    /// "<hash>-<name>", unless it's there already, and returns that name.
+    fn espCopy(m: *const Machine, from: []const u8, name: []const u8, used: *std.ArrayList([]const u8), why: *[]const u8) !?[]const u8 {
+        const src = try std.fs.path.join(m.a, &.{ from, name });
+        const sum = switch (try exec.output(m.a, m.io, &.{ "sha256sum", src })) {
+            .ok => |t| t,
+            .failed => |w| {
+                why.* = w;
+                return null;
+            },
+        };
+        if (sum.len < 16) {
+            why.* = try std.fmt.allocPrint(m.a, "can't hash {s}", .{src});
+            return null;
+        }
+        const copy = try std.fmt.allocPrint(m.a, "{s}-{s}", .{ sum[0..16], name });
+        try used.append(m.a, copy);
+        const dest = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir, copy });
+        if (rootfs.pathExists(m.io, dest)) return copy;
+        const tmp = try std.fmt.allocPrint(m.a, "{s}.yoq-new", .{dest});
+        if (try m.run(&.{ "cp", src, tmp }) orelse try m.run(&.{ "mv", "-f", tmp, dest })) |w| {
+            why.* = w;
+            return null;
+        }
+        return copy;
+    }
+
+    /// refind reads btrfs through its driver, so entries boot from each
+    /// root's own /boot. os's entries go in yoq.conf beside refind.conf,
+    /// which includes it, and the driver goes in if it's missing.
+    fn writeRefind(m: *const Machine, entries: []const menu.Entry) !?[]const u8 {
+        const conf = try m.loaderConf() orelse return "can't read refind.conf";
+        const dir = std.fs.path.dirnamePosix(m.boot.loader_conf.?).?;
+        const driver = try std.fs.path.join(m.a, &.{ dir, "drivers_x64/btrfs_x64.efi" });
+        if (!rootfs.pathExists(m.io, driver)) {
+            if (try m.run(&.{ "install", "-D", "-m", "0644", "/usr/share/refind/drivers_x64/btrfs_x64.efi", driver })) |w| return w;
+        }
+        var why: []const u8 = "";
+        const text = try menu.refind(m.a, .{
+            .esp_part = try blkid(m.a, m.io, m.boot.esp_device.?, "PARTUUID", &why) orelse return why,
+            .root_part = try blkid(m.a, m.io, m.boot.root_device.?, "PARTUUID", &why) orelse return why,
+            .entries = entries,
+        });
+        if (try m.write(try std.fs.path.join(m.a, &.{ dir, "yoq.conf" }), text)) |w| return w;
+        return m.write(m.boot.loader_conf.?, try menu.spliceRefind(m.a, conf));
     }
 
     /// remakes generation `n`'s writable copy from its record, so booting
@@ -300,7 +392,7 @@ pub const Machine = struct {
 
     /// a menu entry for the root at `subvol`: its kernel, microcode, and
     /// initramfs, from its own /boot, or the esp's for the newest.
-    fn entry(m: *const Machine, id: []const u8, name: []const u8, subvol: []const u8, cmdline: []const u8) !generation.Entry {
+    fn entry(m: *const Machine, id: []const u8, name: []const u8, subvol: []const u8, cmdline: []const u8) !menu.Entry {
         var kernels: std.ArrayList([]const u8) = .empty;
         var initrds: std.ArrayList([]const u8) = .empty;
         const dir = if (std.mem.eql(u8, id, "head") and m.bootOnEsp()) "/boot" else try m.at(&.{ subvol, "boot" });
@@ -338,46 +430,6 @@ pub const notice_path = "/var/lib/yoq/notice";
 pub fn writeNotice(a: Allocator, io: std.Io, text: []const u8) !?[]const u8 {
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = notice_path, .data = text }) catch return try std.fmt.allocPrint(a, "can't write {s}", .{notice_path});
     return null;
-}
-
-/// the env file on the esp that grub reads the menu's choices from.
-fn envPath(a: Allocator, esp: []const u8) ![]const u8 {
-    return std.fs.path.join(a, &.{ esp, "yoq/grubenv" });
-}
-
-/// one value from the esp's env file, or null.
-pub fn envValue(a: Allocator, io: std.Io, esp: []const u8, name: []const u8) !?[]const u8 {
-    const text = switch (try exec.output(a, io, &.{ "grub-editenv", try envPath(a, esp), "list" })) {
-        .ok => |t| t,
-        .failed => return null,
-    };
-    var lines = std.mem.tokenizeScalar(u8, text, '\n');
-    while (lines.next()) |line| {
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        if (std.mem.eql(u8, line[0..eq], name) and eq + 1 < line.len) return line[eq + 1 ..];
-    }
-    return null;
-}
-
-/// sets values in the esp's env file: "name=value" each.
-/// sets `name=value` pairs, or with "unset", removes names.
-pub fn editEnv(a: Allocator, io: std.Io, esp: []const u8, verb: []const u8, args: []const []const u8) !?[]const u8 {
-    var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(a, &.{ "grub-editenv", try envPath(a, esp), verb });
-    try argv.appendSlice(a, args);
-    return exec.run(a, io, argv.items);
-}
-
-/// the generation a pending trial falls back to, or 0 with no trial.
-pub fn trialFallback(a: Allocator, io: std.Io, esp: []const u8) !u32 {
-    const default = try envValue(a, io, esp, "yoq_default") orelse return 0;
-    if (!std.mem.startsWith(u8, default, "gen-")) return 0;
-    return std.fmt.parseInt(u32, default["gen-".len..], 10) catch 0;
-}
-
-/// ends a trial boot, however it went: no fallback default any more.
-pub fn endTrial(a: Allocator, io: std.Io, esp: []const u8) !?[]const u8 {
-    return editEnv(a, io, esp, "unset", &.{ "yoq_default", "yoq_trial", "yoq_tried" });
 }
 
 /// machine state every root gets from the running system. ssh host keys
@@ -427,7 +479,7 @@ pub fn next(records: []const generation.Record) u32 {
 }
 
 /// "yoq 2 · 2026-09-26 · add fd".
-fn title(a: Allocator, r: generation.Record) ![]const u8 {
+pub fn title(a: Allocator, r: generation.Record) ![]const u8 {
     return std.fmt.allocPrint(a, "yoq {d} · {s} · {s}", .{ r.n, try dateOf(a, r.time), r.reason });
 }
 
@@ -465,11 +517,15 @@ pub fn recordPath(a: Allocator, var_dir: []const u8, n: u32) ![]const u8 {
     return std.fmt.allocPrint(a, "{s}/{s}/{d}.json", .{ var_dir, generation.records_dir, n });
 }
 
-fn uuidOf(a: Allocator, io: std.Io, device: []const u8, why: *[]const u8) !?[]const u8 {
-    return switch (try exec.output(a, io, &.{ "blkid", "-s", "UUID", "-o", "value", device })) {
+/// where limine's copies of boot files go, on the esp.
+pub const esp_boot_dir = "yoq/boot";
+
+/// one of blkid's tags for a device, like its "UUID" or "PARTUUID".
+fn blkid(a: Allocator, io: std.Io, device: []const u8, tag: []const u8, why: *[]const u8) !?[]const u8 {
+    return switch (try exec.output(a, io, &.{ "blkid", "-s", tag, "-o", "value", device })) {
         .ok => |out| std.mem.trim(u8, out, " \n"),
         .failed => |w| {
-            why.* = try std.fmt.allocPrint(a, "can't read {s}'s uuid: {s}", .{ device, w });
+            why.* = try std.fmt.allocPrint(a, "can't read {s}'s {s}: {s}", .{ device, tag, w });
             return null;
         },
     };

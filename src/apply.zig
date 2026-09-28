@@ -115,7 +115,7 @@ fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.
     else if (std.mem.eql(u8, path, planner.modules_path))
         &.{ "systemctl", "restart", "systemd-modules-load.service" }
     else if (std.mem.startsWith(u8, path, "/etc/mkinitcpio.conf.d/"))
-        &.{ "mkinitcpio", "-P" }
+        &.{ "/usr/bin/mkinitcpio", "-P" }
     else
         return true;
     if (try exec.run(a, io, then)) |why| {
@@ -164,7 +164,7 @@ fn removeFile(a: Allocator, io: std.Io, root: []const u8, path: []const u8, live
         },
     };
     if (!live or !std.mem.startsWith(u8, path, "/etc/mkinitcpio.conf.d/")) return true;
-    if (try exec.run(a, io, &.{ "mkinitcpio", "-P" })) |why| {
+    if (try exec.run(a, io, &.{ "/usr/bin/mkinitcpio", "-P" })) |why| {
         try diags.add(.apply_failed, null, "removed {s}, but mkinitcpio failed: {s}", .{ path, why }, null);
         return false;
     }

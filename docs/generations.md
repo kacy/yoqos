@@ -19,13 +19,17 @@ required. the machine needs:
 - a btrfs root, either in the top level of the filesystem (like arch's
   cloud image) or in archinstall's `@` subvolume
 - uefi, with the esp mounted at `/efi`, `/boot/efi`, or `/boot`
-- grub
+- grub, limine, or refind. `os` works with the one you have and never
+  switches it
 
 it takes one snapshot of the running root and builds generation 1 from it.
 `/var`, `/home`, `/root`, `/srv`, and `/usr/local` each become a subvolume
 of their own, unless they're mounted separately already. the pacman
-database moves into `/usr/lib/sysimage/pacman`, and grub is reinstalled on
-the esp with a menu that `os` maintains. after a reboot, the machine runs
+database moves into `/usr/lib/sysimage/pacman`, and the boot menu gets an
+entry for generation 1 (see [bootloaders](#bootloaders)). on a machine with
+snapper, snap-pac stops taking snapshots of the root around each pacman
+run, since each change is a generation already; snapper's other configs,
+like one for `/home`, keep working. after a reboot, the machine runs
 generation 1, and the boot menu still offers the system as it was before.
 
 changes you make between running `enable-rollback` and rebooting stay in
@@ -34,8 +38,49 @@ files in `/home`, so reboot right away. the old root is still in the menu
 as "the system before generations" if you need something from it.
 
 if a step fails, `enable-rollback` undoes the steps before it and says
-whether the machine is back as it was. grub's files are installed last, so
-until then the machine boots the way it always did.
+whether the machine is back as it was. the step that changes what the
+machine boots comes last: reinstalling grub, or adding entries to limine's
+or refind's config. until then, the machine boots the way it always did.
+
+## bootloaders
+
+every bootloader gets the same entries: the newest generation first, then
+the older ones, then the system from before generations.
+
+### grub
+
+`os` writes the whole `grub.cfg` on the esp, and `enable-rollback`
+reinstalls grub to read it there. grub can write to fat, so trial boots
+(below) are kept in an env file beside it.
+
+### limine
+
+limine reads only fat, so each generation's kernel, microcode, and
+initramfs get copied into `yoq/boot` on the esp, named by their content.
+generations with the same kernel share one copy.
+
+`os` keeps its entries in a marked section at the top of the `limine.conf`
+that limine reads. it leaves the rest of the file alone, except for
+`default_entry` and `remember_last_entry`, which it removes: either one
+would override a trial's fallback. trial boots use limine's one-shot
+entry, set with `bootctl`, so this needs limine 11.4 or newer.
+
+tools that rewrite `limine.conf` themselves, like omarchy's
+`limine-entry-tool`, `limine-snapper-sync`, and `omarchy-refresh-limine`,
+can drop `os`'s section. the next change that makes a generation writes it
+again.
+
+### refind
+
+refind reads btrfs through its driver, which `os` installs if it's
+missing, so every generation boots the kernel in its own root. the entries
+go in `yoq.conf`, beside `refind.conf`, and `refind.conf` gets an `include
+yoq.conf` line at the end.
+
+the driver starts its paths at the btrfs default subvolume, so that has to
+be the top level. it is, unless something like a snapper rollback changed
+it. refind also can't boot an entry just once, so there are no trial
+boots.
 
 ## how they work
 
@@ -112,8 +157,8 @@ if you booted an older generation from the menu and want to stay on it,
 
 ## updates that need a reboot
 
-a change that needs a reboot, like a new kernel, systemd, microcode, or a
-different display manager, boots once on trial:
+on grub and limine, a change that needs a reboot, like a new kernel,
+systemd, microcode, or a different display manager, boots once on trial:
 
 ```
 reboot to finish. the next boot tries generation 5 once; if it doesn't come up healthy, the machine goes back to generation 4.
@@ -129,10 +174,11 @@ into the generation before.
 
 a trial boot that hangs without panicking, for example on a service that
 never finishes starting, gets five minutes. then `yoq-watchdog.timer`
-reboots it, and grub picks the generation before.
+reboots it, and the bootloader picks the generation before.
 
 if the new generation can't boot at all, grub falls back to the default by
-itself, and a kernel panic reboots into it after 10 seconds. either way,
+itself, and on either bootloader a kernel panic reboots into it after 10
+seconds. either way,
 `os` notices on that boot, makes it the newest generation with its config,
 and `os status` explains what happened:
 
@@ -142,9 +188,16 @@ note: generation 7 didn't come up healthy, so this machine went back to generati
 
 two changes that need a reboot, applied before rebooting, make one trial:
 the next boot tries the newest, and falls back to the generation that last
-booted. if you pick an older entry from the menu before the trial has run,
-that doesn't count as a failure; the next boot tries the new generation
-again.
+booted. on grub, if you pick an older entry from the menu before the trial
+has run, that doesn't count as a failure; the next boot tries the new
+generation again. limine forgets the trial as soon as it reads it, so
+there, picking an older entry counts as the trial failing.
+
+refind can't boot an entry once, so it says what to do instead:
+
+```
+reboot to finish. if generation 5 doesn't start, pick generation 4 in the boot menu, then `os rollback --to-booted`.
+```
 
 ## keeping and cleaning up
 
@@ -184,13 +237,16 @@ history` marks pinned generations.
   reboot, or on an older generation booted from the menu, changes the
   kernel on a `/boot` esp that the next boot shares. use `os` for kernel
   updates there, or reboot first.
-- grub only, and only the two root layouts above.
+- only the two root layouts above, and not systemd-boot.
+- generations with limine are tested on archinstall's layout with snapper,
+  not on a real omarchy install. omarchy builds unified kernel images, and
+  `os` boots the kernel and initramfs files in `/boot` instead.
 
 ## later
 
 - carrying state again at shutdown, and the uid map for system users
 - a network check for configs that declare one
-- systemd-boot, limine, and refind
+- systemd-boot, and trial boots on refind
 - more root layouts
 - building the next generation apart from the running system, so a bad
   update never touches the session you're in

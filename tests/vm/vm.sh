@@ -7,7 +7,8 @@
 #                with @, @home, @log, and @pkg
 #   ext4         archinstall's layout with an ext4 root: no generations
 #   limine       archinstall with limine and snapper, like omarchy's boot
-#                setup: generations wait for limine support
+#                setup
+#   refind       archinstall with refind
 #
 #   vm.sh image              make the base image, once
 #   vm.sh start              boot a fresh overlay and wait for ssh
@@ -129,6 +130,7 @@ image)
         -e 's|"compress=zstd"||' -e 's|"btrfs": \[{.*}\]|"btrfs": []|' ;;
     limine) archinstall -e 's|"bootloader": "Grub"|"bootloader": "Limine"|' \
         -e 's|"config_type": "default_layout",|"config_type": "default_layout", "btrfs_options": { "snapshot_config": { "type": "Snapper" } },|' ;;
+    refind) archinstall -e 's|"bootloader": "Grub"|"bootloader": "Refind"|' ;;
     *) echo "vm: no image called $image" >&2; exit 2 ;;
     esac
     ;;

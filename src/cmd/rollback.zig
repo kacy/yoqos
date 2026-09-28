@@ -13,6 +13,7 @@ const applying = @import("apply.zig");
 const facts = @import("../facts.zig");
 const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
+const trial = @import("../trial.zig");
 const Context = cli.Context;
 
 pub fn historyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
@@ -172,7 +173,7 @@ pub fn startFrom(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, target: 
         return null;
     }
     // a trial still waiting is overtaken: the next boot runs this.
-    if (try gens.endTrial(a, ctx.io, boot.esp.?)) |w| try ctx.err.print("os: couldn't end the pending trial: {s}\n", .{w});
+    if (trial.Store.of(a, ctx.io, boot)) |store| if (try store.end()) |w| try ctx.err.print("os: couldn't end the pending trial: {s}\n", .{w});
     if (config) |c| {
         if (!try restoreConfig(ctx, a, c, reason)) return null;
     }

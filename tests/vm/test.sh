@@ -8,12 +8,14 @@ set -o pipefail
 vm=tests/vm/vm.sh
 os=$1
 
-# where the image keeps its esp, and the root it boots before generations.
+# where the image keeps its esp, the root it boots before generations,
+# and its bootloader.
 case ${VM_IMAGE:-cloud} in
-archinstall | ext4 | limine) VM_ESP=/boot VM_ROOT=/@ ;;
-*) VM_ESP=/efi VM_ROOT=/ ;;
+archinstall | ext4) VM_ESP=/boot VM_ROOT=/@ VM_LOADER=grub ;;
+limine | refind) VM_ESP=/boot VM_ROOT=/@ VM_LOADER=$VM_IMAGE ;;
+*) VM_ESP=/efi VM_ROOT=/ VM_LOADER=grub ;;
 esac
-export VM_ESP VM_ROOT
+export VM_ESP VM_ROOT VM_LOADER
 
 "$vm" start
 trap '"$vm" stop' EXIT
@@ -29,14 +31,21 @@ trap '"$vm" stop' EXIT
 "$vm" ssh mkdir -p /root/dist
 "$vm" copy dist/yoq-drift.hook /root/dist/yoq-drift.hook
 "$vm" ssh "cd /root && sh smoke.sh /usr/local/bin/os"
-# machines that can't have generations yet: enable-rollback says which
-# check fails, and changes nothing.
 case ${VM_IMAGE:-cloud} in
 ext4)
+    # generations need btrfs: enable-rollback says so, and changes nothing.
     tests/vm/manage.sh "root filesystem: ext4"
     tests/vm/aur.sh
     ;;
-limine) tests/vm/manage.sh "bootloader: limine" ;;
+limine)
+    tests/vm/rollback.sh
+    tests/vm/trial.sh
+    ;;
+refind)
+    # no one-shot boot, so no trials: a failed generation is picked from
+    # the menu by hand.
+    tests/vm/rollback.sh
+    ;;
 *)
     tests/vm/rollback.sh
     tests/vm/trial.sh

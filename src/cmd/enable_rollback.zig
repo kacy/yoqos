@@ -87,6 +87,7 @@ const Enabler = struct {
                 .data_subvols => try e.moveData(),
                 .pacman_db => try e.movePacmanDb(),
                 .config_dir => try e.moveConfig(),
+                .snapper => try e.stopSnapPac(),
                 .boot_entry => try e.seal() and try e.bootEntry(),
                 .boot_files => try e.bootFiles(),
             };
@@ -238,6 +239,16 @@ const Enabler = struct {
         return true;
     }
 
+    /// generation 1's snap-pac leaves the root alone: every change is a
+    /// generation, so a snapshot before and after each pacman run is two
+    /// more of the same.
+    fn stopSnapPac(e: *Enabler) !bool {
+        const path = try e.m.at(&.{ new_root, "etc/snap-pac.ini" });
+        const old = std.Io.Dir.cwd().readFileAlloc(e.ctx.io, path, e.a, .limited(1 << 16)) catch "";
+        std.Io.Dir.cwd().writeFile(e.ctx.io, .{ .sub_path = path, .data = try enable.snapPac(e.a, old) }) catch return e.failed("can't write {s}", .{path});
+        return true;
+    }
+
     /// the new root's fstab mounts its own subvolume, @var at /var, and
     /// the esp; then it's recorded, read-only, as @gens/1.
     fn seal(e: *Enabler) !bool {
@@ -364,21 +375,34 @@ const Enabler = struct {
         return null;
     }
 
-    /// the menu, with generation 1 and the system as it is now, and the
-    /// esp's env file for one-shot boots.
+    /// the menu, with generation 1 and the system as it is now. grub's goes
+    /// where grub-install will point grub, with the env file for one-shot
+    /// boots; nothing reads it until then. limine and refind read theirs
+    /// already, so for them this is the switch.
     fn bootEntry(e: *Enabler) !bool {
         const esp = e.boot.esp.?;
-        // the menu goes where grub-install will point grub. nothing reads
-        // it until then, and taking back this step removes it.
-        // with the esp at /boot, grub's own menu is already there.
-        const grub_dir = try std.fs.path.join(e.a, &.{ esp, "grub" });
-        if (!try e.keep(grub_dir, "/run/yoq/grub-backup")) return false;
-        if (!try e.sh(&.{ "mkdir", "-p", grub_dir })) return false;
-        const env_dir = try std.fs.path.join(e.a, &.{ esp, "yoq" });
-        try e.later(&.{ "rm", "-rf", env_dir });
+        switch (e.m.loader) {
+            .grub => {
+                // with the esp at /boot, grub's own menu is already there.
+                const grub_dir = try std.fs.path.join(e.a, &.{ esp, "grub" });
+                if (!try e.keep(grub_dir, "/run/yoq/grub-backup")) return false;
+                if (!try e.sh(&.{ "mkdir", "-p", grub_dir })) return false;
+            },
+            .limine => if (!try e.keep(e.boot.loader_conf.?, "/run/yoq/loader-backup")) return false,
+            .refind => {
+                const dir = std.fs.path.dirnamePosix(e.boot.loader_conf.?).?;
+                if (!try e.keep(e.boot.loader_conf.?, "/run/yoq/loader-backup")) return false;
+                if (!try e.keep(try std.fs.path.join(e.a, &.{ dir, "yoq.conf" }), "/run/yoq/yoq-conf-backup")) return false;
+                if (!try e.keep(try std.fs.path.join(e.a, &.{ dir, "drivers_x64" }), "/run/yoq/drivers-backup")) return false;
+            },
+        }
+        // the env file, and limine's copies of boot files.
+        const own_dir = try std.fs.path.join(e.a, &.{ esp, "yoq" });
+        if (!try e.keep(own_dir, "/run/yoq/esp-backup")) return false;
         const records = try gens.readRecords(e.a, e.ctx.io, e.var_dir);
         if (try e.m.writeMenu(new_root, records)) |why| return e.failed("{s}", .{why});
-        if (!try e.sh(&.{ "mkdir", "-p", try std.fs.path.join(e.a, &.{ esp, "yoq" }) })) return false;
+        if (e.m.loader != .grub) return true;
+        if (!try e.sh(&.{ "mkdir", "-p", own_dir })) return false;
         return e.sh(&.{ "grub-editenv", try std.fs.path.join(e.a, &.{ esp, "yoq/grubenv" }), "create" });
     }
 

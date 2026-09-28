@@ -65,6 +65,8 @@ test {
     _ = @import("btrfs.zig");
     _ = @import("enable.zig");
     _ = @import("generation.zig");
+    _ = @import("menu.zig");
+    _ = @import("trial.zig");
     _ = @import("gens.zig");
     _ = @import("planner.zig");
     _ = @import("pipeline.zig");

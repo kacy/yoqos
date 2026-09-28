@@ -137,6 +137,7 @@ const Reader = struct {
         var b: facts.Boot = .{
             .initramfs_hooks = try r.mkinitcpio("HOOKS"),
             .pacman_moved = std.mem.endsWith(u8, dbpath, "sysimage/pacman"),
+            .snapper_root = r.exists("etc/snapper/configs/root"),
         };
         if (!std.mem.eql(u8, r.root, "/")) return b;
         b.uefi = r.exists("sys/firmware/efi");
@@ -165,7 +166,42 @@ const Reader = struct {
             }
         }
         b.loader = try r.loader(b.esp);
+        if (b.esp) |esp| b.loader_conf = try r.loaderConf(b.loader orelse "", esp);
+        if (b.root_subvol != null) {
+            b.top_is_default = switch (try exec.output(r.a, r.io, &.{ "btrfs", "subvolume", "get-default", "/" })) {
+                // "ID 5 (FS_TREE)" for the top level.
+                .ok => |t| std.mem.startsWith(u8, t, "ID 5 "),
+                .failed => true,
+            };
+        }
         return b;
+    }
+
+    /// where limine or refind reads its config, as each one looks for it:
+    /// first beside its binary, under EFI/, then limine's other places.
+    fn loaderConf(r: Reader, name_of: []const u8, esp: []const u8) !?[]const u8 {
+        const name = if (std.mem.eql(u8, name_of, "limine")) "limine.conf" else if (std.mem.eql(u8, name_of, "refind")) "refind.conf" else return null;
+        const efi = try std.fs.path.join(r.a, &.{ esp[1..], "EFI" });
+        var dir = std.Io.Dir.cwd().openDir(r.io, try r.path(efi), .{ .iterate = true }) catch null;
+        if (dir) |*d| {
+            defer d.close(r.io);
+            var names: std.ArrayList([]const u8) = .empty;
+            var it = d.iterate();
+            while (it.next(r.io) catch null) |e| {
+                if (e.kind == .directory) try names.append(r.a, try r.a.dupe(u8, e.name));
+            }
+            lists.sortStrings(names.items);
+            for (names.items) |n| {
+                const rel = try std.fs.path.join(r.a, &.{ efi, n, name });
+                if (r.exists(rel)) return try std.fmt.allocPrint(r.a, "/{s}", .{rel});
+            }
+        }
+        if (std.mem.eql(u8, name_of, "refind")) return null;
+        for ([_][]const u8{ "boot/limine/limine.conf", "boot/limine.conf", "limine/limine.conf", "limine.conf" }) |p| {
+            const rel = try std.fs.path.join(r.a, &.{ esp[1..], p });
+            if (r.exists(rel)) return try std.fmt.allocPrint(r.a, "/{s}", .{rel});
+        }
+        return null;
     }
 
     /// the bootloader, by the files each one keeps.

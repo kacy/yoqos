@@ -1,6 +1,6 @@
-//! generations on the rollback rung: where they live on btrfs, and the
-//! boot menu that lists them. this part is pure; cmd/enable_rollback.zig
-//! and apply do the work.
+//! generations on the rollback rung: where they live on btrfs, and what
+//! os keeps about each one. this part is pure; menu.zig has the boot menu,
+//! and cmd/enable_rollback.zig and apply do the work.
 //!
 //! the layout, under the btrfs top level:
 //!   @roots/<n>       writable roots: the one running, and the one before it
@@ -76,20 +76,6 @@ pub fn keeps(r: Record, records: []const Record, keep: usize) bool {
 /// a config directory at one commit.
 pub const Config = struct { dir: []const u8, rev: []const u8 };
 
-/// one boot menu entry: a kernel and its initrds, from a root subvolume.
-pub const Entry = struct {
-    id: []const u8,
-    title: []const u8,
-    /// the root subvolume, like "/@roots/1", or "/" for the top level.
-    subvol: []const u8,
-    kernel: []const u8,
-    initrds: []const []const u8,
-    args: []const u8,
-    /// the kernel and initramfs come from the esp, not the root's /boot:
-    /// the newest entry, when /boot is the esp.
-    on_esp: bool = false,
-};
-
 /// a file in /boot that belongs to the root beside it: a kernel, a
 /// microcode image, or an initramfs. fallback images are left out; they're
 /// large and no menu entry uses them.
@@ -144,67 +130,6 @@ pub fn kernelArgs(a: Allocator, cmdline: []const u8, root_uuid: []const u8, subv
     return std.fmt.allocPrint(a, "root=UUID={s} rootflags={s}{s}{s}", .{ root_uuid, flags.items, rest.items, panic });
 }
 
-pub const GrubConfig = struct {
-    esp_uuid: []const u8,
-    root_uuid: []const u8,
-    default: []const u8,
-    timeout: u32 = 3,
-    entries: []const Entry,
-};
-
-/// the whole grub.cfg os keeps on the esp. choices come from an env file
-/// there, since grub can write fat but not btrfs: `yoq_next` boots an
-/// entry once, and `yoq_default`, set while a generation is on trial, is
-/// both the default and what grub falls back to if an entry won't boot.
-pub fn grubConfig(a: Allocator, c: GrubConfig) ![]const u8 {
-    var out: std.Io.Writer.Allocating = .init(a);
-    const w = &out.writer;
-    w.print(
-        \\# written by os: one entry per generation. edits here are overwritten.
-        \\insmod part_gpt
-        \\insmod fat
-        \\insmod btrfs
-        \\set timeout={d}
-        \\set default="{s}"
-        \\search --no-floppy --fs-uuid --set=yoq_esp {s}
-        \\if [ -f (${{yoq_esp}})/yoq/grubenv ]; then
-        \\  load_env -f (${{yoq_esp}})/yoq/grubenv yoq_next yoq_default
-        \\  if [ "${{yoq_default}}" ]; then
-        \\    set default="${{yoq_default}}"
-        \\    set fallback="${{yoq_default}}"
-        \\  fi
-        \\  if [ "${{yoq_next}}" ]; then
-        \\    if [ "${{yoq_default}}" ]; then set yoq_trial_arg="yoq.trial"; fi
-        \\    set default="${{yoq_next}}"
-        \\    set yoq_next=
-        \\    save_env -f (${{yoq_esp}})/yoq/grubenv yoq_next
-        \\  fi
-        \\fi
-        \\search --no-floppy --fs-uuid --set=root {s}
-        \\
-    , .{ c.timeout, c.default, c.esp_uuid, c.root_uuid }) catch return error.OutOfMemory;
-    for (c.entries) |e| {
-        const dir = if (e.on_esp) "(${yoq_esp})" else if (std.mem.eql(u8, e.subvol, "/")) "/boot" else try std.fmt.allocPrint(a, "{s}/boot", .{e.subvol});
-        // ${yoq_trial_arg} is "yoq.trial" on a trial boot, which starts
-        // the watchdog; empty otherwise. the newest entry notes that it
-        // was tried, so a fallback after it counts, and an older entry
-        // picked by hand doesn't.
-        w.writeAll("\nmenuentry \"") catch return error.OutOfMemory;
-        // a title is a quoted grub string: quotes, backslashes, and $ would
-        // end it or expand.
-        for (e.title) |ch| {
-            if (ch == '"' or ch == '\\' or ch == '$') w.writeByte('\\') catch return error.OutOfMemory;
-            w.writeByte(ch) catch return error.OutOfMemory;
-        }
-        w.print("\" --id {s} {{\n", .{e.id}) catch return error.OutOfMemory;
-        if (std.mem.eql(u8, e.id, "head")) w.writeAll("  if [ \"${yoq_trial_arg}\" ]; then set yoq_tried=1; save_env -f (${yoq_esp})/yoq/grubenv yoq_tried; fi\n") catch return error.OutOfMemory;
-        w.print("  linux {s}/{s} {s} ${{yoq_trial_arg}}\n  initrd", .{ dir, e.kernel, e.args }) catch return error.OutOfMemory;
-        for (e.initrds) |i| w.print(" {s}/{s}", .{ dir, i }) catch return error.OutOfMemory;
-        w.writeAll("\n}\n") catch return error.OutOfMemory;
-    }
-    return out.written();
-}
-
 // -- tests --
 
 const testing = std.testing;
@@ -237,56 +162,4 @@ test "a generation's kernel command line" {
 test "which files in /boot a root keeps" {
     for ([_][]const u8{ "vmlinuz-linux", "vmlinuz-linux-lts", "amd-ucode.img", "initramfs-linux.img" }) |f| try testing.expect(bootFile(f));
     for ([_][]const u8{ "initramfs-linux-fallback.img", "grub", "EFI", "loader.conf" }) |f| try testing.expect(!bootFile(f));
-}
-
-test "grub's config on the esp" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const text = try grubConfig(arena.allocator(), .{
-        .esp_uuid = "41B2-0FB5",
-        .root_uuid = "1df77bf6",
-        .default = "gen-1",
-        .entries = &.{
-            .{ .id = "gen-1", .title = "yoq 1 · 2026-09-26 · enable-rollback", .subvol = "/@roots/1", .kernel = "vmlinuz-linux", .initrds = &.{ "amd-ucode.img", "initramfs-linux.img" }, .args = "root=UUID=1df77bf6 rootflags=subvol=/@roots/1 rw" },
-            .{ .id = "before", .title = "the system before generations", .subvol = "/", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "root=UUID=1df77bf6 rootflags=subvol=/ rw" },
-        },
-    });
-    const on_esp = try grubConfig(arena.allocator(), .{
-        .esp_uuid = "41B2-0FB5",
-        .root_uuid = "1df77bf6",
-        .default = "head",
-        .entries = &.{
-            .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/1", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw", .on_esp = true },
-        },
-    });
-    try testing.expect(std.mem.endsWith(u8, on_esp, "  linux (${yoq_esp})/vmlinuz-linux rw ${yoq_trial_arg}\n  initrd (${yoq_esp})/initramfs-linux.img\n}\n"));
-    try testing.expect(std.mem.indexOf(u8, text, "set default=\"gen-1\"\nsearch --no-floppy --fs-uuid --set=yoq_esp 41B2-0FB5\n") != null);
-    try testing.expect(std.mem.indexOf(u8, text, "load_env -f (${yoq_esp})/yoq/grubenv yoq_next yoq_default\n") != null);
-    try testing.expect(std.mem.indexOf(u8, text, "set fallback=\"${yoq_default}\"") != null);
-    try testing.expect(std.mem.endsWith(u8, text,
-        \\search --no-floppy --fs-uuid --set=root 1df77bf6
-        \\
-        \\menuentry "yoq 1 · 2026-09-26 · enable-rollback" --id gen-1 {
-        \\  linux /@roots/1/boot/vmlinuz-linux root=UUID=1df77bf6 rootflags=subvol=/@roots/1 rw ${yoq_trial_arg}
-        \\  initrd /@roots/1/boot/amd-ucode.img /@roots/1/boot/initramfs-linux.img
-        \\}
-        \\
-        \\menuentry "the system before generations" --id before {
-        \\  linux /boot/vmlinuz-linux root=UUID=1df77bf6 rootflags=subvol=/ rw ${yoq_trial_arg}
-        \\  initrd /boot/initramfs-linux.img
-        \\}
-        \\
-    ));
-}
-
-test "a menu title can't end its quotes or expand" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const text = try grubConfig(arena.allocator(), .{
-        .esp_uuid = "e",
-        .root_uuid = "r",
-        .default = "head",
-        .entries = &.{.{ .id = "gen-2", .title = "add \"x\" $y", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{}, .args = "rw" }},
-    });
-    try testing.expect(std.mem.indexOf(u8, text, "menuentry \"add \\\"x\\\" \\$y\" --id gen-2 {") != null);
 }

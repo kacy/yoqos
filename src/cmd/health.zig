@@ -12,6 +12,7 @@ const exec = @import("../exec.zig");
 const facts = @import("../facts.zig");
 const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
+const trial = @import("../trial.zig");
 const rollback = @import("rollback.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
@@ -25,38 +26,37 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     // the boot finished, so a trial's watchdog stands down. this runs on
     // every boot, so a stray one can't reboot a healthy machine.
     _ = try exec.run(a, ctx.io, &.{ "systemctl", "stop", "yoq-watchdog.timer" });
-    const esp = boot.esp orelse return 0;
-    const trial_text = try gens.envValue(a, ctx.io, esp, "yoq_trial") orelse {
+    const store = trial.Store.of(a, ctx.io, boot) orelse return 0;
+    const t = try store.current() orelse {
         try ctx.out.writeAll("no generation on trial.\n");
         return 0;
     };
-    const trial = std.fmt.parseInt(u32, trial_text, 10) catch return 0;
-    const record = generation.find(try gens.readRecords(a, ctx.io, "/var"), trial) orelse {
+    const record = generation.find(try gens.readRecords(a, ctx.io, "/var"), t.n) orelse {
         // a trial whose generation is gone can't be judged; end it.
-        _ = try gens.endTrial(a, ctx.io, esp);
+        _ = try store.end();
         return 0;
     };
     if (!std.mem.eql(u8, boot.root_subvol.?[1..], record.root)) {
         // an older entry picked by hand before the trial ran isn't a
         // failed trial: the next boot tries it again.
-        if (try gens.envValue(a, ctx.io, esp, "yoq_tried") == null) {
-            _ = try gens.editEnv(a, ctx.io, esp, "set", &.{"yoq_next=head"});
-            try ctx.out.print("generation {d} hasn't been tried yet; the next boot tries it.\n", .{trial});
+        if (!t.tried) {
+            _ = try store.retry();
+            try ctx.out.print("generation {d} hasn't been tried yet; the next boot tries it.\n", .{t.n});
             return 0;
         }
-        return fellBack(ctx, a, boot, trial);
+        return fellBack(ctx, a, store, boot, t.n);
     }
 
     const problems = try check(ctx, a);
     if (problems.len == 0) {
-        if (try gens.endTrial(a, ctx.io, esp)) |why| {
-            try ctx.err.print("os: generation {d} is healthy, but couldn't make it the default: {s}\n", .{ trial, why });
+        if (try store.end()) |why| {
+            try ctx.err.print("os: generation {d} is healthy, but couldn't make it the default: {s}\n", .{ t.n, why });
             return 1;
         }
-        try ctx.out.print("generation {d} came up healthy. it's the default now.\n", .{trial});
+        try ctx.out.print("generation {d} came up healthy. it's the default now.\n", .{t.n});
         return 0;
     }
-    try ctx.out.print("generation {d} isn't healthy: {s}. going back to the generation before.\n", .{ trial, try std.mem.join(a, "; ", problems) });
+    try ctx.out.print("generation {d} isn't healthy: {s}. going back to the generation before.\n", .{ t.n, try std.mem.join(a, "; ", problems) });
     // the trial stays marked, so the boot that falls back knows why.
     try ctx.out.flush();
     _ = try exec.run(a, ctx.io, &.{ "systemctl", "reboot" });
@@ -66,17 +66,17 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 /// the trial didn't come up healthy, and this boot runs the generation
 /// before it, from its copy. that becomes the newest generation, with its
 /// config, the trial ends, and a notice says what happened.
-fn fellBack(ctx: *Context, a: Allocator, boot: facts.Boot, trial: u32) !u8 {
+fn fellBack(ctx: *Context, a: Allocator, store: trial.Store, boot: facts.Boot, tried: u32) !u8 {
     const running = boot.root_subvol.?;
     const n = generation.bootCopyOf(running) orelse 0;
     const target = generation.find(try gens.readRecords(a, ctx.io, "/var"), n) orelse {
-        try ctx.err.print("os: generation {d} didn't start, and this boot isn't one os knows ({s}).\n", .{ trial, running });
-        _ = try gens.endTrial(a, ctx.io, boot.esp.?);
+        try ctx.err.print("os: generation {d} didn't start, and this boot isn't one os knows ({s}).\n", .{ tried, running });
+        _ = try store.end();
         return 1;
     };
-    const reason = try std.fmt.allocPrint(a, "fell back from {d} to {d}", .{ trial, n });
+    const reason = try std.fmt.allocPrint(a, "fell back from {d} to {d}", .{ tried, n });
     const made = try rollback.startFrom(ctx, a, boot, target, running, reason) orelse return 1;
-    const notice = try std.fmt.allocPrint(a, "generation {d} didn't come up healthy, so this machine went back to generation {d}. it's generation {d} now, with its config. `os rollback {d}` tries {d} again.\n", .{ trial, n, made, trial, trial });
+    const notice = try std.fmt.allocPrint(a, "generation {d} didn't come up healthy, so this machine went back to generation {d}. it's generation {d} now, with its config. `os rollback {d}` tries {d} again.\n", .{ tried, n, made, tried, tried });
     if (try gens.writeNotice(a, ctx.io, notice)) |why| try ctx.err.print("os: {s}\n", .{why});
     try ctx.out.writeAll(notice);
     return 1;
