@@ -2,69 +2,80 @@
 
 ## unreleased
 
-- `[repos.<name>]` declares a package repository with its server and
-  signing key. `os` writes it for pacman, includes it from pacman.conf, and
-  trusts the key.
-- `aur = [...]`, or `os add --aur`, builds packages from the aur in a clean
-  chroot with makechrootpkg, after a review of each new or changed recipe,
-  into a local repository. the lock pins their recipe commits.
-- a pacman.conf repository with `SigLevel = Optional` or `Never` is read
-  that way, instead of as signed.
-- pacman.conf's includes are read the way pacman reads them, so an included
-  file can hold whole repositories.
-- generations work with limine and refind, besides grub. limine gets its
-  entries in a section of its own config, kernels copied to the esp, and
-  trial boots through its one-shot entry. refind reads each generation's
-  kernel from btrfs, and a generation that won't start is picked from its
-  menu by hand.
+### every bootloader arch users run
+
+- generations work with limine, refind, and systemd-boot, besides grub,
+  without switching bootloaders. limine and systemd-boot get kernels
+  copied to the esp; refind reads them from btrfs.
+- all four fall back on their own when a trial boot doesn't come up:
+  limine and systemd-boot through their one-shot entry, and refind through
+  the firmware's one-time boot and a copy of refind in `EFI/yoq-trial`.
+- `os status` notices a boot menu that lost os's generations, like a
+  limine.conf another tool rewrote, and `os gc` writes them back.
 - `enable-rollback` stops snap-pac's snapshots of the root, since each
   change is a generation already.
+
+### new machines, and leaving
+
+- `os install <config> --disk <dev>` puts the machine a config repository
+  describes on a blank disk, from a live system: an esp, btrfs with the
+  generations layout, the clean build as generation 1, and grub.
+- a live iso of yoq os's own, built from arch's releng profile with `os`
+  and what `os install` runs, comes with each release.
 - `os uninstall` leaves plain arch on the running system: the config back
   in `/etc/yoq`, the pacman database back in `/var/lib/pacman`, and a
   bootloader set up the way arch sets it up. other generations stay unless
   you ask for them to go.
-- generations work with systemd-boot too: os's own entry files beside
-  yours, kernels copied to the esp, and trial boots through its one-shot
-  entry.
-- a live iso of yoq os's own, built from arch's releng profile with `os`
-  and what `os install` runs, comes with each release.
-- refind gets trial boots too, through the firmware's one-time boot: a
-  generation that doesn't come up falls back without anyone at the menu.
-- `os install <config> --disk <dev>` puts the machine a config repository
-  describes on a blank disk, from a live system: an esp, btrfs with the
-  generations layout, the clean build as generation 1, and grub.
-- a config repository for several machines works: without
-  `/etc/yoq/machine.toml`, `os` reads `/etc/yoq/hosts/<hostname>/machine.toml`.
-- a service whose unit can't be enabled, like one without an `[Install]`
-  section, is only started and stopped, instead of showing up in every plan.
-- a generation waiting for the reboot gets the machine's passwords and
-  state once more at shutdown, so a password changed after `os rollback`
-  isn't left behind.
-- only one os changes a machine at a time. another one says which process
-  has it and stops, rather than running a second transaction beside it.
-- `os status` notices a boot menu that lost os's generations, like a
-  limine.conf another tool rewrote, and `os gc` writes them back.
 - `os build --clean <dir>` builds a root from the config and the lock
   alone, and lists what's on this machine that they don't explain.
-- `os` runs `/usr/bin/mkinitcpio` itself, not a wrapper earlier in `PATH`
-  that might stop to ask a question.
-- files os writes are never readable by anyone else on the way to their
-  mode, and a symlink left where os writes its temporary copy isn't
-  followed.
-- a lock's aur recipe has to be a git commit, a recipe has to build under
-  its own name, and reviews show every file in a new recipe, with control
-  characters escaped so nothing can hide a line.
-- the config refuses a plain http repository without a key, a sysctl value
-  or server with a line break in it, and a unit name that isn't one.
-- right after `enable-rollback`, before the reboot, `os apply` and `os
-  uninstall` see that a generation is waiting, even when `/var` moved.
-- `os gc` refuses to run from a boot menu copy of an older generation.
-- a limine trial that can't be set up no longer looks like a failed boot.
+- a config repository for several machines works: without
+  `/etc/yoq/machine.toml`, `os` reads `/etc/yoq/hosts/<hostname>/machine.toml`.
+
+### repositories and the aur
+
+- `[repos.<name>]` declares a package repository with its server and
+  signing key. `os` writes it for pacman, includes it from pacman.conf, and
+  trusts the key. a plain http server needs a key.
+- `aur = [...]`, or `os add --aur`, builds packages from the aur in a clean
+  chroot with makechrootpkg, after a review of each new or changed recipe,
+  into a local repository. the lock pins their recipe commits.
+- reviews show every file in a new recipe, with control characters escaped
+  so nothing can hide a line. a lock's recipe has to be a git commit, and
+  a recipe has to build under its own name.
+- a pacman.conf repository with `SigLevel = Optional` or `Never` is read
+  that way, instead of as signed, and pacman.conf's includes are read the
+  way pacman reads them.
+
+### trial boots and the health check
+
 - the health check also wants a default route within a minute when the
   config turns on networkmanager, systemd-networkd, iwd, dhcpcd, or connman.
 - while a new generation waits for its reboot, the machine can't
   hibernate, since resuming would start the new kernel with the old one's
   memory.
+- a generation waiting for the reboot gets the machine's passwords and
+  state once more at shutdown, so a password changed after `os rollback`
+  isn't left behind.
+
+### fixes
+
+- boot entries keep the running system's kernel arguments. `/proc` files
+  were read as empty, which also left a clean build's mounts behind.
+- only one os changes a machine at a time. another one says which process
+  has it and stops, rather than running a second transaction beside it.
+- right after `enable-rollback`, before the reboot, `os apply` and `os
+  uninstall` see that a generation is waiting, even when `/var` moved.
+- files os writes are never readable by anyone else on the way to their
+  mode, and a symlink left where os writes its temporary copy isn't
+  followed.
+- the config refuses a sysctl value or server with a line break in it, and
+  a unit name that isn't one.
+- a service whose unit can't be enabled, like one without an `[Install]`
+  section, is only started and stopped, instead of showing up in every plan.
+- `os gc` refuses to run from a boot menu copy of an older generation.
+- a limine trial that can't be set up no longer looks like a failed boot.
+- `os` runs `/usr/bin/mkinitcpio` itself, not a wrapper earlier in `PATH`
+  that might stop to ask a question.
 
 ## 0.1.0
 
