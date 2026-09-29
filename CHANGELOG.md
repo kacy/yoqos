@@ -37,6 +37,9 @@
   `/etc/yoq/machine.toml`, `os` reads `/etc/yoq/hosts/<hostname>/machine.toml`.
 - a service whose unit can't be enabled, like one without an `[Install]`
   section, is only started and stopped, instead of showing up in every plan.
+- a generation waiting for the reboot gets the machine's passwords and
+  state once more at shutdown, so a password changed after `os rollback`
+  isn't left behind.
 - only one os changes a machine at a time. another one says which process
   has it and stops, rather than running a second transaction beside it.
 - `os status` notices a boot menu that lost os's generations, like a

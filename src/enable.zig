@@ -201,9 +201,11 @@ pub const Unit = struct {
 };
 
 /// yoq-health.service runs `os health` at each boot, which ends a trial
-/// one way or the other, and yoq-watchdog.timer reboots a trial boot that
-/// hangs before it. `os_path` is the os they run.
-pub fn units(a: Allocator, os_path: []const u8) ![3]Unit {
+/// one way or the other, yoq-watchdog.timer reboots a trial boot that
+/// hangs before it, and yoq-carry.service carries passwords and the like
+/// into a generation waiting for the reboot, as the machine shuts down.
+/// `os_path` is the os they run.
+pub fn units(a: Allocator, os_path: []const u8) ![4]Unit {
     return .{
         .{
             .name = "yoq-health.service",
@@ -252,6 +254,28 @@ pub fn units(a: Allocator, os_path: []const u8) ![3]Unit {
             \\
             ,
             .wanted_by = null,
+        },
+        .{
+            .name = "yoq-carry.service",
+            // it does its work when it stops, at shutdown, after
+            // everything that could still change a password, and before
+            // the filesystems go.
+            .text = try std.fmt.allocPrint(a,
+                \\[Unit]
+                \\Description=Carry passwords and machine state into a generation waiting for this reboot
+                \\After=local-fs.target
+                \\
+                \\[Service]
+                \\Type=oneshot
+                \\RemainAfterExit=yes
+                \\ExecStart=/usr/bin/true
+                \\ExecStop={s} carry
+                \\
+                \\[Install]
+                \\WantedBy=multi-user.target
+                \\
+            , .{os_path}),
+            .wanted_by = "multi-user.target",
         },
     };
 }

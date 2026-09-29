@@ -51,7 +51,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool) !Plan {
             .fix = try std.fmt.allocPrint(a, "without os, {s} boots the kernel arch installs in /boot, so the esp has to be mounted there.", .{@tagName(loader)}),
         });
         try steps.append(a, .{ .kind = .config_dir, .what = "move the config from " ++ enable.config_home ++ " back into /etc/yoq" });
-        try steps.append(a, .{ .kind = .units, .what = "remove os's units that run at boot: yoq-health.service and yoq-watchdog.timer" });
+        try steps.append(a, .{ .kind = .units, .what = "remove os's units that run at boot and shutdown: yoq-health, yoq-watchdog, and yoq-carry" });
         if (b.pacman_moved) try steps.append(a, .{ .kind = .pacman_db, .what = "move the pacman database back to /var/lib/pacman" });
         try steps.append(a, .{ .kind = .boot_menu, .what = switch (loader) {
             .grub => "reinstall grub with a menu from grub-mkconfig in /boot/grub, booting this root",

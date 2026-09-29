@@ -130,7 +130,9 @@ directories stay as they are either way, and so does the machine's own
 state: every new root, and every copy the menu boots, gets the running
 system's passwords, ssh host keys, machine id, clock setting, id ranges,
 and pacman keyring. users and everything else in `/etc` belong to the
-generation.
+generation. a generation waiting for the next boot gets them once more as the
+machine shuts down, from `yoq-carry.service`, so a password you change
+between `os rollback` and the reboot comes along too.
 
 when the esp is `/boot`, as archinstall sets it up, the kernel and
 initramfs live on the esp, outside every root. each generation therefore
@@ -250,9 +252,6 @@ generation booted from the menu, since that generation's record is what
 - the health check is simple. it looks at systemd's state, the display
   manager, the config's services, and whether a networked machine got a
   route. a desktop that starts but shows nothing useful still passes.
-- state is carried at the moment of the rollback. a password you change
-  after `os rollback` but before the reboot stays behind. carrying it again
-  at shutdown is planned.
 - an older generation booted from the menu is only for looking around.
   `os apply` refuses to run there, and anything else you change is thrown
   away the next time `os` writes the menu. `os rollback --to-booted` keeps
@@ -268,7 +267,7 @@ generation booted from the menu, since that generation's record is what
 
 ## later
 
-- carrying state again at shutdown, and the uid map for system users
+- the uid map for system users
 - more root layouts
 - building the next generation apart from the running system, so a bad
   update never touches the session you're in

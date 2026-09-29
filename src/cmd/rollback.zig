@@ -182,6 +182,45 @@ pub fn startFrom(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, target: 
     return made;
 }
 
+/// `os carry`, run by yoq-carry.service as the machine shuts down: a
+/// generation waiting for this reboot gets the running machine's
+/// passwords, host keys, and the rest of its state once more, so a
+/// password changed after `os rollback` isn't left behind.
+pub fn carryCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    if (try cli.noArgs(ctx, args, "os carry")) |code| return code;
+    var w: cli.Work = .init(ctx);
+    defer w.deinit();
+    const a = w.allocator();
+    const boot = try w.generations() orelse return 0;
+    const running = boot.root_subvol.?;
+    const waiting = try waitingRoot(ctx, a, running) orelse return 0;
+    var why: []const u8 = "";
+    const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse {
+        try ctx.err.print("os: {s}\n", .{why});
+        return 1;
+    };
+    defer m.close();
+    if (try m.carry(waiting)) |problem| {
+        try ctx.err.print("os: couldn't carry this machine's state into {s}: {s}\n", .{ waiting, problem });
+        return 1;
+    }
+    try ctx.out.print("carried this machine's state into {s}, which the next boot runs.\n", .{waiting});
+    return 0;
+}
+
+/// the root the next boot runs, if it isn't the running one: the newest
+/// generation's, or with none in this /var, the one enable-rollback noted.
+fn waitingRoot(ctx: *Context, a: std.mem.Allocator, running: []const u8) !?[]const u8 {
+    const records = try gens.readRecords(a, ctx.io, "/var");
+    const root = if (records.len > 0)
+        try std.fmt.allocPrint(a, "/{s}", .{records[records.len - 1].root})
+    else blk: {
+        const note = std.Io.Dir.cwd().readFileAlloc(ctx.io, generation.pending_path, a, .limited(256)) catch return null;
+        break :blk try std.fmt.allocPrint(a, "/{s}", .{std.mem.trim(u8, note, " \n")});
+    };
+    return if (std.mem.eql(u8, root, running)) null else root;
+}
+
 /// `os gc [--keep n]`: removes old generations now.
 pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const usage_text = "os gc [--keep n]";

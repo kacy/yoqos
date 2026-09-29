@@ -81,9 +81,12 @@ check "pacman -Q tree >/dev/null && echo tree" tree
 # changed since carries over: generation 1's would be the old one.
 # data made since, in /root and /home, stays.
 "$vm" ssh "echo root:carried-over | chpasswd"
-hash=$("$vm" ssh "grep ^root: /etc/shadow | cut -d: -f2")
 "$vm" ssh "echo kept > /root/after-2 && mkdir -p /home/someone && echo kept > /home/someone/after-2"
 "$vm" ssh "/usr/local/bin/os rollback --yes"
+# and one changed after the rollback, before the reboot, is carried at
+# shutdown.
+"$vm" ssh "echo root:changed-at-the-last-minute | chpasswd"
+hash=$("$vm" ssh "grep ^root: /etc/shadow | cut -d: -f2")
 "$vm" reboot
 check "findmnt -no FSROOT /" /@roots/3
 check "grep ^root: /etc/shadow | cut -d: -f2" "$hash"

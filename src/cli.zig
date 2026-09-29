@@ -98,6 +98,7 @@ const commands = [_]Command{
     .{ .name = "config", .summary = "show the merged config (config show [--resolved])", .handler = inspect.configCmd },
     .{ .name = "facts", .summary = "show what os knows about this machine", .handler = inspect.factsCmd },
     .{ .name = "build", .summary = "build a root from the config and lock alone, and list what they don't explain here", .handler = build_cmd.buildCmd, .hidden = true },
+    .{ .name = "carry", .summary = "carry this machine's state into a generation waiting for the reboot (yoq-carry.service runs this)", .handler = rollback.carryCmd, .hidden = true },
     .{ .name = "health", .summary = "check a generation on trial, at boot (yoq-health.service runs this)", .handler = health.healthCmd, .hidden = true },
     .{ .name = "record-pacman", .summary = "record a pacman transaction (the drift hook runs this)", .handler = hook.recordPacmanCmd, .hidden = true },
     .{ .name = "explain", .summary = "explain an error code, like E0213", .handler = explain },

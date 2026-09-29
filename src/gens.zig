@@ -366,7 +366,7 @@ pub const Machine = struct {
     /// carries the running machine's own state into the root at `subvol`:
     /// its identity, host keys, clock, id ranges, keyring, and passwords.
     /// a generation holds the system, not these.
-    fn carry(m: *const Machine, subvol: []const u8) !?[]const u8 {
+    pub fn carry(m: *const Machine, subvol: []const u8) !?[]const u8 {
         const root = try m.at(&.{subvol});
         var paths: std.ArrayList([]const u8) = .empty;
         try paths.appendSlice(m.a, &carried);
