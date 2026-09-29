@@ -126,6 +126,12 @@ newest() {
     "$vm" ssh "ls /var/lib/yoq/generations | sort -n | tail -n 1 | cut -d. -f1"
 }
 
+# the newest generation's root, like @roots/7.
+newest_root() {
+    n=$(newest)
+    "$vm" ssh "sed -n 's/.*\"root\":\"\\([^\"]*\\)\".*/\\1/p' /var/lib/yoq/generations/$n.json"
+}
+
 # the number of the generation before the newest.
 second_newest() {
     "$vm" ssh "ls /var/lib/yoq/generations | sort -n | tail -n 2 | head -n 1 | cut -d. -f1"

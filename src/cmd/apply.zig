@@ -21,6 +21,7 @@ const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
 const accounts = @import("../accounts.zig");
 const trial = @import("../trial.zig");
+const stage = @import("stage.zig");
 const locking = @import("lock.zig");
 const diag = @import("../diag.zig");
 const Context = cli.Context;
@@ -125,6 +126,9 @@ pub const Outcome = struct {
     changed_generation: bool = false,
     /// the change needs a reboot, so its generation boots on trial.
     needs_reboot: bool = false,
+    /// the change went into this root, staged beside the running one, not
+    /// into the running system. it's the generation to record.
+    staged_root: ?[]const u8 = null,
 
     fn failed(w: *cli.Work) !Outcome {
         return .{ .code = try w.fail(), .matches = false };
@@ -149,8 +153,15 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.Render
         return .{ .code = 0, .matches = true };
     }
 
-    if (!ctx.json) try planner.writeText(ctx.out, a, p, render);
+    if (!ctx.json and !render.quiet) try planner.writeText(ctx.out, a, p, render);
     if (try cli.approve(ctx, yes, "apply", "apply this?")) |code| return .{ .code = code, .matches = false };
+
+    // a change that needs a reboot, on a machine with generations, goes
+    // into the next root instead of the running one.
+    if (cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol) and (try p.rebootReasons(a)).len > 0) {
+        const root = try stage.build(ctx, result.facts.boot, in) orelse return .{ .code = 1, .matches = false };
+        return .{ .code = 0, .matches = true, .changed_generation = true, .needs_reboot = true, .staged_root = root };
+    }
 
     const target = try targetFor(ctx, &w, result.state.config(), &result.state.lock) orelse return Outcome.failed(&w);
     const units = liveUnits(ctx);
@@ -216,7 +227,10 @@ pub fn recordGeneration(ctx: *Context, done: Outcome, reason: []const u8) !void 
         return;
     };
     defer m.close();
-    if (try m.record(reason, std.Io.Timestamp.now(ctx.io, .real).toSeconds(), try configNow(ctx, a))) |problem| {
+    const now = std.Io.Timestamp.now(ctx.io, .real).toSeconds();
+    const commit = try configNow(ctx, a);
+    const recorded = if (done.staged_root) |root| try m.recordStaged(root, reason, now, commit) else try m.record(reason, now, commit);
+    if (recorded) |problem| {
         try ctx.err.print("os: applied, but not recorded as a generation: {s}\n", .{problem});
         return;
     }

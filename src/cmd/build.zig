@@ -10,6 +10,7 @@ const exec = @import("../exec.zig");
 const lists = @import("../lists.zig");
 const output = @import("../output.zig");
 const planner = @import("../planner.zig");
+const pipeline = @import("../pipeline.zig");
 const facts = @import("../facts.zig");
 const applying = @import("apply.zig");
 const Context = cli.Context;
@@ -110,6 +111,14 @@ pub const Builder = struct {
     seed_config: bool = true,
     /// mounts under `dir` that were there before, which stay.
     keep: []const []const u8 = &.{},
+    /// the next generation, staged from a snapshot of the running root: it
+    /// has pacman's setup and the config already, and the running /var is
+    /// bound in whole, as a live apply would see it. its initramfs can
+    /// autodetect, since it's for this machine.
+    staged: bool = false,
+    /// what the build plans from, when not the command's own: an update's
+    /// pending lock, say.
+    inputs: ?pipeline.Inputs = null,
 
     fn in(b: *Builder, rel: []const u8) ![]const u8 {
         return std.fs.path.join(b.a, &.{ b.dir, rel });
@@ -123,6 +132,13 @@ pub const Builder = struct {
     /// hooks expect, mounted as pacstrap mounts them. os's caches are this
     /// machine's, so packages it has already come from there.
     pub fn prepare(b: *Builder) !?[]const u8 {
+        if (b.staged) return b.mountAll(&.{
+            .{ "proc", &.{ "-t", "proc", "proc" } },
+            .{ "sys", &.{ "-t", "sysfs", "-o", "ro", "sys" } },
+            .{ "dev", &.{ "--rbind", "--make-rslave", "/dev" } },
+            .{ "run", &.{ "-t", "tmpfs", "-o", "mode=0755,nosuid,nodev", "run" } },
+            .{ "var", &.{ "--rbind", "--make-rslave", "/var" } },
+        });
         for ([_][]const u8{ "var/lib/pacman", "var/cache/yoq", "proc", "sys", "dev", "run", "tmp", "etc/pacman.d" }) |d| {
             if (try b.run(&.{ "mkdir", "-p", try b.in(d) })) |w| return w;
         }
@@ -150,15 +166,26 @@ pub const Builder = struct {
             \\unset _yoq_hooks _yoq_hook
             \\
         , null) catch return "can't write the build's mkinitcpio drop-in";
-        const mounts = [_]struct { []const u8, []const []const u8 }{
+        return b.mountAll(if (b.share_cache) &.{
             .{ "proc", &.{ "-t", "proc", "proc" } },
             .{ "sys", &.{ "-t", "sysfs", "-o", "ro", "sys" } },
             .{ "dev", &.{ "--rbind", "--make-rslave", "/dev" } },
             .{ "run", &.{ "-t", "tmpfs", "-o", "mode=0755,nosuid,nodev", "run" } },
             .{ "var/cache/yoq", &.{ "--bind", "/var/cache/yoq" } },
-        };
+        } else &.{
+            .{ "proc", &.{ "-t", "proc", "proc" } },
+            .{ "sys", &.{ "-t", "sysfs", "-o", "ro", "sys" } },
+            .{ "dev", &.{ "--rbind", "--make-rslave", "/dev" } },
+            .{ "run", &.{ "-t", "tmpfs", "-o", "mode=0755,nosuid,nodev", "run" } },
+        });
+    }
+
+    const Mount = struct { []const u8, []const []const u8 };
+
+    /// mounts each of `mounts` at its place under the new root: the
+    /// filesystems package scripts and hooks expect, as pacstrap mounts them.
+    fn mountAll(b: *Builder, mounts: []const Mount) !?[]const u8 {
         for (mounts) |m| {
-            if (!b.share_cache and std.mem.eql(u8, m[0], "var/cache/yoq")) continue;
             const point = try b.in(m[0]);
             var argv: std.ArrayList([]const u8) = .empty;
             try argv.append(b.a, "mount");
@@ -184,17 +211,19 @@ pub const Builder = struct {
 
     /// the config applied to the new root, then its units turned on
     /// there, since no systemd runs it to start them.
-    pub fn install(b: *Builder) !u8 {
+    pub fn install(b: *Builder) anyerror!u8 {
         const ctx = b.ctx;
         const host = ctx.root;
         ctx.root = b.dir;
         defer ctx.root = host;
-        const done = try applying.run(ctx, true, cli.inputs(ctx), .{});
-        std.Io.Dir.cwd().deleteFile(ctx.io, try b.in(no_autodetect)) catch {};
+        var from = b.inputs orelse cli.inputs(ctx);
+        from.root = b.dir;
+        const done = try applying.run(ctx, true, from, .{ .quiet = b.staged });
+        if (!b.staged) std.Io.Dir.cwd().deleteFile(ctx.io, try b.in(no_autodetect)) catch {};
         if (done.code != 0) return done.code;
         var w: cli.Work = .init(ctx);
         defer w.deinit();
-        const result = try w.plan(cli.inputs(ctx)) orelse return w.fail();
+        const result = try w.plan(from) orelse return w.fail();
         for (result.plan.changes) |c| {
             if (c.kind != .unit) continue;
             const verb = if (c.op == .remove) "disable" else "enable";

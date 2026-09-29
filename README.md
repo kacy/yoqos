@@ -34,8 +34,9 @@ it's early. on any arch install, `os` manages packages, system settings,
 services, users, files, and sysctl, and rolls packages and config back. on a
 btrfs root with grub, limine, refind, or systemd-boot, `os enable-rollback`
 turns on whole-system generations: every change is a snapshot in the boot
-menu, and an update that needs a reboot boots once on trial, then falls
-back by itself if it doesn't come up healthy. the vm
+menu, and an update that needs a reboot is built beside the running system
+and boots once on trial, then falls back by itself if it doesn't come up
+healthy. the vm
 tests run that on arch's cloud image and on archinstall's layouts. `os
 install` puts a machine straight from its config repository on a blank
 disk, and `os uninstall` takes it all back off, leaving plain arch running
@@ -80,8 +81,7 @@ push.
 ## what's next
 
 see the end of [docs/generations.md](docs/generations.md). the big pieces
-are building the next generation apart from the running system, so a bad
-update never touches the session you're in, and more root layouts.
+left are more root layouts and time on real machines.
 
 ## license
 

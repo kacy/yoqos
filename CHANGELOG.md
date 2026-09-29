@@ -48,6 +48,10 @@
 
 ### trial boots and the health check
 
+- a change that needs a reboot is built into the next root, a snapshot of
+  the running one, and the running system doesn't change until the reboot.
+  a staged kernel boots from its own root until it has come up healthy.
+
 - the health check also wants a default route within a minute when the
   config turns on networkmanager, systemd-networkd, iwd, dhcpcd, or connman.
 - while a new generation waits for its reboot, the machine can't

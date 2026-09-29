@@ -576,6 +576,8 @@ pub const RenderOptions = struct {
     verbose: bool = false,
     /// packages as counts and the notable few, for big updates.
     summary: bool = false,
+    /// the plan was shown already, so it isn't again.
+    quiet: bool = false,
 };
 
 pub fn writeText(w: *std.Io.Writer, a: Allocator, p: *const Plan, opts: RenderOptions) !void {

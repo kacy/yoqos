@@ -71,6 +71,16 @@ pub const Machine = struct {
         return m.add(records, try m.free(records), m.boot.root_subvol.?, reason, time, config);
     }
 
+    /// records the root at `root`, a staged one built beside the running
+    /// root, as the next generation, with the menu booting it first.
+    pub fn recordStaged(m: *const Machine, root: []const u8, reason: []const u8, time: i64, config: ?generation.Config) !?[]const u8 {
+        std.Io.Dir.cwd().deleteFile(m.io, notice_path) catch {};
+        const records = try readRecords(m.a, m.io, "/var");
+        const prefix = "/" ++ generation.roots_dir ++ "/";
+        const n = std.fmt.parseInt(u32, root[prefix.len..], 10) catch return try std.fmt.allocPrint(m.a, "{s} isn't a root os staged", .{root});
+        return m.add(records, n, root, reason, time, config);
+    }
+
     /// starts a new generation from `source`, a generation's record or a
     /// copy of one: a writable root of its own, recorded and at the top of
     /// the menu, so the next boot runs it. its number goes in `made`. if a
@@ -164,7 +174,7 @@ pub const Machine = struct {
 
     /// the next generation number no subvolume has yet. a crash between a
     /// snapshot and its record can leave one behind without a record.
-    fn free(m: *const Machine, records: []const generation.Record) !u32 {
+    pub fn free(m: *const Machine, records: []const generation.Record) !u32 {
         var n = generation.next(records);
         while (true) : (n += 1) {
             const name = try std.fmt.allocPrint(m.a, "{d}", .{n});
@@ -198,7 +208,7 @@ pub const Machine = struct {
         // records come sorted by number.
         const latest = records[records.len - 1];
         var newest_entry = try m.entry("head", try generation.title(m.a, latest), head, cmdline);
-        if (m.bootOnEsp()) newest_entry.esp_dir = "";
+        if (m.headOnEsp(head)) newest_entry.esp_dir = "";
         try entries.append(m.a, newest_entry);
         var i = records.len;
         while (i > 0) {
@@ -411,6 +421,14 @@ pub const Machine = struct {
     /// live outside every root, so each root keeps copies of its own in
     /// its /boot directory, under the mount, where grub and refind read
     /// them, and limine copies them from.
+    /// whether the newest entry, for the root at `head`, boots the kernel
+    /// on the esp: when /boot is the esp and `head` is the root running.
+    /// a root not booted yet, like a staged one, keeps its own until a
+    /// good boot puts it on the esp, so the running kernel stays there.
+    fn headOnEsp(m: *const Machine, head: []const u8) bool {
+        return m.bootOnEsp() and std.mem.eql(u8, head, m.boot.root_subvol orelse "");
+    }
+
     pub fn bootOnEsp(m: *const Machine) bool {
         return m.esp_is_boot orelse std.mem.eql(u8, m.boot.esp orelse "", "/boot");
     }
@@ -424,7 +442,7 @@ pub const Machine = struct {
 
     /// puts the boot files kept in the root at `subvol` back on the esp,
     /// for a root that's about to be the newest.
-    fn restoreBoot(m: *const Machine, subvol: []const u8) !?[]const u8 {
+    pub fn restoreBoot(m: *const Machine, subvol: []const u8) !?[]const u8 {
         if (!m.bootOnEsp()) return null;
         return m.copyBoot(try m.at(&.{ subvol, "boot" }), m.boot.esp.?);
     }
@@ -465,7 +483,7 @@ pub const Machine = struct {
     pub fn entry(m: *const Machine, id: []const u8, name: []const u8, subvol: []const u8, cmdline: []const u8) !menu.Entry {
         var kernels: std.ArrayList([]const u8) = .empty;
         var initrds: std.ArrayList([]const u8) = .empty;
-        const dir = if (std.mem.eql(u8, id, "head") and m.bootOnEsp()) m.boot.esp.? else try m.at(&.{ subvol, "boot" });
+        const dir = if (std.mem.eql(u8, id, "head") and m.headOnEsp(subvol)) m.boot.esp.? else try m.at(&.{ subvol, "boot" });
         var boot = std.Io.Dir.cwd().openDir(m.io, dir, .{ .iterate = true }) catch null;
         if (boot) |*b| {
             defer b.close(m.io);

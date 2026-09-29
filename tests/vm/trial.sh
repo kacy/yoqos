@@ -5,8 +5,10 @@
 set -eu
 . tests/vm/lib.sh
 
-# a healthy trial: microcode needs a reboot.
-"$vm" ssh "/usr/local/bin/os add --yes amd-ucode" | tail -n 2
+# a healthy trial: microcode needs a reboot, so it's built into the next
+# root, and the running system doesn't change until then.
+"$vm" ssh "/usr/local/bin/os add --yes amd-ucode" | tail -n 3
+check "pacman -Q amd-ucode >/dev/null 2>&1 || echo not yet" "not yet"
 show_env
 # until that reboot, the machine can't hibernate: resuming would start the
 # new kernel with the old one's memory.
@@ -18,14 +20,18 @@ settled
 check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'the default now'" 1
 on_trial no
 check "test -e /run/systemd/sleep.conf.d/yoq.conf && echo blocked || echo free" free
+check "pacman -Q amd-ucode >/dev/null && echo installed" installed
+# a good boot puts its boot files where /boot is, the esp included.
+check "test -e /boot/amd-ucode.img && echo there" there
 
 # an unhealthy trial: a service the config turns on that only starts
 # while a marker file exists. the trial boot runs without the marker.
 "$vm" ssh "touch /etc/yoq-flaky-ok && printf '[Unit]\\nDescription=flaky\\n[Service]\\nType=oneshot\\nRemainAfterExit=yes\\nExecStart=/usr/bin/test -e /etc/yoq-flaky-ok\\n[Install]\\nWantedBy=multi-user.target\\n' > /etc/systemd/system/yoq-flaky.service && systemctl daemon-reload"
 "$vm" ssh "printf '\\n[services.flaky]\\nunit = \"yoq-flaky.service\"\\npackage = \"pacman\"\\n' >> /etc/yoq/machine.toml && /usr/local/bin/os apply --yes" | tail -n 2
 before=$(newest)
-"$vm" ssh "/usr/local/bin/os remove --yes amd-ucode" | tail -n 2
+# the marker goes first, so the next root, a snapshot of this one, lacks it.
 "$vm" ssh "rm /etc/yoq-flaky-ok"
+"$vm" ssh "/usr/local/bin/os remove --yes amd-ucode" | tail -n 2
 show_env
 # the trial boot may answer before its health check reboots it, so this
 # waits for the boot after: the generation before, from its copy, taken
@@ -52,7 +58,9 @@ settled
 "$vm" ssh "/usr/local/bin/os add --yes intel-ucode" | tail -n 1
 on_trial yes
 before=$(second_newest)
-"$vm" ssh "echo not an initramfs > /boot/initramfs-linux.img"
+# the staged root boots its own initramfs until it's good.
+staged=$(newest_root)
+"$vm" ssh "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && echo not an initramfs > /run/yoq-top/$staged/boot/initramfs-linux.img; umount /run/yoq-top"
 show_env
 falls_back "$before"
 # a trial that comes up without a network, on a config that turns on

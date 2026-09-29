@@ -185,11 +185,23 @@ if you booted an older generation from the menu and want to stay on it,
 ## updates that need a reboot
 
 a change that needs a reboot, like a new kernel, systemd, microcode, or a
-different display manager, boots once on trial:
+different display manager, isn't made to the running system at all. `os`
+builds it into the next root instead: a snapshot of the running one, with
+the change applied to it the way a clean build is made, and `/var` bound
+in as it is. the session you're in keeps its kernel, libraries, and
+services, and the next boot runs the new generation once, on trial:
 
 ```
+building generation 5 beside the running system, which doesn't change.
+...
 reboot to finish. the next boot tries generation 5 once; if it doesn't come up healthy, the machine goes back to generation 4.
 ```
+
+with `/boot` as the esp, a staged generation boots the kernel in its own
+root until it has come up healthy, and only then moves it onto the esp, so
+the kernel the running system booted stays where it was. changes that
+don't need a reboot, like a new command-line tool, still apply to the
+running system right away.
 
 the next boot runs the new generation, while the menu's default stays on
 the one before. once the machine is up, `yoq-health.service` checks it:
@@ -249,11 +261,11 @@ generation booted from the menu, since that generation's record is what
 
 ## what this doesn't do yet
 
-- changes happen live. an update changes the running system first, and the
-  result becomes a generation afterwards. if an update breaks something,
-  the previous generation is one pick away in the boot menu, but the
-  session you were in has the broken update. building the next generation
-  separately, and booting it once to check it, is planned.
+- changes that don't need a reboot still apply live. if one of those
+  breaks something, the previous generation is one pick away in the boot
+  menu, but the session you're in has it.
+- changes you make to the running system between a staged apply and the
+  reboot, besides passwords and the like, stay in the old root.
 - the health check is simple. it looks at systemd's state, the display
   manager, the config's services, and whether a networked machine got a
   route. a desktop that starts but shows nothing useful still passes.
@@ -273,5 +285,3 @@ generation booted from the menu, since that generation's record is what
 ## later
 
 - more root layouts
-- building the next generation apart from the running system, so a bad
-  update never touches the session you're in

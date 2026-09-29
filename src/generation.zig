@@ -41,6 +41,10 @@ pub const pacman_db = "usr/lib/sysimage/pacman";
 /// grub's env file, from the top of the esp.
 pub const grubenv = "yoq/grubenv";
 
+/// where a staged root is noted until it has booted well: with /boot as
+/// the esp, it boots its own kernel till then, and moves it onto the esp.
+pub const unsettled_path = "/var/lib/yoq/unsettled";
+
 /// where enable-rollback notes the root the next boot runs, in the /var
 /// the machine runs now, so nothing changes the root it's leaving.
 pub const pending_path = "/var/lib/yoq/pending";

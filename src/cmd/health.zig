@@ -31,6 +31,8 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const store = trial.Store.of(a, ctx.io, boot) orelse return 0;
     const t = try store.current() orelse {
         try ctx.out.writeAll("no generation on trial.\n");
+        // a staged root that booted without a trial settles now.
+        if (try settleBoot(ctx, a, boot)) |why| try ctx.err.print("os: {s}\n", .{why});
         return 0;
     };
     const record = generation.find(try gens.readRecords(a, ctx.io, "/var"), t.n) orelse {
@@ -56,6 +58,7 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             return 1;
         }
         try ctx.out.print("generation {d} came up healthy. it's the default now.\n", .{t.n});
+        if (try settleBoot(ctx, a, boot)) |why| try ctx.err.print("os: {s}\n", .{why});
         return 0;
     }
     try ctx.out.print("generation {d} isn't healthy: {s}. going back to the generation before.\n", .{ t.n, try std.mem.join(a, "; ", problems) });
@@ -82,6 +85,24 @@ fn fellBack(ctx: *Context, a: Allocator, store: trial.Store, boot: facts.Boot, t
     if (try gens.writeNotice(a, ctx.io, notice)) |why| try ctx.err.print("os: {s}\n", .{why});
     try ctx.out.writeAll(notice);
     return 1;
+}
+
+/// with /boot as the esp, a generation that was staged booted its kernel
+/// from its own root. now that it's good, its kernel goes on the esp, where
+/// the menu's first entry boots it from again. the note that it was staged
+/// goes either way; a root that isn't running, after a fallback, no longer
+/// needs it.
+fn settleBoot(ctx: *Context, a: Allocator, boot: facts.Boot) !?[]const u8 {
+    const note = std.Io.Dir.cwd().readFileAlloc(ctx.io, generation.unsettled_path, a, .limited(256)) catch return null;
+    std.Io.Dir.cwd().deleteFile(ctx.io, generation.unsettled_path) catch {};
+    if (!std.mem.eql(u8, std.mem.trim(u8, note, " \n"), boot.root_subvol.?)) return null;
+    var why: []const u8 = "";
+    const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse return why;
+    defer m.close();
+    if (!m.bootOnEsp()) return null;
+    const running = boot.root_subvol.?;
+    if (try m.restoreBoot(running)) |w| return w;
+    return m.writeMenu(running, try gens.readRecords(a, ctx.io, "/var"));
 }
 
 /// what's wrong with the running machine, if anything.
