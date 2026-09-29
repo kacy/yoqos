@@ -214,7 +214,8 @@ pub const Machine = struct {
         }
         return switch (m.loader) {
             .grub => m.write(try std.fs.path.join(m.a, &.{ m.boot.esp.?, "grub/grub.cfg" }), try menu.grub(m.a, .{ .esp_uuid = m.esp_uuid, .root_uuid = m.root_uuid, .default = "head", .entries = entries.items })),
-            .limine => m.writeLimine(entries.items),
+            .limine => m.writeOnEsp(entries.items, writeLimine),
+            .@"systemd-boot" => m.writeOnEsp(entries.items, writeSdboot),
             .refind => m.writeRefind(entries.items),
         };
     }
@@ -230,11 +231,11 @@ pub const Machine = struct {
         return std.Io.Dir.cwd().readFileAlloc(m.io, path, m.a, .limited(1 << 20)) catch null;
     }
 
-    /// limine reads only fat, so entries whose files are in a root's /boot
-    /// get copies on the esp, named by content so generations share them.
-    /// copies no entry uses any more go.
-    fn writeLimine(m: *const Machine, entries: []menu.Entry) !?[]const u8 {
-        const conf = try m.loaderConf() orelse return "can't read limine.conf";
+    /// limine and systemd-boot read only fat, so entries whose files are
+    /// in a root's /boot get copies on the esp, named by content so
+    /// generations share them. `write` puts the menu in place; then copies
+    /// no entry uses any more go.
+    fn writeOnEsp(m: *const Machine, entries: []menu.Entry, comptime put: fn (*const Machine, []menu.Entry) anyerror!?[]const u8) !?[]const u8 {
         const dir = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir });
         if (try m.run(&.{ "mkdir", "-p", dir })) |w| return w;
         var used: std.ArrayList([]const u8) = .empty;
@@ -248,7 +249,7 @@ pub const Machine = struct {
             e.initrds = initrds;
             e.esp_dir = esp_boot_dir;
         }
-        if (try m.write(m.boot.loader_conf.?, try menu.spliceLimine(m.a, conf, try menu.limine(m.a, entries)))) |w| return w;
+        if (try put(m, entries)) |w| return w;
         var d = std.Io.Dir.cwd().openDir(m.io, dir, .{ .iterate = true }) catch return null;
         defer d.close(m.io);
         var it = d.iterate();
@@ -256,6 +257,36 @@ pub const Machine = struct {
             if (!lists.contains(used.items, f.name)) d.deleteFile(m.io, f.name) catch {};
         }
         return null;
+    }
+
+    fn writeLimine(m: *const Machine, entries: []menu.Entry) anyerror!?[]const u8 {
+        const conf = try m.loaderConf() orelse return "can't read limine.conf";
+        return m.write(m.boot.loader_conf.?, try menu.spliceLimine(m.a, conf, try menu.limine(m.a, entries)));
+    }
+
+    /// os's entry files in systemd-boot's loader/entries, beside
+    /// loader.conf. yoq-*.conf files no entry needs any more go.
+    fn writeSdboot(m: *const Machine, entries: []menu.Entry) anyerror!?[]const u8 {
+        const dir = try m.sdbootEntries();
+        if (try m.run(&.{ "mkdir", "-p", dir })) |w| return w;
+        const files = try menu.sdboot(m.a, entries);
+        for (files) |f| {
+            if (try m.write(try std.fs.path.join(m.a, &.{ dir, f.name }), f.text)) |w| return w;
+        }
+        var d = std.Io.Dir.cwd().openDir(m.io, dir, .{ .iterate = true }) catch return null;
+        defer d.close(m.io);
+        var it = d.iterate();
+        while (it.next(m.io) catch null) |f| {
+            if (!std.mem.startsWith(u8, f.name, "yoq-") or !std.mem.endsWith(u8, f.name, ".conf")) continue;
+            if (lists.find(files, "name", f.name) == null) d.deleteFile(m.io, f.name) catch {};
+        }
+        return null;
+    }
+
+    /// systemd-boot's entries directory, beside its loader.conf.
+    pub fn sdbootEntries(m: *const Machine) ![]const u8 {
+        const conf = m.boot.loader_conf orelse try std.fs.path.join(m.a, &.{ m.boot.esp.?, "loader/loader.conf" });
+        return std.fs.path.join(m.a, &.{ std.fs.path.dirnamePosix(conf).?, "entries" });
     }
 
     /// copies `name` from `from` into the esp's boot directory, as

@@ -181,6 +181,10 @@ const Reader = struct {
     /// where limine or refind reads its config, as each one looks for it:
     /// first beside its binary, under EFI/, then limine's other places.
     fn loaderConf(r: Reader, name_of: []const u8, esp: []const u8) !?[]const u8 {
+        if (std.mem.eql(u8, name_of, "systemd-boot")) {
+            const rel = try std.fs.path.join(r.a, &.{ esp[1..], "loader/loader.conf" });
+            return if (r.exists(rel)) try std.fmt.allocPrint(r.a, "/{s}", .{rel}) else null;
+        }
         const name = if (std.mem.eql(u8, name_of, "limine")) "limine.conf" else if (std.mem.eql(u8, name_of, "refind")) "refind.conf" else return null;
         const efi = try std.fs.path.join(r.a, &.{ esp[1..], "EFI" });
         var dir = std.Io.Dir.cwd().openDir(r.io, try r.path(efi), .{ .iterate = true }) catch null;

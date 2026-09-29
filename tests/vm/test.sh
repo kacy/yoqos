@@ -13,6 +13,7 @@ os=$1
 case ${VM_IMAGE:-cloud} in
 archinstall | ext4) VM_ESP=/boot VM_ROOT=/@ VM_LOADER=grub ;;
 limine | refind) VM_ESP=/boot VM_ROOT=/@ VM_LOADER=$VM_IMAGE ;;
+sdboot) VM_ESP=/boot VM_ROOT=/@ VM_LOADER=systemd-boot ;;
 *) VM_ESP=/efi VM_ROOT=/ VM_LOADER=grub ;;
 esac
 export VM_ESP VM_ROOT VM_LOADER
@@ -41,7 +42,7 @@ ext4)
     tests/vm/aur.sh
     tests/vm/install.sh
     ;;
-limine)
+limine | sdboot)
     tests/vm/rollback.sh
     tests/vm/trial.sh
     tests/vm/leave.sh

@@ -176,6 +176,22 @@ const Uninstaller = struct {
                 const store = trial.Store.of(u.a, u.ctx.io, u.boot) orelse return null;
                 return store.end();
             },
+            .@"systemd-boot" => {
+                const dir = try m.sdbootEntries();
+                const text = try menu.sdbootEntry(u.a, "Arch Linux", "arch", 1, try u.plainEntry(), (try u.plainEntry()).args);
+                rootfs.writeAtomic(u.ctx.io, try std.fs.path.join(u.a, &.{ dir, "arch-linux.conf" }), text, null) catch return "can't write arch-linux.conf";
+                if (try exec.runAll(u.a, u.ctx.io, &.{
+                    &.{ "bootctl", "set-oneshot", "" },
+                    &.{ "bootctl", "set-default", "arch-linux.conf" },
+                })) |w| return w;
+                var d = std.Io.Dir.cwd().openDir(u.ctx.io, dir, .{ .iterate = true }) catch return null;
+                defer d.close(u.ctx.io);
+                var it = d.iterate();
+                while (it.next(u.ctx.io) catch null) |f| {
+                    if (std.mem.startsWith(u8, f.name, "yoq-")) d.deleteFile(u.ctx.io, f.name) catch {};
+                }
+                return null;
+            },
             .refind => {
                 const conf_path = u.boot.loader_conf orelse return "can't find refind.conf";
                 const conf = std.Io.Dir.cwd().readFileAlloc(u.ctx.io, conf_path, u.a, .limited(1 << 20)) catch return "can't read refind.conf";

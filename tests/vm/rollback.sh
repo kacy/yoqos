@@ -18,7 +18,7 @@ today=$(date -u +%Y-%m-%d)
 # command only it runs fails.
 case $VM_LOADER in
 grub) last=grub-install ;;
-limine) last=sha256sum ;;
+limine | systemd-boot) last=sha256sum ;;
 refind) last=install ;;
 esac
 esp=$("$vm" ssh "find $VM_ESP -type f -exec sha256sum {} + | sort | sha256sum")

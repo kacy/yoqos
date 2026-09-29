@@ -12,6 +12,7 @@ const exec = @import("../exec.zig");
 const facts = @import("../facts.zig");
 const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
+const menu = @import("../menu.zig");
 const output = @import("../output.zig");
 const applying = @import("apply.zig");
 const Context = cli.Context;
@@ -300,7 +301,9 @@ const Enabler = struct {
     /// the menu, with generation 1 and the system as it is now. grub's goes
     /// where grub-install will point grub, with the env file for one-shot
     /// boots; nothing reads it until then. limine and refind read theirs
-    /// already, so for them this is the switch.
+    /// already, so for them this is the switch. systemd-boot gets os's
+    /// entries beside its own, and the switch is making os's newest the
+    /// default.
     fn bootEntry(e: *Enabler) !bool {
         const esp = e.boot.esp.?;
         switch (e.m.loader) {
@@ -311,6 +314,7 @@ const Enabler = struct {
                 if (!try e.sh(&.{ "mkdir", "-p", grub_dir })) return false;
             },
             .limine => if (!try e.keep(e.boot.loader_conf.?, "/run/yoq/loader-backup")) return false,
+            .@"systemd-boot" => if (!try e.keep(try e.m.sdbootEntries(), "/run/yoq/entries-backup")) return false,
             .refind => {
                 const dir = std.fs.path.dirnamePosix(e.boot.loader_conf.?).?;
                 if (!try e.keep(e.boot.loader_conf.?, "/run/yoq/loader-backup")) return false;
@@ -323,6 +327,12 @@ const Enabler = struct {
         if (!try e.keep(own_dir, "/run/yoq/esp-backup")) return false;
         const records = try gens.readRecords(e.a, e.ctx.io, e.var_dir);
         if (try e.m.writeMenu(new_root, records)) |why| return e.failed("{s}", .{why});
+        if (e.m.loader == .@"systemd-boot") {
+            // taken back, the variable goes, and loader.conf's default is
+            // the default again.
+            try e.later(&.{ "bootctl", "set-default", "" });
+            return e.sh(&.{ "bootctl", "set-default", try menu.sdbootName(e.a, "head") });
+        }
         if (e.m.loader != .grub) return true;
         if (!try e.sh(&.{ "mkdir", "-p", own_dir })) return false;
         return e.sh(&.{ "grub-editenv", try std.fs.path.join(e.a, &.{ esp, generation.grubenv }), "create" });

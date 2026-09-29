@@ -23,6 +23,9 @@
   in `/etc/yoq`, the pacman database back in `/var/lib/pacman`, and a
   bootloader set up the way arch sets it up. other generations stay unless
   you ask for them to go.
+- generations work with systemd-boot too: os's own entry files beside
+  yours, kernels copied to the esp, and trial boots through its one-shot
+  entry.
 - `os install <config> --disk <dev>` puts the machine a config repository
   describes on a blank disk, from a live system: an esp, btrfs with the
   generations layout, the clean build as generation 1, and grub.

@@ -10,6 +10,7 @@ pub const Loader = enum {
     grub,
     limine,
     refind,
+    @"systemd-boot",
 
     pub fn of(boot: facts.Boot) ?Loader {
         return std.meta.stringToEnum(Loader, boot.loader orelse return null);
@@ -208,6 +209,42 @@ pub fn spliceLimine(a: Allocator, conf: []const u8, section: []const u8) ![]cons
     return out.items;
 }
 
+/// a file os writes whole: a name and its content.
+pub const Named = struct { name: []const u8, text: []const u8 };
+
+/// systemd-boot's entry for os's entry `id`, like "yoq-head.conf".
+pub fn sdbootName(a: Allocator, id: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(a, "yoq-{s}.conf", .{id});
+}
+
+/// the entry a trial boots on systemd-boot.
+pub const sdboot_trial = "yoq-trial.conf";
+
+/// os's entry files for systemd-boot, in loader/entries on the esp: one
+/// per generation, and the one a trial boots. versions put the newest
+/// first. like limine, systemd-boot reads only fat, so every entry's files
+/// are on the esp.
+pub fn sdboot(a: Allocator, entries: []const Entry) ![]const Named {
+    var out: std.ArrayList(Named) = .empty;
+    for (entries, 0..) |e, i| {
+        try out.append(a, .{ .name = try sdbootName(a, e.id), .text = try sdbootEntry(a, e.title, "yoq", entries.len - i, e, e.args) });
+    }
+    if (entries.len > 0) {
+        const head = entries[0];
+        try out.append(a, .{ .name = sdboot_trial, .text = try sdbootEntry(a, "yoq trial boot", "yoq-trial", entries.len, head, try std.fmt.allocPrint(a, "{s} yoq.trial", .{head.args})) });
+    }
+    return out.items;
+}
+
+/// one entry file, for `os uninstall` too, which leaves one of its own.
+pub fn sdbootEntry(a: Allocator, title: []const u8, sort_key: []const u8, version: usize, e: Entry, args: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.print(a, "# written by os. edits here are overwritten.\ntitle {s}\nsort-key {s}\nversion {d}\nlinux {s}\n", .{ try plainTitle(a, title), sort_key, version, try e.onEsp(a, e.kernel) });
+    for (e.initrds) |i| try out.print(a, "initrd {s}\n", .{try e.onEsp(a, i)});
+    try out.print(a, "options {s}\n", .{args});
+    return out.items;
+}
+
 pub const Refind = struct {
     /// partition guids: the esp's, and the root's.
     esp_part: []const u8,
@@ -384,6 +421,28 @@ test "limine's entries, and where they go in its config" {
     try testing.expectEqualStrings("timeout: 5\n\n" ++ section2 ++ "\n/Arch Linux (linux)\n    protocol: linux\n", twice);
     // a config with no entries gets the section at the end.
     try testing.expectEqualStrings("timeout: 5\n\nS\n", try spliceLimine(a, "timeout: 5\nremember_last_entry: yes\n", "S\n"));
+}
+
+test "systemd-boot's entry files" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const files = try sdboot(arena.allocator(), &test_entries);
+    try testing.expectEqual(3, files.len);
+    try testing.expectEqualStrings("yoq-head.conf", files[0].name);
+    try testing.expectEqualStrings("yoq-gen-1.conf", files[1].name);
+    try testing.expectEqualStrings(sdboot_trial, files[2].name);
+    try testing.expectEqualStrings(
+        \\# written by os. edits here are overwritten.
+        \\title yoq 1 - enable-rollback
+        \\sort-key yoq
+        \\version 1
+        \\linux /yoq/boot/ab12-vmlinuz-linux
+        \\initrd /yoq/boot/cd34-initramfs-linux.img
+        \\options root=UUID=r rootflags=subvol=/@roots/boot-1 rw
+        \\
+    , files[1].text);
+    try testing.expect(std.mem.indexOf(u8, files[2].text, "sort-key yoq-trial\n") != null);
+    try testing.expect(std.mem.endsWith(u8, files[2].text, "options root=UUID=r rw yoq.trial\n"));
 }
 
 test "refind's entries, and its include" {

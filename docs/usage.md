@@ -22,7 +22,7 @@ refind, `os enable-rollback` adds whole-system generations; see
 | `os apply` | makes those changes, after asking |
 | `os history` | the generations |
 | `os rollback` | goes back to an earlier generation |
-| `os enable-rollback` | turns on whole-system generations (btrfs, with grub, limine, or refind) |
+| `os enable-rollback` | turns on whole-system generations (btrfs, with grub, limine, refind, or systemd-boot) |
 | `os gc`, `os pin` | clean up old generations, or keep one |
 | `os uninstall` | takes `os` off the machine, leaving plain arch |
 | `os install` | puts the machine a config describes on a blank disk |
@@ -378,7 +378,7 @@ back never loses them.
 
 ## generations (early)
 
-on a btrfs root with grub, limine, or refind, `os enable-rollback` turns
+on a btrfs root with grub, limine, refind, or systemd-boot, `os enable-rollback` turns
 the machine's history into generations: whole copies of the system you can
 boot from the menu. it shows its checks and steps and asks first; `--yes`
 skips the question.

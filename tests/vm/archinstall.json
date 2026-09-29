@@ -57,6 +57,6 @@
   "timezone": "UTC",
   "custom_commands": [
     "install -d -m 700 /root/.ssh && echo 'KEY' > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys",
-    "if [ -f /etc/default/grub ]; then sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=\"/GRUB_CMDLINE_LINUX_DEFAULT=\"console=tty0 console=ttyS0,115200 /' /etc/default/grub && grub-mkconfig -o /boot/grub/grub.cfg; fi; for f in /boot/EFI/*/limine.conf; do if [ -f \"$f\" ]; then sed -i 's/^\\( *cmdline: .*\\)$/\\1 console=tty0 console=ttyS0,115200/' \"$f\"; fi; done; if [ -f /boot/refind_linux.conf ]; then sed -i 's/\"$/ console=tty0 console=ttyS0,115200\"/' /boot/refind_linux.conf && sed -i 's/^timeout .*/timeout 3/' /boot/EFI/refind/refind.conf; fi"
+    "if [ -f /etc/default/grub ]; then sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=\"/GRUB_CMDLINE_LINUX_DEFAULT=\"console=tty0 console=ttyS0,115200 /' /etc/default/grub && grub-mkconfig -o /boot/grub/grub.cfg; fi; for f in /boot/EFI/*/limine.conf; do if [ -f \"$f\" ]; then sed -i 's/^\\( *cmdline: .*\\)$/\\1 console=tty0 console=ttyS0,115200/' \"$f\"; fi; done; if [ -f /boot/refind_linux.conf ]; then sed -i 's/\"$/ console=tty0 console=ttyS0,115200\"/' /boot/refind_linux.conf && sed -i 's/^timeout .*/timeout 3/' /boot/EFI/refind/refind.conf; fi; for f in /boot/loader/entries/*.conf; do if [ -f \"$f\" ]; then sed -i 's/^\\(options .*\\)$/\\1 console=tty0 console=ttyS0,115200/' \"$f\"; fi; done"
   ]
 }

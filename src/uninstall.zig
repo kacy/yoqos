@@ -42,8 +42,8 @@ pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool) !Plan {
     var steps: std.ArrayList(Step) = .empty;
     if (generation.running(b.root_subvol)) {
         const loader = menu.Loader.of(b) orelse .grub;
-        // a plain limine or refind finds arch's kernels in /boot only when
-        // that's the esp, as archinstall sets them up.
+        // a plain limine, refind, or systemd-boot finds arch's kernels in
+        // /boot only when that's the esp, as archinstall sets them up.
         if (loader != .grub) try checks.append(a, .{
             .what = "esp",
             .ok = std.mem.eql(u8, b.esp orelse "", "/boot"),
@@ -57,6 +57,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool) !Plan {
             .grub => "reinstall grub with a menu from grub-mkconfig in /boot/grub, booting this root",
             .limine => try std.fmt.allocPrint(a, "replace os's entries in {s} with one for this root", .{b.loader_conf orelse "limine.conf"}),
             .refind => "remove os's entries from refind, and boot this root through /boot/refind_linux.conf",
+            .@"systemd-boot" => "replace os's entries in systemd-boot with one for this root, arch-linux.conf, as its default",
         } });
         if (b.snapper_root) try steps.append(a, .{ .kind = .snap_pac, .what = "turn snap-pac's snapshots of the root back on" });
         if (drop_generations) try steps.append(a, .{ .kind = .generations, .what = "delete every generation but this one, and their boot copies" });

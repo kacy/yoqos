@@ -44,13 +44,14 @@ pub const Store = struct {
     pub fn current(s: Store) !?Trial {
         switch (s.loader) {
             .grub => {},
-            .limine => {
-                const text = std.Io.Dir.cwd().readFileAlloc(s.io, limine_state, s.a, .limited(64)) catch return null;
+            .limine, .@"systemd-boot" => {
+                const text = std.Io.Dir.cwd().readFileAlloc(s.io, state_path, s.a, .limited(64)) catch return null;
                 var words = std.mem.tokenizeAny(u8, text, " \n");
                 return .{
                     .n = std.fmt.parseInt(u32, words.next() orelse return null, 10) catch return null,
                     .fallback = std.fmt.parseInt(u32, words.next() orelse "0", 10) catch 0,
-                    // limine clears the one-shot variable when it reads it.
+                    // the bootloader clears the one-shot variable when it
+                    // reads it.
                     .tried = !rootfs.pathExists(s.io, oneshot_var),
                 };
             },
@@ -76,15 +77,19 @@ pub const Store = struct {
                     try std.fmt.allocPrint(s.a, "yoq_trial={d}", .{n}),
                 });
             },
-            .limine => {
+            .limine, .@"systemd-boot" => {
                 // the one-shot first, and the note of the trial last: a
                 // fallback default or a note without a one-shot would make
                 // the next boot look like a failed trial.
+                const id = if (s.loader == .limine)
+                    try menu.limineId(s.a, try generation.title(s.a, fallback))
+                else
+                    try menu.sdbootName(s.a, try std.fmt.allocPrint(s.a, "gen-{d}", .{fallback.n}));
                 const why = try s.retry() orelse
-                    try s.bootctl("set-default", try menu.limineId(s.a, try generation.title(s.a, fallback))) orelse
+                    try s.bootctl("set-default", id) orelse
                     blk: {
                         const state = try std.fmt.allocPrint(s.a, "{d} {d}\n", .{ n, fallback.n });
-                        rootfs.writeAtomic(s.io, limine_state, state, null) catch break :blk try std.fmt.allocPrint(s.a, "can't write {s}", .{limine_state});
+                        rootfs.writeAtomic(s.io, state_path, state, null) catch break :blk try std.fmt.allocPrint(s.a, "can't write {s}", .{state_path});
                         break :blk null;
                     } orelse return null;
                 _ = try s.end();
@@ -99,6 +104,7 @@ pub const Store = struct {
         return switch (s.loader) {
             .grub => s.edit("set", &.{"yoq_next=head"}),
             .limine => s.bootctl("set-oneshot", try menu.limineId(s.a, menu.limine_trial)),
+            .@"systemd-boot" => s.bootctl("set-oneshot", menu.sdboot_trial),
             .refind => null,
         };
     }
@@ -108,12 +114,13 @@ pub const Store = struct {
     pub fn end(s: Store) !?[]const u8 {
         switch (s.loader) {
             .grub => return s.edit("unset", &.{ "yoq_default", "yoq_trial", "yoq_tried" }),
-            .limine => {
-                // empty removes the variable: no one-shot, and limine's
-                // first entry, the newest generation, is the default.
+            .limine, .@"systemd-boot" => {
+                // empty removes the one-shot. limine's first entry is the
+                // newest generation, so it needs no default; systemd-boot
+                // is pointed at it, past loader.conf's own.
                 if (try s.bootctl("set-oneshot", "")) |w| return w;
-                if (try s.bootctl("set-default", "")) |w| return w;
-                std.Io.Dir.cwd().deleteFile(s.io, limine_state) catch {};
+                if (try s.bootctl("set-default", if (s.loader == .limine) "" else try menu.sdbootName(s.a, "head"))) |w| return w;
+                std.Io.Dir.cwd().deleteFile(s.io, state_path) catch {};
                 return null;
             },
             .refind => return null,
@@ -124,9 +131,9 @@ pub const Store = struct {
         return exec.run(s.a, s.io, &.{ "bootctl", verb, id });
     }
 
-    /// where os keeps a trial on limine: its generation, and the one
-    /// before it.
-    const limine_state = "/var/lib/yoq/trial";
+    /// where os keeps a trial on limine and systemd-boot: its generation,
+    /// and the one before it.
+    const state_path = "/var/lib/yoq/trial";
     /// the variable limine boots once from, under the boot loader
     /// interface's vendor guid.
     const oneshot_var = "/sys/firmware/efi/efivars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";

@@ -19,8 +19,8 @@ required. the machine needs:
 - a btrfs root, either in the top level of the filesystem (like arch's
   cloud image) or in archinstall's `@` subvolume
 - uefi, with the esp mounted at `/efi`, `/boot/efi`, or `/boot`
-- grub, limine, or refind. `os` works with the one you have and never
-  switches it
+- grub, limine, refind, or systemd-boot. `os` works with the one you have
+  and never switches it
 
 it takes one snapshot of the running root and builds generation 1 from it.
 `/var`, `/home`, `/root`, `/srv`, and `/usr/local` each become a subvolume
@@ -70,6 +70,17 @@ tools that rewrite `limine.conf` themselves, like omarchy's
 `limine-entry-tool`, `limine-snapper-sync`, and `omarchy-refresh-limine`,
 can drop `os`'s section. the next change that makes a generation writes it
 again.
+
+### systemd-boot
+
+like limine, systemd-boot reads only fat, so generations' kernels and
+initramfs images get copied into `yoq/boot` on the esp by content. `os`
+writes one entry file per generation into `loader/entries`, named
+`yoq-head.conf`, `yoq-gen-<n>.conf`, and so on, and leaves your own
+entries and `loader.conf` alone. it makes `yoq-head.conf` the default
+with `bootctl set-default`, which outranks `loader.conf`'s own default.
+trial boots use systemd-boot's one-shot entry, the same way they do on
+limine.
 
 ### refind
 
@@ -247,7 +258,7 @@ generation booted from the menu, since that generation's record is what
   reboot, or on an older generation booted from the menu, changes the
   kernel on a `/boot` esp that the next boot shares. use `os` for kernel
   updates there, or reboot first.
-- only the two root layouts above, and not systemd-boot.
+- only the two root layouts above.
 - generations with limine are tested on archinstall's layout with snapper,
   not on a real omarchy install. omarchy builds unified kernel images, and
   `os` boots the kernel and initramfs files in `/boot` instead.
@@ -255,7 +266,7 @@ generation booted from the menu, since that generation's record is what
 ## later
 
 - carrying state again at shutdown, and the uid map for system users
-- systemd-boot, and trial boots on refind
+- trial boots on refind
 - more root layouts
 - building the next generation apart from the running system, so a bad
   update never touches the session you're in

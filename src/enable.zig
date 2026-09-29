@@ -92,7 +92,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .what = "bootloader",
         .ok = known != null,
         .found = loader,
-        .fix = if (b.loader != null) "generations support grub, limine, and refind so far; systemd-boot comes later." else "no bootloader os knows was found.",
+        .fix = if (b.loader != null) "generations support grub, limine, refind, and systemd-boot." else "no bootloader os knows was found.",
     });
     // limine and refind keep os's entries in their own config.
     const own_conf = known != null and known.? != .grub;
@@ -418,7 +418,7 @@ test "what stops a machine, and the steps it no longer needs" {
     const f: facts.Facts = .{ .boot = .{
         .uefi = true,
         .esp = "/boot/efi",
-        .loader = "systemd-boot",
+        .loader = "efistub",
         .root_fs = "ext4",
         .var_subvol = true,
         .data_apart = &.{ "home", "root", "srv", "usr/local" },
@@ -437,8 +437,8 @@ test "what stops a machine, and the steps it no longer needs" {
         \\        generations are btrfs snapshots, so the root has to be btrfs. everything else in os works on any filesystem.
         \\  ok  firmware: uefi
         \\  ok  esp: /boot/efi
-        \\  no  bootloader: systemd-boot
-        \\        generations support grub, limine, and refind so far; systemd-boot comes later.
+        \\  no  bootloader: efistub
+        \\        generations support grub, limine, refind, and systemd-boot.
         \\  no  root layout: /@/.snapshots/1/snapshot
         \\        enable-rollback converts a root in the btrfs top level, or archinstall's @ subvolume. other layouts come later.
         \\  ok  generations: none yet
@@ -448,9 +448,9 @@ test "what stops a machine, and the steps it no longer needs" {
         \\     the first generation to go back to. changes made after it and before the reboot are left behind
         \\  2. keep the config in /var/lib/yoq/config, mounted at /etc/yoq
         \\     the config and its history stay put when a rollback changes the root; a rollback puts back the config that generation had
-        \\  3. write systemd-boot's menu on the esp: generation 1 first, and the system as it is now (at the next boot)
+        \\  3. write efistub's menu on the esp: generation 1 first, and the system as it is now (at the next boot)
         \\     every generation can be booted, and so can the way back
-        \\  4. install systemd-boot's boot files on the esp (/boot/efi), reading that menu
+        \\  4. install efistub's boot files on the esp (/boot/efi), reading that menu
         \\     the boot menu has to live outside every generation
         \\
     , out.written());

@@ -30,7 +30,7 @@ settled() {
 show_env() {
     case $VM_LOADER in
     grub) "$vm" ssh "grub-editenv $VM_ESP/yoq/grubenv list | grep ^yoq_ | sort | tr '\\n' ' '" ;;
-    limine) "$vm" ssh "cat /var/lib/yoq/trial 2>/dev/null; ls /sys/firmware/efi/efivars | grep ^LoaderEntry | tr '\\n' ' '" ;;
+    limine | systemd-boot) "$vm" ssh "cat /var/lib/yoq/trial 2>/dev/null; ls /sys/firmware/efi/efivars | grep ^LoaderEntry | tr '\\n' ' '" ;;
     *) ;;
     esac
 }
@@ -49,6 +49,7 @@ menu_file() {
     grub) echo "$VM_ESP/grub/grub.cfg" ;;
     limine) "$vm" ssh "ls $VM_ESP/EFI/*/limine.conf $VM_ESP/limine.conf 2>/dev/null | head -n 1" ;;
     refind) "$vm" ssh "ls $VM_ESP/EFI/*/yoq.conf | head -n 1" ;;
+    systemd-boot) echo "$VM_ESP/loader/entries" ;;
     esac
 }
 
@@ -59,6 +60,7 @@ menu_generations() {
     grub) check "grep -c -e '--id head' -e '--id gen-' $f" "$1" ;;
     limine) check "grep -c '^/yoq [0-9]' $f" "$1" ;;
     refind) check "grep -c '^menuentry \"yoq [0-9]' $f" "$1" ;;
+    systemd-boot) check "ls $f | grep -c -e '^yoq-head.conf' -e '^yoq-gen-'" "$1" ;;
     esac
 }
 
@@ -68,6 +70,7 @@ menu_generations() {
 boot_once() {
     case $VM_LOADER in
     grub) "$vm" ssh "grub-editenv $VM_ESP/yoq/grubenv set yoq_next=gen-$1" ;;
+    systemd-boot) "$vm" ssh "bootctl set-oneshot yoq-gen-$1.conf" ;;
     limine) "$vm" ssh "bootctl set-oneshot \"\$(grep '^/yoq $1 ' $(menu_file) | cut -c2- | sed 's/[^A-Za-z0-9+_.@-]/-/g')\"" ;;
     refind)
         f=$(menu_file)
