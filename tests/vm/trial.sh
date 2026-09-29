@@ -8,10 +8,14 @@ set -eu
 # a healthy trial: microcode needs a reboot.
 "$vm" ssh "/usr/local/bin/os add --yes amd-ucode" | tail -n 2
 show_env
+# until that reboot, the machine can't hibernate: resuming would start the
+# new kernel with the old one's memory.
+check "grep -c AllowHibernation=no /run/systemd/sleep.conf.d/yoq.conf" 1
 "$vm" reboot
 settled
 check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'the default now'" 1
 on_trial no
+check "test -e /run/systemd/sleep.conf.d/yoq.conf && echo blocked || echo free" free
 
 # an unhealthy trial: a service the config turns on that only starts
 # while a marker file exists. the trial boot runs without the marker.
@@ -49,4 +53,18 @@ before=$(second_newest)
 "$vm" ssh "echo not an initramfs > /boot/initramfs-linux.img"
 show_env
 falls_back "$before"
+# a trial that comes up without a network, on a config that turns on
+# networkmanager: it manages no devices there, so there's no default
+# route, and the machine falls back to the generation before.
+if "$vm" ssh "systemctl is-active -q NetworkManager.service"; then
+    "$vm" reboot
+    settled
+    "$vm" ssh "printf '[keyfile]\\nunmanaged-devices=*\\n' > /etc/NetworkManager/conf.d/99-yoq-test-off.conf"
+    "$vm" ssh "/usr/local/bin/os add --yes intel-ucode" | tail -n 1
+    on_trial yes
+    before=$(second_newest)
+    show_env
+    falls_back "$before"
+    check "journalctl -b -1 -u yoq-health --no-pager -o cat | grep -c 'no network'" 1
+fi
 echo "trial ok"

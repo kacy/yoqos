@@ -178,6 +178,7 @@ pub fn startFrom(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, target: 
         if (!try restoreConfig(ctx, a, c, reason)) return null;
     }
     try applying.collectOld(ctx, &m, generation.default_keep);
+    gens.blockHibernation(ctx.io);
     return made;
 }
 

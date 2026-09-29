@@ -217,6 +217,7 @@ pub fn recordGeneration(ctx: *Context, done: Outcome, reason: []const u8) !void 
 /// tries it, the default stays on the one before, and `os health` makes
 /// it the default once it has come up healthy.
 fn armTrial(ctx: *Context, a: Allocator, boot: facts.Boot) !void {
+    gens.blockHibernation(ctx.io);
     const records = try gens.readRecords(a, ctx.io, "/var");
     if (records.len < 2) return;
     const n = records[records.len - 1].n;

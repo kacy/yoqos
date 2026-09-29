@@ -44,6 +44,11 @@
   uninstall` see that a generation is waiting, even when `/var` moved.
 - `os gc` refuses to run from a boot menu copy of an older generation.
 - a limine trial that can't be set up no longer looks like a failed boot.
+- the health check also wants a default route within a minute when the
+  config turns on networkmanager, systemd-networkd, iwd, dhcpcd, or connman.
+- while a new generation waits for its reboot, the machine can't
+  hibernate, since resuming would start the new kernel with the old one's
+  memory.
 
 ## 0.1.0
 

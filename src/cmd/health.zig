@@ -9,6 +9,8 @@ const std = @import("std");
 const rootfs = @import("../rootfs.zig");
 const cli = @import("../cli.zig");
 const exec = @import("../exec.zig");
+const config = @import("../config.zig");
+const lists = @import("../lists.zig");
 const facts = @import("../facts.zig");
 const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
@@ -113,6 +115,48 @@ fn check(ctx: *Context, a: Allocator) ![]const []const u8 {
             if (c.kind == .unit and c.op != .remove) try down.append(a, try a.dupe(u8, c.subject));
         }
         if (down.items.len > 0) try out.append(a, try std.fmt.allocPrint(a, "not running: {s}", .{try std.mem.join(a, ", ", down.items)}));
+        // a machine the config puts on a network has to get there.
+        if (networked(result.state.config()) and !try hasRoute(ctx, a)) try out.append(a, "no network: no default route a minute into the boot");
     }
     return out.items;
+}
+
+/// units that bring a machine onto a network.
+const network_units = [_][]const u8{ "NetworkManager.service", "systemd-networkd.service", "iwd.service", "dhcpcd.service", "connman.service" };
+
+/// whether the config turns on a service that brings up a network.
+fn networked(c: *const config.Config) bool {
+    for (c.services.entries.items) |e| {
+        if (!e.value.isEnabled()) continue;
+        if (lists.contains(&network_units, e.value.unitFor(e.name))) return true;
+    }
+    return false;
+}
+
+/// whether the machine has a default route, ipv4 or ipv6, waiting up to
+/// a minute for one: a network that's slow to come up isn't a failure.
+fn hasRoute(ctx: *Context, a: Allocator) !bool {
+    for (0..30) |i| {
+        if (i > 0) _ = try exec.run(a, ctx.io, &.{ "sleep", "2" });
+        for ([_][]const u8{ "-4", "-6" }) |family| {
+            switch (try exec.output(a, ctx.io, &.{ "ip", family, "route", "show", "default" })) {
+                .ok => |t| if (std.mem.trim(u8, t, " \n").len > 0) return true,
+                .failed => {},
+            }
+        }
+    }
+    return false;
+}
+
+test "a config puts the machine on a network when it turns on a network service" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const src: config.Src = .{ .file = "machine.toml", .line = 1, .column = 1 };
+    var c: config.Config = .{};
+    try std.testing.expect(!networked(&c));
+    try c.services.entries.append(a, .{ .name = "networkmanager", .value = .{ .src = src } });
+    try std.testing.expect(networked(&c));
+    c.services.entries.items[0].value.enabled = .{ .v = false, .src = src };
+    try std.testing.expect(!networked(&c));
 }

@@ -169,7 +169,10 @@ the next boot runs the new generation, while the menu's default stays on
 the one before. once the machine is up, `yoq-health.service` checks it:
 systemd isn't in maintenance or shutting down, the display manager is
 running if there is one, and every service the config turns on is running.
-a oneshot service that ran and finished counts as running. if the check
+a oneshot service that ran and finished counts as running. when the config
+turns on something that brings up a network, like networkmanager,
+systemd-networkd, or iwd, the machine also has to get a default route
+within a minute; it doesn't need to reach the internet. if the check
 passes, the new generation becomes the default; if not, the machine reboots
 into the generation before.
 
@@ -186,6 +189,11 @@ and `os status` explains what happened:
 ```
 note: generation 7 didn't come up healthy, so this machine went back to generation 6. it's generation 8 now, with its config. `os rollback 7` tries 7 again.
 ```
+
+until that reboot, the machine can't hibernate. resuming goes through the
+bootloader, which would start the new generation's kernel with the memory
+of the one running now, so `os` turns hibernation off in `/run`, which the
+next boot clears. suspending to memory still works.
 
 two changes that need a reboot, applied before rebooting, make one trial:
 the next boot tries the newest, and falls back to the generation that last
@@ -226,9 +234,8 @@ generation booted from the menu, since that generation's record is what
   session you were in has the broken update. building the next generation
   separately, and booting it once to check it, is planned.
 - the health check is simple. it looks at systemd's state, the display
-  manager, and the config's services. a network that doesn't come up
-  passes unless a service the config turns on needs it, and so does a
-  desktop that starts but shows nothing useful.
+  manager, the config's services, and whether a networked machine got a
+  route. a desktop that starts but shows nothing useful still passes.
 - state is carried at the moment of the rollback. a password you change
   after `os rollback` but before the reboot stays behind. carrying it again
   at shutdown is planned.
@@ -248,7 +255,6 @@ generation booted from the menu, since that generation's record is what
 ## later
 
 - carrying state again at shutdown, and the uid map for system users
-- a network check for configs that declare one
 - systemd-boot, and trial boots on refind
 - more root layouts
 - building the next generation apart from the running system, so a bad

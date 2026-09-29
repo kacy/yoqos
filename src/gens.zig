@@ -503,6 +503,24 @@ pub fn writeUnits(a: Allocator, io: std.Io, root: []const u8, os_path: []const u
     return null;
 }
 
+/// where the hibernation block goes: in /run, so the next boot, whichever
+/// generation it runs, lifts it.
+pub const no_hibernate = "/run/systemd/sleep.conf.d/yoq.conf";
+
+/// keeps the machine from hibernating until it reboots. resuming goes
+/// through the bootloader, which would start the next generation's kernel
+/// with the memory of the one running now.
+pub fn blockHibernation(io: std.Io) void {
+    rootfs.writeAtomic(io, no_hibernate,
+        \\# written by os: a new generation is waiting for the next boot.
+        \\[Sleep]
+        \\AllowHibernation=no
+        \\AllowHybridSleep=no
+        \\AllowSuspendThenHibernate=no
+        \\
+    , null) catch {};
+}
+
 /// where limine's copies of boot files go, on the esp.
 pub const esp_boot_dir = "yoq/boot";
 
