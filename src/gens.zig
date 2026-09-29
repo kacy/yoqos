@@ -12,6 +12,7 @@ const facts = @import("facts.zig");
 const generation = @import("generation.zig");
 const menu = @import("menu.zig");
 const enable = @import("enable.zig");
+const accounts = @import("accounts.zig");
 const trial = @import("trial.zig");
 const Allocator = std.mem.Allocator;
 
@@ -364,7 +365,8 @@ pub const Machine = struct {
     }
 
     /// carries the running machine's own state into the root at `subvol`:
-    /// its identity, host keys, clock, id ranges, keyring, and passwords.
+    /// its identity, host keys, clock, id ranges, keyring, passwords, and
+    /// the system accounts it lacks.
     /// a generation holds the system, not these.
     pub fn carry(m: *const Machine, subvol: []const u8) !?[]const u8 {
         const root = try m.at(&.{subvol});
@@ -387,8 +389,21 @@ pub const Machine = struct {
         }
         const fs: rootfs.Root = .{ .a = m.a, .io = m.io, .dir = root };
         const here: rootfs.Root = .{ .a = m.a, .io = m.io, .dir = "/" };
-        const merged = try generation.mergeShadow(m.a, try here.read("etc/shadow"), try fs.read("etc/shadow"));
-        fs.writeMode("etc/shadow", merged, 0o600) catch return try std.fmt.allocPrint(m.a, "can't write {s}/etc/shadow", .{root});
+        // system accounts it lacks, so an id given out once stays taken,
+        // and a package installed again there gets its old one.
+        const users = try accounts.merge(m.a, try here.read("etc/passwd"), try fs.read("etc/passwd"));
+        const groups = try accounts.merge(m.a, try here.read("etc/group"), try fs.read("etc/group"));
+        const shadow = try accounts.addLines(m.a, try generation.mergeShadow(m.a, try here.read("etc/shadow"), try fs.read("etc/shadow")), try here.read("etc/shadow"), users.added, 7);
+        const gshadow = try accounts.addLines(m.a, try fs.read("etc/gshadow"), try here.read("etc/gshadow"), groups.added, 2);
+        const files = [_]struct { []const u8, []const u8, u32 }{
+            .{ "etc/passwd", users.text, 0o644 },
+            .{ "etc/group", groups.text, 0o644 },
+            .{ "etc/shadow", shadow, 0o600 },
+            .{ "etc/gshadow", gshadow, 0o600 },
+        };
+        for (files) |f| {
+            fs.writeMode(f[0], f[1], f[2]) catch return try std.fmt.allocPrint(m.a, "can't write {s}/{s}", .{ root, f[0] });
+        }
         return null;
     }
 

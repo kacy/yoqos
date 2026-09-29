@@ -56,6 +56,7 @@ refind)
     tests/vm/rollback.sh
     tests/vm/trial.sh
     tests/vm/desktop.sh
+    tests/vm/ids.sh
     tests/vm/leave.sh
     ;;
 esac

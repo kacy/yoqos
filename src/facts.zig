@@ -151,6 +151,9 @@ pub const Facts = struct {
     users: []User = &.{},
     /// pacman transactions since the last apply, from the drift hook.
     pacman_changes: []PacmanChange = &.{},
+    /// system accounts whose id isn't the one os first saw them with, or
+    /// ids that went to another name, as sentences.
+    id_changes: []const []const u8 = &.{},
     /// the files the config manages that exist.
     files: []File = &.{},
     /// modules mkinitcpio puts in the initramfs, from mkinitcpio.conf and

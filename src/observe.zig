@@ -7,6 +7,7 @@
 const std = @import("std");
 const exec = @import("exec.zig");
 const generation = @import("generation.zig");
+const accounts = @import("accounts.zig");
 const menu = @import("menu.zig");
 const facts = @import("facts.zig");
 const alpm = @import("alpm.zig");
@@ -43,6 +44,7 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
         f.users = try users(a, passwd, try r.file("etc/group") orelse "");
     }
     f.pacman_changes = try drift.since(a, io, opts.root);
+    f.id_changes = try accounts.changes(a, try accounts.parseHistory(a, try r.file(accounts.history_path) orelse ""), try accounts.systemIds(a, try r.file("etc/passwd") orelse "", try r.file("etc/group") orelse ""));
     f.files = try files(a, io, opts.root, opts.wanted.files);
     f.pacman = try pacmanSetup(a, io, r, opts.wanted.keys);
     f.initramfs_modules = try r.mkinitcpio("MODULES");

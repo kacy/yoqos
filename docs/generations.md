@@ -130,7 +130,12 @@ directories stay as they are either way, and so does the machine's own
 state: every new root, and every copy the menu boots, gets the running
 system's passwords, ssh host keys, machine id, clock setting, id ranges,
 and pacman keyring. users and everything else in `/etc` belong to the
-generation. a generation waiting for the next boot gets them once more as the
+generation, with one exception: system accounts that packages make, like
+`postgres` or `chrony`, come along into every root os makes, as they are.
+an older generation then has accounts for packages it doesn't have, but an
+id given out once is never given to anyone else, and a package installed
+again gets its old id back, along with the files in `/var` it owns. `os
+status` says if a system account's id ever changes anyway. a generation waiting for the next boot gets them once more as the
 machine shuts down, from `yoq-carry.service`, so a password you change
 between `os rollback` and the reboot comes along too.
 
@@ -267,7 +272,6 @@ generation booted from the menu, since that generation's record is what
 
 ## later
 
-- the uid map for system users
 - more root layouts
 - building the next generation apart from the running system, so a bad
   update never touches the session you're in

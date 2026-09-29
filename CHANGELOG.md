@@ -53,6 +53,10 @@
 - while a new generation waits for its reboot, the machine can't
   hibernate, since resuming would start the new kernel with the old one's
   memory.
+- system accounts packages make come along into every root os makes, so
+  an id is never given to a different account after a rollback, and a
+  package installed again gets its files in `/var` back. `os status` says
+  if a system account's id changes anyway.
 - a generation waiting for the reboot gets the machine's passwords and
   state once more at shutdown, so a password changed after `os rollback`
   isn't left behind.

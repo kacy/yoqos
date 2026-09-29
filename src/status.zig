@@ -53,6 +53,8 @@ pub const Status = struct {
         pacman: []const []const u8,
         /// the boot menu file that lost os's entries.
         menu: ?[]const u8 = null,
+        /// system ids that aren't what they first were.
+        ids: []const []const u8 = &.{},
     },
     /// configured services whose units failed.
     failing: []const []const u8,
@@ -128,6 +130,7 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
             .pacnew_managed = pacnew_managed.items,
             .pacman = try pacmanTouched(a, f),
             .menu = f.boot.menu_missing,
+            .ids = f.id_changes,
         },
         .failing = failing.items,
     };
@@ -191,6 +194,7 @@ pub fn writeText(w: *std.Io.Writer, s: *const Status) !void {
     if (ch.pacnew_managed.len > 0) try rows.list("new upstream defaults for files os writes", ch.pacnew_managed, "os keeps its version; the .pacnew is for reference");
     if (ch.pacman.len > 0) try rows.list("touched with pacman since the last apply", ch.pacman, "os plan shows what differs");
     if (ch.menu) |m| try rows.list("boot menu without os's generations", &.{m}, "os gc writes them again");
+    if (ch.ids.len > 0) try rows.list("system ids changed", ch.ids, "files they own may now belong to someone else; chown them");
     if (rows.first) try w.writeAll("changed   none\n");
 
     try w.writeAll("failing   ");

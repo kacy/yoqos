@@ -19,6 +19,7 @@ const catalog = @import("../catalog.zig");
 const facts = @import("../facts.zig");
 const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
+const accounts = @import("../accounts.zig");
 const trial = @import("../trial.zig");
 const locking = @import("lock.zig");
 const diag = @import("../diag.zig");
@@ -162,6 +163,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.Render
         return Outcome.failed(&w);
     };
     try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "done", &hash);
+    try recordIds(ctx, a);
     var code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units);
     if (w.diags.items.items.len > problems) code = try scriptsFailed(ctx, w.diags.items.items[problems..]);
     if (units and !ctx.json and changesPackages(p)) try offerRestarts(ctx, yes);
@@ -171,6 +173,15 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.Render
         .changed_generation = cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol),
         .needs_reboot = (try p.rebootReasons(a)).len > 0,
     };
+}
+
+/// adds the system accounts packages made to the history of system ids,
+/// which `os status` checks later ids against.
+fn recordIds(ctx: *Context, a: Allocator) !void {
+    const fs: rootfs.Root = .{ .a = a, .io = ctx.io, .dir = ctx.root };
+    const seen = try accounts.systemIds(a, try fs.read("etc/passwd"), try fs.read("etc/group"));
+    const lines = try accounts.newHistory(a, try accounts.parseHistory(a, try fs.read(accounts.history_path)), seen);
+    if (lines.len > 0) fs.append(accounts.history_path, lines) catch {};
 }
 
 /// an apply that worked can still leave `problems`: hooks or package
