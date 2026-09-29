@@ -10,9 +10,10 @@ to use it today.
 up to date, tells you what's different, and applies the difference. `os
 apply` installs and removes packages, sets the `[system]` settings, turns
 services on and off, creates users and sets their shells and groups, and
-writes files and sysctl settings. on a btrfs root with grub, limine, or
-refind, `os enable-rollback` adds whole-system generations; see
-[generations.md](generations.md).
+writes files and sysctl settings. on a btrfs root with grub, limine,
+refind, or systemd-boot, `os enable-rollback` adds whole-system
+generations, and a change that needs a reboot is then built beside the
+running system instead of into it; see [generations.md](generations.md).
 
 | command | what it does |
 | --- | --- |

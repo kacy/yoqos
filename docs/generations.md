@@ -284,4 +284,8 @@ generation booted from the menu, since that generation's record is what
 
 ## later
 
-- more root layouts
+- more root layouts, like one snapper has rolled back
+- old locks rebuilt from the arch linux archive, for packages no mirror or
+  local cache has any more
+- system accounts with the same ids on every machine a config repository
+  describes, so restoring a backup onto a new machine keeps ownership

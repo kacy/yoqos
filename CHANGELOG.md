@@ -1,6 +1,12 @@
 # changelog
 
-## unreleased
+## 0.1.2
+
+generations work with every bootloader arch users run, and each one falls
+back on its own from a trial boot that doesn't come up. a change that needs
+a reboot is built beside the running system instead of into it. a machine
+can be installed straight from its config repository, from yoq os's own
+live iso, and `os uninstall` takes it all back off.
 
 ### every bootloader arch users run
 
