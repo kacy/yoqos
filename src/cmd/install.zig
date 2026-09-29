@@ -19,6 +19,7 @@ const applying = @import("apply.zig");
 const building = @import("build.zig");
 const locking = @import("lock.zig");
 const updating = @import("update.zig");
+const health = @import("health.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
@@ -176,8 +177,16 @@ const Installer = struct {
         for (install.tools) |t| {
             if (!rootfs.pathExists(ctx.io, try std.fmt.allocPrint(in.a, "/usr/bin/{s}", .{t}))) try missing.append(in.a, t);
         }
+        var sudo_user = false;
+        if (l.package("sudo") != null) {
+            for (c.users.entries.items) |u| sudo_user = sudo_user or u.value.groups.contains("wheel");
+        }
         return .{
             .missing = missing.items,
+            .virtual = try exec.run(in.a, ctx.io, &.{ "systemd-detect-virt", "-q" }) == null,
+            .firmware = l.package("linux-firmware") != null,
+            .network = health.networked(c),
+            .sudo_user = sudo_user,
             .disk = in.disk,
             .size = size,
             .whole = rootfs.pathExists(ctx.io, try std.fmt.allocPrint(in.a, "/sys/class/block/{s}", .{name})) and

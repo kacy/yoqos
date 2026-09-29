@@ -447,6 +447,17 @@ pub fn lockMachine() ?[]const u8 {
     return null;
 }
 
+/// asks for a line of text, with `default` for an empty answer. null at
+/// the end of input.
+pub fn ask(ctx: *Context, a: std.mem.Allocator, question: []const u8, default: ?[]const u8) !?[]const u8 {
+    if (default) |d| try ctx.out.print("{s} [{s}] ", .{ question, d }) else try ctx.out.print("{s} ", .{question});
+    try ctx.out.flush();
+    const read = ctx.in.?.takeDelimiter('\n') catch return null;
+    const answer = std.mem.trim(u8, read orelse return null, " \t\r");
+    if (answer.len == 0) return default;
+    return try a.dupe(u8, answer);
+}
+
 pub fn confirm(ctx: *Context, question: []const u8) !bool {
     try ctx.out.print("{s} [y/N] ", .{question});
     try ctx.out.flush();

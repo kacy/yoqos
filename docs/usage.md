@@ -46,7 +46,7 @@ each release on github has an arch package and a tarball, with a
 `sha256sums.txt` beside them:
 
 ```
-sudo pacman -U yoq-os-0.1.0-1-x86_64.pkg.tar.zst
+sudo pacman -U yoq-os-0.1.1-1-x86_64.pkg.tar.zst
 ```
 
 the package holds the `os` command, a pacman hook that records direct
@@ -60,7 +60,7 @@ repository's `main` branch, or `yoq-os` from a release tag with
 ```
 cd dist
 makepkg -si                              # yoq-os-git, from main
-YOQ_VERSION=0.1.0 makepkg -si            # yoq-os 0.1.0, from v0.1.0
+YOQ_VERSION=0.1.1 makepkg -si            # yoq-os 0.1.1, from v0.1.1
 YOQ_SOURCE=file://$PWD/.. makepkg -si    # this checkout
 ```
 
@@ -470,54 +470,140 @@ it stopped.
 
 ## installing a new machine
 
-from yoq os's own live iso, booted in uefi mode: it's arch's live iso,
-built from the same profile, with `os` and everything `os install` runs
-already on it. arch's own iso works too, with `os` added (`pacman -U` the
-release package, or copy the binary); on another live system, `pacman -S
-dosfstools btrfs-progs grub git` first, and `os install` names any that
-are missing:
+### what you need
 
-```
-os install https://github.com/you/machines --host atlas --disk /dev/nvme0n1
-```
+- the live iso, `yoq-os-<version>-x86_64.iso`, from a release. it's arch's
+  own live iso, built from the same profile, with `os` and everything `os
+  install` runs added.
+- a usb drive of 2 gb or more.
+- a machine that boots in uefi mode. secure boot has to be off: the iso
+  isn't signed for it, and `os` doesn't support it yet.
+- a config repository that describes the machine, or nothing at all:
+  `os init --new` writes one on the live system. see [a config for a new
+  machine](#a-config-for-a-new-machine).
 
-the first argument is the config repository, as a url or a directory.
-`--host atlas` picks `hosts/atlas/machine.toml` in a repository for several
-machines; without it, `os` uses the repository's own `machine.toml`. the
-disk gets erased.
+### step by step
 
-it shows its checks and what it will build, and asks first:
+1. write the iso to the drive, from any linux machine. everything on the
+   drive is erased; `lsblk` says which one it is.
 
-```
-install atlas on /dev/nvme0n1 (476 GiB). everything on it is erased.
+   ```
+   sudo dd if=yoq-os-0.1.1-x86_64.iso of=/dev/sdX bs=4M status=progress oflag=sync
+   ```
 
-disk      an esp of 1024 MiB at /boot, and btrfs for the rest:
-          @roots/1, @var, @home, @root, @srv, @usrlocal
-boot      grub, with generation 1 as its first entry
-packages  412 from the lock (2026-09-25)
-users     kacy
-services  18
-```
+2. boot the new machine from the drive, in uefi mode. it comes up at a
+   root shell, the same as arch's iso.
 
-then it partitions the disk, builds the machine the way `os build --clean`
-does, and records it as generation 1 of the layout `enable-rollback` makes,
-so the new machine has generations from its first boot. it asks for a
-password for root and each user, since the config never holds one; with
-`--yes` it doesn't ask, and the accounts stay locked until you set one.
-grub goes on the disk's removable boot path, which every firmware checks,
-and gets a boot entry of its own too when `efibootmgr` is there. `os`
-itself comes along as `/usr/local/bin/os`.
+3. get online. a wired connection comes up by itself. for wi-fi:
 
-mirrors only serve today's packages, so a lock from an earlier day needs
-`--update`: it resolves the config against today's packages first and
-commits the new lock to the fetched config, which you can push back
-afterwards. the lock's kernel and grub have to be in it, and aur packages
-wait until the machine is running: install without them, then add them
-back and run `os update` there.
+   ```
+   iwctl station wlan0 connect "my network"
+   ```
 
-after a reboot, `/etc/yoq` is the repository you installed from, and a
-machine whose hostname matches a directory under `hosts/` reads its config
-from there.
+4. find the disk to install on. everything on it is erased.
+
+   ```
+   lsblk
+   ```
+
+5. if you don't have a config for this machine yet, write one:
+
+   ```
+   os --config /root/machines/machine.toml init --new
+   ```
+
+   it asks for a name for the machine, your user name, and a time zone,
+   and looks at the hardware for the rest. `/root/machines` is then a
+   config repository to install from, in the next step, and to push
+   somewhere once the machine is up.
+
+6. install from the config repository:
+
+   ```
+   os install https://github.com/you/machines --host atlas --disk /dev/nvme0n1 --update
+   ```
+
+   the first argument is the repository, as a url or a directory.
+   `--host atlas` picks `hosts/atlas/machine.toml` in a repository for
+   several machines; without it, `os` uses the repository's own
+   `machine.toml`. for a private repository, git asks for your name and a
+   token, as it would anywhere else.
+
+   `--update` resolves the config against today's packages first, since
+   mirrors only keep today's. you'll nearly always want it: a lock from
+   any earlier day can't be installed as it is. the new lock is committed
+   to the repository `os` fetched, and ends up in `/etc/yoq` on the new
+   machine, so you can push it back from there.
+
+7. read what it's going to do, and say yes:
+
+   ```
+   install atlas on /dev/nvme0n1 (476 GiB). everything on it is erased.
+
+   disk      an esp of 1024 MiB at /boot, and btrfs for the rest:
+             @roots/1, @var, @home, @root, @srv, @usrlocal
+   boot      grub, with generation 1 as its first entry
+   packages  412 from the lock (2026-09-29)
+   users     kacy
+   services  18
+   ```
+
+8. set a password for root and each user when it asks. the config never
+   holds one.
+
+9. reboot, and take the drive out.
+
+the new machine runs generation 1, with generations from its first boot.
+`/etc/yoq` is the repository you installed from, and a machine whose
+hostname matches a directory under `hosts/` reads its config from there.
+`os` itself comes along as `/usr/local/bin/os`; installing the `yoq-os`
+package on the new machine puts the packaged one, and its pacman hook, in
+place.
+
+### what it does
+
+`os install` partitions the disk, then builds the machine the way `os
+build --clean` builds a root. it records the machine as generation 1 of
+the layout `enable-rollback` makes. grub goes on the disk's removable boot
+path, which every firmware checks, and gets a boot entry of its own too.
+with `--yes`, it doesn't ask anything, and the accounts stay locked until
+you give them a password with `passwd -R /mnt/yoq <user>` before
+rebooting.
+
+it checks first that the firmware is uefi and that the disk is a whole
+disk nothing has mounted. it also checks that the tools it runs are
+there, and that the lock has a kernel and grub. arch's own iso works too,
+with `os` added: `pacman -U` the release package, or copy the binary. on
+another live system, `pacman -S dosfstools btrfs-progs grub git` first.
+
+aur packages wait until the machine is running: install without them,
+then add them back and run `os update` there.
+
+### a config for a new machine
+
+`os init --new` writes a small config for a machine with nothing on it
+yet. it has what a new machine can't do without: a kernel and grub,
+`linux-firmware` on real hardware, the cpu's microcode and the gpu's
+driver from what the live system sees, networkmanager, a user in `wheel`,
+and sudo for them. `--hostname`, `--user`, `--timezone`, and `--ssh` answer
+its questions ahead of time, and without a terminal the first three are
+required.
+
+a config written for another machine only has what it lists, and `os`
+doesn't add anything. the install plan notes what a new machine usually
+needs and the config lacks, so check that it has:
+
+- a kernel, like `linux`, and `grub`;
+- `linux-firmware`, on real hardware, or wi-fi and some graphics won't
+  work;
+- something that brings up the network, like `[services] networkmanager =
+  true`, or the machine boots offline;
+- a user in `wheel`, and `sudo` in `packages`, or only root can log in to
+  run anything;
+- `[hardware] cpu`, so the right microcode loads.
+
+a config doesn't need a lock yet to be installed: `os install --update`
+makes one.
 
 ## clean builds
 

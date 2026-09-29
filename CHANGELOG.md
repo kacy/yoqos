@@ -1,5 +1,15 @@
 # changelog
 
+## unreleased
+
+- `os init --new` writes a config for a machine with nothing on it yet,
+  from a few questions and the hardware the live system sees: a kernel,
+  grub, firmware, microcode, a gpu driver, networkmanager, and a user who
+  can use sudo.
+- the install plan notes what a new machine usually needs and its config
+  lacks: firmware on real hardware, a network, and a user who can use sudo.
+- the usage docs walk through installing from a thumb drive, step by step.
+
 ## 0.1.1
 
 generations work with every bootloader arch users run, and each one falls

@@ -146,7 +146,7 @@ fn check(ctx: *Context, a: Allocator) ![]const []const u8 {
 const network_units = [_][]const u8{ "NetworkManager.service", "systemd-networkd.service", "iwd.service", "dhcpcd.service", "connman.service" };
 
 /// whether the config turns on a service that brings up a network.
-fn networked(c: *const config.Config) bool {
+pub fn networked(c: *const config.Config) bool {
     for (c.services.entries.items) |e| {
         if (!e.value.isEnabled()) continue;
         if (lists.contains(&network_units, e.value.unitFor(e.name))) return true;

@@ -12,16 +12,20 @@ trap '"$vm" stop' EXIT
 "$vm" ssh "for i in \$(seq 60); do systemctl is-active -q pacman-init.service && exit 0; sleep 2; done; exit 1"
 check "os version | grep -c ." 1
 
+# a config for this empty machine, from nothing: os init --new on the live
+# system, plus a way in over ssh for the test.
+"$vm" ssh "os --config /root/machines/machine.toml init --new --hostname yoq-iso --user tester --timezone UTC --ssh"
 key=$(cat "${VM_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/yoq-vm}/key.pub")
-sed "s|KEY|$key|" tests/vm/iso-machine.toml > /tmp/iso-machine.toml
-"$vm" ssh "mkdir -p /root/machines"
-"$vm" copy /tmp/iso-machine.toml /root/machines/machine.toml
-"$vm" ssh "cd /root/machines && git init -q && git add -A && git -c user.name=t -c user.email=t@localhost commit -q -m 'a machine for the iso test'"
+printf '\n[files."/root/.ssh/authorized_keys"]\ntext = "%s\\n"\nmode = "0600"\n' "$key" > /tmp/iso-access.toml
+"$vm" copy /tmp/iso-access.toml /root/iso-access.toml
+"$vm" ssh "cd /root/machines && cat /root/iso-access.toml >> machine.toml && git add -A && git -c user.name=t -c user.email=t@localhost commit -q -m 'a way in for the test'"
 
 "$vm" ssh "os install /root/machines --disk /dev/vda --update --yes" | tail -n 20
 
 "$vm" start-installed
 check "cat /etc/hostname" yoq-iso
+check "id -nG tester | tr ' ' '\\n' | grep -c '^wheel$'" 1
+check "test -e /etc/sudoers.d/10-wheel && echo sudo" sudo
 check "findmnt -no FSROOT /" /@roots/1
 check "findmnt -no FSROOT /etc/yoq" /@var/lib/yoq/config
 check "ls /var/lib/yoq/generations" 1.json

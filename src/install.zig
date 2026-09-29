@@ -44,6 +44,12 @@ pub const Found = struct {
     has_grub: bool,
     /// tools the install runs that aren't on the live system.
     missing: []const []const u8 = &.{},
+    /// what a new machine can't do without, which a config written for
+    /// another one may lack. the plan notes each that's missing.
+    virtual: bool = false,
+    firmware: bool = true,
+    network: bool = true,
+    sudo_user: bool = true,
 };
 
 /// what the install runs, from arch's live iso: its packages are
@@ -110,6 +116,11 @@ pub fn plan(a: Allocator, f: Found) !Plan {
         try summary.append(a, try std.fmt.allocPrint(a, "users     {s}", .{names}));
     }
     try summary.append(a, try std.fmt.allocPrint(a, "services  {d}", .{f.services}));
+    // not stops: a server may want no firmware or no sudo. but each is easy
+    // to miss in a config written for another machine.
+    if (!f.firmware and !f.virtual) try summary.append(a, "note: no linux-firmware in packages. wi-fi and some graphics won't work without it.");
+    if (!f.network) try summary.append(a, "note: nothing in the config brings up a network, like `networkmanager = true` in [services].");
+    if (!f.sudo_user) try summary.append(a, "note: no user in wheel with sudo installed, so only root can run anything as root.");
     return .{ .checks = checks.items, .summary = summary.items };
 }
 
@@ -194,4 +205,18 @@ test "what stops an install" {
     const q = try plan(a, f);
     try testing.expect(!q.ready());
     try testing.expectEqualStrings("missing mkfs.btrfs", q.checks[1].found);
+    f.missing = &.{};
+    f.firmware = false;
+    f.network = false;
+    const r = try plan(a, f);
+    try testing.expect(r.ready());
+    try testing.expectEqual(2, notes(r.summary));
+    f.virtual = true;
+    try testing.expectEqual(1, notes((try plan(a, f)).summary));
+}
+
+fn notes(lines: []const []const u8) usize {
+    var n: usize = 0;
+    for (lines) |l| n += @intFromBool(std.mem.startsWith(u8, l, "note: "));
+    return n;
 }

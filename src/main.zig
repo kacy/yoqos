@@ -86,6 +86,7 @@ test {
     _ = @import("uninstall.zig");
     _ = @import("install.zig");
     _ = @import("accounts.zig");
+    _ = @import("newconfig.zig");
     _ = @import("cmd/install.zig");
     _ = @import("cmd/diff.zig");
     _ = @import("cmd/doctor.zig");
