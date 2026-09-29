@@ -33,6 +33,7 @@ trap '"$vm" stop' EXIT
 "$vm" ssh "cd /root && sh smoke.sh /usr/local/bin/os"
 case ${VM_IMAGE:-cloud} in
 ext4)
+    tests/vm/build.sh
     # generations need btrfs: enable-rollback says so, and changes nothing.
     tests/vm/manage.sh "root filesystem: ext4"
     tests/vm/aur.sh

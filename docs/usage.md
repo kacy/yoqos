@@ -415,6 +415,30 @@ own state in `/var/lib/yoq`. the config and its git history stay in
 `/etc/yoq`. if a step fails, running `os uninstall` again picks up where
 it stopped.
 
+## clean builds
+
+```
+sudo os build --clean /var/tmp/clean
+```
+
+builds a whole root in a new directory from the config and the lock
+alone, the way pacstrap would: the locked packages, then everything else
+the config sets. it takes this machine's pacman setup, keyring, and uid
+map, and packages come from `os`'s own cache when it has them. afterwards
+it lists what this machine has in `/etc` and `/usr` that the build
+doesn't: files nothing in the config or its packages explains, and files
+in `/etc` whose content differs. machine state like `/etc/shadow`, the
+machine id, and ssh host keys is left out of the comparison. `--json` gives
+the whole list.
+
+the directory can't exist yet. `os` makes it itself, readable only by
+root, since the build runs package scripts as root inside it, and nobody
+else should have been able to put anything there first. everything the
+build mounts inside it is unmounted when it ends, however it ends.
+
+the build is the first half of an installer: the same steps, aimed at a
+blank disk instead of a directory.
+
 ## the config
 
 `machine.toml` is plain toml. a full example:
@@ -645,13 +669,18 @@ key = "EF925EA60F33D0CB85C44AD13056513887B78AEB"
 
 a repository here works like one in pacman.conf, and travels with the
 config to a new machine. it can't be in both: move it out of pacman.conf
-when you move it into the config, or `os plan` says so. `os` writes every configured repository to
-`/etc/pacman.d/yoq-repos.conf` and adds one line to the end of pacman.conf
-that includes it, so plain `pacman` sees them too, after arch's own. `key`
-is the full fingerprint of the key its packages are signed with: `os`
-imports it into pacman's keyring and signs it locally, and packages from
-the repository must then be signed by it. without a key, its packages
-aren't checked, the way pacman's `SigLevel = Optional TrustAll` works.
+when you move it into the config, or `os plan` says so. `os` writes every
+configured repository to `/etc/pacman.d/yoq-repos.conf` and adds one line
+to the end of pacman.conf that includes it, so plain `pacman` sees them
+too, after arch's own.
+
+`key` is the full fingerprint of the key its packages are signed with:
+`os` imports it into pacman's keyring and signs it locally, and packages
+from the repository must then be signed by it. without a key, its
+packages aren't checked, the way pacman's `SigLevel = Optional TrustAll`
+works. that's fine over https, or for a `file://` repository on the
+machine itself, but a plain `http://` server needs a key: otherwise anyone
+between you and it could hand you their own packages.
 
 `os update` resolves against a new repository before any apply, so adding
 one and updating is enough. the lock pins each package by hash, but a
@@ -676,16 +705,21 @@ and the lock pins each package by hash and by the recipe commit it was
 built from. a recipe that hasn't changed isn't built again.
 
 aur recipes run as code when they build, so `os update` shows a recipe
-before building it: the first time, every file in it, with the PKGBUILD
-and any install script in full, and after that, what changed since the
-locked commit. each one is a question of its own;
-`--yes` alone doesn't build an unreviewed recipe. without a terminal, `os
-update` stops, unless `--trust-aur` says to build them as they are.
+before building it: the first time, every file in it in full (binary
+files by name only), and after that, what changed since the locked
+commit. control characters show as escapes like `\x1b`, so a recipe can't
+move the cursor and hide a line from you. each recipe is a question of its
+own; `--yes` alone doesn't build an unreviewed one. without a terminal,
+`os update` stops, unless `--trust-aur` says to build them as they are.
+
+a recipe builds only under its own name: one whose `.SRCINFO` gives a
+different pkgbase is refused.
 
 an aur package that needs another aur package needs that one in `aur` too;
 `os` builds them in order. an `aur` list brings in devtools, which the
-builds need, and they build against today's arch packages. `os add`, `os remove`, and the like keep the
-recipes the lock already has; only `os update` builds.
+builds need, and they build against today's arch packages. `os add`, `os
+remove`, and the like keep the recipes the lock already has; only `os
+update` builds.
 
 ### includes
 

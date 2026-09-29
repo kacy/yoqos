@@ -448,6 +448,9 @@ pub fn validate(c: *const Config, diags: *diag.List) !void {
     }
     for (c.services.entries.items) |e| {
         if (!knownService(c, e.name)) try unknownService(diags, e.name, e.value.src);
+        if (e.value.unit) |u| {
+            if (!validUnitName(u.v)) try diags.add(.bad_value, u.src, "\"{s}\" isn't a unit name", .{u.v}, "a unit name ends in its type, like tailscaled.service, and uses letters, digits, and :-_.@\\");
+        }
     }
     inline for (comptime keysOf(System)) |key| {
         if (@field(c.system, key)) |v| {
@@ -463,8 +466,12 @@ pub fn validate(c: *const Config, diags: *diag.List) !void {
             try diags.add(.bad_value, r.src, "\"{s}\" can't be a repository's name here", .{e.name}, "use letters, digits, dashes, dots, and underscores, and not one of arch's own repositories");
         }
         if (r.server) |sv| {
-            if (!std.mem.startsWith(u8, sv.v, "https://") and !std.mem.startsWith(u8, sv.v, "http://") and !std.mem.startsWith(u8, sv.v, "file://")) {
+            if (!std.mem.startsWith(u8, sv.v, "https://") and !std.mem.startsWith(u8, sv.v, "http://") and !std.mem.startsWith(u8, sv.v, "file://") or hasControl(sv.v) or std.mem.indexOfScalar(u8, sv.v, ' ') != null) {
                 try diags.add(.bad_value, sv.src, "\"{s}\" isn't a server url", .{sv.v}, "servers start with https://, http://, or file://, like pacman.conf's");
+            } else if (std.mem.startsWith(u8, sv.v, "http://") and r.key == null) {
+                // unsigned packages over plain http: anyone on the way
+                // could hand the machine their own.
+                try diags.add(.bad_value, sv.src, "repos.{s} is plain http with no key", .{e.name}, "use https, or add the repository's signing key with `key = \"<fingerprint>\"`");
             }
         } else try diags.add(.bad_value, r.src, "repos.{s} needs a server", .{e.name}, "like `server = \"https://example.org/$repo/$arch\"`");
         if (r.key) |k| {
@@ -502,9 +509,10 @@ pub fn validate(c: *const Config, diags: *diag.List) !void {
         }
     }
     for (c.sysctl.entries.items) |e| {
-        if (e.name.len == 0 or std.mem.indexOfAny(u8, e.name, " =\n") != null) {
+        if (e.name.len == 0 or std.mem.indexOfAny(u8, e.name, " =") != null or hasControl(e.name)) {
             try diags.add(.bad_value, e.value.src, "\"{s}\" isn't a sysctl key", .{e.name}, "keys look like \"vm.swappiness\"");
         }
+        if (hasControl(e.value.v.text)) try diags.add(.bad_value, e.value.src, "sysctl.{s} has a line break or control character in it", .{e.name}, "a sysctl value is one line");
     }
     for (c.users.entries.items) |u| {
         if (!validUserName(u.name)) {
@@ -557,6 +565,27 @@ fn validMode(m: []const u8) bool {
         if (ch < '0' or ch > '7') return false;
     }
     return true;
+}
+
+/// a newline, tab, or other control character, which would start a new
+/// line or field in the files os writes from config values.
+fn hasControl(s: []const u8) bool {
+    for (s) |ch| {
+        if (ch < 0x20 or ch == 0x7f) return true;
+    }
+    return false;
+}
+
+/// systemd's unit names: a name and a type suffix, from letters, digits,
+/// and :-_.@\, and never starting with a dash, which tools would take for
+/// an option.
+fn validUnitName(n: []const u8) bool {
+    if (n.len == 0 or n[0] == '-') return false;
+    for (n) |ch| {
+        if (!std.ascii.isAlphanumeric(ch) and std.mem.indexOfScalar(u8, ":-_.@\\", ch) == null) return false;
+    }
+    const dot = std.mem.lastIndexOfScalar(u8, n, '.') orelse return false;
+    return dot > 0 and lists.contains(&.{ "service", "socket", "timer", "path", "target", "mount", "automount", "swap", "slice", "scope", "device" }, n[dot + 1 ..]);
 }
 
 /// pacman's rule: letters, digits, and @._+-, not starting with - or .
@@ -805,6 +834,10 @@ test "repositories name a server, and a key by its fingerprint" {
     try f.expectDiag(0, .bad_value, 3, "\"3056513887B78AEB\" isn't a key fingerprint");
     try f.expectDiag(1, .bad_value, 4, "\"core\" can't be a repository's name here");
     try f.expectDiag(2, .bad_value, 5, "\"ftp://x\" isn't a server url");
+    try testing.expect(validUnitName("getty@tty1.service"));
+    try testing.expect(!validUnitName("--root=/x"));
+    try testing.expect(!validUnitName("tailscaled"));
+    try testing.expect(hasControl("1\nkernel.x = 2"));
     try f.expectDiag(3, .bad_value, 6, "repos.mine needs a server");
 }
 

@@ -77,11 +77,14 @@ pub const Machine = struct {
             made.* = n;
             return null;
         };
-        _ = try m.forget(n);
-        _ = try m.drop(try m.at(&.{root}));
-        _ = try m.writeMenu(m.boot.root_subvol.?, records);
+        // what cleaning up couldn't do matters too: a menu left as it was
+        // written for the new root points at one that's gone.
+        const left = try m.forget(n) orelse try m.drop(try m.at(&.{root}));
+        const menu_left = try m.writeMenu(m.boot.root_subvol.?, records);
         // the running root's kernel goes back on the esp, if it left.
-        _ = try m.restoreBoot(m.boot.root_subvol.?);
+        const boot_left = try m.restoreBoot(m.boot.root_subvol.?);
+        if (menu_left orelse boot_left) |w| return try std.fmt.allocPrint(m.a, "{s}. putting the boot menu back failed too, so it may still name the root that was removed: {s}", .{ why, w });
+        if (left) |w| return try std.fmt.allocPrint(m.a, "{s}. generation {d} couldn't be removed either: {s}", .{ why, n, w });
         return why;
     }
 
@@ -154,7 +157,7 @@ pub const Machine = struct {
     /// the next generation number no subvolume has yet. a crash between a
     /// snapshot and its record can leave one behind without a record.
     fn free(m: *const Machine, records: []const generation.Record) !u32 {
-        var n = next(records);
+        var n = generation.next(records);
         while (true) : (n += 1) {
             const name = try std.fmt.allocPrint(m.a, "{d}", .{n});
             if (!rootfs.pathExists(m.io, try m.at(&.{ generation.gens_dir, name })) and
@@ -186,7 +189,7 @@ pub const Machine = struct {
         if (records.len == 0) return "no generations to put in the menu";
         // records come sorted by number.
         const latest = records[records.len - 1];
-        var newest_entry = try m.entry("head", try title(m.a, latest), head, cmdline);
+        var newest_entry = try m.entry("head", try generation.title(m.a, latest), head, cmdline);
         if (m.bootOnEsp()) newest_entry.esp_dir = "";
         try entries.append(m.a, newest_entry);
         var i = records.len;
@@ -196,7 +199,7 @@ pub const Machine = struct {
             if (r.n == latest.n) continue;
             const copy = try generation.bootCopy(m.a, r.n);
             if (try m.freshCopy(r.n, copy)) |w| return w;
-            try entries.append(m.a, try m.entry(try std.fmt.allocPrint(m.a, "gen-{d}", .{r.n}), try title(m.a, r), copy, cmdline));
+            try entries.append(m.a, try m.entry(try std.fmt.allocPrint(m.a, "gen-{d}", .{r.n}), try generation.title(m.a, r), copy, cmdline));
         }
         for (records) |r| {
             const from = r.from orelse continue;
@@ -267,12 +270,18 @@ pub const Machine = struct {
         try used.append(m.a, copy);
         const dest = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir, copy });
         if (rootfs.pathExists(m.io, dest)) return copy;
-        const tmp = try std.fmt.allocPrint(m.a, "{s}.yoq-new", .{dest});
-        if (try m.run(&.{ "cp", src, tmp }) orelse try m.run(&.{ "mv", "-f", tmp, dest })) |w| {
+        if (try m.replaceFile(src, dest)) |w| {
             why.* = w;
             return null;
         }
         return copy;
+    }
+
+    /// copies `src` beside `dest` and renames it into place, so `dest`
+    /// is never half written.
+    fn replaceFile(m: *const Machine, src: []const u8, dest: []const u8) !?[]const u8 {
+        const tmp = try std.fmt.allocPrint(m.a, "{s}.yoq-new", .{dest});
+        return exec.runAll(m.a, m.io, &.{ &.{ "cp", src, tmp }, &.{ "mv", "-f", tmp, dest } });
     }
 
     /// refind reads btrfs through its driver, so entries boot from each
@@ -331,14 +340,15 @@ pub const Machine = struct {
         }
         const fs: rootfs.Root = .{ .a = m.a, .io = m.io, .dir = root };
         const here: rootfs.Root = .{ .a = m.a, .io = m.io, .dir = "/" };
-        const merged = try mergeShadow(m.a, try here.read("etc/shadow"), try fs.read("etc/shadow"));
+        const merged = try generation.mergeShadow(m.a, try here.read("etc/shadow"), try fs.read("etc/shadow"));
         fs.writeMode("etc/shadow", merged, 0o600) catch return try std.fmt.allocPrint(m.a, "can't write {s}/etc/shadow", .{root});
         return null;
     }
 
     /// whether /boot is the esp, as archinstall sets it up. kernels then
     /// live outside every root, so each root keeps copies of its own in
-    /// its /boot directory, under the mount, where grub can read them.
+    /// its /boot directory, under the mount, where grub and refind read
+    /// them, and limine copies them from.
     pub fn bootOnEsp(m: *const Machine) bool {
         return std.mem.eql(u8, m.boot.esp orelse "", "/boot");
     }
@@ -368,9 +378,7 @@ pub const Machine = struct {
             const src = try std.fs.path.join(m.a, &.{ from, f });
             const dest = try std.fs.path.join(m.a, &.{ to, f });
             if (rootfs.pathExists(m.io, dest) and try m.run(&.{ "cmp", "-s", src, dest }) == null) continue;
-            const tmp = try std.fmt.allocPrint(m.a, "{s}.yoq-new", .{dest});
-            if (try m.run(&.{ "cp", src, tmp })) |w| return w;
-            if (try m.run(&.{ "mv", "-f", tmp, dest })) |w| return w;
+            if (try m.replaceFile(src, dest)) |w| return w;
         }
         for (old) |f| {
             if (lists.contains(new, f)) continue;
@@ -436,53 +444,6 @@ pub fn writeNotice(a: Allocator, io: std.Io, text: []const u8) !?[]const u8 {
 /// are added by name, and passwords are merged into /etc/shadow.
 const carried = [_][]const u8{ "etc/machine-id", "etc/adjtime", "etc/subuid", "etc/subgid", "etc/pacman.d/gnupg" };
 
-/// `target`'s shadow file with the password hash, and when it last
-/// changed, taken from `current` for every user both have. users only in
-/// one of them stay as they are.
-fn mergeShadow(a: Allocator, current: []const u8, target: []const u8) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, target, "\n"), '\n');
-    while (lines.next()) |line| {
-        if (line.len == 0) continue;
-        const name = line[0 .. std.mem.indexOfScalar(u8, line, ':') orelse line.len];
-        const now = findUser(current, name) orelse {
-            try out.print(a, "{s}\n", .{line});
-            continue;
-        };
-        // name:hash:lastchange:rest
-        var theirs = std.mem.splitScalar(u8, line, ':');
-        var ours = std.mem.splitScalar(u8, now, ':');
-        _ = theirs.next();
-        _ = ours.next();
-        const hash = ours.next() orelse "";
-        const changed = ours.next() orelse "";
-        _ = theirs.next();
-        _ = theirs.next();
-        try out.print(a, "{s}:{s}:{s}:{s}\n", .{ name, hash, changed, theirs.rest() });
-    }
-    return out.items;
-}
-
-fn findUser(shadow: []const u8, name: []const u8) ?[]const u8 {
-    var lines = std.mem.splitScalar(u8, shadow, '\n');
-    while (lines.next()) |line| {
-        if (line.len > name.len and std.mem.startsWith(u8, line, name) and line[name.len] == ':') return line;
-    }
-    return null;
-}
-
-/// the number the next generation gets.
-pub fn next(records: []const generation.Record) u32 {
-    var n: u32 = 1;
-    for (records) |r| n = @max(n, r.n + 1);
-    return n;
-}
-
-/// "yoq 2 · 2026-09-26 · add fd".
-pub fn title(a: Allocator, r: generation.Record) ![]const u8 {
-    return std.fmt.allocPrint(a, "yoq {d} · {s} · {s}", .{ r.n, try dateOf(a, r.time), r.reason });
-}
-
 /// every generation's record under `var_dir`, by number.
 pub fn readRecords(a: Allocator, io: std.Io, var_dir: []const u8) ![]const generation.Record {
     var out: std.ArrayList(generation.Record) = .empty;
@@ -520,6 +481,28 @@ pub fn recordPath(a: Allocator, var_dir: []const u8, n: u32) ![]const u8 {
 /// where limine's copies of boot files go, on the esp.
 pub const esp_boot_dir = "yoq/boot";
 
+/// grub-install's arguments for grub on `esp`, reading its menu from
+/// `boot_dir`, on the efi path grub boots from now: its own directory
+/// under EFI/, or the removable path, EFI/BOOT.
+pub fn grubInstall(a: Allocator, io: std.Io, esp: []const u8, boot_dir: []const u8) ![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, &.{ "grub-install", "--target=x86_64-efi", try std.fmt.allocPrint(a, "--efi-directory={s}", .{esp}), try std.fmt.allocPrint(a, "--boot-directory={s}", .{boot_dir}) });
+    var dir = std.Io.Dir.cwd().openDir(io, try std.fs.path.join(a, &.{ esp, "EFI" }), .{ .iterate = true }) catch {
+        try argv.append(a, "--removable");
+        return argv.items;
+    };
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |d| {
+        if (d.kind != .directory or std.ascii.eqlIgnoreCase(d.name, "BOOT")) continue;
+        dir.access(io, try std.fs.path.join(a, &.{ d.name, "grubx64.efi" }), .{}) catch continue;
+        try argv.append(a, try std.fmt.allocPrint(a, "--bootloader-id={s}", .{d.name}));
+        return argv.items;
+    }
+    try argv.append(a, "--removable");
+    return argv.items;
+}
+
 /// one of blkid's tags for a device, like its "UUID" or "PARTUUID".
 fn blkid(a: Allocator, io: std.Io, device: []const u8, tag: []const u8, why: *[]const u8) !?[]const u8 {
     return switch (try exec.output(a, io, &.{ "blkid", "-s", tag, "-o", "value", device })) {
@@ -534,36 +517,6 @@ fn blkid(a: Allocator, io: std.Io, device: []const u8, tag: []const u8, why: *[]
 fn fail(why: *[]const u8, message: []const u8) ?Machine {
     why.* = message;
     return null;
-}
-
-/// "2026-09-26" for unix seconds.
-pub fn dateOf(a: Allocator, secs: i64) ![]const u8 {
-    const es: std.time.epoch.EpochSeconds = .{ .secs = @intCast(secs) };
-    const day = es.getEpochDay().calculateYearDay();
-    const md = day.calculateMonthDay();
-    return std.fmt.allocPrint(a, "{d}-{d:0>2}-{d:0>2}", .{ day.year, md.month.numeric(), md.day_index + 1 });
-}
-
-test "passwords carry over, users don't" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const merged = try mergeShadow(arena.allocator(),
-        \\root:$6$new$root:20000::::::
-        \\kacy:$6$new$kacy:20001:0:99999:7:::
-        \\newuser:$6$x:20002::::::
-        \\
-    ,
-        \\root:$6$old$root:19000::::::
-        \\kacy:!:19001:0:99999:7:::
-        \\olduser:$6$y:19002::::::
-        \\
-    );
-    try std.testing.expectEqualStrings(
-        \\root:$6$new$root:20000::::::
-        \\kacy:$6$new$kacy:20001:0:99999:7:::
-        \\olduser:$6$y:19002::::::
-        \\
-    , merged);
 }
 
 test "records by number, and dates" {
@@ -581,5 +534,5 @@ test "records by number, and dates" {
     try std.testing.expectEqual(2, got.len);
     try std.testing.expectEqual(1, got[0].n);
     try std.testing.expectEqualStrings("/", got[0].from.?);
-    try std.testing.expectEqualStrings("yoq 2 · 2026-09-26 · add fd", try title(a, got[1]));
+    try std.testing.expectEqualStrings("yoq 2 · 2026-09-26 · add fd", try generation.title(a, got[1]));
 }

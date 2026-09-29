@@ -10,7 +10,6 @@ const std = @import("std");
 const exec = @import("exec.zig");
 const rootfs = @import("rootfs.zig");
 const generation = @import("generation.zig");
-const gens = @import("gens.zig");
 const facts = @import("facts.zig");
 const menu = @import("menu.zig");
 const Allocator = std.mem.Allocator;
@@ -78,10 +77,18 @@ pub const Store = struct {
                 });
             },
             .limine => {
-                const state = try std.fmt.allocPrint(s.a, "{d} {d}\n", .{ n, fallback.n });
-                rootfs.writeAtomic(s.io, limine_state, state, null) catch return try std.fmt.allocPrint(s.a, "can't write {s}", .{limine_state});
-                if (try s.bootctl("set-default", try menu.limineId(s.a, try gens.title(s.a, fallback)))) |w| return w;
-                return s.retry();
+                // the one-shot first, and the note of the trial last: a
+                // fallback default or a note without a one-shot would make
+                // the next boot look like a failed trial.
+                const why = try s.retry() orelse
+                    try s.bootctl("set-default", try menu.limineId(s.a, try generation.title(s.a, fallback))) orelse
+                    blk: {
+                        const state = try std.fmt.allocPrint(s.a, "{d} {d}\n", .{ n, fallback.n });
+                        rootfs.writeAtomic(s.io, limine_state, state, null) catch break :blk try std.fmt.allocPrint(s.a, "can't write {s}", .{limine_state});
+                        break :blk null;
+                    } orelse return null;
+                _ = try s.end();
+                return why;
             },
             .refind => return null,
         }
@@ -126,7 +133,7 @@ pub const Store = struct {
 
     /// the env file on the esp that grub reads the menu's choices from.
     fn envPath(s: Store) ![]const u8 {
-        return std.fs.path.join(s.a, &.{ s.esp, "yoq/grubenv" });
+        return std.fs.path.join(s.a, &.{ s.esp, generation.grubenv });
     }
 
     /// a generation number from the env file: "12", or "gen-12".

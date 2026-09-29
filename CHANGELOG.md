@@ -23,8 +23,22 @@
   in `/etc/yoq`, the pacman database back in `/var/lib/pacman`, and a
   bootloader set up the way arch sets it up. other generations stay unless
   you ask for them to go.
+- `os build --clean <dir>` builds a root from the config and the lock
+  alone, and lists what's on this machine that they don't explain.
 - `os` runs `/usr/bin/mkinitcpio` itself, not a wrapper earlier in `PATH`
   that might stop to ask a question.
+- files os writes are never readable by anyone else on the way to their
+  mode, and a symlink left where os writes its temporary copy isn't
+  followed.
+- a lock's aur recipe has to be a git commit, a recipe has to build under
+  its own name, and reviews show every file in a new recipe, with control
+  characters escaped so nothing can hide a line.
+- the config refuses a plain http repository without a key, a sysctl value
+  or server with a line break in it, and a unit name that isn't one.
+- right after `enable-rollback`, before the reboot, `os apply` and `os
+  uninstall` see that a generation is waiting, even when `/var` moved.
+- `os gc` refuses to run from a boot menu copy of an older generation.
+- a limine trial that can't be set up no longer looks like a failed boot.
 
 ## 0.1.0
 

@@ -14,8 +14,8 @@ const gens = @import("../gens.zig");
 const menu = @import("../menu.zig");
 const output = @import("../output.zig");
 const uninstall = @import("../uninstall.zig");
+const trial = @import("../trial.zig");
 const applying = @import("apply.zig");
-const enable_rollback = @import("enable_rollback.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
@@ -42,21 +42,8 @@ pub fn uninstallCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.out.writeAll("\nos can't leave this machine until the checks above pass.\n");
         return 1;
     }
-    if (!cli.eql(ctx.root, "/") or std.os.linux.geteuid() != 0) {
-        try ctx.err.writeAll("os: uninstall changes the running machine, so it needs root and no --root.\n");
-        return 1;
-    }
-    switch (applying.bootState(ctx.io)) {
-        .normal => {},
-        .copy => {
-            try ctx.err.writeAll("os: this boot runs a copy of an older generation. boot the newest one first, or keep this one with `os rollback --to-booted` and reboot.\n");
-            return 1;
-        },
-        .pending => {
-            try ctx.err.writeAll("os: a new generation is waiting for the next boot. reboot into it first.\n");
-            return 1;
-        },
-    }
+    if (try cli.needsHost(ctx, "uninstall changes the running machine")) return 1;
+    if (try applying.refused(ctx, applying.bootBlocker(ctx.io))) return 1;
     if (try cli.approve(ctx, yes, "uninstall", "uninstall?")) |code| return code;
     // asked apart, since keeping them is the safe answer.
     if (running and !drop and !yes and try cli.confirm(ctx, "delete every generation but this one too? otherwise they stay as btrfs subvolumes.")) {
@@ -141,29 +128,28 @@ const Uninstaller = struct {
     }
 
     fn units(u: *Uninstaller) !?[]const u8 {
-        for ([_][]const u8{
-            "multi-user.target.wants/yoq-health.service",
-            "timers.target.wants/yoq-watchdog.timer",
-            "yoq-health.service",
-            "yoq-watchdog.timer",
-            "yoq-watchdog.service",
-        }) |unit| {
-            if (try u.run(&.{ "rm", "-f", try std.fs.path.join(u.a, &.{ "/etc/systemd/system", unit }) })) |w| return w;
+        for (try enable.units(u.a, "")) |unit| {
+            const link = try unit.wantsLink(u.a) orelse unit.name;
+            for ([_][]const u8{ link, unit.name }) |rel| {
+                if (try u.run(&.{ "rm", "-f", try std.fs.path.join(u.a, &.{ "/etc/systemd/system", rel }) })) |w| return w;
+            }
         }
         return u.run(&.{ "systemctl", "daemon-reload" });
     }
 
     /// the database goes back to /var, in place of the symlink to it.
     fn pacmanDb(u: *Uninstaller) !?[]const u8 {
-        const moved = "/usr/lib/sysimage/pacman";
+        const moved = "/" ++ generation.pacman_db;
         const db = "/var/lib/pacman";
         const fresh = db ++ ".yoq-new";
         if (!u.exists(moved)) return null;
-        if (try u.run(&.{ "rm", "-rf", fresh })) |w| return w;
-        if (try u.run(&.{ "cp", "-a", "--reflink=auto", moved, fresh })) |w| return w;
-        if (try u.run(&.{ "rm", "-f", db })) |w| return w;
-        if (try u.run(&.{ "mv", fresh, db })) |w| return w;
-        return u.run(&.{ "rm", "-rf", moved });
+        return exec.runAll(u.a, u.ctx.io, &.{
+            &.{ "rm", "-rf", fresh },
+            &.{ "cp", "-a", "--reflink=auto", moved, fresh },
+            &.{ "rm", "-f", db },
+            &.{ "mv", fresh, db },
+            &.{ "rm", "-rf", moved },
+        });
     }
 
     fn bootMenu(u: *Uninstaller) !?[]const u8 {
@@ -173,7 +159,7 @@ const Uninstaller = struct {
             // grub reads its menu from /boot again, the way arch sets it up,
             // and grub-mkconfig names this root's subvolume.
             .grub => {
-                if (try u.run(try enable_rollback.grubInstall(u.a, u.ctx.io, esp, "/boot"))) |w| return w;
+                if (try u.run(try gens.grubInstall(u.a, u.ctx.io, esp, "/boot"))) |w| return w;
                 if (try u.run(&.{ "grub-mkconfig", "-o", "/boot/grub/grub.cfg" })) |w| return w;
                 if (!std.mem.eql(u8, esp, "/boot")) return u.run(&.{ "rm", "-rf", try std.fs.path.join(u.a, &.{ esp, "grub" }) });
                 return null;
@@ -181,12 +167,14 @@ const Uninstaller = struct {
             .limine => {
                 const conf_path = u.boot.loader_conf orelse return "can't find limine.conf";
                 const conf = std.Io.Dir.cwd().readFileAlloc(u.ctx.io, conf_path, u.a, .limited(1 << 20)) catch return "can't read limine.conf";
-                const entry = try u.plainEntry();
-                rootfs.writeAtomic(u.ctx.io, conf_path, try menu.spliceLimine(u.a, conf, try menu.limineOne(u.a, "Arch Linux", entry)), null) catch return "can't write limine.conf";
+                // an earlier run may have replaced os's section already.
+                if (std.mem.indexOf(u8, conf, menu.limine_begin) != null) {
+                    const text = try menu.spliceLimine(u.a, conf, try menu.limineOne(u.a, "Arch Linux", try u.plainEntry()));
+                    rootfs.writeAtomic(u.ctx.io, conf_path, text, null) catch return "can't write limine.conf";
+                }
                 // no one-shot or default left behind: the first entry boots.
-                _ = try u.run(&.{ "bootctl", "set-oneshot", "" });
-                _ = try u.run(&.{ "bootctl", "set-default", "" });
-                return null;
+                const store = trial.Store.of(u.a, u.ctx.io, u.boot) orelse return null;
+                return store.end();
             },
             .refind => {
                 const conf_path = u.boot.loader_conf orelse return "can't find refind.conf";

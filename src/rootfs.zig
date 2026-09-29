@@ -63,22 +63,57 @@ pub fn pathExists(io: std.Io, path: []const u8) bool {
 
 /// replaces the file at `path` in one step, making its directory if
 /// needed, so a crash leaves the old or the new content, never half of
-/// each. the new file has mode `bits`, or 0644, whatever the umask, and is
-/// on disk before it takes the old one's place.
+/// each. the new file has mode `bits`, or 0644, whatever the umask, from
+/// the moment it exists, and is on disk before it takes the old one's
+/// place. the temporary file beside it is made fresh, never through a
+/// symlink someone left there.
 pub fn writeAtomic(io: std.Io, path: []const u8, bytes: []const u8, bits: ?u32) error{WriteFailed}!void {
+    const linux = std.os.linux;
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp = std.fmt.bufPrint(&buf, "{s}.os-tmp", .{path}) catch return error.WriteFailed;
+    const tmp = std.fmt.bufPrintZ(&buf, "{s}.os-tmp", .{path}) catch return error.WriteFailed;
+    var dest_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dest = std.fmt.bufPrintZ(&dest_buf, "{s}", .{path}) catch return error.WriteFailed;
     const cwd = std.Io.Dir.cwd();
     if (std.fs.path.dirnamePosix(path)) |d| cwd.createDirPath(io, d) catch return error.WriteFailed;
-    errdefer cwd.deleteFile(io, tmp) catch {};
+    const mode: linux.mode_t = @intCast(bits orelse 0o644);
+    // one left by a crash goes first; unlink removes a symlink itself.
+    _ = linux.unlink(tmp);
+    const opened = linux.open(tmp, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true, .NOFOLLOW = true, .CLOEXEC = true }, mode);
+    if (linux.errno(opened) != .SUCCESS) return error.WriteFailed;
+    const fd: linux.fd_t = @intCast(opened);
+    errdefer _ = linux.unlink(tmp);
     {
-        var f = cwd.createFile(io, tmp, .{}) catch return error.WriteFailed;
-        defer f.close(io);
-        f.writeStreamingAll(io, bytes) catch return error.WriteFailed;
-        f.sync(io) catch return error.WriteFailed;
+        defer _ = linux.close(fd);
+        if (linux.errno(linux.fchmod(fd, mode)) != .SUCCESS) return error.WriteFailed;
+        var done: usize = 0;
+        while (done < bytes.len) {
+            const n = linux.write(fd, bytes[done..].ptr, bytes.len - done);
+            switch (linux.errno(n)) {
+                .SUCCESS => done += n,
+                .INTR => {},
+                else => return error.WriteFailed,
+            }
+        }
+        if (linux.errno(linux.fsync(fd)) != .SUCCESS) return error.WriteFailed;
     }
-    cwd.setFilePermissions(io, tmp, @enumFromInt(bits orelse 0o644), .{}) catch return error.WriteFailed;
-    cwd.rename(tmp, cwd, path, io) catch return error.WriteFailed;
+    if (linux.errno(linux.rename(tmp, dest)) != .SUCCESS) return error.WriteFailed;
+}
+
+test "an atomic write keeps its mode, and a symlink in the way stays untouched" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const dir = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.writeFile(io, .{ .sub_path = "victim", .data = "keep" });
+    try tmp.dir.symLink(io, "victim", "secret.os-tmp", .{});
+    try writeAtomic(io, try std.fmt.allocPrint(a, "{s}/secret", .{dir}), "hash", 0o600);
+    try std.testing.expectEqualStrings("keep", try tmp.dir.readFileAlloc(io, "victim", a, .limited(16)));
+    try std.testing.expectEqualStrings("hash", try tmp.dir.readFileAlloc(io, "secret", a, .limited(16)));
+    const st = try tmp.dir.statFile(io, "secret", .{});
+    try std.testing.expectEqual(0o600, @intFromEnum(st.permissions) & 0o777);
 }
 
 test "write, read, and append under a root" {

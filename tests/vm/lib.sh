@@ -83,13 +83,31 @@ boot_done() {
 }
 
 # waits up to 10 minutes for the vm to come up running the root $1. a boot
-# that doesn't answer, or answers from another root, is waited out.
+# that doesn't answer, or answers from another root, is waited out. if it
+# never comes, this shows what the machine is doing and fails.
 wait_root() {
     for _ in $(seq 60); do
         root=$(timeout 20 "$vm" ssh "findmnt -no FSROOT /" 2>/dev/null || true)
         [ "$root" = "$1" ] && return 0
         sleep 10
     done
+    echo "$name: no boot into $1 after 10 minutes; the machine shows:"
+    "$vm" ssh "findmnt -no FSROOT /; cat /proc/cmdline; systemctl is-active yoq-watchdog.timer multi-user.target; journalctl -b -u yoq-health -u yoq-watchdog.timer -u yoq-watchdog.service --no-pager -o cat | tail -n 10" || true
+    exit 1
+}
+
+# after a trial that shouldn't come up: the next boot runs generation $1
+# from its copy, and os took it on as the newest generation.
+falls_back() {
+    "$vm" reboot || true
+    wait_root "/@roots/boot-$1"
+    settled
+    check "/usr/local/bin/os history | tail -n 1 | grep -c 'fell back from'" 1
+}
+
+# the newest generation's number.
+newest() {
+    "$vm" ssh "ls /var/lib/yoq/generations | sort -n | tail -n 1 | cut -d. -f1"
 }
 
 # the number of the generation before the newest.

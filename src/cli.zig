@@ -18,6 +18,7 @@ const rollback = @import("cmd/rollback.zig");
 const hook = @import("cmd/hook.zig");
 const health = @import("cmd/health.zig");
 const uninstall = @import("cmd/uninstall.zig");
+const build_cmd = @import("cmd/build.zig");
 const enable_rollback = @import("cmd/enable_rollback.zig");
 const inspect = @import("cmd/inspect.zig");
 const edit = @import("cmd/edit.zig");
@@ -89,6 +90,7 @@ const commands = [_]Command{
     .{ .name = "why", .summary = "say which config line brings in a package", .handler = inspect.whyCmd },
     .{ .name = "config", .summary = "show the merged config (config show [--resolved])", .handler = inspect.configCmd },
     .{ .name = "facts", .summary = "show what os knows about this machine", .handler = inspect.factsCmd },
+    .{ .name = "build", .summary = "build a root from the config and lock alone, and list what they don't explain here", .handler = build_cmd.buildCmd, .hidden = true },
     .{ .name = "health", .summary = "check a generation on trial, at boot (yoq-health.service runs this)", .handler = health.healthCmd, .hidden = true },
     .{ .name = "record-pacman", .summary = "record a pacman transaction (the drift hook runs this)", .handler = hook.recordPacmanCmd, .hidden = true },
     .{ .name = "explain", .summary = "explain an error code, like E0213", .handler = explain },
@@ -379,6 +381,16 @@ pub fn approve(ctx: *Context, yes: bool, what: []const u8, question: []const u8)
     if (try confirm(ctx, question)) return null;
     try ctx.out.writeAll("the machine is as it was.\n");
     return 0;
+}
+
+/// commands that change the running machine itself, like its disk and
+/// boot menu, need root and no --root. says so and returns true when
+/// either is missing. `what` says why, like "uninstall changes the
+/// running machine".
+pub fn needsHost(ctx: *Context, what: []const u8) !bool {
+    if (eql(ctx.root, "/") and std.os.linux.geteuid() == 0) return false;
+    try ctx.err.print("os: {s}, so it needs root and no --root.\n", .{what});
+    return true;
 }
 
 pub fn confirm(ctx: *Context, question: []const u8) !bool {

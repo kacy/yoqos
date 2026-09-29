@@ -33,8 +33,9 @@ like one for `/home`, keep working. after a reboot, the machine runs
 generation 1, and the boot menu still offers the system as it was before.
 
 changes you make between running `enable-rollback` and rebooting stay in
-the old root, because generation 1 comes from the snapshot. that includes
-files in `/home`, so reboot right away. the old root is still in the menu
+the old root, because generation 1 comes from the snapshot. `os apply` and
+`os uninstall` know that and refuse until the reboot, but anything else you
+change, like files in `/home`, is left behind too, so reboot right away. the old root is still in the menu
 as "the system before generations" if you need something from it.
 
 if a step fails, `enable-rollback` undoes the steps before it and says
@@ -213,7 +214,9 @@ os gc --keep 2       # clean up now, keeping the newest two
 ```
 
 `--keep` is at least 1, since the newest generation always stays. `os
-history` marks pinned generations.
+history` marks pinned generations. `os gc` doesn't run from an older
+generation booted from the menu, since that generation's record is what
+`os rollback --to-booted` needs.
 
 ## what this doesn't do yet
 

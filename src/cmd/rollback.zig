@@ -117,7 +117,7 @@ fn listGenerations(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot) !u8 {
         if (std.mem.eql(u8, r.root, boot.root_subvol.?[1..])) running = r.n;
     }
     for (records) |r| {
-        try ctx.out.print("{s} {d: >3}  {s}  {s}{s}\n", .{ if (running == r.n) "*" else " ", r.n, try gens.dateOf(a, r.time), r.reason, if (r.pinned) "  (pinned)" else "" });
+        try ctx.out.print("{s} {d: >3}  {s}  {s}{s}\n", .{ if (running == r.n) "*" else " ", r.n, try generation.dateOf(a, r.time), r.reason, if (r.pinned) "  (pinned)" else "" });
     }
     return 0;
 }
@@ -149,7 +149,7 @@ fn rollbackGeneration(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, wan
 
     const source = if (to_booted) boot.root_subvol.? else try std.fmt.allocPrint(a, "/{s}/{d}", .{ generation.gens_dir, n });
     const reason = try std.fmt.allocPrint(a, "{s} {d}: {s}", .{ if (to_booted) "keep" else "rollback to", n, target.reason });
-    try ctx.out.print("generation {d} ({s} · {s}) becomes generation {d}, and the next boot runs it.\n/var and /home stay as they are.\n", .{ n, try gens.dateOf(a, target.time), target.reason, gens.next(records) });
+    try ctx.out.print("generation {d} ({s} · {s}) becomes generation {d}, and the next boot runs it.\n/var and /home stay as they are.\n", .{ n, try generation.dateOf(a, target.time), target.reason, generation.next(records) });
     if (try cli.approve(ctx, yes, "roll back", "roll back?")) |code| return code;
     const made = try startFrom(ctx, a, boot, target, source, reason) orelse return 1;
     try ctx.out.print("generation {d} is ready. reboot to start it.\n", .{made});
@@ -196,6 +196,9 @@ pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer w.deinit();
     const a = w.allocator();
     const boot = try w.generations() orelse return noGenerations(ctx);
+    // from a menu copy, collecting could take the record of the very
+    // generation this boot runs.
+    if (try applying.refused(ctx, applying.bootBlocker(ctx.io))) return 1;
     var why: []const u8 = "";
     const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse {
         try ctx.err.print("os: {s}\n", .{why});

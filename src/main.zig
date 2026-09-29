@@ -68,6 +68,7 @@ test {
     _ = @import("menu.zig");
     _ = @import("trial.zig");
     _ = @import("uninstall.zig");
+    _ = @import("cmd/build.zig");
     _ = @import("gens.zig");
     _ = @import("planner.zig");
     _ = @import("pipeline.zig");

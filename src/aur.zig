@@ -9,6 +9,7 @@ const std = @import("std");
 const exec = @import("exec.zig");
 const lists = @import("lists.zig");
 const rootfs = @import("rootfs.zig");
+const lock = @import("lock.zig");
 const Allocator = std.mem.Allocator;
 
 /// the local repository's name, as pacman and the lock see it.
@@ -123,6 +124,18 @@ pub const Dirs = struct {
     }
 };
 
+/// `text` with control characters other than newlines and tabs written
+/// as escapes, like "\\x1b".
+fn visible(a: Allocator, text: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (text) |ch| {
+        if ((ch < 0x20 and ch != '\n' and ch != '\t') or ch == 0x7f) {
+            try out.print(a, "\\x{x:0>2}", .{ch});
+        } else try out.append(a, ch);
+    }
+    return out.items;
+}
+
 /// the aur's recipes, fetched and built on a machine.
 pub const Builder = struct {
     a: Allocator,
@@ -149,7 +162,9 @@ pub const Builder = struct {
         // the remote's newest commit, after a clone or a fetch alike.
         const out = try b.gitOutput(&.{ "-C", dir, "rev-parse", "origin/HEAD" }) orelse
             return fail(why, try std.fmt.allocPrint(b.a, "{s}'s recipe has no commits: is it on the aur?", .{name}));
-        return std.mem.trim(u8, out, " \n");
+        const commit = std.mem.trim(u8, out, " \n");
+        if (!lock.validCommit(commit)) return fail(why, try std.fmt.allocPrint(b.a, "{s}'s recipe gave a commit that isn't one: {s}", .{ name, commit }));
+        return commit;
     }
 
     /// the recipe's .SRCINFO at `commit`, with the commit.
@@ -161,23 +176,28 @@ pub const Builder = struct {
     }
 
     /// what to review before building `commit`: what changed since
-    /// `from`, or for a recipe never built, every file in it and the
-    /// PKGBUILD and install scripts whole, since those run.
+    /// `from`, or for a recipe never built, every file in it whole, since
+    /// any of them can run. binary files are only named. control
+    /// characters show as escapes, so nothing in a recipe can move the
+    /// terminal's cursor and hide a line from the review.
     pub fn review(b: Builder, name: []const u8, from: ?[]const u8, commit: []const u8) ![]const u8 {
         const dir = try b.recipeDir(name);
         if (from) |f| {
-            if (try b.gitOutput(&.{ "-C", dir, "diff", "--stat", "-p", f, commit, "--", "." })) |d| return d;
+            if (try b.gitOutput(&.{ "-C", dir, "diff", "--stat", "-p", f, commit, "--", "." })) |d| return visible(b.a, d);
         }
         const files = try b.gitOutput(&.{ "-C", dir, "ls-tree", "-r", "--name-only", commit }) orelse "";
         var out: std.ArrayList(u8) = .empty;
         try out.print(b.a, "files in the recipe:\n{s}", .{files});
         var names = std.mem.tokenizeScalar(u8, files, '\n');
         while (names.next()) |f| {
-            if (!std.mem.eql(u8, f, "PKGBUILD") and !std.mem.endsWith(u8, f, ".install")) continue;
             const text = try b.gitOutput(&.{ "-C", dir, "show", try std.fmt.allocPrint(b.a, "{s}:{s}", .{ commit, f }) }) orelse continue;
+            if (std.mem.indexOfScalar(u8, text, 0) != null) {
+                try out.print(b.a, "\n--- {s} (binary, {d} bytes)\n", .{ f, text.len });
+                continue;
+            }
             try out.print(b.a, "\n--- {s}\n{s}", .{ f, text });
         }
-        return out.items;
+        return visible(b.a, out.items);
     }
 
     /// builds the recipe `info` names, at its commit, in the chroot, with

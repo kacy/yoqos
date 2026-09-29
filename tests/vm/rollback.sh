@@ -34,6 +34,8 @@ check "findmnt -no FSROOT /" "$VM_ROOT"
 
 root_mode=$("$vm" ssh "stat -c %a /root")
 "$vm" ssh /usr/local/bin/os enable-rollback --yes
+# until the reboot, changes would land on the root being left.
+check "/usr/local/bin/os apply --yes 2>&1 | grep -c 'waiting for the next boot'" 1
 "$vm" reboot
 
 check "findmnt -no FSROOT /" /@roots/1

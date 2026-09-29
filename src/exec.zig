@@ -20,8 +20,6 @@ pub fn output(a: Allocator, io: std.Io, argv: []const []const u8) error{OutOfMem
     return .{ .failed = if (out.len > 0) out else try std.fmt.allocPrint(a, "{s} failed", .{argv[0]}) };
 }
 
-/// runs `argv` for its effect. returns null when it succeeds, or what went
-/// wrong.
 /// runs `argv` like `run`, and keeps everything it printed, both streams,
 /// in the file at `log`. a failure says where the log is, with its last
 /// lines, since a build's reason can be on either stream.
@@ -56,11 +54,22 @@ fn lastLines(text: []const u8, n: usize) []const u8 {
     return t[start..];
 }
 
+/// runs `argv` for its effect. returns null when it succeeds, or what went
+/// wrong.
 pub fn run(a: Allocator, io: std.Io, argv: []const []const u8) error{OutOfMemory}!?[]const u8 {
     return switch (try output(a, io, argv)) {
         .ok => null,
         .failed => |why| why,
     };
+}
+
+/// runs each command in turn, stopping at the first that fails, and says
+/// why it failed.
+pub fn runAll(a: Allocator, io: std.Io, argvs: []const []const []const u8) error{OutOfMemory}!?[]const u8 {
+    for (argvs) |argv| {
+        if (try run(a, io, argv)) |why| return why;
+    }
+    return null;
 }
 
 test "a missing program and a failing one" {
@@ -71,4 +80,5 @@ test "a missing program and a failing one" {
     try std.testing.expectEqual(null, try run(a, std.testing.io, &.{"true"}));
     try std.testing.expectEqualStrings("false failed", (try run(a, std.testing.io, &.{"false"})).?);
     try std.testing.expectEqualStrings("hi\n", (try output(a, std.testing.io, &.{ "echo", "hi" })).ok);
+    try std.testing.expectEqualStrings("false failed", (try runAll(a, std.testing.io, &.{ &.{"true"}, &.{"false"}, &.{"os-no-such-tool"} })).?);
 }

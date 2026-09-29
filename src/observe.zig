@@ -171,7 +171,8 @@ const Reader = struct {
             b.top_is_default = switch (try exec.output(r.a, r.io, &.{ "btrfs", "subvolume", "get-default", "/" })) {
                 // "ID 5 (FS_TREE)" for the top level.
                 .ok => |t| std.mem.startsWith(u8, t, "ID 5 "),
-                .failed => true,
+                // not knowing isn't the same as knowing it's fine.
+                .failed => false,
             };
         }
         return b;
@@ -405,7 +406,7 @@ fn pacmanSetup(a: Allocator, io: std.Io, r: Reader, keys: []const []const u8) !f
 /// pacman's database directory under `root`: in /usr on the rollback rung,
 /// in /var otherwise.
 pub fn pacmanDb(a: Allocator, io: std.Io, root: []const u8) ![]const u8 {
-    const moved = try std.fs.path.join(a, &.{ root, "usr/lib/sysimage/pacman" });
+    const moved = try std.fs.path.join(a, &.{ root, generation.pacman_db });
     if (rootfs.pathExists(io, try std.fs.path.join(a, &.{ moved, "local" }))) return moved;
     return std.fs.path.join(a, &.{ root, "var/lib/pacman" });
 }

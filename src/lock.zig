@@ -180,7 +180,17 @@ pub fn parse(a: Allocator, path: []const u8, bytes: []const u8, diags: *diag.Lis
 const fix_hint = "restore it from git or run `os update`";
 
 fn validSha256(s: []const u8) bool {
-    if (s.len != 64) return false;
+    return lowerHex(s, 64);
+}
+
+/// a git commit id, as a lock's recipe holds one: 40 lowercase hex
+/// digits, and never something git would read as an option.
+pub fn validCommit(s: []const u8) bool {
+    return lowerHex(s, 40);
+}
+
+fn lowerHex(s: []const u8, len: usize) bool {
+    if (s.len != len) return false;
     for (s) |c| {
         if (!std.ascii.isDigit(c) and !(c >= 'a' and c <= 'f')) return false;
     }
@@ -247,7 +257,10 @@ const Reader = struct {
             .sha256 = try r.str(t, "sha256", prefix),
         };
         if (!validSha256(p.sha256)) return r.bad(t.get("sha256").?.span, "{s}sha256 isn't a sha-256 hash", .{prefix});
-        if (t.get("recipe") != null) p.recipe = try r.str(t, "recipe", prefix);
+        if (t.get("recipe")) |rv| {
+            p.recipe = try r.str(t, "recipe", prefix);
+            if (!validCommit(p.recipe.?)) return r.bad(rv.span, "{s}recipe isn't a git commit", .{prefix});
+        }
         if (t.get("depends")) |dv| {
             if (dv.data != .array) return r.wrong(dv, "depends", prefix, "a list");
             const items = dv.data.array.items.items;

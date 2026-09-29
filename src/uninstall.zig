@@ -22,10 +22,7 @@ pub const Plan = struct {
     steps: []const Step,
 
     pub fn ready(p: *const Plan) bool {
-        for (p.checks) |c| {
-            if (!c.ok) return false;
-        }
-        return true;
+        return enable.allOk(p.checks);
     }
 };
 
@@ -54,7 +51,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool) !Plan {
             .fix = try std.fmt.allocPrint(a, "without os, {s} boots the kernel arch installs in /boot, so the esp has to be mounted there.", .{@tagName(loader)}),
         });
         try steps.append(a, .{ .kind = .config_dir, .what = "move the config from " ++ enable.config_home ++ " back into /etc/yoq" });
-        try steps.append(a, .{ .kind = .units, .what = "remove yoq-health.service and yoq-watchdog.timer" });
+        try steps.append(a, .{ .kind = .units, .what = "remove os's units that run at boot: yoq-health.service and yoq-watchdog.timer" });
         if (b.pacman_moved) try steps.append(a, .{ .kind = .pacman_db, .what = "move the pacman database back to /var/lib/pacman" });
         try steps.append(a, .{ .kind = .boot_menu, .what = switch (loader) {
             .grub => "reinstall grub with a menu from grub-mkconfig in /boot/grub, booting this root",
@@ -72,11 +69,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool) !Plan {
 
 pub fn writeText(w: *std.Io.Writer, p: *const Plan) !void {
     if (p.checks.len > 0) {
-        try w.writeAll("checks\n");
-        for (p.checks) |c| {
-            try w.print("  {s}  {s}: {s}\n", .{ if (c.ok) "ok" else "no", c.what, c.found });
-            if (!c.ok) try w.print("        {s}\n", .{c.fix.?});
-        }
+        try enable.writeChecks(w, p.checks);
         try w.writeByte('\n');
     }
     try w.writeAll("steps\n");

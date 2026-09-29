@@ -34,6 +34,17 @@ pub const top_mount = "/run/yoq/top";
 /// every rollback. relative to a var directory.
 pub const records_dir = "lib/yoq/generations";
 
+/// where the rollback rung keeps the pacman database, in /usr beside the
+/// packages it describes. /var/lib/pacman links to it.
+pub const pacman_db = "usr/lib/sysimage/pacman";
+
+/// grub's env file, from the top of the esp.
+pub const grubenv = "yoq/grubenv";
+
+/// where enable-rollback notes the root the next boot runs, in the /var
+/// the machine runs now, so nothing changes the root it's leaving.
+pub const pending_path = "/var/lib/yoq/pending";
+
 /// whether a machine runs a generation: its root is one of @roots.
 pub fn running(root_subvol: ?[]const u8) bool {
     const sv = root_subvol orelse return false;
@@ -103,6 +114,12 @@ pub fn find(records: []const Record, n: u32) ?Record {
     return null;
 }
 
+/// a btrfs mount option that picks the subvolume, which each root sets
+/// for itself.
+pub fn subvolOption(o: []const u8) bool {
+    return std.mem.startsWith(u8, o, "subvol=") or std.mem.startsWith(u8, o, "subvolid=");
+}
+
 /// a generation's kernel command line, from the running one: the root is
 /// the btrfs filesystem by uuid, mounted from `subvol`; other rootflags
 /// and arguments stay as they are.
@@ -113,12 +130,12 @@ pub fn kernelArgs(a: Allocator, cmdline: []const u8, root_uuid: []const u8, subv
     var words = std.mem.tokenizeAny(u8, cmdline, " \t\n");
     while (words.next()) |w| {
         if (std.mem.startsWith(u8, w, "BOOT_IMAGE=") or std.mem.startsWith(u8, w, "initrd=") or std.mem.startsWith(u8, w, "root=")) continue;
-        // grub adds this on a trial boot; it's never part of an entry.
+        // a trial boot adds this; it's never part of an entry.
         if (std.mem.eql(u8, w, "yoq.trial")) continue;
         if (std.mem.startsWith(u8, w, "rootflags=")) {
             var opts = std.mem.tokenizeScalar(u8, w["rootflags=".len..], ',');
             while (opts.next()) |o| {
-                if (std.mem.startsWith(u8, o, "subvol=") or std.mem.startsWith(u8, o, "subvolid=")) continue;
+                if (subvolOption(o)) continue;
                 try flags.print(a, ",{s}", .{o});
             }
             continue;
@@ -128,6 +145,61 @@ pub fn kernelArgs(a: Allocator, cmdline: []const u8, root_uuid: []const u8, subv
     // a kernel that panics reboots, so a generation on trial falls back.
     const panic = if (std.mem.indexOf(u8, rest.items, " panic=") == null) " panic=10" else "";
     return std.fmt.allocPrint(a, "root=UUID={s} rootflags={s}{s}{s}", .{ root_uuid, flags.items, rest.items, panic });
+}
+
+/// `target`'s shadow file with the password hash, and when it last
+/// changed, taken from `current` for every user both have. users only in
+/// one of them stay as they are.
+pub fn mergeShadow(a: Allocator, current: []const u8, target: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, target, "\n"), '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const name = line[0 .. std.mem.indexOfScalar(u8, line, ':') orelse line.len];
+        const now = findUser(current, name) orelse {
+            try out.print(a, "{s}\n", .{line});
+            continue;
+        };
+        // name:hash:lastchange:rest
+        var theirs = std.mem.splitScalar(u8, line, ':');
+        var ours = std.mem.splitScalar(u8, now, ':');
+        _ = theirs.next();
+        _ = ours.next();
+        const hash = ours.next() orelse "";
+        const changed = ours.next() orelse "";
+        _ = theirs.next();
+        _ = theirs.next();
+        try out.print(a, "{s}:{s}:{s}:{s}\n", .{ name, hash, changed, theirs.rest() });
+    }
+    return out.items;
+}
+
+fn findUser(shadow: []const u8, name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, shadow, '\n');
+    while (lines.next()) |line| {
+        if (line.len > name.len and std.mem.startsWith(u8, line, name) and line[name.len] == ':') return line;
+    }
+    return null;
+}
+
+/// the number the next generation gets.
+pub fn next(records: []const Record) u32 {
+    var n: u32 = 1;
+    for (records) |r| n = @max(n, r.n + 1);
+    return n;
+}
+
+/// "yoq 2 · 2026-09-26 · add fd".
+pub fn title(a: Allocator, r: Record) ![]const u8 {
+    return std.fmt.allocPrint(a, "yoq {d} · {s} · {s}", .{ r.n, try dateOf(a, r.time), r.reason });
+}
+
+/// "2026-09-26" for unix seconds.
+pub fn dateOf(a: Allocator, secs: i64) ![]const u8 {
+    const es: std.time.epoch.EpochSeconds = .{ .secs = @intCast(secs) };
+    const day = es.getEpochDay().calculateYearDay();
+    const md = day.calculateMonthDay();
+    return std.fmt.allocPrint(a, "{d}-{d:0>2}-{d:0>2}", .{ day.year, md.month.numeric(), md.day_index + 1 });
 }
 
 // -- tests --
@@ -162,4 +234,26 @@ test "a generation's kernel command line" {
 test "which files in /boot a root keeps" {
     for ([_][]const u8{ "vmlinuz-linux", "vmlinuz-linux-lts", "amd-ucode.img", "initramfs-linux.img" }) |f| try testing.expect(bootFile(f));
     for ([_][]const u8{ "initramfs-linux-fallback.img", "grub", "EFI", "loader.conf" }) |f| try testing.expect(!bootFile(f));
+}
+
+test "passwords carry over, users don't" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const merged = try mergeShadow(arena.allocator(),
+        \\root:$6$new$root:20000::::::
+        \\kacy:$6$new$kacy:20001:0:99999:7:::
+        \\newuser:$6$x:20002::::::
+        \\
+    ,
+        \\root:$6$old$root:19000::::::
+        \\kacy:!:19001:0:99999:7:::
+        \\olduser:$6$y:19002::::::
+        \\
+    );
+    try testing.expectEqualStrings(
+        \\root:$6$new$root:20000::::::
+        \\kacy:$6$new$kacy:20001:0:99999:7:::
+        \\olduser:$6$y:19002::::::
+        \\
+    , merged);
 }

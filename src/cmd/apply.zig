@@ -75,23 +75,35 @@ pub fn blocker(ctx: *Context) ?[]const u8 {
 fn applyBlocker(ctx: *Context) ?[]const u8 {
     if (blocker(ctx)) |why| return why;
     if (!cli.eql(ctx.root, "/")) return null;
-    return switch (bootState(ctx.io)) {
+    return bootBlocker(ctx.io);
+}
+
+/// why nothing should change the running machine in this boot, if
+/// something shouldn't: it runs a menu copy of an older generation, or a
+/// newer one is waiting for the next boot.
+pub fn bootBlocker(io: std.Io) ?[]const u8 {
+    return switch (bootState(io)) {
         .normal => null,
-        .copy => "this boot runs a copy of an older generation from the boot menu, and os remakes that copy from its record. `os rollback --to-booted` keeps it as a generation of its own; apply works after a reboot into it",
-        .pending => "a new generation, from a rollback or enable-rollback, is waiting for the next boot, and an apply now would land on the root being left. reboot first",
+        .copy => "this boot runs a copy of an older generation from the boot menu, and os remakes that copy from its record. `os rollback --to-booted` keeps it as a generation of its own; reboot into that first",
+        .pending => "a new generation, from a rollback or enable-rollback, is waiting for the next boot, and a change now would land on the root being left. reboot first",
     };
 }
 
 /// how this boot stands with generations: running a menu copy of an
 /// older one, or with a newer one waiting for the next boot.
-pub fn bootState(io: std.Io) enum { normal, copy, pending } {
+fn bootState(io: std.Io) enum { normal, copy, pending } {
     var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const subvol = (observe.rootSubvol(a, io) catch return .normal) orelse return .normal;
     if (generation.bootCopyOf(subvol) != null) return .copy;
     const records = gens.readRecords(a, io, "/var") catch return .normal;
-    if (records.len == 0) return .normal;
+    if (records.len == 0) {
+        // enable-rollback moved /var into a subvolume of its own and put
+        // generation 1's record there, so this /var only has its note.
+        const root = std.Io.Dir.cwd().readFileAlloc(io, generation.pending_path, a, .limited(256)) catch return .normal;
+        return if (std.mem.eql(u8, std.mem.trim(u8, root, " \n"), subvol[1..])) .normal else .pending;
+    }
     return if (std.mem.eql(u8, records[records.len - 1].root, subvol[1..])) .normal else .pending;
 }
 

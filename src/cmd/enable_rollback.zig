@@ -40,10 +40,7 @@ pub fn enableRollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.out.writeAll("\nthis machine can't have generations until the checks above pass.\n");
         return 1;
     }
-    if (!cli.eql(ctx.root, "/") or std.os.linux.geteuid() != 0) {
-        try ctx.err.writeAll("os: enable-rollback changes the running machine's disk and boot menu, so it needs root and no --root.\n");
-        return 1;
-    }
+    if (try cli.needsHost(ctx, "enable-rollback changes the running machine's disk and boot menu")) return 1;
     if (try cli.approve(ctx, yes, "enable rollback", "enable rollback?")) |code| return code;
     try ctx.out.writeByte('\n');
     var e: Enabler = .{ .ctx = ctx, .a = a, .boot = f.boot, .time = std.Io.Timestamp.now(ctx.io, .real).toSeconds() };
@@ -205,12 +202,12 @@ const Enabler = struct {
     /// now, so the running root gets its own copy of the database too.
     fn movePacmanDb(e: *Enabler) !bool {
         const db = try std.fs.path.join(e.a, &.{ e.var_dir, "lib/pacman" });
-        const moved = try e.m.at(&.{ new_root, "usr/lib/sysimage/pacman" });
+        const moved = try e.m.at(&.{ new_root, generation.pacman_db });
         if (!try e.sh(&.{ "mkdir", "-p", std.fs.path.dirnamePosix(moved).? })) return false;
         if (e.moved_var) {
             if (!try e.sh(&.{ "mv", db, moved })) return false;
         } else {
-            const here = try e.m.at(&.{ e.boot.root_subvol.?, "usr/lib/sysimage/pacman" });
+            const here = try e.m.at(&.{ e.boot.root_subvol.?, generation.pacman_db });
             if (!try e.sh(&.{ "mkdir", "-p", std.fs.path.dirnamePosix(here).? })) return false;
             if (!try e.sh(&.{ "cp", "-a", "--reflink=auto", db, moved })) return false;
             if (!try e.sh(&.{ "cp", "-a", "--reflink=auto", db, here })) return false;
@@ -221,7 +218,7 @@ const Enabler = struct {
             try e.later(&.{ "rm", "-f", db });
             if (!try e.sh(&.{ "rm", "-rf", db })) return false;
         }
-        return e.sh(&.{ "ln", "-s", "/usr/lib/sysimage/pacman", db });
+        return e.sh(&.{ "ln", "-s", "/" ++ generation.pacman_db, db });
     }
 
     /// generation 1's /etc/yoq moves into its /var, and fstab mounts it
@@ -245,7 +242,7 @@ const Enabler = struct {
     fn stopSnapPac(e: *Enabler) !bool {
         const path = try e.m.at(&.{ new_root, "etc/snap-pac.ini" });
         const old = std.Io.Dir.cwd().readFileAlloc(e.ctx.io, path, e.a, .limited(1 << 16)) catch "";
-        std.Io.Dir.cwd().writeFile(e.ctx.io, .{ .sub_path = path, .data = try enable.snapPac(e.a, old) }) catch return e.failed("can't write {s}", .{path});
+        rootfs.writeAtomic(e.ctx.io, path, try enable.snapPac(e.a, old), null) catch return e.failed("can't write {s}", .{path});
         return true;
     }
 
@@ -254,14 +251,14 @@ const Enabler = struct {
     fn seal(e: *Enabler) !bool {
         const fstab_path = try e.m.at(&.{ new_root, "etc/fstab" });
         const old = std.Io.Dir.cwd().readFileAlloc(e.ctx.io, fstab_path, e.a, .limited(1 << 20)) catch "";
-        const fstab = try rewriteFstab(e.a, old, .{
+        const fstab = try enable.rewriteFstab(e.a, old, .{
             .uuid = e.m.root_uuid,
             .add_var = e.moved_var,
             .data = e.moved_data.items,
             .bind_config = e.moved_config,
             .esp = .{ .uuid = e.m.esp_uuid, .point = e.boot.esp.? },
         });
-        std.Io.Dir.cwd().writeFile(e.ctx.io, .{ .sub_path = fstab_path, .data = fstab }) catch return e.failed("can't write {s}", .{fstab_path});
+        rootfs.writeAtomic(e.ctx.io, fstab_path, fstab, null) catch return e.failed("can't write {s}", .{fstab_path});
         if (!try e.healthUnit()) return false;
         const gen = try e.m.at(&.{ generation.gens_dir, "1" });
         if (!try e.tried(btrfs.snapshot(try e.m.at(&.{new_root}), gen, true), "record generation 1")) return false;
@@ -277,72 +274,24 @@ const Enabler = struct {
         };
         if (try gens.writeRecord(e.a, e.ctx.io, e.var_dir, record)) |why| return e.failed("{s}", .{why});
         if (!e.moved_var) try e.later(&.{ "rm", "-f", try gens.recordPath(e.a, e.var_dir, 1) });
+        rootfs.writeAtomic(e.ctx.io, generation.pending_path, new_root[1..], null) catch return e.failed("can't write {s}", .{generation.pending_path});
+        try e.later(&.{ "rm", "-f", generation.pending_path });
         return true;
     }
 
-    /// the units generation 1 gets, enabled: yoq-health.service runs
-    /// `os health` at each boot, which ends a trial one way or the other,
-    /// and yoq-watchdog.timer reboots a trial boot that hangs before it.
+    /// the units generation 1 gets (see enable.units), turned on.
     fn healthUnit(e: *Enabler) !bool {
         // the packaged os outlasts a copy run from a build directory.
         const os_path = if (rootfs.pathExists(e.ctx.io, "/usr/bin/os")) "/usr/bin/os" else try std.process.executablePathAlloc(e.ctx.io, e.a);
-        const units = [_]struct { []const u8, []const u8, ?[]const u8 }{
-            .{
-                "yoq-health.service",
-                try std.fmt.allocPrint(e.a,
-                    \\[Unit]
-                    \\Description=Check that a generation on trial came up healthy
-                    \\After=multi-user.target graphical.target
-                    \\
-                    \\[Service]
-                    \\Type=oneshot
-                    \\ExecStart={s} health
-                    \\
-                    \\[Install]
-                    \\WantedBy=multi-user.target
-                    \\
-                , .{os_path}),
-                "multi-user.target",
-            },
-            .{
-                "yoq-watchdog.timer",
-                \\[Unit]
-                \\Description=Reboot a generation on trial that doesn't finish booting
-                \\ConditionKernelCommandLine=yoq.trial
-                \\
-                \\[Timer]
-                \\OnBootSec=5min
-                \\AccuracySec=10s
-                \\
-                \\[Install]
-                \\WantedBy=timers.target
-                \\
-                ,
-                "timers.target",
-            },
-            .{
-                "yoq-watchdog.service",
-                \\[Unit]
-                \\Description=Reboot a generation on trial that didn't finish booting
-                \\SuccessAction=reboot-force
-                \\
-                \\[Service]
-                \\Type=oneshot
-                \\ExecStart=/usr/bin/true
-                \\
-                ,
-                null,
-            },
-        };
+        const units = try enable.units(e.a, os_path);
         const dir = try e.m.at(&.{ new_root, "etc/systemd/system" });
         for (units) |u| {
-            const path = try std.fs.path.join(e.a, &.{ dir, u[0] });
-            const text = try std.fmt.allocPrint(e.a, "# written by os enable-rollback.\n{s}", .{u[1]});
+            const path = try std.fs.path.join(e.a, &.{ dir, u.name });
+            const text = try std.fmt.allocPrint(e.a, "# written by os enable-rollback.\n{s}", .{u.text});
             std.Io.Dir.cwd().writeFile(e.ctx.io, .{ .sub_path = path, .data = text }) catch return e.failed("can't write {s}", .{path});
-            const target = u[2] orelse continue;
-            const wants = try std.fs.path.join(e.a, &.{ dir, try std.fmt.allocPrint(e.a, "{s}.wants", .{target}) });
-            if (!try e.sh(&.{ "mkdir", "-p", wants })) return false;
-            if (!try e.sh(&.{ "ln", "-sf", try std.fmt.allocPrint(e.a, "../{s}", .{u[0]}), try std.fs.path.join(e.a, &.{ wants, u[0] }) })) return false;
+            const link = try u.wantsLink(e.a) orelse continue;
+            if (!try e.sh(&.{ "mkdir", "-p", std.fs.path.dirnamePosix(try std.fs.path.join(e.a, &.{ dir, link })).? })) return false;
+            if (!try e.sh(&.{ "ln", "-sf", try std.fmt.allocPrint(e.a, "../{s}", .{u.name}), try std.fs.path.join(e.a, &.{ dir, link }) })) return false;
         }
         return true;
     }
@@ -353,7 +302,7 @@ const Enabler = struct {
         const esp = e.boot.esp.?;
         // what the firmware boots now, kept until grub-install is done.
         if (!try e.keep(try std.fs.path.join(e.a, &.{ esp, "EFI" }), "/run/yoq/efi-backup")) return false;
-        return e.sh(try grubInstall(e.a, e.ctx.io, esp, esp));
+        return e.sh(try gens.grubInstall(e.a, e.ctx.io, esp, esp));
     }
 
     /// the menu, with generation 1 and the system as it is now. grub's goes
@@ -384,7 +333,7 @@ const Enabler = struct {
         if (try e.m.writeMenu(new_root, records)) |why| return e.failed("{s}", .{why});
         if (e.m.loader != .grub) return true;
         if (!try e.sh(&.{ "mkdir", "-p", own_dir })) return false;
-        return e.sh(&.{ "grub-editenv", try std.fs.path.join(e.a, &.{ esp, "yoq/grubenv" }), "create" });
+        return e.sh(&.{ "grub-editenv", try std.fs.path.join(e.a, &.{ esp, generation.grubenv }), "create" });
     }
 
     /// copies `dir` to `backup`, if it's there, so taking back the steps
@@ -415,107 +364,3 @@ const Enabler = struct {
         return false;
     }
 };
-
-/// grub-install's arguments for grub on `esp`, reading its menu from
-/// `boot_dir`, on the efi path grub boots from now: its own directory
-/// under EFI/, or the removable path, EFI/BOOT.
-pub fn grubInstall(a: Allocator, io: std.Io, esp: []const u8, boot_dir: []const u8) ![]const []const u8 {
-    var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(a, &.{ "grub-install", "--target=x86_64-efi", try std.fmt.allocPrint(a, "--efi-directory={s}", .{esp}), try std.fmt.allocPrint(a, "--boot-directory={s}", .{boot_dir}) });
-    var dir = std.Io.Dir.cwd().openDir(io, try std.fs.path.join(a, &.{ esp, "EFI" }), .{ .iterate = true }) catch {
-        try argv.append(a, "--removable");
-        return argv.items;
-    };
-    defer dir.close(io);
-    var it = dir.iterate();
-    while (it.next(io) catch null) |d| {
-        if (d.kind != .directory or std.ascii.eqlIgnoreCase(d.name, "BOOT")) continue;
-        dir.access(io, try std.fs.path.join(a, &.{ d.name, "grubx64.efi" }), .{}) catch continue;
-        try argv.append(a, try std.fmt.allocPrint(a, "--bootloader-id={s}", .{d.name}));
-        return argv.items;
-    }
-    try argv.append(a, "--removable");
-    return argv.items;
-}
-
-const Fstab = struct {
-    uuid: []const u8,
-    add_var: bool,
-    /// data directories that moved into subvolumes of their own.
-    data: []const generation.DataDir = &.{},
-    /// /etc/yoq is a bind mount of the config in /var.
-    bind_config: bool = false,
-    /// the esp, which gets a line if none mounts it: without one it might
-    /// only have been automounted, which a new root can't count on.
-    esp: ?struct { uuid: []const u8, point: []const u8 } = null,
-};
-
-/// the new root's fstab: a btrfs line for / names no subvolume, /var gets
-/// a line for @var when it moved, and the esp gets one if it had none.
-fn rewriteFstab(a: Allocator, text: []const u8, f: Fstab) ![]const u8 {
-    const uuid = f.uuid;
-    var out: std.ArrayList(u8) = .empty;
-    var root_opts: []const u8 = "rw,relatime";
-    var has_esp = false;
-    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, text, "\n"), '\n');
-    while (lines.next()) |line| {
-        var fields = std.mem.tokenizeAny(u8, line, " \t");
-        const spec = fields.next() orelse "";
-        const point = fields.next() orelse "";
-        const fstype = fields.next() orelse "";
-        const opts = fields.next() orelse "";
-        if (f.esp) |esp| has_esp = has_esp or std.mem.eql(u8, point, esp.point);
-        if (spec.len == 0 or spec[0] == '#' or !std.mem.eql(u8, point, "/") or !std.mem.eql(u8, fstype, "btrfs")) {
-            if (line.len > 0 or out.items.len > 0) try out.print(a, "{s}\n", .{line});
-            continue;
-        }
-        // the kernel's rootflags pick which root it is, so the same fstab
-        // works in every generation and every copy of one.
-        root_opts = try withoutSubvol(a, opts);
-        try out.print(a, "{s} / btrfs {s} 0 0\n", .{ spec, root_opts });
-    }
-    if (f.add_var) try out.print(a, "UUID={s} /var btrfs {s},subvol=/{s} 0 0\n", .{ uuid, root_opts, generation.var_subvol });
-    for (f.data) |d| try out.print(a, "UUID={s} /{s} btrfs {s},subvol=/{s} 0 0\n", .{ uuid, d.dir, root_opts, d.subvol });
-    if (f.bind_config) try out.print(a, "{s} /etc/yoq none bind,x-systemd.requires-mounts-for=/var 0 0\n", .{enable.config_home});
-    if (f.esp) |esp| {
-        if (!has_esp) try out.print(a, "UUID={s} {s} vfat rw,relatime,fmask=0077,dmask=0077 0 2\n", .{ esp.uuid, esp.point });
-    }
-    return out.items;
-}
-
-fn withoutSubvol(a: Allocator, opts: []const u8) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    var it = std.mem.tokenizeScalar(u8, opts, ',');
-    while (it.next()) |o| {
-        if (std.mem.startsWith(u8, o, "subvol=") or std.mem.startsWith(u8, o, "subvolid=")) continue;
-        if (out.items.len > 0) try out.append(a, ',');
-        try out.appendSlice(a, o);
-    }
-    return if (out.items.len > 0) out.items else "rw,relatime";
-}
-
-test "the new root's fstab" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    try std.testing.expectEqualStrings(
-        \\# /dev/vda3
-        \\UUID=abc / btrfs rw,relatime,compress=zstd:1 0 0
-        \\UUID=efi /efi vfat rw 0 2
-        \\UUID=abc /var btrfs rw,relatime,compress=zstd:1,subvol=/@var 0 0
-        \\UUID=abc /home btrfs rw,relatime,compress=zstd:1,subvol=/@home 0 0
-        \\/var/lib/yoq/config /etc/yoq none bind,x-systemd.requires-mounts-for=/var 0 0
-        \\
-    , try rewriteFstab(a,
-        \\# /dev/vda3
-        \\UUID=abc / btrfs rw,relatime,compress=zstd:1,subvol=/@ 0 0
-        \\UUID=efi /efi vfat rw 0 2
-        \\
-    , .{ .uuid = "abc", .add_var = true, .data = &.{generation.data_dirs[0]}, .bind_config = true, .esp = .{ .uuid = "efi", .point = "/efi" } }));
-    // no lines at all, as on an image that relies on automounts.
-    try std.testing.expectEqualStrings(
-        \\UUID=abc /var btrfs rw,relatime,subvol=/@var 0 0
-        \\UUID=41B2-0FB5 /efi vfat rw,relatime,fmask=0077,dmask=0077 0 2
-        \\
-    , try rewriteFstab(a, "", .{ .uuid = "abc", .add_var = true, .esp = .{ .uuid = "41B2-0FB5", .point = "/efi" } }));
-}

@@ -115,6 +115,12 @@ fn buildAur(ctx: *Context, w: *cli.Work, c: *const config.Config, old: ?*const l
             try ctx.err.print("os: {s}'s recipe has no .SRCINFO at {s}\n", .{ it.name, commit[0..@min(12, commit.len)] });
             return null;
         };
+        // the build's paths come from pkgbase, so it has to be the recipe
+        // that was fetched and reviewed.
+        if (!eql(info.pkgbase, it.name)) {
+            try ctx.err.print("os: {s}'s recipe says its pkgbase is {s}. os builds a recipe only under its own name.\n", .{ it.name, info.pkgbase });
+            return null;
+        }
         // a recipe is reviewed when it's new, or changed since the lock.
         const was = if (old) |o| if (o.package(it.name)) |p| p.recipe else null else null;
         if (was == null or !eql(was.?, commit)) {
