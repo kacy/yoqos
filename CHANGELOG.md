@@ -1,6 +1,6 @@
 # changelog
 
-## 0.1.2
+## 0.1.1
 
 generations work with every bootloader arch users run, and each one falls
 back on its own from a trial boot that doesn't come up. a change that needs
