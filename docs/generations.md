@@ -253,4 +253,4 @@ generation booted from the menu, since that generation's record is what
 - more root layouts
 - building the next generation apart from the running system, so a bad
   update never touches the session you're in
-- a clean build of a root from the lock alone, and an installer built on it
+- an iso of our own around `os install`, which works from arch's live iso today

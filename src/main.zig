@@ -31,6 +31,7 @@ pub fn main(init: std.process.Init) !void {
         .in_own_transaction = init.environ_map.get(@import("alpm.zig").own_env) != null,
         .aur_url = init.environ_map.get("YOQ_AUR") orelse @import("aur.zig").default_url,
         .gpa = init.gpa,
+        .config_path = try hostConfig(init.arena.allocator(), init.io),
         .out = &out.interface,
         .err = &err.interface,
     };
@@ -42,6 +43,20 @@ pub fn main(init: std.process.Init) !void {
     out.interface.flush() catch {};
     err.interface.flush() catch {};
     std.process.exit(code);
+}
+
+/// the config this machine reads unless --config says otherwise:
+/// /etc/yoq/machine.toml, or in a repository for several machines, the one
+/// under hosts/ named for this machine's hostname.
+fn hostConfig(a: std.mem.Allocator, io: std.Io) ![]const u8 {
+    const cwd = std.Io.Dir.cwd();
+    cwd.access(io, cli.default_config, .{}) catch {
+        const name = cwd.readFileAlloc(io, "/etc/hostname", a, .limited(256)) catch return cli.default_config;
+        const path = try cli.hostConfigPath(a, std.mem.trim(u8, name, " \n"));
+        cwd.access(io, path, .{}) catch return cli.default_config;
+        return path;
+    };
+    return cli.default_config;
 }
 
 test {
@@ -68,6 +83,8 @@ test {
     _ = @import("menu.zig");
     _ = @import("trial.zig");
     _ = @import("uninstall.zig");
+    _ = @import("install.zig");
+    _ = @import("cmd/install.zig");
     _ = @import("cmd/build.zig");
     _ = @import("gens.zig");
     _ = @import("planner.zig");

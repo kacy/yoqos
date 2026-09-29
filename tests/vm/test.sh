@@ -17,6 +17,8 @@ limine | refind) VM_ESP=/boot VM_ROOT=/@ VM_LOADER=$VM_IMAGE ;;
 esac
 export VM_ESP VM_ROOT VM_LOADER
 
+# the ext4 machine installs a new one on a second disk.
+[ "${VM_IMAGE:-cloud}" = ext4 ] && export VM_DISK2=1
 "$vm" start
 trap '"$vm" stop' EXIT
 
@@ -37,6 +39,7 @@ ext4)
     # generations need btrfs: enable-rollback says so, and changes nothing.
     tests/vm/manage.sh "root filesystem: ext4"
     tests/vm/aur.sh
+    tests/vm/install.sh
     ;;
 limine)
     tests/vm/rollback.sh

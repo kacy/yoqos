@@ -191,7 +191,7 @@ const Uninstaller = struct {
     /// the running root's entry, with its kernel on the esp's top, where
     /// arch installs it when the esp is /boot.
     fn plainEntry(u: *Uninstaller) !menu.Entry {
-        const cmdline = std.Io.Dir.cwd().readFileAlloc(u.ctx.io, "/proc/cmdline", u.a, .limited(4096)) catch "";
+        const cmdline = try rootfs.readProc(u.a, u.ctx.io, "/proc/cmdline");
         var e = try u.m.?.entry("head", "Arch Linux", u.boot.root_subvol.?, cmdline);
         e.esp_dir = "";
         return e;

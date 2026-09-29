@@ -23,6 +23,11 @@
   in `/etc/yoq`, the pacman database back in `/var/lib/pacman`, and a
   bootloader set up the way arch sets it up. other generations stay unless
   you ask for them to go.
+- `os install <config> --disk <dev>` puts the machine a config repository
+  describes on a blank disk, from a live system: an esp, btrfs with the
+  generations layout, the clean build as generation 1, and grub.
+- a config repository for several machines works: without
+  `/etc/yoq/machine.toml`, `os` reads `/etc/yoq/hosts/<hostname>/machine.toml`.
 - `os build --clean <dir>` builds a root from the config and the lock
   alone, and lists what's on this machine that they don't explain.
 - `os` runs `/usr/bin/mkinitcpio` itself, not a wrapper earlier in `PATH`

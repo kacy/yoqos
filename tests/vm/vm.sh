@@ -11,7 +11,10 @@
 #   refind       archinstall with refind
 #
 #   vm.sh image              make the base image, once
-#   vm.sh start              boot a fresh overlay and wait for ssh
+#   vm.sh start              boot a fresh overlay and wait for ssh; with
+#                            VM_DISK2=1, a blank second disk too
+#   vm.sh start-installed    power off and boot the second disk alone, with
+#                            blank firmware variables, like a new machine
 #   vm.sh ssh <command>      run a command in the vm as root
 #   vm.sh copy <file> <dest> copy a file into the vm
 #   vm.sh reboot             reboot and wait for ssh
@@ -137,7 +140,18 @@ image)
 start)
     [ -f "$dir/$image.qcow2" ] || { echo "vm: no $image image; run vm.sh image" >&2; exit 1; }
     fresh "$image"
-    boot "$dir/overlay.qcow2" "$dir/vars.fd"
+    if [ -n "${VM_DISK2:-}" ]; then
+        qemu-img create -q -f qcow2 "$dir/disk2.qcow2" 20G
+        boot "$dir/overlay.qcow2" "$dir/vars.fd" -drive if=virtio,file="$dir/disk2.qcow2"
+    else
+        boot "$dir/overlay.qcow2" "$dir/vars.fd"
+    fi
+    ;;
+start-installed)
+    if running; then kill "$(cat "$dir/qemu.pid")"; fi
+    for _ in $(seq 60); do running || break; sleep 1; done
+    cp "$ovmf/OVMF_VARS.4m.fd" "$dir/vars.fd"
+    boot "$dir/disk2.qcow2" "$dir/vars.fd"
     ;;
 ssh)
     shift
@@ -154,10 +168,10 @@ reboot)
     ;;
 stop)
     if [ -f "$dir/qemu.pid" ]; then kill "$(cat "$dir/qemu.pid")" 2>/dev/null || true; fi
-    rm -f "$dir/qemu.pid" "$dir/overlay.qcow2" "$dir/vars.fd"
+    rm -f "$dir/qemu.pid" "$dir/overlay.qcow2" "$dir/vars.fd" "$dir/disk2.qcow2"
     ;;
 *)
-    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac

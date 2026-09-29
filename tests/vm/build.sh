@@ -7,8 +7,8 @@ set -eu
 
 "$vm" ssh "/usr/local/bin/os init >/dev/null 2>&1 || true"
 "$vm" ssh "/usr/local/bin/os apply --yes" | tail -n 1
-check "/usr/local/bin/os build --clean /var/tmp/clean >/tmp/build.out 2>&1; echo \$?" 0
-"$vm" ssh "tail -n 40 /tmp/build.out"
+"$vm" ssh "/usr/local/bin/os build --clean /var/tmp/clean >/tmp/build.out 2>&1; echo \$? >/tmp/build.rc; tail -n 40 /tmp/build.out"
+check "cat /tmp/build.rc" 0
 check "pacman -r /var/tmp/clean -Q | sha256sum" "$("$vm" ssh "pacman -Q | sha256sum")"
 check "cmp /etc/hostname /var/tmp/clean/etc/hostname && echo same" same
 check "cmp /etc/locale.conf /var/tmp/clean/etc/locale.conf && echo same" same

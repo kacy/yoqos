@@ -56,6 +56,20 @@ pub const Root = struct {
     }
 };
 
+/// a file under /proc, like /proc/cmdline. those report a size of 0, so
+/// they're read to the end rather than by their size. empty if it can't
+/// be read.
+pub fn readProc(a: std.mem.Allocator, io: std.Io, path: []const u8) error{OutOfMemory}![]const u8 {
+    const f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return "";
+    defer f.close(io);
+    var buf: [4096]u8 = undefined;
+    var fr = f.readerStreaming(io, &buf);
+    return fr.interface.allocRemaining(a, .limited(4 << 20)) catch |e| switch (e) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => "",
+    };
+}
+
 pub fn pathExists(io: std.Io, path: []const u8) bool {
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
@@ -114,6 +128,13 @@ test "an atomic write keeps its mode, and a symlink in the way stays untouched" 
     try std.testing.expectEqualStrings("hash", try tmp.dir.readFileAlloc(io, "secret", a, .limited(16)));
     const st = try tmp.dir.statFile(io, "secret", .{});
     try std.testing.expectEqual(0o600, @intFromEnum(st.permissions) & 0o777);
+}
+
+test "a /proc file reads whole" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expect((try readProc(arena.allocator(), std.testing.io, "/proc/self/mountinfo")).len > 0);
+    try std.testing.expectEqualStrings("", try readProc(arena.allocator(), std.testing.io, "/proc/no-such-file"));
 }
 
 test "write, read, and append under a root" {

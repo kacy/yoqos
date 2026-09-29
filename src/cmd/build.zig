@@ -10,19 +10,24 @@ const exec = @import("../exec.zig");
 const lists = @import("../lists.zig");
 const output = @import("../output.zig");
 const planner = @import("../planner.zig");
+const facts = @import("../facts.zig");
 const applying = @import("apply.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
 const usage_text = "os build --clean <dir>";
 
+/// the mkinitcpio drop-in a build uses while it runs. the observer skips
+/// files named 10-yoq-, so it doesn't show up in a plan.
+const no_autodetect = "etc/mkinitcpio.conf.d/10-yoq-build.conf";
+
 /// what a new root takes from this machine before anything installs: how
 /// pacman is set up, its keyring, the config, and the uid map, so users
-/// get the same ids.
+/// get the same ids. os's own repositories aren't among them: the config
+/// brings those, and pacman.conf comes without the line that reads them.
 const seeded = [_][]const u8{
     "etc/pacman.conf",
     "etc/pacman.d/mirrorlist",
-    "etc/pacman.d/yoq-repos.conf",
     "etc/pacman.d/gnupg",
     "etc/yoq",
     "var/lib/yoq/ids",
@@ -65,11 +70,13 @@ pub fn buildCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.err.print("os: {s} has to be an absolute path, and not /.\n", .{dir});
         return 1;
     }
-    // made here, only root can reach in: a directory someone else made
+    // made here, only root can write in it: a directory someone else made
     // could have hooks or symlinks planted in it while the build runs.
+    // others can still read it, since pacman downloads as its own user
+    // into the caches inside.
     var z: [std.fs.max_path_bytes]u8 = undefined;
     const dir_z = std.fmt.bufPrintZ(&z, "{s}", .{dir}) catch return cli.usageError(ctx, usage_text);
-    if (std.os.linux.errno(std.os.linux.mkdir(dir_z, 0o700)) != .SUCCESS) {
+    if (std.os.linux.errno(std.os.linux.mkdir(dir_z, 0o755)) != .SUCCESS) {
         try ctx.err.print("os: can't make {s}. a clean build starts from nothing, in a directory it makes itself, so it can't be there already.\n", .{dir});
         return 1;
     }
@@ -88,10 +95,21 @@ pub fn buildCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     return b.report();
 }
 
-const Builder = struct {
+/// a root built from the config and lock in a directory, by `os build
+/// --clean` here and by `os install` on a new disk.
+pub const Builder = struct {
     ctx: *Context,
     a: Allocator,
     dir: []const u8,
+    /// packages and databases come from this machine's cache, bound in.
+    /// an install from a live system keeps them on the new disk instead,
+    /// since the live system's /var is memory.
+    share_cache: bool = true,
+    /// this machine's config and uid map go in too. an install brings
+    /// its own config.
+    seed_config: bool = true,
+    /// mounts under `dir` that were there before, which stay.
+    keep: []const []const u8 = &.{},
 
     fn in(b: *Builder, rel: []const u8) ![]const u8 {
         return std.fs.path.join(b.a, &.{ b.dir, rel });
@@ -104,18 +122,34 @@ const Builder = struct {
     /// the new root's first files, and the filesystems package scripts and
     /// hooks expect, mounted as pacstrap mounts them. os's caches are this
     /// machine's, so packages it has already come from there.
-    fn prepare(b: *Builder) !?[]const u8 {
+    pub fn prepare(b: *Builder) !?[]const u8 {
         for ([_][]const u8{ "var/lib/pacman", "var/cache/yoq", "proc", "sys", "dev", "run", "tmp", "etc/pacman.d" }) |d| {
             if (try b.run(&.{ "mkdir", "-p", try b.in(d) })) |w| return w;
         }
         for (seeded) |rel| {
+            if (!b.seed_config and (std.mem.eql(u8, rel, "etc/yoq") or std.mem.eql(u8, rel, "var/lib/yoq/ids"))) continue;
             const src = try std.fmt.allocPrint(b.a, "/{s}", .{rel});
             if (!rootfs.pathExists(b.ctx.io, src)) continue;
             const dest = try b.in(rel);
             if (try b.run(&.{ "mkdir", "-p", std.fs.path.dirnamePosix(dest).? })) |w| return w;
             if (try b.run(&.{ "cp", "-a", src, dest })) |w| return w;
         }
+        const conf = try b.in("etc/pacman.conf");
+        if (std.Io.Dir.cwd().readFileAlloc(b.ctx.io, conf, b.a, .limited(1 << 20)) catch null) |text| {
+            rootfs.writeAtomic(b.ctx.io, conf, try withoutReposInclude(b.a, text), null) catch return "can't write the build's pacman.conf";
+        }
         if (try b.run(&.{ "mkdir", "-p", "/var/cache/yoq" })) |w| return w;
+        // mkinitcpio's autodetect looks at the machine the build runs on,
+        // not the root it builds, so the first initramfs leaves it out: a
+        // generic image, which boots anywhere. `install` takes it away.
+        rootfs.writeAtomic(b.ctx.io, try b.in(no_autodetect),
+            \\# written by os while it builds this root, and removed after.
+            \\_yoq_hooks=()
+            \\for _yoq_hook in "${HOOKS[@]}"; do [[ $_yoq_hook == autodetect ]] || _yoq_hooks+=("$_yoq_hook"); done
+            \\HOOKS=("${_yoq_hooks[@]}")
+            \\unset _yoq_hooks _yoq_hook
+            \\
+        , null) catch return "can't write the build's mkinitcpio drop-in";
         const mounts = [_]struct { []const u8, []const []const u8 }{
             .{ "proc", &.{ "-t", "proc", "proc" } },
             .{ "sys", &.{ "-t", "sysfs", "-o", "ro", "sys" } },
@@ -124,6 +158,7 @@ const Builder = struct {
             .{ "var/cache/yoq", &.{ "--bind", "/var/cache/yoq" } },
         };
         for (mounts) |m| {
+            if (!b.share_cache and std.mem.eql(u8, m[0], "var/cache/yoq")) continue;
             const point = try b.in(m[0]);
             var argv: std.ArrayList([]const u8) = .empty;
             try argv.append(b.a, "mount");
@@ -137,10 +172,11 @@ const Builder = struct {
     /// unmounts everything under the new root, deepest first, including
     /// what package scripts mounted there. a mount something still holds
     /// is detached lazily, so it goes once that lets go.
-    fn unmount(b: *Builder) void {
-        const text = std.Io.Dir.cwd().readFileAlloc(b.ctx.io, "/proc/self/mountinfo", b.a, .limited(1 << 22)) catch return;
+    pub fn unmount(b: *Builder) void {
+        const text = rootfs.readProc(b.a, b.ctx.io, "/proc/self/mountinfo") catch return;
         const points = mountsUnder(b.a, text, b.dir) catch return;
         for (points) |p| {
+            if (lists.contains(b.keep, p)) continue;
             const failed = exec.run(b.a, b.ctx.io, &.{ "umount", p }) catch return;
             if (failed != null) _ = exec.run(b.a, b.ctx.io, &.{ "umount", "-l", p }) catch return;
         }
@@ -148,12 +184,13 @@ const Builder = struct {
 
     /// the config applied to the new root, then its units turned on
     /// there, since no systemd runs it to start them.
-    fn install(b: *Builder) !u8 {
+    pub fn install(b: *Builder) !u8 {
         const ctx = b.ctx;
         const host = ctx.root;
         ctx.root = b.dir;
         defer ctx.root = host;
         const done = try applying.run(ctx, true, cli.inputs(ctx), .{});
+        std.Io.Dir.cwd().deleteFile(ctx.io, try b.in(no_autodetect)) catch {};
         if (done.code != 0) return done.code;
         var w: cli.Work = .init(ctx);
         defer w.deinit();
@@ -244,6 +281,17 @@ fn mountsUnder(a: Allocator, text: []const u8, dir: []const u8) ![]const []const
     return out.items;
 }
 
+/// pacman.conf without the line that includes os's repositories.
+fn withoutReposInclude(a: Allocator, text: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, text, "\n"), '\n');
+    while (lines.next()) |line| {
+        if (std.mem.eql(u8, std.mem.trim(u8, line, " \t\r"), facts.repos_include)) continue;
+        try out.print(a, "{s}\n", .{line});
+    }
+    return out.items;
+}
+
 fn sortedHas(sorted: []const []const u8, s: []const u8) bool {
     const Ctx = struct {
         fn order(key: []const u8, item: []const u8) std.math.Order {
@@ -286,6 +334,12 @@ test "mounts under a build, deepest first" {
     try std.testing.expectEqualStrings("/var/tmp/clean/proc", got[0]);
     try std.testing.expectEqualStrings("/var/tmp/clean/dev/pts", got[1]);
     try std.testing.expectEqualStrings("/var/tmp/clean/dev", got[2]);
+}
+
+test "a build's pacman.conf leaves out os's repositories" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings("[core]\nInclude = /etc/pacman.d/mirrorlist\n", try withoutReposInclude(arena.allocator(), "[core]\nInclude = /etc/pacman.d/mirrorlist\n" ++ facts.repos_include ++ "\n"));
 }
 
 test "paths a build can't explain or be explained by" {

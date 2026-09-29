@@ -308,8 +308,12 @@ fn verify(ctx: *Context, in: pipeline.Inputs, applied: usize, skipped: []const p
     const a = w.allocator();
     const result = try w.plan(in) orelse return w.fail();
     var left: std.ArrayList([]const u8) = .empty;
+    // with what's still to do, which says more about why it didn't take.
+    var told: std.ArrayList([]const u8) = .empty;
     for (result.plan.changes) |c| {
-        if (apply.applies(c.kind, units)) try left.append(a, c.subject);
+        if (!apply.applies(c.kind, units)) continue;
+        try left.append(a, c.subject);
+        try told.append(a, if (c.to) |to| try std.fmt.allocPrint(a, "{s} ({s})", .{ c.subject, to }) else c.subject);
     }
     if (ctx.json) {
         try output.writeDoc(ctx.out, "yoq.apply/1", .{ .applied = applied, .skipped = skipped, .left = left.items });
@@ -322,7 +326,7 @@ fn verify(ctx: *Context, in: pipeline.Inputs, applied: usize, skipped: []const p
         }
     }
     if (left.items.len == 0) return 0;
-    if (!ctx.json) try ctx.err.print("os: applied, but these still differ from the config: {s}\n", .{try std.mem.join(a, ", ", left.items)});
+    if (!ctx.json) try ctx.err.print("os: applied, but these still differ from the config: {s}\n", .{try std.mem.join(a, ", ", told.items)});
     return 1;
 }
 

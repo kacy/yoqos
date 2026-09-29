@@ -36,8 +36,9 @@ btrfs root with grub, limine, or refind, `os enable-rollback` turns on
 whole-system generations: every change is a snapshot in the boot menu, and
 on grub and limine an update that needs a reboot boots once on trial, then
 falls back by itself if it doesn't come up healthy. the vm tests run that on
-arch's cloud image and on archinstall's layouts. `os uninstall` takes it all
-back off and leaves plain arch running the system you have.
+arch's cloud image and on archinstall's layouts. `os install` puts a machine
+straight from its config repository on a blank disk, and `os uninstall`
+takes it all back off, leaving plain arch running the system you have.
 
 - [docs/usage.md](docs/usage.md): installing, every command, and the config
   format
@@ -68,7 +69,7 @@ zig build test -Dalpm -Dsystemd
 
 `tests/vm/test.sh zig-out/bin/os` boots an arch vm under kvm and runs the
 whole loop in it: the manage rung, enable-rollback, rollback, trial boots,
-a clean build, and uninstalling. `VM_IMAGE` picks the machine: arch's cloud
+a clean build, installing on a blank disk, and uninstalling. `VM_IMAGE` picks the machine: arch's cloud
 image (the default), or one archinstall installs, with its default btrfs
 layout (`archinstall`), an ext4 root (`ext4`), limine and snapper, like
 omarchy's boot setup (`limine`), or refind (`refind`). the ext4 one stays
@@ -77,9 +78,8 @@ on the manage rung. ci runs all five on every push.
 ## what's next
 
 see the end of [docs/generations.md](docs/generations.md). the big pieces
-are an installer that builds a machine straight from its config (the clean
-build is its first half), systemd-boot, and building the next generation
-apart from the running system.
+are an iso of our own around `os install`, systemd-boot, and building the
+next generation apart from the running system.
 
 ## license
 

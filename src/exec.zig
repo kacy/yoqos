@@ -63,6 +63,27 @@ pub fn run(a: Allocator, io: std.Io, argv: []const []const u8) error{OutOfMemory
     };
 }
 
+/// runs `argv` on the terminal os runs on, for a program that asks the
+/// person there something itself, like passwd. null when it succeeds.
+pub fn interactive(a: Allocator, io: std.Io, argv: []const []const u8) error{OutOfMemory}!?[]const u8 {
+    var child = std.process.spawn(io, .{ .argv = argv }) catch |e| return try spawnFailed(a, argv, e);
+    const term = child.wait(io) catch |e| return try std.fmt.allocPrint(a, "{s} didn't finish: {s}", .{ argv[0], @errorName(e) });
+    if (term == .exited and term.exited == 0) return null;
+    return try std.fmt.allocPrint(a, "{s} failed", .{argv[0]});
+}
+
+/// runs `argv` with the file at `input` as its standard input, for a
+/// program that reads a script there, like sfdisk. what it prints goes
+/// nowhere; a failure says it failed.
+pub fn runFrom(a: Allocator, io: std.Io, argv: []const []const u8, input: []const u8) error{OutOfMemory}!?[]const u8 {
+    var f = std.Io.Dir.cwd().openFile(io, input, .{}) catch return try std.fmt.allocPrint(a, "can't read {s}", .{input});
+    defer f.close(io);
+    var child = std.process.spawn(io, .{ .argv = argv, .stdin = .{ .file = f }, .stdout = .ignore, .stderr = .ignore }) catch |e| return try spawnFailed(a, argv, e);
+    const term = child.wait(io) catch |e| return try std.fmt.allocPrint(a, "{s} didn't finish: {s}", .{ argv[0], @errorName(e) });
+    if (term == .exited and term.exited == 0) return null;
+    return try std.fmt.allocPrint(a, "{s} failed", .{argv[0]});
+}
+
 /// runs each command in turn, stopping at the first that fails, and says
 /// why it failed.
 pub fn runAll(a: Allocator, io: std.Io, argvs: []const []const []const u8) error{OutOfMemory}!?[]const u8 {

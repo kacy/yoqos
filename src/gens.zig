@@ -11,6 +11,7 @@ const exec = @import("exec.zig");
 const facts = @import("facts.zig");
 const generation = @import("generation.zig");
 const menu = @import("menu.zig");
+const enable = @import("enable.zig");
 const trial = @import("trial.zig");
 const Allocator = std.mem.Allocator;
 
@@ -23,6 +24,12 @@ pub const Machine = struct {
     root_uuid: []const u8,
     esp_uuid: []const u8,
     top: []const u8 = generation.top_mount,
+    /// the kernel command line entries start from, when it isn't the
+    /// running one's: an install boots from a live system's.
+    cmdline: ?[]const u8 = null,
+    /// the esp is the root's /boot, when the esp is mounted somewhere
+    /// else for now: an install's, under its target.
+    esp_is_boot: ?bool = null,
 
     /// mounts the top level of the root's filesystem. `close` unmounts it.
     pub fn open(a: Allocator, io: std.Io, boot: facts.Boot, why: *[]const u8) !?Machine {
@@ -184,7 +191,7 @@ pub const Machine = struct {
     /// generation, then every older one, from a fresh writable copy of its
     /// record, then the system from before generations.
     pub fn writeMenu(m: *const Machine, head: []const u8, records: []const generation.Record) !?[]const u8 {
-        const cmdline = std.Io.Dir.cwd().readFileAlloc(m.io, "/proc/cmdline", m.a, .limited(4096)) catch "";
+        const cmdline = m.cmdline orelse try rootfs.readProc(m.a, m.io, "/proc/cmdline");
         var entries: std.ArrayList(menu.Entry) = .empty;
         if (records.len == 0) return "no generations to put in the menu";
         // records come sorted by number.
@@ -350,21 +357,21 @@ pub const Machine = struct {
     /// its /boot directory, under the mount, where grub and refind read
     /// them, and limine copies them from.
     pub fn bootOnEsp(m: *const Machine) bool {
-        return std.mem.eql(u8, m.boot.esp orelse "", "/boot");
+        return m.esp_is_boot orelse std.mem.eql(u8, m.boot.esp orelse "", "/boot");
     }
 
     /// copies the esp's boot files into the root at `subvol`, so its
     /// snapshots boot the kernel that matches their modules.
     pub fn keepBoot(m: *const Machine, subvol: []const u8) !?[]const u8 {
         if (!m.bootOnEsp()) return null;
-        return m.copyBoot("/boot", try m.at(&.{ subvol, "boot" }));
+        return m.copyBoot(m.boot.esp.?, try m.at(&.{ subvol, "boot" }));
     }
 
     /// puts the boot files kept in the root at `subvol` back on the esp,
     /// for a root that's about to be the newest.
     fn restoreBoot(m: *const Machine, subvol: []const u8) !?[]const u8 {
         if (!m.bootOnEsp()) return null;
-        return m.copyBoot(try m.at(&.{ subvol, "boot" }), "/boot");
+        return m.copyBoot(try m.at(&.{ subvol, "boot" }), m.boot.esp.?);
     }
 
     /// makes the boot files in `to` match the ones in `from`. files that
@@ -403,7 +410,7 @@ pub const Machine = struct {
     pub fn entry(m: *const Machine, id: []const u8, name: []const u8, subvol: []const u8, cmdline: []const u8) !menu.Entry {
         var kernels: std.ArrayList([]const u8) = .empty;
         var initrds: std.ArrayList([]const u8) = .empty;
-        const dir = if (std.mem.eql(u8, id, "head") and m.bootOnEsp()) "/boot" else try m.at(&.{ subvol, "boot" });
+        const dir = if (std.mem.eql(u8, id, "head") and m.bootOnEsp()) m.boot.esp.? else try m.at(&.{ subvol, "boot" });
         var boot = std.Io.Dir.cwd().openDir(m.io, dir, .{ .iterate = true }) catch null;
         if (boot) |*b| {
             defer b.close(m.io);
@@ -476,6 +483,24 @@ pub fn writeRecord(a: Allocator, io: std.Io, var_dir: []const u8, r: generation.
 
 pub fn recordPath(a: Allocator, var_dir: []const u8, n: u32) ![]const u8 {
     return std.fmt.allocPrint(a, "{s}/{s}/{d}.json", .{ var_dir, generation.records_dir, n });
+}
+
+/// writes os's units that run at boot (enable.units) into the root at
+/// `root`, and turns them on there. `os_path` is the os they run.
+pub fn writeUnits(a: Allocator, io: std.Io, root: []const u8, os_path: []const u8) !?[]const u8 {
+    const dir = try std.fs.path.join(a, &.{ root, "etc/systemd/system" });
+    for (try enable.units(a, os_path)) |u| {
+        const path = try std.fs.path.join(a, &.{ dir, u.name });
+        const text = try std.fmt.allocPrint(a, "# written by os.\n{s}", .{u.text});
+        rootfs.writeAtomic(io, path, text, null) catch return try std.fmt.allocPrint(a, "can't write {s}", .{path});
+        const link = try u.wantsLink(a) orelse continue;
+        const at = try std.fs.path.join(a, &.{ dir, link });
+        if (try exec.runAll(a, io, &.{
+            &.{ "mkdir", "-p", std.fs.path.dirnamePosix(at).? },
+            &.{ "ln", "-sf", try std.fmt.allocPrint(a, "../{s}", .{u.name}), at },
+        })) |w| return w;
+    }
+    return null;
 }
 
 /// where limine's copies of boot files go, on the esp.

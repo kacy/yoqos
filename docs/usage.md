@@ -25,6 +25,7 @@ refind, `os enable-rollback` adds whole-system generations; see
 | `os enable-rollback` | turns on whole-system generations (btrfs, with grub, limine, or refind) |
 | `os gc`, `os pin` | clean up old generations, or keep one |
 | `os uninstall` | takes `os` off the machine, leaving plain arch |
+| `os install` | puts the machine a config describes on a blank disk |
 | `os update` | resolves the config against today's arch packages into the lock |
 | `os add`, `os remove` | edit the package list, and the lock with it |
 | `os enable`, `os disable` | turn services on or off in the config |
@@ -415,6 +416,55 @@ own state in `/var/lib/yoq`. the config and its git history stay in
 `/etc/yoq`. if a step fails, running `os uninstall` again picks up where
 it stopped.
 
+## installing a new machine
+
+from arch's live iso, booted in uefi mode, with `os` on it (`pacman -U` the
+release package, or copy the binary). the iso has the tools it runs; on
+another live system, `pacman -S dosfstools btrfs-progs grub git` first,
+and `os install` names any that are missing:
+
+```
+os install https://github.com/you/machines --host atlas --disk /dev/nvme0n1
+```
+
+the first argument is the config repository, as a url or a directory.
+`--host atlas` picks `hosts/atlas/machine.toml` in a repository for several
+machines; without it, `os` uses the repository's own `machine.toml`. the
+disk gets erased.
+
+it shows its checks and what it will build, and asks first:
+
+```
+install atlas on /dev/nvme0n1 (476 GiB). everything on it is erased.
+
+disk      an esp of 1024 MiB at /boot, and btrfs for the rest:
+          @roots/1, @var, @home, @root, @srv, @usrlocal
+boot      grub, with generation 1 as its first entry
+packages  412 from the lock (2026-09-25)
+users     kacy
+services  18
+```
+
+then it partitions the disk, builds the machine the way `os build --clean`
+does, and records it as generation 1 of the layout `enable-rollback` makes,
+so the new machine has generations from its first boot. it asks for a
+password for root and each user, since the config never holds one; with
+`--yes` it doesn't ask, and the accounts stay locked until you set one.
+grub goes on the disk's removable boot path, which every firmware checks,
+and gets a boot entry of its own too when `efibootmgr` is there. `os`
+itself comes along as `/usr/local/bin/os`.
+
+mirrors only serve today's packages, so a lock from an earlier day needs
+`--update`: it resolves the config against today's packages first and
+commits the new lock to the fetched config, which you can push back
+afterwards. the lock's kernel and grub have to be in it, and aur packages
+wait until the machine is running: install without them, then add them
+back and run `os update` there.
+
+after a reboot, `/etc/yoq` is the repository you installed from, and a
+machine whose hostname matches a directory under `hosts/` reads its config
+from there.
+
 ## clean builds
 
 ```
@@ -431,7 +481,7 @@ in `/etc` whose content differs. machine state like `/etc/shadow`, the
 machine id, and ssh host keys is left out of the comparison. `--json` gives
 the whole list.
 
-the directory can't exist yet. `os` makes it itself, readable only by
+the directory can't exist yet. `os` makes it itself, writable only by
 root, since the build runs package scripts as root inside it, and nobody
 else should have been able to put anything there first. everything the
 build mounts inside it is unmounted when it ends, however it ends.

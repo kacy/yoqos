@@ -19,12 +19,18 @@ const hook = @import("cmd/hook.zig");
 const health = @import("cmd/health.zig");
 const uninstall = @import("cmd/uninstall.zig");
 const build_cmd = @import("cmd/build.zig");
+const install_cmd = @import("cmd/install.zig");
 const enable_rollback = @import("cmd/enable_rollback.zig");
 const inspect = @import("cmd/inspect.zig");
 const edit = @import("cmd/edit.zig");
 const update = @import("cmd/update.zig");
 
 pub const default_config = "/etc/yoq/machine.toml";
+
+/// where a repository for several machines keeps `host`'s config.
+pub fn hostConfigPath(a: std.mem.Allocator, host: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(a, "/etc/yoq/hosts/{s}/machine.toml", .{host});
+}
 
 pub const Context = struct {
     gpa: std.mem.Allocator,
@@ -83,6 +89,7 @@ const commands = [_]Command{
     .{ .name = "adopt", .summary = "put packages installed outside os into the config", .handler = edit.adoptCmd },
     .{ .name = "rollback", .summary = "go back to an earlier generation", .handler = rollback.rollbackCmd },
     .{ .name = "enable-rollback", .summary = "turn on generations of the whole system (btrfs)", .handler = enable_rollback.enableRollbackCmd },
+    .{ .name = "install", .summary = "put the machine a config describes on a blank disk, from a live system", .handler = install_cmd.installCmd },
     .{ .name = "uninstall", .summary = "leave plain arch on the running system, keeping the config", .handler = uninstall.uninstallCmd },
     .{ .name = "gc", .summary = "remove old generations, keeping the newest and pinned ones", .handler = rollback.gcCmd },
     .{ .name = "pin", .summary = "keep a generation through garbage collection", .handler = rollback.pinCmd },

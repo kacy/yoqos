@@ -283,17 +283,8 @@ const Enabler = struct {
     fn healthUnit(e: *Enabler) !bool {
         // the packaged os outlasts a copy run from a build directory.
         const os_path = if (rootfs.pathExists(e.ctx.io, "/usr/bin/os")) "/usr/bin/os" else try std.process.executablePathAlloc(e.ctx.io, e.a);
-        const units = try enable.units(e.a, os_path);
-        const dir = try e.m.at(&.{ new_root, "etc/systemd/system" });
-        for (units) |u| {
-            const path = try std.fs.path.join(e.a, &.{ dir, u.name });
-            const text = try std.fmt.allocPrint(e.a, "# written by os enable-rollback.\n{s}", .{u.text});
-            std.Io.Dir.cwd().writeFile(e.ctx.io, .{ .sub_path = path, .data = text }) catch return e.failed("can't write {s}", .{path});
-            const link = try u.wantsLink(e.a) orelse continue;
-            if (!try e.sh(&.{ "mkdir", "-p", std.fs.path.dirnamePosix(try std.fs.path.join(e.a, &.{ dir, link })).? })) return false;
-            if (!try e.sh(&.{ "ln", "-sf", try std.fmt.allocPrint(e.a, "../{s}", .{u.name}), try std.fs.path.join(e.a, &.{ dir, link }) })) return false;
-        }
-        return true;
+        const why = try gens.writeUnits(e.a, e.ctx.io, try e.m.at(&.{new_root}), os_path) orelse return true;
+        return e.failed("{s}", .{why});
     }
 
     /// grub's files on the esp, so the menu lives outside every
