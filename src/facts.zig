@@ -151,6 +151,10 @@ pub const Facts = struct {
     users: []User = &.{},
     /// pacman transactions since the last apply, from the drift hook.
     pacman_changes: []PacmanChange = &.{},
+    /// with a staged generation waiting for the reboot: what changed on the
+    /// running system since it was built, which stays behind. files in
+    /// /etc, and packages pacman touched.
+    staged_changes: []const []const u8 = &.{},
     /// system accounts whose id isn't the one os first saw them with, or
     /// ids that went to another name, as sentences.
     id_changes: []const []const u8 = &.{},

@@ -9,6 +9,8 @@
 - the install plan notes what a new machine usually needs and its config
   lacks: firmware on real hardware, a network, and a user who can use sudo.
 - the usage docs walk through installing from a thumb drive, step by step.
+- `os status` lists what changed on the running system after a staged
+  generation was built, since those changes stay behind at the reboot.
 
 ## 0.1.1
 

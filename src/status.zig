@@ -55,6 +55,8 @@ pub const Status = struct {
         menu: ?[]const u8 = null,
         /// system ids that aren't what they first were.
         ids: []const []const u8 = &.{},
+        /// changes to the running system a staged generation doesn't have.
+        after_staging: []const []const u8 = &.{},
     },
     /// configured services whose units failed.
     failing: []const []const u8,
@@ -131,6 +133,7 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
             .pacman = try pacmanTouched(a, f),
             .menu = f.boot.menu_missing,
             .ids = f.id_changes,
+            .after_staging = f.staged_changes,
         },
         .failing = failing.items,
     };
@@ -195,6 +198,7 @@ pub fn writeText(w: *std.Io.Writer, s: *const Status) !void {
     if (ch.pacman.len > 0) try rows.list("touched with pacman since the last apply", ch.pacman, "os plan shows what differs");
     if (ch.menu) |m| try rows.list("boot menu without os's generations", &.{m}, "os gc writes them again");
     if (ch.ids.len > 0) try rows.list("system ids changed", ch.ids, "files they own may now belong to someone else; chown them");
+    if (ch.after_staging.len > 0) try rows.list("changed since the next generation was built", ch.after_staging, "they stay behind at the reboot. make them in the config, or again afterwards");
     if (rows.first) try w.writeAll("changed   none\n");
 
     try w.writeAll("failing   ");

@@ -265,7 +265,9 @@ generation booted from the menu, since that generation's record is what
   breaks something, the previous generation is one pick away in the boot
   menu, but the session you're in has it.
 - changes you make to the running system between a staged apply and the
-  reboot, besides passwords and the like, stay in the old root.
+  reboot, besides passwords and the like, stay in the old root. `os
+  status` lists the files in `/etc` and the pacman runs it sees since the
+  build, so you can make them in the config instead, or again afterwards.
 - the health check is simple. it looks at systemd's state, the display
   manager, the config's services, and whether a networked machine got a
   route. a desktop that starts but shows nothing useful still passes.

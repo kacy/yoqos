@@ -44,6 +44,7 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
         f.users = try users(a, passwd, try r.file("etc/group") orelse "");
     }
     f.pacman_changes = try drift.since(a, io, opts.root);
+    if (std.mem.eql(u8, opts.root, "/")) f.staged_changes = try stagedChanges(a, io, f.boot.root_subvol, f.pacman_changes);
     f.id_changes = try accounts.changes(a, try accounts.parseHistory(a, try r.file(accounts.history_path) orelse ""), try accounts.systemIds(a, try r.file("etc/passwd") orelse "", try r.file("etc/group") orelse ""));
     f.files = try files(a, io, opts.root, opts.wanted.files);
     f.pacman = try pacmanSetup(a, io, r, opts.wanted.keys);
@@ -488,6 +489,57 @@ fn shellVar(text: []const u8, key: []const u8) ?[]const u8 {
 }
 
 /// users from /etc/passwd with their groups from /etc/group.
+/// what changed on the running system since a staged generation waiting
+/// for the reboot was built: files in /etc, less the machine state carried
+/// into it anyway, and packages pacman touched. the note staging leaves
+/// says when it was built.
+fn stagedChanges(a: Allocator, io: std.Io, running: ?[]const u8, pacman: []const facts.PacmanChange) ![]const []const u8 {
+    const cwd = std.Io.Dir.cwd();
+    const note = cwd.readFileAlloc(io, generation.unsettled_path, a, .limited(256)) catch return &.{};
+    if (std.mem.eql(u8, std.mem.trim(u8, note, " \n"), running orelse "")) return &.{};
+    const built = (cwd.statFile(io, generation.unsettled_path, .{}) catch return &.{}).mtime.nanoseconds;
+    var out: std.ArrayList([]const u8) = .empty;
+    var etc = cwd.openDir(io, "/etc", .{ .iterate = true }) catch return out.items;
+    defer etc.close(io);
+    var walker = try etc.walk(a);
+    defer walker.deinit();
+    while (walker.next(io) catch null) |e| {
+        if (e.kind != .file or carriedEtc(e.path)) continue;
+        const st = etc.statFile(io, e.path, .{}) catch continue;
+        if (st.mtime.nanoseconds > built) try out.append(a, try std.fmt.allocPrint(a, "/etc/{s}", .{e.path}));
+        if (out.items.len >= 20) break;
+    }
+    const built_ms: i64 = @intCast(@divFloor(built, std.time.ns_per_ms));
+    var names: std.ArrayList([]const u8) = .empty;
+    for (pacman) |c| {
+        if (c.time <= built_ms) continue;
+        for (c.packages) |p| {
+            if (!lists.contains(names.items, p)) try names.append(a, p);
+        }
+    }
+    if (names.items.len > 0) try out.append(a, try std.fmt.allocPrint(a, "packages with pacman: {s}", .{try std.mem.join(a, ", ", names.items)}));
+    return out.items;
+}
+
+/// files in /etc a new root gets from the running one as it boots, or that
+/// aren't the machine's to begin with: passwords and accounts, its
+/// identity, host keys, the keyring, and os's own config.
+fn carriedEtc(path: []const u8) bool {
+    for ([_][]const u8{ "shadow", "gshadow", "passwd", "group", "machine-id", "adjtime", "subuid", "subgid", "ld.so.cache" }) |f| {
+        if (std.mem.eql(u8, path, f) or (std.mem.startsWith(u8, path, f) and path.len == f.len + 1 and path[f.len] == '-')) return true;
+    }
+    return lists.startsWithAny(path, &.{ "ssh/ssh_host_", "pacman.d/gnupg/", "yoq/" });
+}
+
+test "files in /etc a new root gets anyway" {
+    try testing.expect(carriedEtc("shadow"));
+    try testing.expect(carriedEtc("shadow-"));
+    try testing.expect(carriedEtc("ssh/ssh_host_ed25519_key"));
+    try testing.expect(carriedEtc("yoq/machine.toml"));
+    try testing.expect(!carriedEtc("hosts"));
+    try testing.expect(!carriedEtc("shadowsocks.json"));
+}
+
 pub fn users(a: Allocator, passwd: []const u8, group: []const u8) ![]facts.User {
     var out: std.ArrayList(facts.User) = .empty;
     var lines = std.mem.splitScalar(u8, passwd, '\n');

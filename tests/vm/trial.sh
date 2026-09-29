@@ -9,6 +9,9 @@ set -eu
 # root, and the running system doesn't change until then.
 "$vm" ssh "/usr/local/bin/os add --yes amd-ucode" | tail -n 3
 check "pacman -Q amd-ucode >/dev/null 2>&1 || echo not yet" "not yet"
+# a change to the running system now stays behind, and status says so.
+"$vm" ssh "echo made after staging > /etc/yoq-after-staging"
+check "/usr/local/bin/os status | grep -c 'changed since the next generation was built'" 1
 show_env
 # until that reboot, the machine can't hibernate: resuming would start the
 # new kernel with the old one's memory.
@@ -21,6 +24,7 @@ check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'the default now'
 on_trial no
 check "test -e /run/systemd/sleep.conf.d/yoq.conf && echo blocked || echo free" free
 check "pacman -Q amd-ucode >/dev/null && echo installed" installed
+check "test -e /etc/yoq-after-staging && echo came along || echo left behind" "left behind"
 # a good boot puts its boot files where /boot is, the esp included.
 check "test -e /boot/amd-ucode.img && echo there" there
 
