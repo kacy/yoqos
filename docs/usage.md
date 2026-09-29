@@ -28,6 +28,9 @@ refind, `os enable-rollback` adds whole-system generations; see
 | `os install` | puts the machine a config describes on a blank disk |
 | `os update` | resolves the config against today's arch packages into the lock |
 | `os add`, `os remove` | edit the package list, and the lock with it |
+| `os edit` | opens the config in your editor, checks it, and applies it |
+| `os diff` | what differs between two generations |
+| `os doctor` | checks how `os` is set up on the machine |
 | `os enable`, `os disable` | turn services on or off in the config |
 | `os adopt` | puts packages installed outside the config into it |
 | `os why` | which config line brings a package in |
@@ -265,6 +268,19 @@ back: the file stays as it was, and nothing is committed.
 rather than editing the included file. if a package comes from a service or
 a hardware choice, `remove` tells you which one to change instead.
 
+### edit
+
+```
+os edit
+```
+
+opens the config in `$VISUAL` or `$EDITOR`, or `vi` if neither is set.
+when you save and quit, `os` loads it again. if it doesn't load, you see
+why and can edit it again; say no and the file goes back to how it was.
+once it loads, `os` relocks it if it needs to, commits it as "edit", and
+shows the plan and asks, the same as `os add`. `--no-apply` stops after
+the commit. it needs a terminal.
+
 ### update
 
 ```
@@ -384,9 +400,44 @@ copies of the system you can boot from the menu. it shows its checks and
 steps and asks first; `--yes` skips the question. there, `os rollback [n]`
 starts an older generation as a new one for the next boot, `os rollback
 --to-booted` keeps the one you booted from the menu, `os gc [--keep n]`
-removes old ones, and `os pin <n>` keeps one.
+removes old ones, and `os pin <n>` keeps one. `os diff 3 5` shows what
+changed between two generations: packages added, removed, and at other
+versions, then the config between their commits. with one number, it
+compares that generation with the newest. it reads each generation's
+root, so it needs root.
 [generations.md](generations.md) covers how they work, and what they don't
 do yet.
+
+## checking the setup
+
+```
+$ os doctor
+checks
+  ok  config: /etc/yoq/machine.toml
+  ok  config history: /etc/yoq
+  ok  lock: from 2026-09-25
+  ok  pacman hook: installed
+  ok  last apply: finished
+  ok  boot menu: has os's generations
+  ok  units: all in place
+  ok  esp space: 612 MiB free on /boot
+
+nothing to fix.
+```
+
+`os doctor` looks at how `os` is set up and changes nothing. it checks
+that:
+
+- the config loads, and its directory is a git repository;
+- the lock is there and under two weeks old;
+- the pacman hook that notices changes made with pacman is installed;
+- no apply stopped partway.
+
+with generations, it also checks that the boot menu has them, that os's
+units are there, and that the esp has room for another kernel. a sudo
+rule without a password shows up too: anything running as that user could
+change the machine without asking. each check that fails says what to do,
+and the exit code is 1 when one does.
 
 ## leaving
 
@@ -842,6 +893,10 @@ exit codes:
 | 0 | done |
 | 1 | the command ran into a problem, or found one: `status` with something failing, `why` with nothing needing the package |
 | 2 | the command line was wrong |
+
+`os docs` prints this reference, the readme, and
+[generations.md](generations.md) as one markdown document: the version
+that came with the installed `os`.
 
 global flags work before or after the command. a flag's value can't be
 empty or start with `-`:

@@ -15,7 +15,7 @@ pub const schema = "yoq.status/1";
 
 /// warn when the lock is older than this, since pinning also holds back
 /// security fixes.
-const stale_days = 14;
+pub const stale_days = 14;
 
 pub const Status = struct {
     hostname: ?[]const u8,
@@ -148,7 +148,7 @@ fn pacmanTouched(a: Allocator, f: *const facts.Facts) ![]const []const u8 {
 }
 
 /// days since 1970-01-01 for a "yyyy-mm-dd" date.
-fn epochDay(date: []const u8) ?i64 {
+pub fn epochDay(date: []const u8) ?i64 {
     if (date.len != 10 or date[4] != '-' or date[7] != '-') return null;
     const y = std.fmt.parseInt(i64, date[0..4], 10) catch return null;
     const m = std.fmt.parseInt(i64, date[5..7], 10) catch return null;

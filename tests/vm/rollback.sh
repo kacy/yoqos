@@ -57,6 +57,9 @@ check "/usr/local/bin/os enable-rollback" "generations are on: this machine runs
 "$vm" ssh "/usr/local/bin/os add --yes tree" | tail -n 3
 check "ls /var/lib/yoq/generations | tr '\\n' ' '" "1.json 2.json "
 menu_generations 2
+# what changed between them, and a doctor that finds the menu in place.
+check "/usr/local/bin/os diff 1 2 | grep -c '^  + tree '" 1
+check "/usr/local/bin/os doctor | grep -c '^  ok  boot menu'" 1
 # a menu another tool rewrote: status says so, and gc puts it back.
 drop_menu
 check "/usr/local/bin/os status | grep -c 'boot menu without'" 1

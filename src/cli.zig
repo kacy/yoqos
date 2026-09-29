@@ -23,6 +23,9 @@ const install_cmd = @import("cmd/install.zig");
 const enable_rollback = @import("cmd/enable_rollback.zig");
 const inspect = @import("cmd/inspect.zig");
 const edit = @import("cmd/edit.zig");
+const diff_cmd = @import("cmd/diff.zig");
+const doctor = @import("cmd/doctor.zig");
+const docs = @import("cmd/docs.zig");
 const update = @import("cmd/update.zig");
 
 pub const default_config = "/etc/yoq/machine.toml";
@@ -62,6 +65,8 @@ pub const Context = struct {
     /// where aur recipes are fetched from; YOQ_AUR points it elsewhere, as
     /// tests do.
     aur_url: []const u8 = @import("aur.zig").default_url,
+    /// what `os edit` opens the config with: $VISUAL, $EDITOR, or vi.
+    editor: []const u8 = "vi",
 };
 
 const Handler = *const fn (ctx: *Context, args: []const [:0]const u8) anyerror!u8;
@@ -86,18 +91,22 @@ const commands = [_]Command{
     .{ .name = "remove", .summary = "remove packages from the config", .handler = edit.removeCmd },
     .{ .name = "enable", .summary = "turn services on in the config", .handler = edit.enableCmd },
     .{ .name = "disable", .summary = "turn services off in the config", .handler = edit.disableCmd },
+    .{ .name = "edit", .summary = "open the config in $EDITOR, check it, and apply it", .handler = edit.editCmd },
     .{ .name = "adopt", .summary = "put packages installed outside os into the config", .handler = edit.adoptCmd },
     .{ .name = "rollback", .summary = "go back to an earlier generation", .handler = rollback.rollbackCmd },
     .{ .name = "enable-rollback", .summary = "turn on generations of the whole system (btrfs)", .handler = enable_rollback.enableRollbackCmd },
     .{ .name = "install", .summary = "put the machine a config describes on a blank disk, from a live system", .handler = install_cmd.installCmd },
     .{ .name = "uninstall", .summary = "leave plain arch on the running system, keeping the config", .handler = uninstall.uninstallCmd },
+    .{ .name = "doctor", .summary = "check how os is set up here, and say what to fix", .handler = doctor.doctorCmd },
     .{ .name = "gc", .summary = "remove old generations, keeping the newest and pinned ones", .handler = rollback.gcCmd },
     .{ .name = "pin", .summary = "keep a generation through garbage collection", .handler = rollback.pinCmd },
     .{ .name = "history", .summary = "list the generations", .handler = rollback.historyCmd },
+    .{ .name = "diff", .summary = "what differs between two generations: packages and config", .handler = diff_cmd.diffCmd },
     .{ .name = "why", .summary = "say which config line brings in a package", .handler = inspect.whyCmd },
     .{ .name = "config", .summary = "show the merged config (config show [--resolved])", .handler = inspect.configCmd },
     .{ .name = "facts", .summary = "show what os knows about this machine", .handler = inspect.factsCmd },
     .{ .name = "build", .summary = "build a root from the config and lock alone, and list what they don't explain here", .handler = build_cmd.buildCmd, .hidden = true },
+    .{ .name = "docs", .summary = "print the whole reference, as it came with this os", .handler = docs.docsCmd, .hidden = true },
     .{ .name = "carry", .summary = "carry this machine's state into a generation waiting for the reboot (yoq-carry.service runs this)", .handler = rollback.carryCmd, .hidden = true },
     .{ .name = "health", .summary = "check a generation on trial, at boot (yoq-health.service runs this)", .handler = health.healthCmd, .hidden = true },
     .{ .name = "record-pacman", .summary = "record a pacman transaction (the drift hook runs this)", .handler = hook.recordPacmanCmd, .hidden = true },

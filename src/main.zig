@@ -30,6 +30,7 @@ pub fn main(init: std.process.Init) !void {
         .interactive = tty,
         .in_own_transaction = init.environ_map.get(@import("alpm.zig").own_env) != null,
         .aur_url = init.environ_map.get("YOQ_AUR") orelse @import("aur.zig").default_url,
+        .editor = init.environ_map.get("VISUAL") orelse init.environ_map.get("EDITOR") orelse "vi",
         .gpa = init.gpa,
         .config_path = try hostConfig(init.arena.allocator(), init.io),
         .out = &out.interface,
@@ -86,6 +87,9 @@ test {
     _ = @import("install.zig");
     _ = @import("accounts.zig");
     _ = @import("cmd/install.zig");
+    _ = @import("cmd/diff.zig");
+    _ = @import("cmd/doctor.zig");
+    _ = @import("cmd/docs.zig");
     _ = @import("cmd/build.zig");
     _ = @import("gens.zig");
     _ = @import("planner.zig");

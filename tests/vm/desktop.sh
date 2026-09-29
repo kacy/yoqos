@@ -10,7 +10,7 @@ settled
 "$vm" ssh "printf '\\n[desktop]\\nlogin = \"greetd\"\\n' >> /etc/yoq/machine.toml && /usr/local/bin/os update --yes" | tail -n 3
 # a display manager changes at the next boot: it's built into the next
 # root, and this session keeps what it had.
-check "systemctl is-enabled greetd.service 2>/dev/null || true" ""
+check "systemctl is-enabled -q greetd.service 2>/dev/null && echo on || echo off" off
 on_trial yes
 "$vm" reboot
 settled

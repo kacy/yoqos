@@ -126,6 +126,23 @@ newest() {
     "$vm" ssh "ls /var/lib/yoq/generations | sort -n | tail -n 1 | cut -d. -f1"
 }
 
+# makes the next trial boot's initramfs garbage, so its kernel can't
+# start and panics, and panic=10 reboots into the generation before. grub
+# and refind boot the staged root's own /boot, so that file is broken.
+# limine and systemd-boot share boot files on the esp between generations
+# with the same content, and breaking one could break the fallback too;
+# there, the trial entry points at a garbage file of its own.
+break_trial_boot() {
+    case $VM_LOADER in
+    limine) "$vm" ssh "echo not an initramfs > $VM_ESP/yoq/boot/garbage.img && sed -i '/^\/yoq trial boot/,/cmdline/ s|module_path: boot():[^ ]*initramfs[^ ]*|module_path: boot():/yoq/boot/garbage.img|' $(menu_file) && grep -A5 '^/yoq trial boot' $(menu_file)" ;;
+    systemd-boot) "$vm" ssh "echo not an initramfs > $VM_ESP/yoq/boot/garbage.img && sed -i 's|^initrd .*initramfs.*|initrd /yoq/boot/garbage.img|' $VM_ESP/loader/entries/yoq-trial.conf && cat $VM_ESP/loader/entries/yoq-trial.conf" ;;
+    *)
+        staged=$(newest_root)
+        "$vm" ssh "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && echo not an initramfs > /run/yoq-top/$staged/boot/initramfs-linux.img; umount /run/yoq-top"
+        ;;
+    esac
+}
+
 # the newest generation's root, like @roots/7.
 newest_root() {
     n=$(newest)

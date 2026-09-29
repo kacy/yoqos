@@ -31,6 +31,17 @@
 - a config repository for several machines works: without
   `/etc/yoq/machine.toml`, `os` reads `/etc/yoq/hosts/<hostname>/machine.toml`.
 
+### new commands
+
+- `os edit` opens the config in your editor, checks it once it's saved,
+  and commits and applies it, putting it back if it doesn't load and you
+  stop there.
+- `os diff <a> [<b>]` shows what differs between two generations:
+  packages added, removed, and at other versions, and the config between
+  their commits.
+- `os doctor` checks how os is set up on the machine and says what to fix.
+- `os docs` prints the whole reference as it came with this os.
+
 ### repositories and the aur
 
 - `[repos.<name>]` declares a package repository with its server and

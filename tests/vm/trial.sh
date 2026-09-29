@@ -45,22 +45,21 @@ check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 # machine falls back the same way. first onto the generation just adopted.
 "$vm" reboot
 settled
+# the hang goes in first, so the next root, a snapshot of this one, has it.
+"$vm" ssh "printf '[Unit]\nDescription=hang\nBefore=multi-user.target\n[Service]\nType=oneshot\nTimeoutStartSec=infinity\nExecStart=/usr/bin/sleep infinity\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/yoq-hang.service && systemctl enable -q yoq-hang.service"
 "$vm" ssh "/usr/local/bin/os add --yes intel-ucode" | tail -n 1
 before=$(second_newest)
-"$vm" ssh "printf '[Unit]\nDescription=hang\nBefore=multi-user.target\n[Service]\nType=oneshot\nTimeoutStartSec=infinity\nExecStart=/usr/bin/sleep infinity\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/yoq-hang.service && systemctl enable -q yoq-hang.service"
 show_env
 falls_back "$before"
 
-# a trial whose kernel can't boot: its initramfs is garbage, so it can't
-# mount its root, and panic=10 brings back the generation before.
+# a trial whose kernel can't start: its initramfs is garbage, so the kernel
+# panics, and panic=10 brings back the generation before.
 "$vm" reboot
 settled
 "$vm" ssh "/usr/local/bin/os add --yes intel-ucode" | tail -n 1
 on_trial yes
 before=$(second_newest)
-# the staged root boots its own initramfs until it's good.
-staged=$(newest_root)
-"$vm" ssh "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && echo not an initramfs > /run/yoq-top/$staged/boot/initramfs-linux.img; umount /run/yoq-top"
+break_trial_boot
 show_env
 falls_back "$before"
 # a trial that comes up without a network, on a config that turns on

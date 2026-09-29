@@ -18,6 +18,10 @@ pub fn build(b: *std.Build) void {
     const systemd = b.option(bool, "systemd", "link libsystemd for reading unit state") orelse false;
     options.addOption(bool, "systemd", systemd);
     root.addOptions("build_options", options);
+    // `os docs` prints these, as they were when this os was built.
+    for ([_][]const u8{ "README.md", "docs/usage.md", "docs/generations.md" }) |doc| {
+        root.addAnonymousImport(doc, .{ .root_source_file = b.path(doc) });
+    }
     if (alpm) {
         root.link_libc = true;
         root.linkSystemLibrary("alpm", .{ .use_pkg_config = .no });

@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const cli = @import("../cli.zig");
+const exec = @import("../exec.zig");
 const change = @import("../change.zig");
 const output = @import("../output.zig");
 const alpm = @import("../alpm.zig");
@@ -149,6 +150,67 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
     const done = try applying.run(ctx, then.yes, cli.inputs(ctx), .{});
     try applying.recordGeneration(ctx, done, if (outcome.changed()) message else "apply");
     return done.code;
+}
+
+/// `os edit`: opens the config in $EDITOR, checks it once it's saved, and
+/// then saves, relocks, and applies it like `os add` does. a config that
+/// doesn't load can be edited again, or put back as it was.
+pub fn editCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    const usage_text = "os edit [--no-apply]";
+    var then: Then = .{};
+    for (args) |arg| {
+        if (!then.flag(arg)) return cli.usageError(ctx, usage_text);
+    }
+    if (!ctx.interactive) {
+        try ctx.err.writeAll("os: edit opens an editor, so it needs a terminal. edit the config yourself, then `os apply`.\n");
+        return 2;
+    }
+    var w: cli.Work = .init(ctx);
+    defer w.deinit();
+    const a = w.allocator();
+    const top = ctx.config_path;
+    const before = try cli.readFile(ctx, a, top) orelse return 1;
+    var argv: std.ArrayList([]const u8) = .empty;
+    var words = std.mem.tokenizeScalar(u8, ctx.editor, ' ');
+    while (words.next()) |word| try argv.append(a, word);
+    try argv.append(a, top);
+    while (true) {
+        if (try exec.interactive(a, ctx.io, argv.items)) |why| {
+            try ctx.err.print("os: {s}\n", .{why});
+            return 1;
+        }
+        const after = try cli.readFile(ctx, a, top) orelse return 1;
+        if (std.mem.eql(u8, before, after)) {
+            try ctx.out.writeAll("no changes.\n");
+            return 0;
+        }
+        if (try loads(ctx)) break;
+        if (try cli.confirm(ctx, "edit it again?")) continue;
+        if (!try cli.writeFile(ctx, top, before)) return 1;
+        try ctx.out.print("{s} is back as it was.\n", .{top});
+        return 1;
+    }
+    const now = then.applies(ctx);
+    if (try relock(ctx, top, !now) == .failed) {
+        _ = try cli.writeFile(ctx, top, before);
+        try ctx.err.print("os: {s} is back as it was.\n", .{top});
+        return 1;
+    }
+    try cli.record(ctx, a, top, "edit");
+    if (!now) return 0;
+    try ctx.out.writeByte('\n');
+    const done = try applying.run(ctx, then.yes, cli.inputs(ctx), .{});
+    try applying.recordGeneration(ctx, done, "edit");
+    return done.code;
+}
+
+/// whether the config loads now, after saying what's wrong if it doesn't.
+fn loads(ctx: *Context) !bool {
+    var w: cli.Work = .init(ctx);
+    defer w.deinit();
+    if (try w.config() != null) return true;
+    _ = try w.fail();
+    return false;
 }
 
 /// "add fd, bat": what the change did, in the words of the command.
