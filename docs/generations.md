@@ -68,8 +68,8 @@ entry, set with `bootctl`, so this needs limine 11.4 or newer.
 
 tools that rewrite `limine.conf` themselves, like omarchy's
 `limine-entry-tool`, `limine-snapper-sync`, and `omarchy-refresh-limine`,
-can drop `os`'s section. the next change that makes a generation writes it
-again.
+can drop `os`'s section. `os status` notices, and `os gc`, or the next
+change that makes a generation, writes it again.
 
 ### systemd-boot
 

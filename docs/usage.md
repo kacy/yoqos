@@ -696,8 +696,9 @@ on an omarchy install, that plans nothing. omarchy's own updates
 (`omarchy-update` and its migrations) still change the machine behind
 `os`'s back, so `os status` shows them as drift until `os adopt` or the next
 apply settles it. generations work with omarchy's limine, but omarchy's own
-limine tools can drop `os`'s entries from `limine.conf` until the next
-change writes them again; see [generations.md](generations.md#bootloaders).
+limine tools can drop `os`'s entries from `limine.conf`. `os status`
+notices, and `os gc` writes them again; see
+[generations.md](generations.md#bootloaders).
 
 ### kernel modules
 

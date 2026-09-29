@@ -88,6 +88,9 @@ pub const Boot = struct {
     pacman_moved: bool = false,
     /// snapper has a config for the root, which snap-pac snapshots.
     snapper_root: bool = false,
+    /// on a machine with generations: the file the bootloader reads that
+    /// has lost os's entries, like a limine.conf another tool rewrote.
+    menu_missing: ?[]const u8 = null,
 };
 
 /// the file os writes the config's repositories to, and the line in

@@ -64,6 +64,18 @@ menu_generations() {
     esac
 }
 
+# takes os's entries out of the boot menu, the way another tool that
+# rewrites the bootloader's config would.
+drop_menu() {
+    f=$(menu_file)
+    case $VM_LOADER in
+    grub) "$vm" ssh "echo '# someone else' > $f" ;;
+    limine) "$vm" ssh "sed -i '/^# yoq: generations/,/^# yoq: end/d' $f" ;;
+    refind) "$vm" ssh "sed -i '/^include yoq.conf/d' \$(dirname $f)/refind.conf" ;;
+    systemd-boot) "$vm" ssh "rm $f/yoq-head.conf" ;;
+    esac
+}
+
 # makes the next boot run generation $1 from the menu, as if picked by
 # hand. refind has no one-shot boot, so its default moves there until
 # boot_done moves it back.

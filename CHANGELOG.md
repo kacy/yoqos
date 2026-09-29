@@ -33,6 +33,8 @@
   `/etc/yoq/machine.toml`, `os` reads `/etc/yoq/hosts/<hostname>/machine.toml`.
 - only one os changes a machine at a time. another one says which process
   has it and stops, rather than running a second transaction beside it.
+- `os status` notices a boot menu that lost os's generations, like a
+  limine.conf another tool rewrote, and `os gc` writes them back.
 - `os build --clean <dir>` builds a root from the config and the lock
   alone, and lists what's on this machine that they don't explain.
 - `os` runs `/usr/bin/mkinitcpio` itself, not a wrapper earlier in `PATH`

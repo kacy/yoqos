@@ -57,6 +57,12 @@ check "/usr/local/bin/os enable-rollback" "generations are on: this machine runs
 "$vm" ssh "/usr/local/bin/os add --yes tree" | tail -n 3
 check "ls /var/lib/yoq/generations | tr '\\n' ' '" "1.json 2.json "
 menu_generations 2
+# a menu another tool rewrote: status says so, and gc puts it back.
+drop_menu
+check "/usr/local/bin/os status | grep -c 'boot menu without'" 1
+check "/usr/local/bin/os gc | grep -c 'wrote the boot menu'" 1
+menu_generations 2
+check "/usr/local/bin/os status | grep -c 'boot menu without' || true" 0
 
 # generation 1, booted once from the menu: a fresh copy of it, from
 # before tree.

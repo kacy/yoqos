@@ -211,6 +211,17 @@ pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.err.print("os: {s}\n", .{problem});
         return 1;
     }
+    // a menu another tool dropped os's entries from gets them back.
+    if (removed.items.len == 0) if (boot.menu_missing) |file| {
+        const records = try gens.readRecords(a, ctx.io, "/var");
+        if (records.len > 0) {
+            if (try m.writeMenu(try std.fmt.allocPrint(a, "/{s}", .{records[records.len - 1].root}), records)) |problem| {
+                try ctx.err.print("os: {s}\n", .{problem});
+                return 1;
+            }
+            try ctx.out.print("wrote the boot menu's generations back into {s}.\n", .{file});
+        }
+    };
     if (removed.items.len == 0) {
         try ctx.out.writeAll("nothing to remove.\n");
         return 0;

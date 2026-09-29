@@ -51,6 +51,8 @@ pub const Status = struct {
         /// packages pacman touched since the last apply. this says where
         /// the rows above came from, so it isn't counted on its own.
         pacman: []const []const u8,
+        /// the boot menu file that lost os's entries.
+        menu: ?[]const u8 = null,
     },
     /// configured services whose units failed.
     failing: []const []const u8,
@@ -125,6 +127,7 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
             .pacnew = pacnew.items,
             .pacnew_managed = pacnew_managed.items,
             .pacman = try pacmanTouched(a, f),
+            .menu = f.boot.menu_missing,
         },
         .failing = failing.items,
     };
@@ -187,6 +190,7 @@ pub fn writeText(w: *std.Io.Writer, s: *const Status) !void {
     if (ch.pacnew.len > 0) try rows.list("new upstream defaults", ch.pacnew, "merge them with pacdiff");
     if (ch.pacnew_managed.len > 0) try rows.list("new upstream defaults for files os writes", ch.pacnew_managed, "os keeps its version; the .pacnew is for reference");
     if (ch.pacman.len > 0) try rows.list("touched with pacman since the last apply", ch.pacman, "os plan shows what differs");
+    if (ch.menu) |m| try rows.list("boot menu without os's generations", &.{m}, "os gc writes them again");
     if (rows.first) try w.writeAll("changed   none\n");
 
     try w.writeAll("failing   ");

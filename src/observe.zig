@@ -7,6 +7,7 @@
 const std = @import("std");
 const exec = @import("exec.zig");
 const generation = @import("generation.zig");
+const menu = @import("menu.zig");
 const facts = @import("facts.zig");
 const alpm = @import("alpm.zig");
 const drift = @import("drift.zig");
@@ -167,6 +168,7 @@ const Reader = struct {
         }
         b.loader = try r.loader(b.esp);
         if (b.esp) |esp| b.loader_conf = try r.loaderConf(b.loader orelse "", esp);
+        if (generation.running(b.root_subvol)) b.menu_missing = try r.menuMissing(b);
         if (b.root_subvol != null) {
             b.top_is_default = switch (try exec.output(r.a, r.io, &.{ "btrfs", "subvolume", "get-default", "/" })) {
                 // "ID 5 (FS_TREE)" for the top level.
@@ -176,6 +178,24 @@ const Reader = struct {
             };
         }
         return b;
+    }
+
+    /// the file that should hold os's boot entries, if it doesn't.
+    fn menuMissing(r: Reader, b: facts.Boot) !?[]const u8 {
+        const kind = menu.Loader.of(b) orelse return null;
+        const esp = b.esp orelse return null;
+        const menu_file = switch (kind) {
+            .grub => try std.fs.path.join(r.a, &.{ esp, "grub/grub.cfg" }),
+            .limine, .refind => b.loader_conf orelse return null,
+            .@"systemd-boot" => try std.fs.path.join(r.a, &.{ esp, "loader/entries", try menu.sdbootName(r.a, "head") }),
+        };
+        const text = try r.file(menu_file[1..]) orelse return menu_file;
+        const ok = switch (kind) {
+            .grub, .@"systemd-boot" => std.mem.startsWith(u8, text, "# written by os"),
+            .limine => std.mem.indexOf(u8, text, menu.limine_begin) != null,
+            .refind => std.mem.indexOf(u8, text, menu.refind_include) != null,
+        };
+        return if (ok) null else menu_file;
     }
 
     /// where limine or refind reads its config, as each one looks for it:
