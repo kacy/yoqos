@@ -170,7 +170,7 @@ pub const Machine = struct {
     }
 
     /// deletes a subvolume if it's there, read-only or not.
-    fn drop(m: *const Machine, path: []const u8) !?[]const u8 {
+    pub fn drop(m: *const Machine, path: []const u8) !?[]const u8 {
         if (!(btrfs.isSubvolume(path) catch false)) return null;
         btrfs.setReadOnly(path, false) catch {};
         btrfs.delete(path) catch |e| return try std.fmt.allocPrint(m.a, "can't remove {s}: {s}", .{ path, @errorName(e) });
@@ -392,7 +392,7 @@ pub const Machine = struct {
 
     /// a menu entry for the root at `subvol`: its kernel, microcode, and
     /// initramfs, from its own /boot, or the esp's for the newest.
-    fn entry(m: *const Machine, id: []const u8, name: []const u8, subvol: []const u8, cmdline: []const u8) !menu.Entry {
+    pub fn entry(m: *const Machine, id: []const u8, name: []const u8, subvol: []const u8, cmdline: []const u8) !menu.Entry {
         var kernels: std.ArrayList([]const u8) = .empty;
         var initrds: std.ArrayList([]const u8) = .empty;
         const dir = if (std.mem.eql(u8, id, "head") and m.bootOnEsp()) "/boot" else try m.at(&.{ subvol, "boot" });

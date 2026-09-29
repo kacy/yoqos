@@ -19,6 +19,10 @@
   menu by hand.
 - `enable-rollback` stops snap-pac's snapshots of the root, since each
   change is a generation already.
+- `os uninstall` leaves plain arch on the running system: the config back
+  in `/etc/yoq`, the pacman database back in `/var/lib/pacman`, and a
+  bootloader set up the way arch sets it up. other generations stay unless
+  you ask for them to go.
 - `os` runs `/usr/bin/mkinitcpio` itself, not a wrapper earlier in `PATH`
   that might stop to ask a question.
 

@@ -84,7 +84,7 @@ fn applyBlocker(ctx: *Context) ?[]const u8 {
 
 /// how this boot stands with generations: running a menu copy of an
 /// older one, or with a newer one waiting for the next boot.
-fn bootState(io: std.Io) enum { normal, copy, pending } {
+pub fn bootState(io: std.Io) enum { normal, copy, pending } {
     var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();

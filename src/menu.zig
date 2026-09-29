@@ -153,6 +153,14 @@ pub fn limine(a: Allocator, entries: []const Entry) ![]const u8 {
     return out.written();
 }
 
+/// one entry, titled `title`, outside os's section: what `os uninstall`
+/// leaves limine.
+pub fn limineOne(a: Allocator, title: []const u8, e: Entry) ![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(a);
+    try limineEntry(a, &out.writer, title, e, e.args);
+    return out.written();
+}
+
 fn limineEntry(a: Allocator, w: *std.Io.Writer, title: []const u8, e: Entry, args: []const u8) !void {
     w.print("/{s}\n    protocol: linux\n    path: boot():{s}\n", .{ title, try e.onEsp(a, e.kernel) }) catch return error.OutOfMemory;
     for (e.initrds) |i| w.print("    module_path: boot():{s}\n", .{try e.onEsp(a, i)}) catch return error.OutOfMemory;
@@ -238,13 +246,29 @@ pub const refind_include = "include yoq.conf";
 /// refind.conf with os's include as its last line, so the default os
 /// sets outranks any earlier one.
 pub fn spliceRefind(a: Allocator, conf: []const u8) ![]const u8 {
+    const out = try unspliceRefind(a, conf);
+    return std.fmt.allocPrint(a, "{s}{s}\n", .{ out, refind_include });
+}
+
+/// refind.conf without os's include.
+pub fn unspliceRefind(a: Allocator, conf: []const u8) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, conf, "\n"), '\n');
     while (lines.next()) |line| {
         if (std.mem.eql(u8, std.mem.trim(u8, line, " \t\r"), refind_include)) continue;
         try out.print(a, "{s}\n", .{line});
     }
-    try out.print(a, "{s}\n", .{refind_include});
+    return out.items;
+}
+
+/// the refind_linux.conf beside the kernel of an entry on the esp's top,
+/// which refind reads when it finds that kernel itself: a title, and the
+/// kernel's arguments with its initrds.
+pub fn refindLinux(a: Allocator, e: Entry) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.print(a, "\"Arch Linux\" \"{s}", .{e.args});
+    for (e.initrds) |i| try out.print(a, " initrd=\\{s}", .{i});
+    try out.appendSlice(a, "\"\n");
     return out.items;
 }
 
@@ -385,6 +409,8 @@ test "refind's entries, and its include" {
         \\default_selection "yoq 2 - add fd"
         \\
     , try refind(a, .{ .esp_part = "esp-guid", .root_part = "root-guid", .entries = &.{ test_entries[0], older } }));
+    try testing.expectEqualStrings("\"Arch Linux\" \"root=UUID=r rw initrd=\\amd-ucode.img initrd=\\initramfs-linux.img\"\n", try refindLinux(a, test_entries[0]));
+    try testing.expectEqualStrings("timeout 20\n", try unspliceRefind(a, "timeout 20\ninclude yoq.conf\n"));
     const conf = "timeout 20\ninclude yoq.conf\ndefault_selection 1\n";
     try testing.expectEqualStrings("timeout 20\ndefault_selection 1\ninclude yoq.conf\n", try spliceRefind(a, conf));
 }

@@ -353,26 +353,7 @@ const Enabler = struct {
         const esp = e.boot.esp.?;
         // what the firmware boots now, kept until grub-install is done.
         if (!try e.keep(try std.fs.path.join(e.a, &.{ esp, "EFI" }), "/run/yoq/efi-backup")) return false;
-        var argv: std.ArrayList([]const u8) = .empty;
-        try argv.appendSlice(e.a, &.{ "grub-install", "--target=x86_64-efi", try std.fmt.allocPrint(e.a, "--efi-directory={s}", .{esp}), try std.fmt.allocPrint(e.a, "--boot-directory={s}", .{esp}) });
-        if (try e.grubId(esp)) |id| {
-            try argv.append(e.a, try std.fmt.allocPrint(e.a, "--bootloader-id={s}", .{id}));
-        } else try argv.append(e.a, "--removable");
-        return e.sh(argv.items);
-    }
-
-    /// the directory under EFI/ that holds grub, if grub has one of its
-    /// own. without one it boots from the removable path, EFI/BOOT.
-    fn grubId(e: *Enabler, esp: []const u8) !?[]const u8 {
-        var dir = std.Io.Dir.cwd().openDir(e.ctx.io, try std.fs.path.join(e.a, &.{ esp, "EFI" }), .{ .iterate = true }) catch return null;
-        defer dir.close(e.ctx.io);
-        var it = dir.iterate();
-        while (it.next(e.ctx.io) catch null) |d| {
-            if (d.kind != .directory or std.ascii.eqlIgnoreCase(d.name, "BOOT")) continue;
-            dir.access(e.ctx.io, try std.fs.path.join(e.a, &.{ d.name, "grubx64.efi" }), .{}) catch continue;
-            return try e.a.dupe(u8, d.name);
-        }
-        return null;
+        return e.sh(try grubInstall(e.a, e.ctx.io, esp, esp));
     }
 
     /// the menu, with generation 1 and the system as it is now. grub's goes
@@ -434,6 +415,28 @@ const Enabler = struct {
         return false;
     }
 };
+
+/// grub-install's arguments for grub on `esp`, reading its menu from
+/// `boot_dir`, on the efi path grub boots from now: its own directory
+/// under EFI/, or the removable path, EFI/BOOT.
+pub fn grubInstall(a: Allocator, io: std.Io, esp: []const u8, boot_dir: []const u8) ![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, &.{ "grub-install", "--target=x86_64-efi", try std.fmt.allocPrint(a, "--efi-directory={s}", .{esp}), try std.fmt.allocPrint(a, "--boot-directory={s}", .{boot_dir}) });
+    var dir = std.Io.Dir.cwd().openDir(io, try std.fs.path.join(a, &.{ esp, "EFI" }), .{ .iterate = true }) catch {
+        try argv.append(a, "--removable");
+        return argv.items;
+    };
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |d| {
+        if (d.kind != .directory or std.ascii.eqlIgnoreCase(d.name, "BOOT")) continue;
+        dir.access(io, try std.fs.path.join(a, &.{ d.name, "grubx64.efi" }), .{}) catch continue;
+        try argv.append(a, try std.fmt.allocPrint(a, "--bootloader-id={s}", .{d.name}));
+        return argv.items;
+    }
+    try argv.append(a, "--removable");
+    return argv.items;
+}
 
 const Fstab = struct {
     uuid: []const u8,

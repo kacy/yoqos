@@ -17,6 +17,7 @@ const apply_cmd = @import("cmd/apply.zig");
 const rollback = @import("cmd/rollback.zig");
 const hook = @import("cmd/hook.zig");
 const health = @import("cmd/health.zig");
+const uninstall = @import("cmd/uninstall.zig");
 const enable_rollback = @import("cmd/enable_rollback.zig");
 const inspect = @import("cmd/inspect.zig");
 const edit = @import("cmd/edit.zig");
@@ -81,6 +82,7 @@ const commands = [_]Command{
     .{ .name = "adopt", .summary = "put packages installed outside os into the config", .handler = edit.adoptCmd },
     .{ .name = "rollback", .summary = "go back to an earlier generation", .handler = rollback.rollbackCmd },
     .{ .name = "enable-rollback", .summary = "turn on generations of the whole system (btrfs)", .handler = enable_rollback.enableRollbackCmd },
+    .{ .name = "uninstall", .summary = "leave plain arch on the running system, keeping the config", .handler = uninstall.uninstallCmd },
     .{ .name = "gc", .summary = "remove old generations, keeping the newest and pinned ones", .handler = rollback.gcCmd },
     .{ .name = "pin", .summary = "keep a generation through garbage collection", .handler = rollback.pinCmd },
     .{ .name = "history", .summary = "list the generations", .handler = rollback.historyCmd },

@@ -24,6 +24,7 @@ refind, `os enable-rollback` adds whole-system generations; see
 | `os rollback` | goes back to an earlier generation |
 | `os enable-rollback` | turns on whole-system generations (btrfs, with grub, limine, or refind) |
 | `os gc`, `os pin` | clean up old generations, or keep one |
+| `os uninstall` | takes `os` off the machine, leaving plain arch |
 | `os update` | resolves the config against today's arch packages into the lock |
 | `os add`, `os remove` | edit the package list, and the lock with it |
 | `os enable`, `os disable` | turn services on or off in the config |
@@ -385,6 +386,34 @@ next boot, `os rollback --to-booted` keeps the one you booted from the menu,
 `os gc [--keep n]` removes old ones, and `os pin <n>` keeps one.
 [generations.md](generations.md) covers how they work, and what they don't
 do yet.
+
+## leaving
+
+`os uninstall` takes `os` off the machine and leaves plain arch running the
+system you have now. like `enable-rollback`, it lists its steps and asks
+first; `--yes` skips the question.
+
+on a machine with generations, it moves the config back into `/etc/yoq`
+and the pacman database back to `/var/lib/pacman`, and removes `os`'s
+units that run at boot. if `enable-rollback` turned off snap-pac's
+snapshots of the root, they come back on. the bootloader gets set up to
+boot the running root without `os`:
+
+- grub reads a menu from `grub-mkconfig` in `/boot/grub` again.
+- limine gets one plain entry where `os`'s section was.
+- refind boots the kernel in `/boot` through `refind_linux.conf`.
+
+limine and refind need the esp mounted at `/boot` for this, since that's
+where arch installs the kernel.
+
+the other generations stay as btrfs subvolumes unless you say yes when it
+asks, or pass `--delete-generations`. the running root stays where it is,
+in `@roots/<n>`, and so do `@var`, `@home`, and the other data subvolumes.
+
+last, it removes the `yoq-os` package if pacman installed it, and `os`'s
+own state in `/var/lib/yoq`. the config and its git history stay in
+`/etc/yoq`. if a step fails, running `os uninstall` again picks up where
+it stopped.
 
 ## the config
 

@@ -197,6 +197,22 @@ pub fn snapPac(a: Allocator, text: []const u8) ![]const u8 {
     return out.items;
 }
 
+/// snap-pac's config with the root's snapshots back on: `snapPac` taken
+/// back. null when nothing else is left in it.
+pub fn snapPacOn(a: Allocator, text: []const u8) !?[]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var in_root = false;
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, text, "\n"), '\n');
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, t, "[")) in_root = std.mem.eql(u8, t, "[root]");
+        if (in_root and std.mem.eql(u8, t, "snapshot = no")) continue;
+        try out.print(a, "{s}\n", .{line});
+    }
+    const left = std.mem.trim(u8, out.items, " \n");
+    return if (left.len == 0 or std.mem.eql(u8, left, "[root]")) null else out.items;
+}
+
 pub fn writeText(w: *std.Io.Writer, p: *const Plan) !void {
     try w.writeAll("checks\n");
     for (p.checks) |c| {
@@ -312,6 +328,8 @@ test "snap-pac stops snapshotting the root" {
     defer arena.deinit();
     const a = arena.allocator();
     try testing.expectEqualStrings("[root]\nsnapshot = no\n", try snapPac(a, ""));
+    try testing.expectEqual(null, try snapPacOn(a, try snapPac(a, "")));
+    try testing.expectEqualStrings("[home]\nsnapshot = yes\n\n[root]\n", (try snapPacOn(a, try snapPac(a, "[home]\nsnapshot = yes\n"))).?);
     try testing.expectEqualStrings("[home]\nsnapshot = yes\n\n[root]\nsnapshot = no\n", try snapPac(a, "[home]\nsnapshot = yes\n"));
     try testing.expectEqualStrings("[root]\nsnapshot = no\ndesc_limit = 72\n[home]\nsnapshot = yes\n", try snapPac(a, "[root]\nsnapshot = yes\ndesc_limit = 72\n[home]\nsnapshot = yes\n"));
 }

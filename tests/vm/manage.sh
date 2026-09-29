@@ -10,4 +10,8 @@ check "/usr/local/bin/os enable-rollback --yes >/tmp/out 2>&1; echo \$?" 1
 check "grep -c '$1' /tmp/out" 1
 check "test -e /var/lib/yoq/generations && echo generations || echo none" none
 check "/usr/local/bin/os rollback --to-booted 2>&1 | grep -c 'no generations'" 1
+# leaving the manage rung takes only os's state; the config stays.
+check "/usr/local/bin/os uninstall --yes >/dev/null; echo \$?" 0
+check "test -e /var/lib/yoq && echo state || echo none" none
+check "test -f /etc/yoq/machine.toml && echo config" config
 echo "manage ok"
