@@ -418,10 +418,12 @@ it stopped.
 
 ## installing a new machine
 
-from arch's live iso, booted in uefi mode, with `os` on it (`pacman -U` the
-release package, or copy the binary). the iso has the tools it runs; on
-another live system, `pacman -S dosfstools btrfs-progs grub git` first,
-and `os install` names any that are missing:
+from yoq os's own live iso, booted in uefi mode: it's arch's live iso,
+built from the same profile, with `os` and everything `os install` runs
+already on it. arch's own iso works too, with `os` added (`pacman -U` the
+release package, or copy the binary); on another live system, `pacman -S
+dosfstools btrfs-progs grub git` first, and `os install` names any that
+are missing:
 
 ```
 os install https://github.com/you/machines --host atlas --disk /dev/nvme0n1

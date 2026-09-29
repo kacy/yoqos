@@ -94,6 +94,27 @@ jobs:
       - if: failure()
         run: tail -n 60 ~/.cache/yoq-vm/console.log || true
 
+  iso:
+    # yoq os's live iso, built with archiso, then booted in a vm with a
+    # blank disk that it installs a machine on. privileged, since mkarchiso
+    # mounts the root it builds.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: archlinux:latest
+      options: --privileged --device /dev/kvm
+    steps:
+      - run: pacman -Syu --noconfirm --needed git libarchive systemd-libs archiso qemu-base edk2-ovmf libisoburn openssh
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline
+      - run: dist/iso/build.sh ./zig-out/bin/os out
+      - run: tests/vm/iso.sh out/yoq-os-*.iso
+      - if: failure()
+        run: tail -n 60 ~/.cache/yoq-vm/console.log || true
+
   package:
     # the pkgbuild in dist/, built from this checkout and installed the way
     # a user would.

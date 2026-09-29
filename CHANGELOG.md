@@ -26,6 +26,8 @@
 - generations work with systemd-boot too: os's own entry files beside
   yours, kernels copied to the esp, and trial boots through its one-shot
   entry.
+- a live iso of yoq os's own, built from arch's releng profile with `os`
+  and what `os install` runs, comes with each release.
 - `os install <config> --disk <dev>` puts the machine a config repository
   describes on a blank disk, from a live system: an esp, btrfs with the
   generations layout, the clean build as generation 1, and grub.

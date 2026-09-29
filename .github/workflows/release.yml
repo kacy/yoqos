@@ -14,9 +14,12 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    container: archlinux:latest
+    # privileged, since mkarchiso mounts the root of the live iso it builds.
+    container:
+      image: archlinux:latest
+      options: --privileged
     steps:
-      - run: pacman -Syu --noconfirm --needed base-devel git zig github-cli libarchive systemd-libs
+      - run: pacman -Syu --noconfirm --needed base-devel git zig github-cli libarchive systemd-libs archiso
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -58,6 +61,10 @@ jobs:
           cp /home/builder/pkg/yoq-os-*.pkg.tar.zst .
           pacman -U --noconfirm yoq-os-*.pkg.tar.zst
           [ "$(os version)" = "os ${{ steps.version.outputs.version }}" ]
+      - name: the live iso
+        run: |
+          dist/iso/build.sh out/bin/os iso
+          mv iso/yoq-os-*.iso yoq-os-${{ steps.version.outputs.version }}-x86_64.iso
       - name: notes from the changelog
         run: |
           awk -v v="## ${{ steps.version.outputs.version }}" '$0 == v { on = 1; next } /^## / { on = 0 } on' CHANGELOG.md > notes.md
@@ -67,6 +74,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          sha256sum yoq-os-*.tar.gz yoq-os-*.pkg.tar.zst > sha256sums.txt
+          sha256sum yoq-os-*.tar.gz yoq-os-*.pkg.tar.zst yoq-os-*.iso > sha256sums.txt
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "${{ steps.version.outputs.version }}" --notes-file notes.md \
-            yoq-os-*.tar.gz yoq-os-*.pkg.tar.zst sha256sums.txt
+            yoq-os-*.tar.gz yoq-os-*.pkg.tar.zst yoq-os-*.iso sha256sums.txt

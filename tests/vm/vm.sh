@@ -14,6 +14,8 @@
 #   vm.sh image              make the base image, once
 #   vm.sh start              boot a fresh overlay and wait for ssh; with
 #                            VM_DISK2=1, a blank second disk too
+#   vm.sh start-iso <iso>    boot a live iso with a blank disk, as a new
+#                            machine would
 #   vm.sh start-installed    power off and boot the second disk alone, with
 #                            blank firmware variables, like a new machine
 #   vm.sh ssh <command>      run a command in the vm as root
@@ -149,6 +151,12 @@ start)
         boot "$dir/overlay.qcow2" "$dir/vars.fd"
     fi
     ;;
+start-iso)
+    mkdir -p "$dir"
+    qemu-img create -q -f qcow2 "$dir/disk2.qcow2" 20G
+    cp "$ovmf/OVMF_VARS.4m.fd" "$dir/vars.fd"
+    boot "$dir/disk2.qcow2" "$dir/vars.fd" -drive media=cdrom,readonly=on,file="$2"
+    ;;
 start-installed)
     if running; then kill "$(cat "$dir/qemu.pid")"; fi
     for _ in $(seq 60); do running || break; sleep 1; done
@@ -173,7 +181,7 @@ stop)
     rm -f "$dir/qemu.pid" "$dir/overlay.qcow2" "$dir/vars.fd" "$dir/disk2.qcow2"
     ;;
 *)
-    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac

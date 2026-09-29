@@ -1,0 +1,26 @@
+# the machine tests/vm/iso.sh installs from the live iso: small, with a
+# network and a way in over ssh for the test.
+version = 1
+packages = ["base", "linux", "grub", "efibootmgr", "openssh", "btrfs-progs"]
+
+[system]
+hostname = "yoq-iso"
+timezone = "UTC"
+
+[providers]
+"libxtables.so" = "iptables"
+initramfs = "mkinitcpio"
+
+[services]
+ssh = true
+
+[services.networkd]
+unit = "systemd-networkd.service"
+package = "systemd"
+
+[files."/etc/systemd/network/20-wired.network"]
+text = "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n"
+
+[files."/root/.ssh/authorized_keys"]
+text = "KEY\n"
+mode = "0600"

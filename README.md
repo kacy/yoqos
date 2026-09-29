@@ -80,8 +80,8 @@ push.
 ## what's next
 
 see the end of [docs/generations.md](docs/generations.md). the big pieces
-are an iso of our own around `os install` and building the
-next generation apart from the running system.
+are building the next generation apart from the running system, so a bad
+update never touches the session you're in, and more root layouts.
 
 ## license
 
