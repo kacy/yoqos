@@ -498,7 +498,8 @@ it stopped.
    ```
 
 2. boot the new machine from the drive, in uefi mode. it comes up at a
-   root shell, the same as arch's iso.
+   root shell, like arch's iso, with a short version of these steps on
+   the screen.
 
 3. get online. a wired connection comes up by itself. for wi-fi:
 

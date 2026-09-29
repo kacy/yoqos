@@ -9,6 +9,8 @@
 - the install plan notes what a new machine usually needs and its config
   lacks: firmware on real hardware, a network, and a user who can use sudo.
 - the usage docs walk through installing from a thumb drive, step by step.
+- the iso greets you with a banner and the install steps, and its boot
+  menu says yoq os.
 - `os plan -o <file>` saves a plan, and `os apply <file>` applies exactly
   that plan, or refuses with E0128 if it's out of date.
 - `os schema` prints json schemas for the plan, facts, status, and errors
