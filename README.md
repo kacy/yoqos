@@ -34,8 +34,8 @@ it's early. on any arch install, `os` manages packages, system settings,
 services, users, files, and sysctl, and rolls packages and config back. on a
 btrfs root with grub, limine, refind, or systemd-boot, `os enable-rollback`
 turns on whole-system generations: every change is a snapshot in the boot
-menu, and on every one but refind, an update that needs a reboot boots once
-on trial, then falls back by itself if it doesn't come up healthy. the vm
+menu, and an update that needs a reboot boots once on trial, then falls
+back by itself if it doesn't come up healthy. the vm
 tests run that on arch's cloud image and on archinstall's layouts. `os
 install` puts a machine straight from its config repository on a blank
 disk, and `os uninstall` takes it all back off, leaving plain arch running

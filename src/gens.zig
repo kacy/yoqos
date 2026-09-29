@@ -338,7 +338,16 @@ pub const Machine = struct {
             .root_part = try blkid(m.a, m.io, m.boot.root_device.?, "PARTUUID", &why) orelse return why,
             .entries = entries,
         });
-        if (try m.write(try std.fs.path.join(m.a, &.{ dir, "yoq.conf" }), text)) |w| return w;
+        // with a trial waiting, refind's own default stays the generation
+        // a failed trial falls back to.
+        var file = text;
+        if (trial.Store.of(m.a, m.io, m.boot)) |store| if (try store.current()) |t| {
+            const id = try std.fmt.allocPrint(m.a, "gen-{d}", .{t.fallback});
+            for (entries) |e| {
+                if (std.mem.eql(u8, e.id, id)) file = try menu.refindDefault(m.a, text, e.title);
+            }
+        };
+        if (try m.write(try std.fs.path.join(m.a, &.{ dir, "yoq.conf" }), file)) |w| return w;
         return m.write(m.boot.loader_conf.?, try menu.spliceRefind(m.a, conf));
     }
 

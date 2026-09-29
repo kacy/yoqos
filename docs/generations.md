@@ -91,8 +91,16 @@ yoq.conf` line at the end.
 
 the driver starts its paths at the btrfs default subvolume, so that has to
 be the top level. it is, unless something like a snapper rollback changed
-it. refind also can't boot an entry just once, so there are no trial
-boots.
+it.
+
+refind can't boot an entry just once, but the firmware can. for a trial,
+`os` puts a copy of refind in `EFI/yoq-trial` on the esp, with its
+drivers and a `refind.conf` whose default is the trial, adds a firmware
+boot entry for that copy without changing the boot order, and makes it
+the next boot with `BootNext`. refind's own default meanwhile moves to the
+generation before, so the boot after a failed trial lands there. when the
+trial ends, the firmware entry and the copy go. this needs `efibootmgr`,
+and firmware that honors `BootNext`, which most does.
 
 ## how they work
 
@@ -169,8 +177,8 @@ if you booted an older generation from the menu and want to stay on it,
 
 ## updates that need a reboot
 
-on grub and limine, a change that needs a reboot, like a new kernel,
-systemd, microcode, or a different display manager, boots once on trial:
+a change that needs a reboot, like a new kernel, systemd, microcode, or a
+different display manager, boots once on trial:
 
 ```
 reboot to finish. the next boot tries generation 5 once; if it doesn't come up healthy, the machine goes back to generation 4.
@@ -210,14 +218,9 @@ two changes that need a reboot, applied before rebooting, make one trial:
 the next boot tries the newest, and falls back to the generation that last
 booted. on grub, if you pick an older entry from the menu before the trial
 has run, that doesn't count as a failure; the next boot tries the new
-generation again. limine forgets the trial as soon as it reads it, so
-there, picking an older entry counts as the trial failing.
-
-refind can't boot an entry once, so it says what to do instead:
-
-```
-reboot to finish. if generation 5 doesn't start, pick generation 4 in the boot menu, then `os rollback --to-booted`.
-```
+generation again. limine, systemd-boot, and the firmware for refind forget
+the trial as soon as they read it, so there, picking an older entry counts
+as the trial failing.
 
 ## keeping and cleaning up
 
@@ -266,7 +269,6 @@ generation booted from the menu, since that generation's record is what
 ## later
 
 - carrying state again at shutdown, and the uid map for system users
-- trial boots on refind
 - more root layouts
 - building the next generation apart from the running system, so a bad
   update never touches the session you're in

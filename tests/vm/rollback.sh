@@ -115,9 +115,4 @@ check "ls /var/lib/yoq/generations | tr '\\n' ' '" "1.json 2.json 4.json "
 check_top "ls /run/yoq-top/@gens /run/yoq-top/@roots | tr '\\n' ' '" "/run/yoq-top/@gens: 1 2 4  /run/yoq-top/@roots: 1 4 boot-1 boot-2 "
 "$vm" ssh "/usr/local/bin/os history"
 
-# refind can't boot a generation once, so a change that needs a reboot
-# says how to go back by hand.
-if [ "$VM_LOADER" = refind ]; then
-    check "/usr/local/bin/os add --yes amd-ucode | grep -c 'pick generation'" 1
-fi
 echo "rollback ok"

@@ -48,9 +48,8 @@ limine | sdboot)
     tests/vm/leave.sh
     ;;
 refind)
-    # no one-shot boot, so no trials: a failed generation is picked from
-    # the menu by hand.
     tests/vm/rollback.sh
+    tests/vm/trial.sh
     tests/vm/leave.sh
     ;;
 *)

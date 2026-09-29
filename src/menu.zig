@@ -259,7 +259,16 @@ pub fn refind(a: Allocator, c: Refind) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(a);
     const w = &out.writer;
     w.writeAll("# written by os: one entry per generation. edits here are overwritten.\n") catch return error.OutOfMemory;
-    for (c.entries) |e| {
+    var all: std.ArrayList(Entry) = .empty;
+    try all.appendSlice(a, c.entries);
+    // the entry a trial boots: the newest generation, with the watchdog on.
+    if (c.entries.len > 0) {
+        var t = c.entries[0];
+        t.title = refind_trial;
+        t.args = try std.fmt.allocPrint(a, "{s} yoq.trial", .{t.args});
+        try all.append(a, t);
+    }
+    for (all.items) |e| {
         const volume = if (e.esp_dir != null) c.esp_part else c.root_part;
         const kernel = if (e.esp_dir != null) try e.onEsp(a, e.kernel) else try std.fmt.allocPrint(a, "{s}/{s}", .{ try e.rootDir(a), e.kernel });
         w.print("\nmenuentry \"{s}\" {{\n    volume {s}\n    loader {s}\n    options \"{s}", .{ try plainTitle(a, e.title), volume, kernel, e.args }) catch return error.OutOfMemory;
@@ -279,6 +288,36 @@ pub fn refind(a: Allocator, c: Refind) ![]const u8 {
 
 /// the line in refind.conf that reads os's file.
 pub const refind_include = "include yoq.conf";
+
+/// the entry a trial boots on refind, and the directory under EFI/ on the
+/// esp where a copy of refind boots it by default.
+pub const refind_trial = "yoq trial boot";
+pub const refind_trial_dir = "yoq-trial";
+
+/// os's refind file, from `text`, with `title` as the default.
+pub fn refindDefault(a: Allocator, text: []const u8, title: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, text, "\n"), '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "default_selection ")) {
+            try out.print(a, "default_selection \"{s}\"\n", .{try plainTitle(a, title)});
+        } else try out.print(a, "{s}\n", .{line});
+    }
+    return out.items;
+}
+
+/// the newest generation's title in os's refind file: its first entry.
+pub fn refindHead(text: []const u8) ?[]const u8 {
+    const start = std.mem.indexOf(u8, text, "menuentry \"") orelse return null;
+    const rest = text[start + "menuentry \"".len ..];
+    return rest[0 .. std.mem.indexOfScalar(u8, rest, '"') orelse return null];
+}
+
+/// the refind.conf a trial's copy of refind reads: refind.conf and os's
+/// entries in one file, with the trial entry as the default.
+pub fn refindTrialConf(a: Allocator, conf: []const u8, yoq: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(a, "{s}\n{s}", .{ try unspliceRefind(a, conf), try refindDefault(a, yoq, refind_trial) });
+}
 
 /// refind.conf with os's include as its last line, so the default os
 /// sets outranks any earlier one.
@@ -450,6 +489,7 @@ test "refind's entries, and its include" {
     defer arena.deinit();
     const a = arena.allocator();
     const older: Entry = .{ .id = "gen-1", .title = "yoq 1 · enable-rollback", .subvol = "/@roots/boot-1", .kernel = "vmlinuz-linux", .initrds = &.{ "amd-ucode.img", "initramfs-linux.img" }, .args = "rw" };
+    const yoq = try refind(a, .{ .esp_part = "esp-guid", .root_part = "root-guid", .entries = &.{ test_entries[0], older } });
     try testing.expectEqualStrings(
         \\# written by os: one entry per generation. edits here are overwritten.
         \\
@@ -465,9 +505,22 @@ test "refind's entries, and its include" {
         \\    options "rw initrd=\@roots\boot-1\boot\amd-ucode.img initrd=\@roots\boot-1\boot\initramfs-linux.img"
         \\}
         \\
+        \\menuentry "yoq trial boot" {
+        \\    volume esp-guid
+        \\    loader /vmlinuz-linux
+        \\    options "root=UUID=r rw yoq.trial initrd=\amd-ucode.img initrd=\initramfs-linux.img"
+        \\}
+        \\
         \\default_selection "yoq 2 - add fd"
         \\
-    , try refind(a, .{ .esp_part = "esp-guid", .root_part = "root-guid", .entries = &.{ test_entries[0], older } }));
+    , yoq);
+    try testing.expectEqualStrings("yoq 2 - add fd", refindHead(yoq).?);
+    const moved = try refindDefault(a, yoq, "yoq 1 · enable-rollback");
+    try testing.expect(std.mem.endsWith(u8, moved, "default_selection \"yoq 1 - enable-rollback\"\n"));
+    const trial = try refindTrialConf(a, "timeout 3\ninclude yoq.conf\n", yoq);
+    try testing.expect(std.mem.startsWith(u8, trial, "timeout 3\n\n# written by os"));
+    try testing.expect(std.mem.indexOf(u8, trial, "include yoq.conf") == null);
+    try testing.expect(std.mem.endsWith(u8, trial, "default_selection \"yoq trial boot\"\n"));
     try testing.expectEqualStrings("\"Arch Linux\" \"root=UUID=r rw initrd=\\amd-ucode.img initrd=\\initramfs-linux.img\"\n", try refindLinux(a, test_entries[0]));
     try testing.expectEqualStrings("timeout 20\n", try unspliceRefind(a, "timeout 20\ninclude yoq.conf\n"));
     const conf = "timeout 20\ninclude yoq.conf\ndefault_selection 1\n";

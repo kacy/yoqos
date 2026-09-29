@@ -28,6 +28,8 @@
   entry.
 - a live iso of yoq os's own, built from arch's releng profile with `os`
   and what `os install` runs, comes with each release.
+- refind gets trial boots too, through the firmware's one-time boot: a
+  generation that doesn't come up falls back without anyone at the menu.
 - `os install <config> --disk <dev>` puts the machine a config repository
   describes on a blank disk, from a live system: an esp, btrfs with the
   generations layout, the clean build as generation 1, and grub.

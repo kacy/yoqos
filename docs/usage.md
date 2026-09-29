@@ -378,13 +378,13 @@ back never loses them.
 
 ## generations (early)
 
-on a btrfs root with grub, limine, refind, or systemd-boot, `os enable-rollback` turns
-the machine's history into generations: whole copies of the system you can
-boot from the menu. it shows its checks and steps and asks first; `--yes`
-skips the question.
-there, `os rollback [n]` starts an older generation as a new one for the
-next boot, `os rollback --to-booted` keeps the one you booted from the menu,
-`os gc [--keep n]` removes old ones, and `os pin <n>` keeps one.
+on a btrfs root with grub, limine, refind, or systemd-boot, `os
+enable-rollback` turns the machine's history into generations: whole
+copies of the system you can boot from the menu. it shows its checks and
+steps and asks first; `--yes` skips the question. there, `os rollback [n]`
+starts an older generation as a new one for the next boot, `os rollback
+--to-booted` keeps the one you booted from the menu, `os gc [--keep n]`
+removes old ones, and `os pin <n>` keeps one.
 [generations.md](generations.md) covers how they work, and what they don't
 do yet.
 

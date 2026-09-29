@@ -227,10 +227,6 @@ fn armTrial(ctx: *Context, a: Allocator, boot: facts.Boot) !void {
     // generation before that one, the last that booted, while it's there.
     const pending = if (try store.current()) |t| t.fallback else 0;
     const before = if (pending != 0 and generation.find(records, pending) != null) pending else records[records.len - 2].n;
-    if (!store.automatic()) {
-        if (!ctx.json) try ctx.out.print("reboot to finish. if generation {d} doesn't start, pick generation {d} in the boot menu, then `os rollback --to-booted`.\n", .{ n, before });
-        return;
-    }
     if (try store.arm(n, generation.find(records, before).?)) |problem| {
         try ctx.err.print("os: couldn't set up the trial boot: {s}. the next boot runs generation {d} without a fallback.\n", .{ problem, n });
         return;

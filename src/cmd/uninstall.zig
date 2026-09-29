@@ -199,6 +199,8 @@ const Uninstaller = struct {
                 rootfs.writeAtomic(u.ctx.io, try std.fs.path.join(u.a, &.{ esp, "refind_linux.conf" }), text, null) catch return "can't write refind_linux.conf";
                 rootfs.writeAtomic(u.ctx.io, conf_path, try menu.unspliceRefind(u.a, conf), null) catch return "can't write refind.conf";
                 const dir = std.fs.path.dirnamePosix(conf_path).?;
+                // a trial waiting: its firmware entry and copy of refind go.
+                if (trial.Store.of(u.a, u.ctx.io, u.boot)) |store| _ = try store.end();
                 return u.run(&.{ "rm", "-f", try std.fs.path.join(u.a, &.{ dir, "yoq.conf" }) });
             },
         }

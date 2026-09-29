@@ -31,6 +31,7 @@ show_env() {
     case $VM_LOADER in
     grub) "$vm" ssh "grub-editenv $VM_ESP/yoq/grubenv list | grep ^yoq_ | sort | tr '\\n' ' '" ;;
     limine | systemd-boot) "$vm" ssh "cat /var/lib/yoq/trial 2>/dev/null; ls /sys/firmware/efi/efivars | grep ^LoaderEntry | tr '\\n' ' '" ;;
+    refind) "$vm" ssh "cat /var/lib/yoq/trial 2>/dev/null; efibootmgr | head -n 3 | tr '\\n' ' '" ;;
     *) ;;
     esac
 }
