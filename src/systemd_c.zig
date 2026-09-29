@@ -201,7 +201,9 @@ fn unitFiles(a: Allocator, bus: ?*c.sd_bus, found: *std.StringArrayHashMapUnmana
         if (r == 0) break;
         const name = std.fs.path.basename(std.mem.span(path));
         if (!api.managedKind(name)) continue;
-        (try entry(a, found, name)).enabled = api.enabledState(std.mem.span(state));
+        const u = try entry(a, found, name);
+        u.enabled = api.enabledState(std.mem.span(state));
+        u.fixed = api.fixedState(std.mem.span(state));
     }
     return true;
 }

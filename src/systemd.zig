@@ -62,6 +62,16 @@ pub fn enabledState(state: []const u8) bool {
     return std.mem.eql(u8, state, "enabled") or std.mem.eql(u8, state, "enabled-runtime");
 }
 
+/// a state enabling or disabling doesn't change: a unit without an
+/// [Install] section, one a generator makes, an alias, or one another
+/// unit turns on.
+pub fn fixedState(state: []const u8) bool {
+    for ([_][]const u8{ "static", "generated", "alias", "indirect", "transient" }) |s| {
+        if (std.mem.eql(u8, state, s)) return true;
+    }
+    return false;
+}
+
 test "verbs from a plan" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -75,6 +85,8 @@ test "unit kinds and states" {
     try std.testing.expect(!managedKind("home.mount"));
     try std.testing.expect(enabledState("enabled"));
     try std.testing.expect(!enabledState("static"));
+    try std.testing.expect(fixedState("static"));
+    try std.testing.expect(!fixedState("disabled"));
 }
 
 test "units from the running system" {

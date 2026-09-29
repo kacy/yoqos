@@ -31,6 +31,8 @@
   generations layout, the clean build as generation 1, and grub.
 - a config repository for several machines works: without
   `/etc/yoq/machine.toml`, `os` reads `/etc/yoq/hosts/<hostname>/machine.toml`.
+- a service whose unit can't be enabled, like one without an `[Install]`
+  section, is only started and stopped, instead of showing up in every plan.
 - only one os changes a machine at a time. another one says which process
   has it and stops, rather than running a second transaction beside it.
 - `os status` notices a boot menu that lost os's generations, like a

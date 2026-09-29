@@ -233,7 +233,7 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
         const cause = try std.fmt.allocPrint(a, "services.{s}", .{e.name});
         const have = f.unit(unit);
         if (enabled) {
-            const is_enabled = if (have) |u| u.enabled else false;
+            const is_enabled = if (have) |u| u.enabled or u.fixed else false;
             // a oneshot that ran and finished well counts as running.
             const is_active = if (have) |u| u.active or u.ran else false;
             if (!is_enabled) {
@@ -242,7 +242,9 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
                 try units.append(a, .{ .op = .change, .kind = .unit, .subject = unit, .to = "start", .cause = cause });
             }
         } else if (have) |u| {
-            if (u.enabled or u.active) {
+            if (u.fixed) {
+                if (u.active) try units.append(a, .{ .op = .remove, .kind = .unit, .subject = unit, .to = "stop", .cause = cause });
+            } else if (u.enabled or u.active) {
                 try units.append(a, .{ .op = .remove, .kind = .unit, .subject = unit, .to = if (u.active) "disable, stop" else "disable", .cause = cause });
             }
         }
@@ -1149,6 +1151,27 @@ test "a file os generated goes when nothing asks for it, but one it didn't write
     try testing.expectEqual(1, p.changes.len);
     try testing.expectEqual(Op.remove, p.changes[0].op);
     try testing.expectEqualStrings(sysctl_path, p.changes[0].subject);
+}
+
+test "a unit that can't be enabled only starts and stops" {
+    var t: T = .{};
+    defer t.deinit();
+    const on = try t.cfg("[boot]\nkernel = \"none\"\n[services.pinger]\nunit = \"pinger.service\"\npackage = \"iputils\"\n");
+    const off = try t.cfg("[boot]\nkernel = \"none\"\n[services.pinger]\nenabled = false\nunit = \"pinger.service\"\npackage = \"iputils\"\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{lockPkg("iputils", "1", &.{})} };
+    var have = [_]facts.Package{.{ .name = "iputils", .version = "1" }};
+    var units = [_]facts.Unit{.{ .name = "pinger.service", .fixed = true, .active = true }};
+    const f: facts.Facts = .{ .packages = &have, .units = &units };
+    try testing.expect((try plan(t.a(), &on, &l, &f, &t.diags)).?.empty());
+    const p = (try plan(t.a(), &off, &l, &f, &t.diags)).?;
+    var stops: usize = 0;
+    for (p.changes) |ch| {
+        if (ch.kind == .unit) {
+            try testing.expectEqualStrings("stop", ch.to.?);
+            stops += 1;
+        }
+    }
+    try testing.expectEqual(1, stops);
 }
 
 test "a oneshot service that ran and finished is as it should be" {

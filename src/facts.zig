@@ -20,6 +20,9 @@ pub const Package = struct {
 pub const Unit = struct {
     name: []const u8,
     enabled: bool = false,
+    /// enabling or disabling it changes nothing, as for a unit without an
+    /// [install] section: it only starts and stops.
+    fixed: bool = false,
     active: bool = false,
     /// the unit tried to run and failed.
     failed: bool = false,
