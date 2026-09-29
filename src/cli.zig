@@ -395,9 +395,46 @@ pub fn approve(ctx: *Context, yes: bool, what: []const u8, question: []const u8)
 /// either is missing. `what` says why, like "uninstall changes the
 /// running machine".
 pub fn needsHost(ctx: *Context, what: []const u8) !bool {
-    if (eql(ctx.root, "/") and std.os.linux.geteuid() == 0) return false;
+    if (eql(ctx.root, "/") and std.os.linux.geteuid() == 0) {
+        const busy = lockMachine() orelse return false;
+        try ctx.err.print("os: {s}.\n", .{busy});
+        return true;
+    }
     try ctx.err.print("os: {s}, so it needs root and no --root.\n", .{what});
     return true;
+}
+
+/// where os locks the running machine while it changes it.
+const lock_path = "/run/yoq/lock";
+var lock_held = false;
+var lock_message: [128]u8 = undefined;
+
+/// makes this os the only one changing the running machine, until it
+/// exits: the lock goes with the process, however it ends. says who has
+/// it when another os does.
+pub fn lockMachine() ?[]const u8 {
+    const linux = std.os.linux;
+    if (lock_held) return null;
+    _ = linux.mkdir("/run/yoq", 0o755);
+    const opened = linux.open(lock_path, .{ .ACCMODE = .RDWR, .CREAT = true, .CLOEXEC = true, .NOFOLLOW = true }, 0o644);
+    if (linux.errno(opened) != .SUCCESS) return "can't open " ++ lock_path;
+    const fd: linux.fd_t = @intCast(opened);
+    const exclusive = 2;
+    const nonblocking = 4;
+    if (linux.errno(linux.flock(fd, exclusive | nonblocking)) != .SUCCESS) {
+        var pid_buf: [32]u8 = undefined;
+        const n = linux.read(fd, &pid_buf, pid_buf.len);
+        const pid = if (linux.errno(n) == .SUCCESS) std.mem.trim(u8, pid_buf[0..n], " \n") else "";
+        _ = linux.close(fd);
+        return std.fmt.bufPrint(&lock_message, "another os, process {s}, is changing this machine. wait for it to finish", .{if (pid.len > 0) pid else "?"}) catch "another os is changing this machine";
+    }
+    // the fd stays open for as long as this process runs.
+    _ = linux.ftruncate(fd, 0);
+    var buf: [32]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, "{d}\n", .{linux.getpid()}) catch "";
+    _ = linux.write(fd, text.ptr, text.len);
+    lock_held = true;
+    return null;
 }
 
 pub fn confirm(ctx: *Context, question: []const u8) !bool {

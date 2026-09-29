@@ -66,8 +66,9 @@ pub const Then = struct {
 /// why os can't change the machine here at all, if it can't.
 pub fn blocker(ctx: *Context) ?[]const u8 {
     if (!alpm.available) return "this build can't change packages. build with -Dalpm";
-    if (cli.eql(ctx.root, "/") and std.os.linux.geteuid() != 0) return "changing the machine needs root";
-    return null;
+    if (!cli.eql(ctx.root, "/")) return null;
+    if (std.os.linux.geteuid() != 0) return "changing the machine needs root";
+    return cli.lockMachine();
 }
 
 /// why apply can't run here, if it can't: `blocker`, or a boot into an

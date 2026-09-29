@@ -31,6 +31,8 @@
   generations layout, the clean build as generation 1, and grub.
 - a config repository for several machines works: without
   `/etc/yoq/machine.toml`, `os` reads `/etc/yoq/hosts/<hostname>/machine.toml`.
+- only one os changes a machine at a time. another one says which process
+  has it and stops, rather than running a second transaction beside it.
 - `os build --clean <dir>` builds a root from the config and the lock
   alone, and lists what's on this machine that they don't explain.
 - `os` runs `/usr/bin/mkinitcpio` itself, not a wrapper earlier in `PATH`
