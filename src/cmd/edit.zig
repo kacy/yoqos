@@ -5,6 +5,7 @@ const std = @import("std");
 const cli = @import("../cli.zig");
 const exec = @import("../exec.zig");
 const change = @import("../change.zig");
+const edit = @import("../edit.zig");
 const output = @import("../output.zig");
 const alpm = @import("../alpm.zig");
 const lock = @import("../lock.zig");
@@ -53,8 +54,11 @@ fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
 const Then = applying.Then;
 
 /// `os adopt [package...]`: puts packages installed outside the config into
-/// it, all of them or the ones named.
+/// it, all of them or the ones named. `os adopt <path>` takes a file.
 pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    for (args) |arg| {
+        if (arg.len > 0 and arg[0] == '/') return adoptFile(ctx, args);
+    }
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
@@ -94,7 +98,7 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
     const outcome = try change.plan(a, &loaded.config, top, text, op, names, aur, &w.diags);
     if (w.failed()) return w.fail();
     if (outcome.changed()) {
-        if (!try change.check(ctx.gpa, ctx.files, top, outcome.text, outcome.notes, &w.diags)) return w.fail();
+        if (!try change.check(ctx.gpa, ctx.files, top, outcome.text, null, outcome.notes, &w.diags)) return w.fail();
     }
 
     if (!ctx.json) for (outcome.notes) |n| {
@@ -104,6 +108,7 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
             .excluded => try ctx.out.print("+ remove.{s} \"{s}\"  (set in {s})\n", .{ listName(n), n.name, n.detail.? }),
             .enabled, .disabled => try ctx.out.print("~ services.{s} = {}\n", .{ n.name, n.what == .enabled }),
             .chosen => try ctx.out.print("+ providers.{s} = \"{s}\"\n", .{ n.name, n.detail.? }),
+            .adopted => unreachable,
             .unchanged => try ctx.out.print("  {s} is already set that way  ({s})\n", .{ n.name, n.detail.? }),
         }
     };
@@ -127,11 +132,100 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
     if (outcome.changed() and locked != .locked) return 0;
     if (!now) return 0;
     // a name already in the config applies too: the machine may be behind.
+    return applyAfter(ctx, then, if (outcome.changed()) message else "apply");
+}
+
+/// applies the config after an edit, and records the generation.
+fn applyAfter(ctx: *Context, then: Then, message: []const u8) !u8 {
     try ctx.out.writeByte('\n');
     const done = try applying.run(ctx, then.yes, cli.inputs(ctx), .{});
-    try applying.recordGeneration(ctx, done, if (outcome.changed()) message else "apply");
+    try applying.recordGeneration(ctx, done, message);
     return done.code;
 }
+
+/// `os adopt <path>`: copies a file from /etc next to the config and adds
+/// a `[files]` entry for it, so os keeps it as it is now.
+fn adoptFile(ctx: *Context, args: []const [:0]const u8) !u8 {
+    const usage_text = "os adopt <path> [--yes] [--no-apply]";
+    var then: Then = .{ .apply = true };
+    var path: ?[]const u8 = null;
+    var it: cli.ArgIter = .{ .args = args };
+    while (it.next()) |arg| {
+        if (it.isFlag(arg)) {
+            if (!then.flag(arg)) return cli.usageError(ctx, usage_text);
+        } else if (path != null or arg.len == 0) {
+            return cli.usageError(ctx, usage_text);
+        } else path = arg;
+    }
+    const p = path.?;
+    if (try cli.refused(ctx, cli.lockForEdit(ctx))) return 1;
+    var w: cli.Work = .init(ctx);
+    defer w.deinit();
+    const a = w.allocator();
+    const loaded = try w.config() orelse return w.fail();
+    if (try change.adoptProblem(a, &loaded.config, p)) |why| return cli.fail(ctx, "can't adopt {s}: {s}", .{ p, why });
+    const found = try readAdoptable(ctx, a, p) orelse return 1;
+
+    const top = loaded.files.items[0];
+    const text = try cli.readFile(ctx, a, top) orelse return 1;
+    const source = try change.adoptedSource(a, p);
+    const copy = try std.fs.path.resolvePosix(a, &.{ std.fs.path.dirnamePosix(top) orelse ".", source });
+    const mode = try change.adoptedMode(a, found.mode);
+    const new_text = try edit.addFile(a, text, p, source, mode);
+    const notes = [_]change.Note{.{ .name = p, .what = .adopted, .detail = source }};
+    if (!try change.check(ctx.gpa, ctx.files, top, new_text, .{ .path = copy, .text = found.content }, &notes, &w.diags)) return w.fail();
+
+    if (!try cli.writeFile(ctx, copy, found.content)) return 1;
+    if (!try cli.writeFile(ctx, top, new_text)) return 1;
+    const message = try std.fmt.allocPrint(a, "adopt {s}", .{p});
+    try cli.record(ctx, a, top, message);
+    if (ctx.json) {
+        try output.writeDoc(ctx.out, "yoq.change/1", .{ .file = top, .changed = true, .notes = &notes });
+        return 0;
+    }
+    try ctx.out.print("+ files.\"{s}\"  (source {s}{s}{s})\n\nsaved {s}.\n", .{ p, source, if (mode != null) ", mode " else "", mode orelse "", top });
+    // the file itself doesn't change. applying brings the rest of the
+    // machine along, as it does after `os add`.
+    if (!then.applies(ctx)) return 0;
+    return applyAfter(ctx, then, message);
+}
+
+const Adoptable = struct { content: []const u8, mode: u32 };
+
+/// the file at `path` on the machine, if it's a plain file anyone can
+/// read. null after saying why not.
+fn readAdoptable(ctx: *Context, a: std.mem.Allocator, path: []const u8) !?Adoptable {
+    const full = try cli.machinePath(ctx, a, path);
+    const cwd = std.Io.Dir.cwd();
+    const st = cwd.statFile(ctx.io, full, .{ .follow_symlinks = false }) catch |e| {
+        _ = try cli.fail(ctx, "can't adopt {s}: {s}", .{ path, if (e == error.FileNotFound) "it doesn't exist" else @errorName(e) });
+        return null;
+    };
+    const problem: ?[]const u8 = switch (st.kind) {
+        .file => null,
+        .sym_link => "it's a symlink. adopt the file it points to, if that's under /etc",
+        else => "it isn't a regular file",
+    };
+    if (problem) |why| {
+        _ = try cli.fail(ctx, "can't adopt {s}: {s}", .{ path, why });
+        return null;
+    }
+    const mode: u32 = @intCast(@intFromEnum(st.permissions));
+    // a file others can't read may well hold a secret, and the config is
+    // meant to be safe to publish.
+    if (mode & 0o004 == 0) {
+        _ = try cli.fail(ctx, "can't adopt {s}: not everyone can read it, so it may hold secrets. if it doesn't, write its [files] entry by hand", .{path});
+        return null;
+    }
+    const content = cwd.readFileAlloc(ctx.io, full, a, .limited(max_adopt_bytes)) catch |e| {
+        _ = try cli.fail(ctx, "can't adopt {s}: {s}", .{ path, if (e == error.StreamTooLong) "it's over 1 MiB" else @errorName(e) });
+        return null;
+    };
+    return .{ .content = content, .mode = mode };
+}
+
+/// the config loader reads sources up to this size.
+const max_adopt_bytes = 1 << 20;
 
 /// `os edit`: opens the config in $EDITOR, checks it once it's saved, and
 /// then saves, relocks, and applies it like `os add` does. a config that
@@ -174,10 +268,7 @@ pub fn editCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (try relock(ctx, top, !now) == .failed) return putBack(ctx, top, before);
     try cli.record(ctx, a, top, "edit");
     if (!now) return 0;
-    try ctx.out.writeByte('\n');
-    const done = try applying.run(ctx, then.yes, cli.inputs(ctx), .{});
-    try applying.recordGeneration(ctx, done, "edit");
-    return done.code;
+    return applyAfter(ctx, then, "edit");
 }
 
 /// writes `top` back as it was before a change the lock couldn't follow,
@@ -372,6 +463,53 @@ test "adopt puts extra packages into the config" {
 
     try t.exec(&.{ "--facts", "f.json", "adopt" });
     try std.testing.expectEqualStrings("packages = [\"git\", \"htop\", \"btop\"]\n", t.fs.get("/etc/yoq/machine.toml").?);
+}
+
+test "adopt takes a file from /etc into the config" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.createDirPath(io, "etc/ssh");
+    try tmp.dir.writeFile(io, .{ .sub_path = "etc/ssh/sshd_config", .data = "PasswordAuthentication no\n", .flags = .{ .permissions = .fromMode(0o644) } });
+    try tmp.dir.writeFile(io, .{ .sub_path = "etc/ssh/sshd_config.pacnew", .data = "# new default\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "etc/hosts", .data = "127.0.0.1 localhost\n", .flags = .{ .permissions = .fromMode(0o640) } });
+    try tmp.dir.symLink(io, "hosts", "etc/hosts.link", .{});
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = try std.fmt.bufPrintZ(&buf, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "# laptop\npackages = [\"git\"]\n");
+    try t.exec(&.{ "--root", root, "adopt", "/etc/ssh/sshd_config" });
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expectEqualStrings("+ files.\"/etc/ssh/sshd_config\"  (source files/etc/ssh/sshd_config)\n\nsaved /etc/yoq/machine.toml.\n", t.out.buffered());
+    try std.testing.expectEqualStrings("PasswordAuthentication no\n", t.fs.get("/etc/yoq/files/etc/ssh/sshd_config").?);
+    try std.testing.expectEqualStrings(
+        \\# laptop
+        \\packages = ["git"]
+        \\
+        \\[files."/etc/ssh/sshd_config"]
+        \\source = "files/etc/ssh/sshd_config"
+        \\
+    , t.fs.get("/etc/yoq/machine.toml").?);
+    try std.testing.expectEqualStrings("adopt /etc/ssh/sshd_config", t.recorder.messages.items[0]);
+
+    try t.exec(&.{ "--root", root, "adopt", "/etc/ssh/sshd_config" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expectEqualStrings("os: can't adopt /etc/ssh/sshd_config: os writes it already, for files.\"/etc/ssh/sshd_config\"\n", t.err.buffered());
+    try t.exec(&.{ "--root", root, "adopt", "/etc/hosts" });
+    try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "may hold secrets") != null);
+    try t.exec(&.{ "--root", root, "adopt", "/etc/hosts.link" });
+    try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "it's a symlink") != null);
+    try t.exec(&.{ "--root", root, "adopt", "/etc/ssh" });
+    try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "isn't a regular file") != null);
+    try t.exec(&.{ "--root", root, "adopt", "/etc/nope" });
+    try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "doesn't exist") != null);
+    try t.exec(&.{ "--root", root, "adopt", "/etc/shadow" });
+    try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "machine state") != null);
+    try std.testing.expectEqual(1, t.recorder.messages.items.len);
+    try t.exec(&.{ "adopt", "/etc/a", "/etc/b" });
+    try std.testing.expectEqual(2, t.code);
 }
 
 test "empty and flag-like names are usage errors, not crashes" {

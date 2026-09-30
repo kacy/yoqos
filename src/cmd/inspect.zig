@@ -10,6 +10,8 @@ const planner = @import("../planner.zig");
 const show = @import("../show.zig");
 const output = @import("../output.zig");
 const why = @import("../why.zig");
+const observe = @import("../observe.zig");
+const config = @import("../config.zig");
 const status = @import("../status.zig");
 const Context = cli.Context;
 const eql = cli.eql;
@@ -118,14 +120,39 @@ pub fn whyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var buf: [1][]const u8 = undefined;
     var it: cli.ArgIter = .{ .args = args };
     const names = it.names(&buf) orelse &.{};
-    if (names.len != 1) return cli.usageError(ctx, "os why <package>");
+    if (names.len != 1 or names[0].len == 0) return cli.usageError(ctx, "os why <package | file | unit>");
+    const arg = names[0];
     var w: cli.Work = .init(ctx);
     defer w.deinit();
+    const a = w.allocator();
+    switch (why.kindOf(arg)) {
+        .file => {
+            const loaded = try w.config() orelse return w.fail();
+            var ans = try why.explainFile(a, &loaded.config, arg);
+            if (ans.cause == null) ans.package = try observe.fileOwner(a, ctx.io, ctx.root, arg);
+            if (ctx.json) try why.writeFileJson(ctx.out, &ans) else try why.writeFileText(ctx.out, &ans);
+            return if (ans.cause == null) 1 else 0;
+        },
+        .unit => {
+            const loaded = try w.config() orelse return w.fail();
+            return whyUnit(ctx, a, &loaded.config, arg);
+        },
+        .package => {},
+    }
     const state = try w.state() orelse return w.fail();
-
-    const ans = try why.explain(w.allocator(), state.config(), &state.lock, names[0]);
+    const ans = try why.explain(a, state.config(), &state.lock, arg);
+    // a name nothing needs as a package may be a service, like "ssh".
+    if (ans.root == null and state.lock.package(arg) == null) {
+        if (why.serviceUnit(state.config(), arg)) |unit| return whyUnit(ctx, a, state.config(), unit);
+    }
     if (ctx.json) try why.writeJson(ctx.out, &ans) else try why.writeText(ctx.out, &ans);
     return if (ans.root == null) 1 else 0;
+}
+
+fn whyUnit(ctx: *Context, a: std.mem.Allocator, c: *const config.Config, unit: []const u8) !u8 {
+    const ans = try why.explainUnit(a, c, unit);
+    if (ctx.json) try why.writeUnitJson(ctx.out, &ans) else try why.writeUnitText(ctx.out, &ans);
+    return if (ans.cause == null) 1 else 0;
 }
 
 // -- tests --
@@ -264,4 +291,30 @@ test "why reads the config and lock" {
 
     try t.exec(&.{"why"});
     try std.testing.expectEqual(2, t.code);
+}
+
+test "why takes files and units too" {
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n[sysctl]\n\"vm.swappiness\" = 10\n[services]\nssh = true\n");
+    try t.fs.put("/etc/yoq/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n" ++
+        "[packages.git]\nversion = \"1\"\nrepo = \"extra\"\nsha256 = \"" ++ "a" ** 64 ++ "\"\n");
+    try t.exec(&.{ "why", "/etc/sysctl.d/99-yoq.conf" });
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expectEqualStrings("/etc/sysctl.d/99-yoq.conf: os writes it for sysctl  (/etc/yoq/machine.toml:3)\n", t.out.buffered());
+
+    try t.exec(&.{ "--root", "/nonexistent", "why", "/etc/hosts" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expect(std.mem.startsWith(u8, t.out.buffered(), "/etc/hosts: not managed by os\n"));
+
+    try t.exec(&.{ "why", "sshd.service" });
+    try std.testing.expectEqualStrings("sshd.service: enabled by services.ssh  (/etc/yoq/machine.toml:5)\n", t.out.buffered());
+    // a name that's a service and no package goes to its unit.
+    try t.exec(&.{ "why", "ssh", "--json" });
+    try std.testing.expectEqual(0, t.code);
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, t.out.buffered(), .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("yoq.why-unit/1", parsed.value.object.get("schema").?.string);
+    try std.testing.expectEqualStrings("sshd.service", parsed.value.object.get("unit").?.string);
+    try std.testing.expectEqualStrings("services.ssh", parsed.value.object.get("cause").?.string);
 }
