@@ -403,7 +403,7 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
             .kind = .file,
             .subject = d.path,
             .cause = d.cause orelse try std.fmt.allocPrint(a, "files.\"{s}\"", .{d.path}),
-            .reboot = d.reboot,
+            .reboot = d.reboot orelse dropInReboot(d.path),
         };
         if (f.file(d.path)) |have| {
             if (!std.mem.eql(u8, have.sha256, &facts.sha256Hex(d.content))) {
@@ -433,7 +433,7 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
             .kind = .file,
             .subject = p,
             .to = "remove: os wrote it, and nothing asks for it now",
-            .reboot = if (std.mem.eql(u8, p, nvidia_initramfs_path)) "initramfs" else null,
+            .reboot = dropInReboot(p),
         });
     }
     lists.sortByField(Change, "subject", files.items);
@@ -497,6 +497,17 @@ const tty_session_path = "/etc/profile.d/yoq-session.sh";
 
 /// mkinitcpio's drop-in that loads nvidia's modules early.
 const nvidia_initramfs_path = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf";
+
+/// whether a file os writes is a mkinitcpio drop-in. changing one changes
+/// the initramfs, so it waits for a reboot like a kernel does, and apply
+/// rebuilds the initramfs in the root it builds.
+pub fn isInitramfsDropIn(path: []const u8) bool {
+    return std.mem.startsWith(u8, path, "/etc/mkinitcpio.conf.d/");
+}
+
+fn dropInReboot(path: []const u8) ?[]const u8 {
+    return if (isInitramfsDropIn(path)) "initramfs" else null;
+}
 
 /// files os writes from other keys, each starting with a "written by os"
 /// line. one still there that nothing asks for any more is removed. the
@@ -849,6 +860,12 @@ pub fn writeJson(w: *std.Io.Writer, a: Allocator, p: *const Plan) !void {
 }
 
 // -- tests --
+
+test "a mkinitcpio drop-in waits for a reboot, written or removed" {
+    try testing.expectEqualStrings("initramfs", dropInReboot("/etc/mkinitcpio.conf.d/50-local.conf").?);
+    try testing.expectEqual(null, dropInReboot("/etc/mkinitcpio.conf.dx/a.conf"));
+    try testing.expectEqual(null, dropInReboot("/etc/motd"));
+}
 
 const testing = std.testing;
 

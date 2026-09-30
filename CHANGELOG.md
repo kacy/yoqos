@@ -23,6 +23,10 @@
 
 ### fixes
 
+- a mkinitcpio drop-in os writes, like nvidia's or one from `[files]`,
+  never made it into a staged generation's initramfs, or into a clean build
+  or `os install`. the initramfs is now rebuilt inside the root being
+  built, and every drop-in waits for a reboot, like a kernel.
 - `os apply` plans again after the yes, and refuses with E0129 if the plan
   changed in between.
 - a pacman lock left by a power cut no longer blocks every later apply:
