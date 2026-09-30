@@ -849,6 +849,13 @@ different content, or has a different mode. files the config doesn't name
 are left alone, and so is a file you take out of the config. `os adopt
 <path>` writes an entry for a file that's already there.
 
+when `apply` writes or removes a file under `/etc/mkinitcpio.conf.d`, yours
+or nvidia's drop-in, it runs `mkinitcpio -P` once, after every file is in
+place. a staged generation, a clean build, and `os install` run it inside
+the root they're building, through chroot, the way pacman runs the kernel's
+own hook there, so that root boots with the drop-in. a root without
+mkinitcpio is skipped.
+
 a path is absolute and plain: no `.` or `..` parts, no trailing `/`, and
 nothing under `/etc/yoq` or `/var/lib/yoq`, which are `os`'s own. it also
 can't be a file another key writes, like the sysctl file below.
