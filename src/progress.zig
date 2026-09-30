@@ -8,6 +8,10 @@
 
 const std = @import("std");
 
+/// how a command shows progress: not at all, as a log would want it, or
+/// redrawn on a terminal.
+pub const Mode = enum { off, log, terminal };
+
 /// a phase that counts packages or hooks as they go.
 pub const Phase = enum { download, install, remove, hooks };
 

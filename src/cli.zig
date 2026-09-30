@@ -16,6 +16,7 @@ const sync = @import("sync.zig");
 const history = @import("history.zig");
 const events = @import("events.zig");
 const journal = @import("journal.zig");
+const progress = @import("progress.zig");
 const init_cmd = @import("cmd/init.zig");
 const apply_cmd = @import("cmd/apply.zig");
 const rollback = @import("cmd/rollback.zig");
@@ -73,6 +74,9 @@ pub const Context = struct {
     aur_url: []const u8 = @import("aur.zig").default_url,
     /// what `os edit` opens the config with: $VISUAL, $EDITOR, or vi.
     editor: []const u8 = "vi",
+    /// how package transactions show progress on `err`, unless --json is
+    /// set. tests leave it off.
+    progress: progress.Mode = .off,
 };
 
 const Handler = *const fn (ctx: *Context, args: []const [:0]const u8) anyerror!u8;

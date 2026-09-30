@@ -11,6 +11,7 @@ const facts = @import("facts.zig");
 const lock = @import("lock.zig");
 const diag = @import("diag.zig");
 const rootfs = @import("rootfs.zig");
+const progress = @import("progress.zig");
 const Allocator = std.mem.Allocator;
 
 pub const available = build_options.alpm;
@@ -100,6 +101,8 @@ pub const Target = struct {
     /// how libalpm downloads, from pacman.conf.
     download_user: ?[]const u8 = null,
     sandbox: Sandbox = .{},
+    /// where to show how the transaction is going, if anywhere.
+    progress: ?*progress.Progress = null,
 };
 
 /// a change to the packages installed in a root: what `os apply` does.
@@ -435,11 +438,18 @@ test "install a locked closure into a root, then remove part of it" {
     for (l.packages) |p| {
         if (!std.mem.eql(u8, p.name, "git")) try deps.append(a, p.name);
     }
+    var buf: [4096]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    var shown: progress.Progress = .{ .w = &w, .tty = false };
     var install = base;
     install.install = l.packages;
     install.explicit = &.{"git"};
     install.dependency = deps.items;
+    install.target.progress = &shown;
     try t.transactOk(install);
+    const installing = try std.fmt.allocPrint(a, "installing {d} packages\n", .{l.packages.len});
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), installing) != null);
+    try testing.expect(std.mem.indexOfScalar(u8, w.buffered(), '\r') == null);
     var have = (try localPackages(a, root, dbpath, &t.diags)).?;
     try testing.expectEqual(l.packages.len, have.len);
     var f: facts.Facts = .{ .packages = have };
@@ -452,7 +462,9 @@ test "install a locked closure into a root, then remove part of it" {
 
     var remove = base;
     remove.remove = &.{ "git", "perl-error", "perl", "curl", "openssl" };
+    remove.target.progress = &shown;
     try testing.expect(try transact(a, io, remove, &t.diags));
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "removing 5 packages\n") != null);
     have = (try localPackages(a, root, dbpath, &t.diags)).?;
     try testing.expectEqual(l.packages.len - 5, have.len);
 }

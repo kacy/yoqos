@@ -18,6 +18,7 @@ pub fn main(init: std.process.Init) !void {
     const stdin = std.Io.File.stdin();
     var in = stdin.reader(init.io, &in_buf);
     const tty = (stdout.isTty(init.io) catch false) and (stdin.isTty(init.io) catch false);
+    const err_tty = std.Io.File.stderr().isTty(init.io) catch false;
 
     var disk_files: disk.Files = .{ .io = init.io };
     var git: history.Git = .{ .io = init.io };
@@ -38,6 +39,7 @@ pub fn main(init: std.process.Init) !void {
         .in_own_transaction = env.get(alpm.own_env) != null,
         .aur_url = env.get("YOQ_AUR") orelse aur.default_url,
         .editor = env.get("VISUAL") orelse env.get("EDITOR") orelse "vi",
+        .progress = if (err_tty) .terminal else .log,
     };
     const code = cli.run(&ctx, argv[1..]) catch |e| blk: {
         err.interface.print("os: {s}\n", .{@errorName(e)}) catch {};
