@@ -14,6 +14,7 @@ const systemd = @import("systemd.zig");
 const users = @import("users.zig");
 const rootfs = @import("rootfs.zig");
 const exec = @import("exec.zig");
+const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Target = alpm.Target;
@@ -93,13 +94,17 @@ pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock
     return .{ .skipped = skipped.items };
 }
 
+/// a drop-in here changes the initramfs.
+const mkinitcpio_dir = "/etc/mkinitcpio.conf.d/";
+/// rebuilds every initramfs. the full path skips wrappers earlier in PATH
+/// that ask questions, like omarchy's.
+const mkinitcpio: []const []const u8 = &.{ "/usr/bin/mkinitcpio", "-P" };
+
 /// writes a managed file whole, with its mode. on a running machine
 /// (`live`, as for units) the sysctl file and the module list are loaded
 /// right away, and a mkinitcpio drop-in rebuilds the initramfs.
 fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.DesiredFile, path: []const u8, live: bool, diags: *diag.List) !bool {
-    const d = for (files) |d| {
-        if (std.mem.eql(u8, d.path, path)) break d;
-    } else unreachable; // the plan came from these files.
+    const d = lists.find(files, "path", path).?; // the plan came from these files.
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
     const mode = std.fmt.parseInt(u32, d.mode, 8) catch unreachable; // validated with the config.
     fs.writeMode(std.mem.trimStart(u8, path, "/"), d.content, mode) catch |e| switch (e) {
@@ -114,8 +119,8 @@ fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.
         &.{ "sysctl", "-p", path }
     else if (std.mem.eql(u8, path, planner.modules_path))
         &.{ "systemctl", "restart", "systemd-modules-load.service" }
-    else if (std.mem.startsWith(u8, path, "/etc/mkinitcpio.conf.d/"))
-        &.{ "/usr/bin/mkinitcpio", "-P" }
+    else if (std.mem.startsWith(u8, path, mkinitcpio_dir))
+        mkinitcpio
     else
         return true;
     if (try exec.run(a, io, then)) |why| {
@@ -163,8 +168,8 @@ fn removeFile(a: Allocator, io: std.Io, root: []const u8, path: []const u8, live
             return false;
         },
     };
-    if (!live or !std.mem.startsWith(u8, path, "/etc/mkinitcpio.conf.d/")) return true;
-    if (try exec.run(a, io, &.{ "/usr/bin/mkinitcpio", "-P" })) |why| {
+    if (!live or !std.mem.startsWith(u8, path, mkinitcpio_dir)) return true;
+    if (try exec.run(a, io, mkinitcpio)) |why| {
         try diags.add(.apply_failed, null, "removed {s}, but mkinitcpio failed: {s}", .{ path, why }, null);
         return false;
     }

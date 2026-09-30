@@ -7,6 +7,7 @@
 //! changed anyway. this part is pure; gens.zig and apply do the writing.
 
 const std = @import("std");
+const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 
 /// the ids below this are the system's; people's accounts start here.
@@ -70,7 +71,7 @@ pub fn merge(a: Allocator, current: []const u8, target: []const u8) !Merged {
     while (ours.next()) |line| {
         const e = entry(line) orelse continue;
         if (e.id >= first_person) continue;
-        if (contains(names.items, e.name) or std.mem.indexOfScalar(u32, ids.items, e.id) != null) continue;
+        if (lists.contains(names.items, e.name) or std.mem.indexOfScalar(u32, ids.items, e.id) != null) continue;
         try out.print(a, "{s}\n", .{line});
         try names.append(a, e.name);
         try ids.append(a, e.id);
@@ -107,13 +108,6 @@ fn lineFor(text: []const u8, name: []const u8) ?[]const u8 {
     return null;
 }
 
-fn contains(list: []const []const u8, s: []const u8) bool {
-    for (list) |x| {
-        if (std.mem.eql(u8, x, s)) return true;
-    }
-    return false;
-}
-
 /// where os keeps every system id it has seen, under a root.
 pub const history_path = "var/lib/yoq/system-ids";
 
@@ -136,8 +130,8 @@ pub fn parseHistory(a: Allocator, text: []const u8) ![]Id {
     return out.items;
 }
 
-/// the lines to add to the history for `seen`: each account whose name
-/// and id it doesn't have together yet.
+/// the lines to add to the history for `now`: each account whose name and
+/// id it doesn't have together yet.
 pub fn newHistory(a: Allocator, history: []const Id, now: []const Id) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     for (now) |s| {
