@@ -43,9 +43,8 @@ pub fn unfinished(a: Allocator, io: std.Io, root: []const u8) !?[]const u8 {
 
 /// when the last apply that got to the end finished, or null if none has.
 pub fn lastDone(a: Allocator, io: std.Io, root: []const u8) !?i64 {
-    const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
     var done: ?i64 = null;
-    var lines = std.mem.tokenizeScalar(u8, try fs.read(path), '\n');
+    var lines = std.mem.tokenizeScalar(u8, try read(a, io, root), '\n');
     while (lines.next()) |text| {
         const line = std.json.parseFromSliceLeaky(Line, a, text, .{}) catch continue;
         if (std.mem.eql(u8, line.event, "done")) done = line.time;
@@ -54,10 +53,15 @@ pub fn lastDone(a: Allocator, io: std.Io, root: []const u8) !?i64 {
 }
 
 fn lastLine(a: Allocator, io: std.Io, root: []const u8) !?Line {
-    const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
-    const trimmed = std.mem.trimEnd(u8, try fs.read(path), "\n");
+    const trimmed = std.mem.trimEnd(u8, try read(a, io, root), "\n");
     const last = trimmed[if (std.mem.lastIndexOfScalar(u8, trimmed, '\n')) |i| i + 1 else 0..];
     return std.json.parseFromSliceLeaky(Line, a, last, .{}) catch null;
+}
+
+/// the journal's text, empty when there's none yet.
+fn read(a: Allocator, io: std.Io, root: []const u8) ![]const u8 {
+    const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
+    return fs.read(path);
 }
 
 test "the journal notices an unfinished run, and knows the last done" {
