@@ -74,14 +74,15 @@ whole loop in it: the manage rung, enable-rollback, rollback, trial boots,
 a clean build, installing on a blank disk, and uninstalling. `VM_IMAGE` picks the machine: arch's cloud
 image (the default), or one archinstall installs, with its default btrfs
 layout (`archinstall`), an ext4 root (`ext4`), limine and snapper, like
-omarchy's boot setup (`limine`), refind (`refind`), or systemd-boot
-(`sdboot`). the ext4 one stays on the manage rung. ci runs all six on every
+omarchy's boot setup (`limine`), refind (`refind`), systemd-boot
+(`sdboot`), or grub and snapper, booted into a root snapper rolled back to
+(`snapper`). the ext4 one stays on the manage rung. ci runs all seven on every
 push.
 
 ## what's next
 
 see the end of [docs/generations.md](docs/generations.md). the big pieces
-left are more root layouts and time on real machines.
+left are time on real machines, and layouts people report.
 
 ## license
 

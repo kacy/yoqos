@@ -16,8 +16,9 @@ sudo os enable-rollback
 changes anything. `--yes` skips the question; without a terminal, it's
 required. the machine needs:
 
-- a btrfs root, either in the top level of the filesystem (like arch's
-  cloud image) or in archinstall's `@` subvolume
+- a btrfs root in one of three places: the top level of the filesystem
+  (like arch's cloud image), archinstall's `@` subvolume, or a snapshot
+  that `snapper rollback` made the root, like `@/.snapshots/2/snapshot`
 - uefi, with the esp mounted at `/efi`, `/boot/efi`, or `/boot`
 - grub, limine, refind, or systemd-boot. `os` works with the one you have
   and never switches it
@@ -89,9 +90,11 @@ missing, so every generation boots the kernel in its own root. the entries
 go in `yoq.conf`, beside `refind.conf`, and `refind.conf` gets an `include
 yoq.conf` line at the end.
 
-the driver starts its paths at the btrfs default subvolume, so that has to
-be the top level. it is, unless something like a snapper rollback changed
-it.
+the driver starts its paths at the btrfs default subvolume, and so does
+grub's. `os` names every root from the top level, so on a machine where
+snapper's rollback moved the default, enable-rollback moves it back to the
+top level for grub and refind. limine and systemd-boot only read the esp,
+so they keep whatever default they had.
 
 refind can't boot an entry just once, but the firmware can. for a trial,
 `os` puts a copy of refind in `EFI/yoq-trial` on the esp, with its
@@ -279,13 +282,12 @@ generation booted from the menu, since that generation's record is what
   reboot, or on an older generation booted from the menu, changes the
   kernel on a `/boot` esp that the next boot shares. use `os` for kernel
   updates there, or reboot first.
-- only the two root layouts above.
+- only the three root layouts above.
 - generations with limine are tested on archinstall's layout with snapper,
   not on a real omarchy install. omarchy builds unified kernel images, and
   `os` boots the kernel and initramfs files in `/boot` instead.
 
 ## later
 
-- more root layouts, like one snapper has rolled back
 - system accounts with the same ids on every machine a config repository
   describes, so restoring a backup onto a new machine keeps ownership

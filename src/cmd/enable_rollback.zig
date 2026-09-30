@@ -87,6 +87,7 @@ const Enabler = struct {
                 .pacman_db => try e.movePacmanDb(),
                 .config_dir => try e.moveConfig(),
                 .snapper => try e.stopSnapPac(),
+                .default_subvol => try e.topDefault(),
                 .boot_entry => try e.seal() and try e.bootEntry(),
                 .boot_files => try e.bootFiles(),
             };
@@ -245,6 +246,19 @@ const Enabler = struct {
         const path = try e.m.at(&.{ new_root, "etc/snap-pac.ini" });
         const old = std.Io.Dir.cwd().readFileAlloc(e.ctx.io, path, e.a, .limited(1 << 16)) catch "";
         rootfs.writeAtomic(e.ctx.io, path, try enable.snapPac(e.a, old), null) catch return e.failed("can't write {s}", .{path});
+        return true;
+    }
+
+    /// the btrfs top level becomes the default subvolume again, where grub
+    /// and refind start their paths. taking it back restores the default
+    /// that was there.
+    fn topDefault(e: *Enabler) !bool {
+        const was = switch (try exec.output(e.a, e.ctx.io, &.{ "btrfs", "subvolume", "get-default", e.m.top })) {
+            .ok => |t| enable.defaultId(t) orelse return e.failed("can't read the default subvolume from: {s}", .{t}),
+            .failed => |why| return e.failed("can't read the default subvolume: {s}", .{why}),
+        };
+        if (!try e.sh(&.{ "btrfs", "subvolume", "set-default", "5", e.m.top })) return false;
+        try e.later(&.{ "btrfs", "subvolume", "set-default", was, e.m.top });
         return true;
     }
 

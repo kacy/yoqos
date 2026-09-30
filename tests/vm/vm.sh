@@ -9,6 +9,8 @@
 #   limine       archinstall with limine and snapper, like omarchy's boot
 #                setup
 #   refind       archinstall with refind
+#   snapper      archinstall's defaults again, for tests/vm/snapper.sh to
+#                set up snapper and boot a root its rollback made
 #   sdboot       archinstall with systemd-boot
 #
 #   vm.sh image              make the base image, once
@@ -137,6 +139,7 @@ image)
     limine) archinstall -e 's|"bootloader": "Grub"|"bootloader": "Limine"|' \
         -e 's|"config_type": "default_layout",|"config_type": "default_layout", "btrfs_options": { "snapshot_config": { "type": "Snapper" } },|' ;;
     refind) archinstall -e 's|"bootloader": "Grub"|"bootloader": "Refind"|' ;;
+    snapper) archinstall ;;
     sdboot) archinstall -e 's|"bootloader": "Grub"|"bootloader": "Systemd-boot"|' ;;
     *) echo "vm: no image called $image" >&2; exit 2 ;;
     esac

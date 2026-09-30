@@ -26,7 +26,7 @@ pub const Step = struct {
 };
 
 /// what the executor does for a step.
-pub const Kind = enum { var_subvol, data_subvols, pacman_db, config_dir, snapper, snapshot, boot_files, boot_entry };
+pub const Kind = enum { var_subvol, data_subvols, pacman_db, config_dir, snapper, default_subvol, snapshot, boot_files, boot_entry };
 
 /// where the config lives on the rollback rung: in /var, so no rollback
 /// takes it, and bind-mounted at /etc/yoq.
@@ -59,9 +59,27 @@ pub fn writeChecks(w: *std.Io.Writer, checks: []const Check) !void {
     }
 }
 
-/// root layouts enable-rollback knows how to convert: everything in the
-/// top level, as arch's cloud image has it, and archinstall's @.
-const layouts = [_][]const u8{ "/", "/@" };
+/// whether enable-rollback knows how to convert a root at `subvol`:
+/// everything in the top level, as arch's cloud image has it, archinstall's
+/// @, or a snapshot snapper's rollback made the root, like
+/// /@/.snapshots/2/snapshot.
+pub fn knownLayout(subvol: []const u8) bool {
+    if (std.mem.eql(u8, subvol, "/") or std.mem.eql(u8, subvol, "/@")) return true;
+    var parts = std.mem.splitBackwardsScalar(u8, subvol, '/');
+    if (!std.mem.eql(u8, parts.first(), "snapshot")) return false;
+    _ = std.fmt.parseInt(u32, parts.next() orelse return false, 10) catch return false;
+    return std.mem.endsWith(u8, parts.next() orelse return false, "snapshots");
+}
+
+/// the id in `btrfs subvolume get-default`'s output, like "ID 262 gen 31
+/// top level 256 path @/.snapshots/2/snapshot".
+pub fn defaultId(text: []const u8) ?[]const u8 {
+    var words = std.mem.tokenizeScalar(u8, text, ' ');
+    if (!std.mem.eql(u8, words.next() orelse return null, "ID")) return null;
+    const id = words.next() orelse return null;
+    _ = std.fmt.parseInt(u64, id, 10) catch return null;
+    return id;
+}
 
 pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
     const b = f.boot;
@@ -102,22 +120,14 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .found = b.loader_conf orelse "not found",
         .fix = try std.fmt.allocPrint(a, "os adds its entries to the config {s} reads, on the esp, and couldn't find it.", .{loader}),
     });
-    if (known == .refind) try checks.append(a, .{
-        .what = "btrfs default subvolume",
-        .ok = b.top_is_default,
-        .found = if (b.top_is_default) "the top level" else "another subvolume, or btrfs couldn't say",
-        .fix = "refind's btrfs driver reads paths from the default subvolume, so it has to be the top level. `btrfs subvolume set-default 5 /` puts it back, if nothing else needs it.",
-    });
     const layout = b.root_subvol orelse "unknown";
-    const known_layout = for (layouts) |l| {
-        if (std.mem.eql(u8, l, layout)) break true;
-    } else false;
+    const known_layout = knownLayout(layout);
     const running_gen = generation.running(b.root_subvol);
     try checks.append(a, .{
         .what = "root layout",
         .ok = known_layout or running_gen,
         .found = layout,
-        .fix = "enable-rollback converts a root in the btrfs top level, or archinstall's @ subvolume. other layouts come later.",
+        .fix = "enable-rollback converts a root in the btrfs top level, archinstall's @ subvolume, or a snapshot snapper rolled back to. other layouts come later.",
     });
     try checks.append(a, .{
         .what = "generations",
@@ -163,6 +173,15 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .kind = .snapper,
         .what = "stop snap-pac's snapshots of the root around each pacman run",
         .why = "each change is a generation already. snapper keeps its other configs, like /home's",
+    });
+    // grub and refind find files on btrfs from the default subvolume, and
+    // os's menu names each root from the top level. limine and
+    // systemd-boot only read the esp, and their own entries may count on
+    // the default, so it stays.
+    if (!b.top_is_default and (known == .grub or known == .refind)) try steps.append(a, .{
+        .kind = .default_subvol,
+        .what = "make the btrfs top level the default subvolume again",
+        .why = try std.fmt.allocPrint(a, "{s} reads each generation's files from the top level. snapper's rollback moved the default to the root it made", .{loader}),
     });
     // for limine and refind, this step is the switch, so it goes last. a
     // failure before it undoes the steps above.
@@ -408,7 +427,7 @@ test "a machine on btrfs and grub is ready, with every step" {
     try testing.expectEqualStrings("install grub's boot files on the esp (/efi), reading that menu", p.steps[6].what);
 }
 
-test "limine and refind keep their own config, and refind needs the top level" {
+test "limine and refind keep their own config, and refind gets the top level back" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     var f: facts.Facts = .{ .boot = .{
@@ -433,7 +452,31 @@ test "limine and refind keep their own config, and refind needs the top level" {
     try testing.expect(!p.ready());
     var failed: usize = 0;
     for (p.checks) |c| failed += @intFromBool(!c.ok);
-    try testing.expectEqual(2, failed);
+    try testing.expectEqual(1, failed);
+    try testing.expectEqual(Kind.default_subvol, p.steps[p.steps.len - 2].kind);
+}
+
+test "a root snapper rolled back to converts, with the top level made the default" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const f: facts.Facts = .{ .boot = .{
+        .uefi = true,
+        .esp = "/boot",
+        .loader = "grub",
+        .root_fs = "btrfs",
+        .root_subvol = "/@/.snapshots/2/snapshot",
+        .snapper_root = true,
+        .top_is_default = false,
+    } };
+    const p = try plan(arena.allocator(), &f);
+    try testing.expect(p.ready());
+    try testing.expectEqual(Kind.default_subvol, p.steps[p.steps.len - 3].kind);
+    try testing.expectEqualStrings("grub reads each generation's files from the top level. snapper's rollback moved the default to the root it made", p.steps[p.steps.len - 3].why);
+    for ([_][]const u8{ "/", "/@", "/@/.snapshots/12/snapshot", "/@snapshots/3/snapshot", "/@.snapshots/3/snapshot" }) |l| try testing.expect(knownLayout(l));
+    try testing.expectEqualStrings("262", defaultId("ID 262 gen 31 top level 256 path @/.snapshots/2/snapshot\n").?);
+    try testing.expectEqualStrings("5", defaultId("ID 5 (FS_TREE)\n").?);
+    try testing.expectEqual(null, defaultId("ERROR: can't access"));
+    for ([_][]const u8{ "/@arch", "/@/.snapshots/x/snapshot", "/snapshot", "/@/.snapshots/2/snapshot/var" }) |l| try testing.expect(!knownLayout(l));
 }
 
 test "what stops a machine, and the steps it no longer needs" {
@@ -447,7 +490,7 @@ test "what stops a machine, and the steps it no longer needs" {
         .var_subvol = true,
         .data_apart = &.{ "home", "root", "srv", "usr/local" },
         .pacman_moved = true,
-        .root_subvol = "/@/.snapshots/1/snapshot",
+        .root_subvol = "/@arch",
     } };
     const p = try plan(arena.allocator(), &f);
     try testing.expect(!p.ready());
@@ -463,8 +506,8 @@ test "what stops a machine, and the steps it no longer needs" {
         \\  ok  esp: /boot/efi
         \\  no  bootloader: efistub
         \\        generations support grub, limine, refind, and systemd-boot.
-        \\  no  root layout: /@/.snapshots/1/snapshot
-        \\        enable-rollback converts a root in the btrfs top level, or archinstall's @ subvolume. other layouts come later.
+        \\  no  root layout: /@arch
+        \\        enable-rollback converts a root in the btrfs top level, archinstall's @ subvolume, or a snapshot snapper rolled back to. other layouts come later.
         \\  ok  generations: none yet
         \\
         \\steps

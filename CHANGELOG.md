@@ -9,6 +9,9 @@
 - the install plan notes what a new machine usually needs and its config
   lacks: firmware on real hardware, a network, and a user who can use sudo.
 - the usage docs walk through installing from a thumb drive, step by step.
+- enable-rollback converts a root that `snapper rollback` made, like
+  `@/.snapshots/2/snapshot`, and makes the btrfs top level the default
+  subvolume again for grub and refind.
 - a lock from an earlier day builds, installs, and rolls back from the arch
   linux archive, for packages the cache doesn't have: mirrors keep only
   today's. `os update --date` resolves against the archive for that day,

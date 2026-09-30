@@ -11,7 +11,7 @@ os=$1
 # where the image keeps its esp, the root it boots before generations,
 # and its bootloader.
 case ${VM_IMAGE:-cloud} in
-archinstall | ext4) VM_ESP=/boot VM_ROOT=/@ VM_LOADER=grub ;;
+archinstall | ext4 | snapper) VM_ESP=/boot VM_ROOT=/@ VM_LOADER=grub ;;
 limine | refind) VM_ESP=/boot VM_ROOT=/@ VM_LOADER=$VM_IMAGE ;;
 sdboot) VM_ESP=/boot VM_ROOT=/@ VM_LOADER=systemd-boot ;;
 *) VM_ESP=/efi VM_ROOT=/ VM_LOADER=grub ;;
@@ -43,6 +43,15 @@ ext4)
     tests/vm/install.sh
     ;;
 limine | sdboot)
+    tests/vm/rollback.sh
+    tests/vm/trial.sh
+    tests/vm/leave.sh
+    ;;
+snapper)
+    # the root snapper's rollback made is the one enable-rollback converts.
+    tests/vm/snapper.sh
+    VM_ROOT=$("$vm" ssh "findmnt -no FSROOT /")
+    export VM_ROOT
     tests/vm/rollback.sh
     tests/vm/trial.sh
     tests/vm/leave.sh

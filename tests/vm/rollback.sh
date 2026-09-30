@@ -22,18 +22,23 @@ limine | systemd-boot) last=sha256sum ;;
 refind) last=install ;;
 esac
 esp=$("$vm" ssh "find $VM_ESP -type f -exec sha256sum {} + | sort | sha256sum")
+default=$("$vm" ssh "btrfs subvolume get-default / | cut -d' ' -f2")
 "$vm" ssh "mkdir -p /tmp/fail && printf '#!/bin/sh\\necho not today >&2\\nexit 1\\n' > /tmp/fail/$last && chmod +x /tmp/fail/$last"
 # it has to get that far, or there's nothing to take back.
 check "PATH=/tmp/fail:\$PATH /usr/local/bin/os enable-rollback --yes >/tmp/enable.out 2>&1; echo \$?; grep -c 'not today' /tmp/enable.out" "1
 1"
 check_top "ls -d /run/yoq-top/@roots /run/yoq-top/@gens /run/yoq-top/@var 2>/dev/null | wc -l" 0
 check "find $VM_ESP -type f -exec sha256sum {} + | sort | sha256sum" "$esp"
+check "btrfs subvolume get-default / | cut -d' ' -f2" "$default"
 check "test -d /etc/yoq/.git && echo config here" "config here"
 "$vm" reboot
 check "findmnt -no FSROOT /" "$VM_ROOT"
 
 root_mode=$("$vm" ssh "stat -c %a /root")
 "$vm" ssh /usr/local/bin/os enable-rollback --yes
+# grub reads each generation's files from the top level, so it's the
+# default subvolume now, whatever snapper's rollback made it.
+if [ "$VM_LOADER" = grub ]; then check "btrfs subvolume get-default / | cut -d' ' -f2" 5; fi
 # until the reboot, changes would land on the root being left.
 check "/usr/local/bin/os apply --yes 2>&1 | grep -c 'waiting for the next boot'" 1
 "$vm" reboot
