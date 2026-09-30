@@ -580,3 +580,32 @@ test "apply refuses when the plan changes while it waits for a yes" {
     try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "- nano 8.6-1") != null);
     try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0129]: the plan changed since it was shown"));
 }
+
+test "a full disk fails the apply with a message, not a crash" {
+    if (!alpm.available) return error.SkipZigTest;
+    if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const exec = @import("../exec.zig");
+    const dir = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    // a small filesystem of its own, to fill up.
+    if (try exec.run(a, io, &.{ "mount", "-t", "tmpfs", "-o", "size=8m", "tmpfs", dir })) |_| return error.SkipZigTest;
+    defer _ = exec.run(a, io, &.{ "umount", dir }) catch {};
+    const m = try @import("../test_helpers.zig").FixtureMachine.init(a, tmp);
+
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put(m.conf_path, m.conf);
+    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n");
+    try t.exec(&.{ "--root", m.root, "update", "--dbs", m.cache, "--date", "2026-09-25", "--no-apply" });
+    try std.testing.expectEqual(0, t.code);
+    // everything that's left goes to one file.
+    _ = try exec.run(a, io, &.{ "sh", "-c", try std.fmt.allocPrint(a, "dd if=/dev/zero of={s}/filler bs=64k 2>/dev/null; true", .{m.root}) });
+    try t.exec(&.{ "--root", m.root, "apply", "--yes" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0124]: can't write "));
+}
