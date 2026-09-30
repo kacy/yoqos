@@ -174,7 +174,7 @@ pub const Store = struct {
     pub fn retry(s: Store) !?[]const u8 {
         return switch (s.loader) {
             .grub => s.edit("set", &.{"yoq_next=head"}),
-            .limine => s.bootctl("set-oneshot", try menu.limineId(s.a, menu.limine_trial)),
+            .limine => s.bootctl("set-oneshot", try menu.limineId(s.a, menu.trial_title)),
             .@"systemd-boot" => s.bootctl("set-oneshot", menu.sdboot_trial),
             .refind => {
                 const words = try s.state() orelse return "no trial to try again";
