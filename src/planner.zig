@@ -110,19 +110,37 @@ pub fn wants(a: Allocator, c: *const config.Config) ![]const Want {
     for (c.aur.items.items) |it| try addWant(a, &out, it.name, "aur", it.src);
     // building aur packages needs devtools' makechrootpkg.
     if (c.aur.items.items.len > 0) try addWant(a, &out, "devtools", "aur", c.aur.items.items[0].src);
-    const kernel = if (c.boot.kernel) |k| k.v else catalog.default_kernel;
-    if (!std.mem.eql(u8, kernel, catalog.no_kernel)) try addWant(a, &out, kernel, "boot.kernel", if (c.boot.kernel) |k| k.src else null);
-    if (c.hardware.cpu) |v| for (catalog.cpuPackages(v.v)) |n| try addWant(a, &out, n, "hardware.cpu", v.src);
-    if (c.hardware.gpu) |v| for (catalog.gpuPackages(v.v)) |n| try addWant(a, &out, n, "hardware.gpu", v.src);
-    if (c.desktop.session) |v| for (catalog.sessionPackages(v.v)) |n| try addWant(a, &out, n, "desktop.session", v.src);
-    if (c.desktop.audio) |v| for (catalog.audioPackages(v.v)) |n| try addWant(a, &out, n, "desktop.audio", v.src);
-    // a tty login without a session is a plain console: nothing to start.
-    if (c.desktop.login) |v| if (v.v != .tty or c.desktop.session != null) for (catalog.loginPackages(v.v)) |n| try addWant(a, &out, n, "desktop.login", v.src);
+    if (c.boot.kernel) |k| {
+        if (!std.mem.eql(u8, k.v, catalog.no_kernel)) try addWant(a, &out, k.v, "boot.kernel", k.src);
+    } else try addWant(a, &out, catalog.default_kernel, "boot.kernel", null);
+    if (c.hardware.cpu) |v| try addWants(a, &out, catalog.cpuPackages(v.v), "hardware.cpu", v.src);
+    if (c.hardware.gpu) |v| try addWants(a, &out, catalog.gpuPackages(v.v), "hardware.gpu", v.src);
+    if (c.desktop.session) |v| try addWants(a, &out, catalog.sessionPackages(v.v), "desktop.session", v.src);
+    if (c.desktop.audio) |v| try addWants(a, &out, catalog.audioPackages(v.v), "desktop.audio", v.src);
+    if (c.desktop.login) |v| {
+        // a tty login without a session is a plain console: nothing to start.
+        if (v.v != .tty or c.desktop.session != null) try addWants(a, &out, catalog.loginPackages(v.v), "desktop.login", v.src);
+    }
     for (c.services.entries.items) |e| {
         if (!e.value.isEnabled()) continue;
         try addWant(a, &out, e.value.packageFor(e.name), try std.fmt.allocPrint(a, "services.{s}", .{e.name}), e.value.src);
     }
     return out.items;
+}
+
+/// adds a want unless one by that name is there already, which keeps the
+/// first cause.
+fn addWant(a: Allocator, list: *std.ArrayList(Want), name: []const u8, cause: ?[]const u8, src: ?config.Src) !void {
+    if (findWant(list.items, name) != null) return;
+    try list.append(a, .{ .name = name, .cause = cause, .src = src });
+}
+
+fn addWants(a: Allocator, list: *std.ArrayList(Want), names: []const []const u8, cause: []const u8, src: config.Src) !void {
+    for (names) |n| try addWant(a, list, n, cause, src);
+}
+
+pub fn findWant(list: []const Want, name: []const u8) ?*const Want {
+    return lists.find(list, "name", name);
 }
 
 /// the wanted packages plus everything they depend on in the lock. wanted
@@ -140,30 +158,57 @@ pub fn closure(a: Allocator, l: *const lock.Lock, ws: []const Want) !std.StringA
     return needed;
 }
 
+/// explicitly installed packages that nothing in the config asks for or
+/// needs, in facts order.
+pub fn extraPackages(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *const facts.Facts) ![]const []const u8 {
+    const ws = try wants(a, c);
+    const needed = try closure(a, l, ws);
+    var out: std.ArrayList([]const u8) = .empty;
+    for (f.packages) |p| {
+        if (p.reason != .explicit or needed.contains(p.name) or findWant(ws, p.name) != null) continue;
+        try out.append(a, p.name);
+    }
+    return out.items;
+}
+
 /// builds the plan. returns null, with diagnostics, if the lock doesn't
 /// cover what the config asks for. everything is allocated in `a`, which
 /// should be an arena.
 pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *const facts.Facts, diags: *diag.List) !?Plan {
     var changes: std.ArrayList(Change) = .empty;
+    if (!try planPackages(a, c, l, f, &changes, diags)) return null;
+    try planSettings(a, c, f, &changes);
+    try planUnits(a, c, f, &changes);
+    try planUsers(a, c, f, &changes);
+    try planFiles(a, c, f, &changes);
+    if (!try planRepos(a, c, f, &changes, diags)) return null;
+    return .{ .changes = changes.items };
+}
 
+/// packages: the lock's closure of the wanted packages is what should be
+/// installed, and everything else goes. returns false, with diagnostics,
+/// if the lock is missing a wanted package or applying would remove a
+/// core one.
+fn planPackages(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *const facts.Facts, changes: *std.ArrayList(Change), diags: *diag.List) !bool {
     const ws = try wants(a, c);
-
-    // every wanted package has to be in the lock.
     var stale = false;
     for (ws) |w| {
         if (l.package(w.name) != null) continue;
         stale = true;
         try diags.add(.lock_stale, w.src, "{s} isn't in machine.lock yet", .{w.name}, "run `os update` to resolve it into the lock");
     }
-    if (stale) return null;
+    if (stale) return false;
 
-    // the lock's closure of the wanted packages is what should be installed.
     const needed = try closure(a, l, ws);
+    try planInstalls(a, l, f, ws, needed.keys(), changes);
+    return planRemovals(a, c, f, needed, changes, diags);
+}
 
-    // packages: install, upgrade, or re-mark what's needed.
-    const need_names = try a.dupe([]const u8, needed.keys());
-    lists.sortStrings(need_names);
-    for (need_names) |name| {
+/// installs, upgrades, or re-marks each needed package, by name.
+fn planInstalls(a: Allocator, l: *const lock.Lock, f: *const facts.Facts, ws: []const Want, needed: []const []const u8, changes: *std.ArrayList(Change)) !void {
+    const names = try a.dupe([]const u8, needed);
+    lists.sortStrings(names);
+    for (names) |name| {
         const lp = l.package(name).?;
         const want = findWant(ws, name);
         const kind: Kind = if (want != null) .package else .dependency;
@@ -184,9 +229,12 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
             try changes.append(a, .{ .op = .change, .kind = .reason, .subject = name, .from = @tagName(have.reason), .to = @tagName(want_reason) });
         }
     }
+}
 
-    // packages: remove what nothing needs, except core packages the config
-    // doesn't remove on purpose. facts are sorted by name.
+/// removes what nothing needs, in facts order (by name), except core
+/// packages the config doesn't remove on purpose. returns false, with a
+/// diagnostic, if it would remove one of those.
+fn planRemovals(a: Allocator, c: *const config.Config, f: *const facts.Facts, needed: std.StringArrayHashMapUnmanaged(void), changes: *std.ArrayList(Change), diags: *diag.List) !bool {
     var blocked: std.ArrayList([]const u8) = .empty;
     for (f.packages) |have| {
         if (needed.contains(have.name)) continue;
@@ -202,52 +250,32 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
             .reboot = catalog.rebootReason(have.name),
         });
     }
-    if (blocked.items.len > 0) {
-        const names = try std.mem.join(a, ", ", blocked.items);
-        try diags.add(.protected_package, null, "applying would remove {s}, which the machine needs", .{names}, "add them to packages, or name them in [remove] to remove them anyway");
-        return null;
-    }
+    if (blocked.items.len == 0) return true;
+    const names = try std.mem.join(a, ", ", blocked.items);
+    try diags.add(.protected_package, null, "applying would remove {s}, which the machine needs", .{names}, "add them to packages, or name them in [remove] to remove them anyway");
+    return false;
+}
 
-    // system settings. facts carry a field for every one of them.
+/// `[system]` values. facts carry a field for every one of them.
+fn planSettings(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
     inline for (comptime config.keysOf(config.System)) |field| {
         if (@field(c.system, field)) |want| {
             const have = @field(f, field);
             if (have == null or !std.mem.eql(u8, have.?, want.v)) {
-                try changes.append(a, .{
-                    .op = .change,
-                    .kind = .setting,
-                    .subject = "system." ++ field,
-                    .from = have,
-                    .to = want.v,
-                });
+                try changes.append(a, .{ .op = .change, .kind = .setting, .subject = "system." ++ field, .from = have, .to = want.v });
             }
         }
     }
+}
 
-    // services: enabled ones get their unit enabled and started. services
-    // the config doesn't mention are left alone.
+/// services: enabled ones get their unit enabled and started, disabled
+/// ones stopped. services the config doesn't mention are left alone.
+fn planUnits(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
     var units: std.ArrayList(Change) = .empty;
     for (c.services.entries.items) |e| {
-        const enabled = e.value.isEnabled();
         const unit = e.value.unitFor(e.name);
-        const cause = try std.fmt.allocPrint(a, "services.{s}", .{e.name});
-        const have = f.unit(unit);
-        if (enabled) {
-            const is_enabled = if (have) |u| u.enabled or u.fixed else false;
-            // a oneshot that ran and finished well counts as running.
-            const is_active = if (have) |u| u.active or u.ran else false;
-            if (!is_enabled) {
-                try units.append(a, .{ .op = .add, .kind = .unit, .subject = unit, .to = if (is_active) "enable" else "enable, start", .cause = cause });
-            } else if (!is_active) {
-                try units.append(a, .{ .op = .change, .kind = .unit, .subject = unit, .to = "start", .cause = cause });
-            }
-        } else if (have) |u| {
-            if (u.fixed) {
-                if (u.active) try units.append(a, .{ .op = .remove, .kind = .unit, .subject = unit, .to = "stop", .cause = cause });
-            } else if (u.enabled or u.active) {
-                try units.append(a, .{ .op = .remove, .kind = .unit, .subject = unit, .to = if (u.active) "disable, stop" else "disable", .cause = cause });
-            }
-        }
+        const step = unitStep(e.value.isEnabled(), f.unit(unit)) orelse continue;
+        try units.append(a, .{ .op = step.op, .kind = .unit, .subject = unit, .to = step.to, .cause = try std.fmt.allocPrint(a, "services.{s}", .{e.name}) });
     }
     // a login choice owns the display manager: its own is enabled, the
     // others disabled. neither starts nor stops now, since that would end
@@ -263,13 +291,25 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
     }
     lists.sortByField(Change, "subject", units.items);
     try changes.appendSlice(a, units.items);
-    try planUsers(a, c, f, &changes);
-    try planFiles(a, c, f, &changes);
-    const before = diags.items.items.len;
-    try planRepos(a, c, f, &changes, diags);
-    if (diags.items.items.len > before) return null;
+}
 
-    return .{ .changes = changes.items };
+const UnitStep = struct { op: Op, to: []const u8 };
+
+/// what it takes to get a unit enabled and running (`on`) or off, or
+/// null if it's there already.
+fn unitStep(on: bool, have: ?*const facts.Unit) ?UnitStep {
+    const u = have orelse return if (on) .{ .op = .add, .to = "enable, start" } else null;
+    if (on) {
+        // a oneshot that ran and finished well counts as running.
+        const running = u.active or u.ran;
+        if (!u.enabled and !u.fixed) return .{ .op = .add, .to = if (running) "enable" else "enable, start" };
+        if (!running) return .{ .op = .change, .to = "start" };
+        return null;
+    }
+    // a unit that can't be enabled only stops.
+    if (u.fixed) return if (u.active) .{ .op = .remove, .to = "stop" } else null;
+    if (u.enabled or u.active) return .{ .op = .remove, .to = if (u.active) "disable, stop" else "disable" };
+    return null;
 }
 
 /// whether the config has repositories of its own for pacman: declared
@@ -279,19 +319,25 @@ fn ownRepos(c: *const config.Config) bool {
 }
 
 /// pacman reads the config's repositories through one include line, and
-/// trusts each one's key. one pacman.conf declares too would be there
-/// twice, which pacman refuses.
-fn planRepos(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change), diags: *diag.List) !void {
-    if (!ownRepos(c)) return;
+/// trusts each one's key. a repository pacman.conf declares too would be
+/// there twice, which pacman refuses, so each is reported and the result
+/// is false.
+fn planRepos(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change), diags: *diag.List) !bool {
+    if (!ownRepos(c)) return true;
+    var twice = false;
     for (c.repos.entries.items) |e| {
-        if (lists.contains(f.pacman.repos, e.name)) try diags.add(.bad_value, e.value.src, "repos.{s} is in /etc/pacman.conf too", .{e.name}, "take it out of pacman.conf; os writes it to /etc/pacman.d/yoq-repos.conf");
+        if (!lists.contains(f.pacman.repos, e.name)) continue;
+        twice = true;
+        try diags.add(.bad_value, e.value.src, "repos.{s} is in /etc/pacman.conf too", .{e.name}, "take it out of pacman.conf; os writes it to /etc/pacman.d/yoq-repos.conf");
     }
+    if (twice) return false;
     if (!f.pacman.includes_repos) try changes.append(a, .{ .op = .change, .kind = .pacman_conf, .subject = "/etc/pacman.conf", .to = "add " ++ facts.repos_include, .cause = "repos" });
     for (c.repos.entries.items) |e| {
         const k = e.value.key orelse continue;
         if (lists.contains(f.pacman.keys, k.v)) continue;
         try changes.append(a, .{ .op = .add, .kind = .key, .subject = k.v, .to = "import and trust", .cause = try std.fmt.allocPrint(a, "repos.{s}", .{e.name}) });
     }
+    return true;
 }
 
 /// a file os writes, from `[files]` or made from another key.
@@ -545,28 +591,6 @@ fn planUsers(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
             if (!e.value.groups.contains(g)) try changes.append(a, .{ .op = .remove, .kind = .user, .subject = name, .from = try std.fmt.allocPrint(a, "leave {s}", .{g}), .cause = cause });
         }
     }
-}
-
-fn addWant(a: Allocator, list: *std.ArrayList(Want), name: []const u8, cause: ?[]const u8, src: ?config.Src) !void {
-    if (findWant(list.items, name) != null) return;
-    try list.append(a, .{ .name = name, .cause = cause, .src = src });
-}
-
-/// explicitly installed packages that nothing in the config asks for or
-/// needs, in facts order.
-pub fn extraPackages(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *const facts.Facts) ![]const []const u8 {
-    const ws = try wants(a, c);
-    const needed = try closure(a, l, ws);
-    var out: std.ArrayList([]const u8) = .empty;
-    for (f.packages) |p| {
-        if (p.reason != .explicit or needed.contains(p.name) or findWant(ws, p.name) != null) continue;
-        try out.append(a, p.name);
-    }
-    return out.items;
-}
-
-pub fn findWant(list: []const Want, name: []const u8) ?*const Want {
-    return lists.find(list, "name", name);
 }
 
 // -- output --
