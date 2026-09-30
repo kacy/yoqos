@@ -174,16 +174,11 @@ pub fn carryCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     return 0;
 }
 
-/// the root the next boot runs, if it isn't the running one: the newest
-/// generation's, or with none in this /var, the one enable-rollback noted.
+/// the root the next boot runs, like "/@roots/2", if it isn't the running
+/// one.
 fn waitingRoot(ctx: *Context, a: std.mem.Allocator, running: []const u8) !?[]const u8 {
-    const records = try gens.readRecords(a, ctx.io, "/var");
-    const root = if (records.len > 0)
-        try std.fmt.allocPrint(a, "/{s}", .{records[records.len - 1].root})
-    else blk: {
-        const note = std.Io.Dir.cwd().readFileAlloc(ctx.io, generation.pending_path, a, .limited(256)) catch return null;
-        break :blk try std.fmt.allocPrint(a, "/{s}", .{std.mem.trim(u8, note, " \n")});
-    };
+    const next = try applying.nextRoot(a, ctx.io) orelse return null;
+    const root = try std.fmt.allocPrint(a, "/{s}", .{next});
     return if (std.mem.eql(u8, root, running)) null else root;
 }
 

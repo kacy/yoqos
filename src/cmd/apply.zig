@@ -119,14 +119,19 @@ fn bootState(io: std.Io) enum { normal, copy, pending } {
     const a = arena.allocator();
     const subvol = (observe.rootSubvol(a, io) catch return .normal) orelse return .normal;
     if (generation.bootCopyOf(subvol) != null) return .copy;
-    const records = gens.readRecords(a, io, "/var") catch return .normal;
-    if (records.len == 0) {
-        // enable-rollback moved /var into a subvolume of its own and put
-        // generation 1's record there, so this /var only has its note.
-        const root = std.Io.Dir.cwd().readFileAlloc(io, generation.pending_path, a, .limited(256)) catch return .normal;
-        return if (std.mem.eql(u8, std.mem.trim(u8, root, " \n"), subvol[1..])) .normal else .pending;
-    }
-    return if (std.mem.eql(u8, records[records.len - 1].root, subvol[1..])) .normal else .pending;
+    const next = (nextRoot(a, io) catch return .normal) orelse return .normal;
+    return if (std.mem.eql(u8, next, subvol[1..])) .normal else .pending;
+}
+
+/// the root the next boot runs, like "@roots/2": the newest generation's,
+/// or with none in this /var, the one enable-rollback noted. it moved /var
+/// into a subvolume of its own and put generation 1's record there, so
+/// until that boots, this /var only has the note.
+pub fn nextRoot(a: Allocator, io: std.Io) !?[]const u8 {
+    const records = try gens.readRecords(a, io, "/var");
+    if (records.len > 0) return records[records.len - 1].root;
+    const note = std.Io.Dir.cwd().readFileAlloc(io, generation.pending_path, a, .limited(256)) catch return null;
+    return std.mem.trim(u8, note, " \n");
 }
 
 /// how a run went: its exit code, and whether the machine now matches
