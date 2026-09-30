@@ -223,6 +223,7 @@ pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.out.writeAll("nothing to remove.\n");
         return 0;
     }
+    try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .gc, .generations = removed.items });
     try ctx.out.writeAll("removed generations:");
     for (removed.items) |n| try ctx.out.print(" {d}", .{n});
     try ctx.out.writeAll(".\n");
@@ -252,6 +253,7 @@ pub fn pinCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var changed = generation.find(try gens.readRecords(a, ctx.io, "/var"), n) orelse return cli.noGeneration(ctx, n);
     changed.pinned = pin;
     if (try gens.writeRecord(a, ctx.io, "/var", changed)) |why| return cli.fail(ctx, "{s}", .{why});
+    try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .pin, .step = if (pin) .pinned else .unpinned, .generation = n });
     try ctx.out.print("generation {d} {s}.\n", .{ n, if (pin) "is pinned: garbage collection keeps it" else "isn't pinned any more" });
     return 0;
 }

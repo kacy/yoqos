@@ -28,9 +28,17 @@ pub const Kind = enum {
     trial,
     /// pacman ran outside os.
     pacman,
+    /// old generations were removed, by `os gc` or after an apply.
+    gc,
+    /// `os pin` pinned a generation, or stopped keeping it.
+    pin,
+    /// `os enable-rollback` set up generation 1.
+    @"enable-rollback",
+    /// `os install` put this machine on its disk, as generation 1.
+    install,
 };
 
-pub const Step = enum { begin, done, failed, armed, passed };
+pub const Step = enum { begin, done, failed, armed, passed, pinned, unpinned };
 
 pub const Event = struct {
     schema: []const u8 = schema,
@@ -38,17 +46,20 @@ pub const Event = struct {
     time: i64,
     kind: Kind,
     /// apply: begin, done, or failed. trial: armed, passed, or failed.
+    /// pin: pinned or unpinned. enable-rollback: done.
     step: ?Step = null,
     /// apply: the plan's hash.
     plan: ?[]const u8 = null,
-    /// generation, trial, and rollback: the generation's number. without
-    /// generations, a rollback's is the config commit's, as `os history`
-    /// numbers them.
+    /// generation, trial, rollback, pin, enable-rollback, and install: the
+    /// generation's number. without generations, a rollback's is the config
+    /// commit's, as `os history` numbers them.
     generation: ?u32 = null,
-    /// commit: its message. generation: what made it.
+    /// commit: its message. generation: what made it. install: the host.
     message: ?[]const u8 = null,
     /// pacman: the packages it touched.
     packages: ?[]const []const u8 = null,
+    /// gc: the generations it removed.
+    generations: ?[]const u32 = null,
 };
 
 /// writes `e` as one line of json, without its empty fields.
@@ -61,6 +72,12 @@ pub fn encode(w: *std.Io.Writer, e: Event) !void {
 /// be written is dropped.
 pub fn record(a: Allocator, io: std.Io, root: []const u8, e: Event) !void {
     try journal.appendLine(a, io, root, journal.path, e);
+}
+
+/// adds `e` to the journal under `var_dir`, a /var that isn't mounted at
+/// /var yet, like the one enable-rollback builds for the next boot.
+pub fn recordIn(a: Allocator, io: std.Io, var_dir: []const u8, e: Event) !void {
+    try journal.appendLine(a, io, var_dir, journal.path["var/".len..], e);
 }
 
 /// the event a line of the journal or the drift log holds, or null for a
@@ -172,6 +189,52 @@ test "an event goes out as one line, without its empty fields, and comes back" {
     try testing.expectEqual(.armed, back.step.?);
     try testing.expectEqual(4, back.generation.?);
     try testing.expectEqual(null, back.plan);
+}
+
+test "the newer kinds go out with their own fields" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cases = [_]struct { e: Event, line: []const u8 }{
+        .{ .e = .{ .time = 1, .kind = .gc, .generations = &.{ 2, 3 } }, .line =
+        \\{"schema":"yoq.event/1","time":1,"kind":"gc","generations":[2,3]}
+        },
+        .{ .e = .{ .time = 2, .kind = .pin, .step = .pinned, .generation = 4 }, .line =
+        \\{"schema":"yoq.event/1","time":2,"kind":"pin","step":"pinned","generation":4}
+        },
+        .{ .e = .{ .time = 3, .kind = .pin, .step = .unpinned, .generation = 4 }, .line =
+        \\{"schema":"yoq.event/1","time":3,"kind":"pin","step":"unpinned","generation":4}
+        },
+        .{ .e = .{ .time = 4, .kind = .@"enable-rollback", .step = .done, .generation = 1 }, .line =
+        \\{"schema":"yoq.event/1","time":4,"kind":"enable-rollback","step":"done","generation":1}
+        },
+        .{ .e = .{ .time = 5, .kind = .install, .generation = 1, .message = "atlas" }, .line =
+        \\{"schema":"yoq.event/1","time":5,"kind":"install","generation":1,"message":"atlas"}
+        },
+    };
+    for (cases) |c| {
+        const line = try encoded(a, c.e);
+        try testing.expectEqualStrings(c.line, line[0 .. line.len - 1]);
+        const back = decode(a, c.line).?;
+        try testing.expectEqual(c.e.kind, back.kind);
+        try testing.expectEqual(c.e.step, back.step);
+        try testing.expectEqual(c.e.generation, back.generation);
+        if (c.e.generations) |g| try testing.expectEqualSlices(u32, g, back.generations.?);
+    }
+}
+
+test "an event recorded under a /var of its own is in that /var's journal" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try recordIn(a, testing.io, try std.fmt.allocPrint(a, "{s}/var", .{root}), .{ .time = 1, .kind = .@"enable-rollback", .step = .done, .generation = 1 });
+    var offsets: Offsets = @splat(0);
+    const got = try poll(a, testing.io, root, &offsets);
+    try testing.expectEqual(1, got.len);
+    try testing.expectEqual(.@"enable-rollback", got[0].kind);
 }
 
 test "the journal's apply lines and the drift log's lines are events too" {
