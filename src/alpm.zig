@@ -157,6 +157,13 @@ const Fixture = struct {
         }, &t.diags);
     }
 
+    /// runs `tx`, and fails the test with its diagnostics if it fails.
+    fn transactOk(t: *Fixture, tx: Transaction) !void {
+        if (try transact(t.arena.allocator(), testing.io, tx, &t.diags)) return;
+        for (t.diags.items.items) |d| std.debug.print("{s}\n", .{d.message});
+        return error.TestUnexpectedResult;
+    }
+
     fn expectDiag(t: *Fixture, code: diag.Code, message: []const u8) !void {
         for (t.diags.items.items) |d| {
             if (d.code == code and std.mem.eql(u8, d.message, message)) return;
@@ -339,10 +346,7 @@ fn installFixture(t: *Fixture, base: Transaction, wants: []const []const u8) !vo
     var install = base;
     install.install = (try t.resolve(wants, &.{})).lock.packages;
     install.explicit = wants;
-    if (!try transact(t.arena.allocator(), testing.io, install, &t.diags)) {
-        for (t.diags.items.items) |d| std.debug.print("{s}\n", .{d.message});
-        return error.TestUnexpectedResult;
-    }
+    try t.transactOk(install);
 }
 
 test "install a locked closure into a root, then remove part of it" {
@@ -367,10 +371,7 @@ test "install a locked closure into a root, then remove part of it" {
     install.install = l.packages;
     install.explicit = &.{"git"};
     install.dependency = deps.items;
-    if (!try transact(a, io, install, &t.diags)) {
-        for (t.diags.items.items) |d| std.debug.print("{s}\n", .{d.message});
-        return error.TestUnexpectedResult;
-    }
+    try t.transactOk(install);
     var have = (try localPackages(a, root, dbpath, &t.diags)).?;
     try testing.expectEqual(l.packages.len, have.len);
     var f: facts.Facts = .{ .packages = have };
@@ -401,10 +402,7 @@ test "a package replaces one it conflicts with that the plan removes" {
     var swap = base;
     swap.install = (try t.resolve(&.{"vim"}, &.{})).lock.packages;
     swap.remove = &.{ "neovim", "luajit", "libuv" };
-    if (!try transact(a, testing.io, swap, &t.diags)) {
-        for (t.diags.items.items) |d| std.debug.print("{s}\n", .{d.message});
-        return error.TestUnexpectedResult;
-    }
+    try t.transactOk(swap);
     var f: facts.Facts = .{ .packages = (try localPackages(a, base.target.root, base.target.dbpath, &t.diags)).? };
     f.normalize();
     try testing.expect(f.package("vim") != null);
