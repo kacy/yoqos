@@ -77,7 +77,9 @@ pub const Machine = struct {
         std.Io.Dir.cwd().deleteFile(m.io, notice_path) catch {};
         const records = try readRecords(m.a, m.io, "/var");
         const prefix = "/" ++ generation.roots_dir ++ "/";
-        const n = std.fmt.parseInt(u32, root[prefix.len..], 10) catch return try std.fmt.allocPrint(m.a, "{s} isn't a root os staged", .{root});
+        const not_staged = try std.fmt.allocPrint(m.a, "{s} isn't a root os staged", .{root});
+        if (!std.mem.startsWith(u8, root, prefix)) return not_staged;
+        const n = std.fmt.parseInt(u32, root[prefix.len..], 10) catch return not_staged;
         return m.add(records, n, root, reason, time, config);
     }
 
@@ -370,8 +372,8 @@ pub const Machine = struct {
 
     /// carries the running machine's own state into the root at `subvol`:
     /// its identity, host keys, clock, id ranges, keyring, passwords, and
-    /// the system accounts it lacks.
-    /// a generation holds the system, not these.
+    /// the system accounts it lacks. a generation holds the system, not
+    /// these.
     pub fn carry(m: *const Machine, subvol: []const u8) !?[]const u8 {
         const root = try m.at(&.{subvol});
         var paths: std.ArrayList([]const u8) = .empty;
