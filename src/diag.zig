@@ -209,7 +209,8 @@ pub const table = [_]Entry{
         .explanation = "an aur recipe's .SRCINFO depends on a package that isn't in the arch repositories " ++
             "and isn't in `aur`. that's usually another aur package, and os builds only the aur packages the " ++
             "config names, so add it: `os add --aur <package>`, then `os update` again. os builds them in " ++
-            "order.",
+            "order. when the missing name is a package a recipe splits off, os can't build it yet: from a " ++
+            "split recipe it installs only the package named after the recipe.",
     },
 };
 

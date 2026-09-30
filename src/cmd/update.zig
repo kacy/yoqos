@@ -126,10 +126,8 @@ fn buildAur(ctx: *Context, w: *cli.Work, c: *const config.Config, old: ?*const l
             try ctx.err.print("os: {s}'s recipe has no .SRCINFO at {s}\n", .{ pkg.name, commit[0..@min(12, commit.len)] });
             return null;
         };
-        // the build's paths come from pkgbase, so it has to be the recipe
-        // that was fetched and reviewed.
-        if (!eql(info.pkgbase, pkg.name)) {
-            try ctx.err.print("os: {s}'s recipe says its pkgbase is {s}. os builds a recipe only under its own name.\n", .{ pkg.name, info.pkgbase });
+        if (try aur.nameProblem(a, pkg.name, info)) |problem| {
+            try ctx.err.print("os: {s}\n", .{problem});
             return null;
         }
         try infos.append(a, info);
@@ -155,7 +153,7 @@ fn buildAur(ctx: *Context, w: *cli.Work, c: *const config.Config, old: ?*const l
             try ctx.err.print("os: building {s} failed: {s}\n", .{ info.pkgbase, problem });
             return null;
         }
-        for (info.pkgnames) |name| try out.put(a, name, info.commit);
+        try out.put(a, info.pkgbase, info.commit);
     }
     return out;
 }
@@ -173,7 +171,11 @@ fn checkNeeds(ctx: *Context, w: *cli.Work, recipes: []const aur.SrcInfo, dbs: []
     const unresolvable = try locking.unsatisfied(ctx, w, dbs, names.items) orelse return false;
     const missing = try aur.missingNeeds(a, recipes, unresolvable);
     for (missing) |m| {
-        try w.diags.addHint(.aur_missing, null, "{s} needs {s}, which isn't in the arch repositories or in `aur`", .{ m.by, m.need }, "if it's on the aur, add it: os add --aur {s}", .{m.need});
+        if (m.split_from) |base| {
+            try w.diags.addHint(.aur_missing, null, "{s} needs {s}, which {s}'s recipe splits off", .{ m.by, m.need, base }, "os installs only the package named after a recipe, so it can't build {s} yet", .{m.by});
+        } else {
+            try w.diags.addHint(.aur_missing, null, "{s} needs {s}, which isn't in the arch repositories or in `aur`", .{ m.by, m.need }, "if it's on the aur, add it: os add --aur {s}", .{m.need});
+        }
     }
     return missing.len == 0;
 }
