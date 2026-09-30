@@ -11,6 +11,7 @@ trap '"$vm" stop' EXIT
 # the live system's keyring is made at boot.
 "$vm" ssh "for i in \$(seq 60); do systemctl is-active -q pacman-init.service && exit 0; sleep 2; done; exit 1"
 check "os version | grep -c ." 1
+check "grep -c 'init --new' /etc/motd" 1
 
 # a config for this empty machine, from nothing: os init --new on the live
 # system, plus a way in over ssh for the test.

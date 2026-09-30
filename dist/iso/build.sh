@@ -13,6 +13,9 @@ sed -i -e 's/^iso_name=.*/iso_name="yoq-os"/' \
     -e 's|^iso_publisher=.*|iso_publisher="yoq os"|' \
     -e 's|^iso_application=.*|iso_application="yoq os live medium"|' \
     "$profile/profiledef.sh"
+# the boot menu names yoq os, and the shell greets with what to do next.
+grep -rl 'Arch Linux install medium' "$profile" | xargs -r sed -i 's/Arch Linux install medium/yoq os live medium/'
+cp "$(dirname "$0")/motd" "$profile/airootfs/etc/motd"
 # os itself, runnable by everyone.
 install -Dm755 "$os" "$profile/airootfs/usr/local/bin/os"
 sed -i 's|^file_permissions=(|file_permissions=(\n  ["/usr/local/bin/os"]="0:0:755"|' "$profile/profiledef.sh"
