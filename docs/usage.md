@@ -84,6 +84,14 @@ reading which services are enabled and running. both are already on any arch
 machine. without them, `os` still builds and runs, but it can't see packages
 or services, and it can't resolve a lock.
 
+`zig build test` runs every test, including the fuzz tests in `src/fuzz.zig`,
+which go once over their seeds. to fuzz one for a million inputs (plain
+`--fuzz` runs until you stop it):
+
+```
+zig build test -Dfuzz --fuzz=1M -Dtest-filter="fuzz lock"
+```
+
 ## getting started
 
 on an arch machine, as root:
