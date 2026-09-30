@@ -246,6 +246,46 @@ fn version(ctx: *Context, args: []const [:0]const u8) !u8 {
     return 0;
 }
 
+fn schemaCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    if (args.len > 1) return usageError(ctx, "os schema [<name>]");
+    if (args.len == 0) {
+        const Entry = struct { name: []const u8, what: []const u8 };
+        var list: [schemas.docs.len]Entry = undefined;
+        for (schemas.docs, &list) |d, *e| e.* = .{ .name = d.name, .what = d.what };
+        if (ctx.json) {
+            try output.writeDoc(ctx.out, "yoq.schemas/1", .{ .schemas = &list });
+        } else for (list) |e| try ctx.out.print("{s: <8}{s}\n", .{ e.name, e.what });
+        return 0;
+    }
+    const d = schemas.find(args[0]) orelse return fail(ctx, "there's no schema called {s}. `os schema` lists them.", .{args[0]});
+    try d.write(ctx.out);
+    return 0;
+}
+
+fn explain(ctx: *Context, args: []const [:0]const u8) !u8 {
+    if (args.len > 1) return usageError(ctx, "os explain [code]");
+    if (args.len == 0) {
+        if (ctx.json) {
+            var all: [diag.table.len]diag.EntryJson = undefined;
+            for (diag.table, &all) |e, *j| j.* = diag.entryJson(e);
+            try output.writeDoc(ctx.out, "yoq.explain/1", .{ .codes = all });
+            return 0;
+        }
+        for (diag.table) |e| try ctx.out.print("{s}  {s}\n", .{ e.id, e.title });
+        return 0;
+    }
+    const e = diag.byId(args[0]) orelse {
+        try ctx.err.print("os: no error code '{s}'. `os explain` lists them all.\n", .{args[0]});
+        return 2;
+    };
+    if (ctx.json) {
+        try output.writeDoc(ctx.out, "yoq.explain/1", .{ .codes = [_]diag.EntryJson{diag.entryJson(e)} });
+        return 0;
+    }
+    try ctx.out.print("{s}: {s}\n\n{s}\n", .{ e.id, e.title, e.explanation });
+    return 0;
+}
+
 pub fn usageError(ctx: *Context, text: []const u8) !u8 {
     try ctx.err.print("usage: {s}\n", .{text});
     return 2;
@@ -449,11 +489,7 @@ pub fn approve(ctx: *Context, yes: bool, what: []const u8, question: []const u8)
 /// either is missing. `what` says why, like "uninstall changes the
 /// running machine".
 pub fn needsHost(ctx: *Context, what: []const u8) !bool {
-    if (eql(ctx.root, "/") and std.os.linux.geteuid() == 0) {
-        const busy = lockMachine() orelse return false;
-        try ctx.err.print("os: {s}.\n", .{busy});
-        return true;
-    }
+    if (eql(ctx.root, "/") and std.os.linux.geteuid() == 0) return refused(ctx, lockMachine());
     try ctx.err.print("os: {s}, so it needs root and no --root.\n", .{what});
     return true;
 }
@@ -528,46 +564,6 @@ fn readAnswer(ctx: *Context) !?[]const u8 {
     try ctx.out.flush();
     const line = ctx.in.?.takeDelimiter('\n') catch return null;
     return std.mem.trim(u8, line orelse return null, " \t\r");
-}
-
-fn schemaCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (args.len > 1) return usageError(ctx, "os schema [<name>]");
-    if (args.len == 0) {
-        const Entry = struct { name: []const u8, what: []const u8 };
-        var list: [schemas.docs.len]Entry = undefined;
-        for (schemas.docs, &list) |d, *e| e.* = .{ .name = d.name, .what = d.what };
-        if (ctx.json) {
-            try output.writeDoc(ctx.out, "yoq.schemas/1", .{ .schemas = &list });
-        } else for (list) |e| try ctx.out.print("{s: <8}{s}\n", .{ e.name, e.what });
-        return 0;
-    }
-    const d = schemas.find(args[0]) orelse return fail(ctx, "there's no schema called {s}. `os schema` lists them.", .{args[0]});
-    try d.write(ctx.out);
-    return 0;
-}
-
-fn explain(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (args.len == 0) {
-        if (ctx.json) {
-            var all: [diag.table.len]diag.EntryJson = undefined;
-            for (diag.table, &all) |e, *j| j.* = diag.entryJson(e);
-            try output.writeDoc(ctx.out, "yoq.explain/1", .{ .codes = all });
-            return 0;
-        }
-        for (diag.table) |e| try ctx.out.print("{s}  {s}\n", .{ e.id, e.title });
-        return 0;
-    }
-    if (args.len > 1) return usageError(ctx, "os explain [code]");
-    const e = diag.byId(args[0]) orelse {
-        try ctx.err.print("os: no error code '{s}'. `os explain` lists them all.\n", .{args[0]});
-        return 2;
-    };
-    if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.explain/1", .{ .codes = [_]diag.EntryJson{diag.entryJson(e)} });
-        return 0;
-    }
-    try ctx.out.print("{s}: {s}\n\n{s}\n", .{ e.id, e.title, e.explanation });
-    return 0;
 }
 
 /// runs commands against in-memory files, for tests here and in cmd/.
