@@ -598,22 +598,26 @@ pub const esp_boot_dir = "yoq/boot";
 /// `boot_dir`, on the efi path grub boots from now: its own directory
 /// under EFI/, or the removable path, EFI/BOOT.
 pub fn grubInstall(a: Allocator, io: std.Io, esp: []const u8, boot_dir: []const u8) ![]const []const u8 {
-    var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(a, &.{ "grub-install", "--target=x86_64-efi", try std.fmt.allocPrint(a, "--efi-directory={s}", .{esp}), try std.fmt.allocPrint(a, "--boot-directory={s}", .{boot_dir}) });
-    var dir = std.Io.Dir.cwd().openDir(io, try std.fs.path.join(a, &.{ esp, "EFI" }), .{ .iterate = true }) catch {
-        try argv.append(a, "--removable");
-        return argv.items;
-    };
+    return a.dupe([]const u8, &.{
+        "grub-install",
+        "--target=x86_64-efi",
+        try std.fmt.allocPrint(a, "--efi-directory={s}", .{esp}),
+        try std.fmt.allocPrint(a, "--boot-directory={s}", .{boot_dir}),
+        try grubEfiPath(a, io, esp),
+    });
+}
+
+/// grub-install's argument for the efi path grub boots from on `esp`.
+fn grubEfiPath(a: Allocator, io: std.Io, esp: []const u8) ![]const u8 {
+    var dir = std.Io.Dir.cwd().openDir(io, try std.fs.path.join(a, &.{ esp, "EFI" }), .{ .iterate = true }) catch return "--removable";
     defer dir.close(io);
     var it = dir.iterate();
     while (it.next(io) catch null) |d| {
         if (d.kind != .directory or std.ascii.eqlIgnoreCase(d.name, "BOOT")) continue;
         dir.access(io, try std.fs.path.join(a, &.{ d.name, "grubx64.efi" }), .{}) catch continue;
-        try argv.append(a, try std.fmt.allocPrint(a, "--bootloader-id={s}", .{d.name}));
-        return argv.items;
+        return std.fmt.allocPrint(a, "--bootloader-id={s}", .{d.name});
     }
-    try argv.append(a, "--removable");
-    return argv.items;
+    return "--removable";
 }
 
 /// one of blkid's tags for a device, like its "UUID" or "PARTUUID".
@@ -648,4 +652,23 @@ test "records by number, and dates" {
     try std.testing.expectEqual(1, got[0].n);
     try std.testing.expectEqualStrings("/", got[0].from.?);
     try std.testing.expectEqualStrings("yoq 2 · 2026-09-26 · add fd", try generation.title(a, got[1]));
+}
+
+test "grub-install keeps grub's efi path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const esp = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    const argv = try grubInstall(a, io, esp, "/boot");
+    try std.testing.expectEqualStrings("--boot-directory=/boot", argv[3]);
+    try std.testing.expectEqualStrings("--removable", argv[4]);
+    try tmp.dir.createDirPath(io, "EFI/BOOT");
+    try tmp.dir.writeFile(io, .{ .sub_path = "EFI/BOOT/grubx64.efi", .data = "" });
+    try std.testing.expectEqualStrings("--removable", try grubEfiPath(a, io, esp));
+    try tmp.dir.createDirPath(io, "EFI/arch");
+    try tmp.dir.writeFile(io, .{ .sub_path = "EFI/arch/grubx64.efi", .data = "" });
+    try std.testing.expectEqualStrings("--bootloader-id=arch", try grubEfiPath(a, io, esp));
 }
