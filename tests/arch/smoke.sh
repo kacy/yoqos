@@ -81,7 +81,7 @@ pacman -Q tree
 # a package that needs something several packages provide, with no one to
 # ask which: os lists the choices and fails, and puts the config back.
 # ant needs a java environment, which each jdk provides.
-cp "$cfg" "$dir/before.toml"
+config=$(sha256sum < "$cfg")
 lock=$(sha256sum < "$dir/machine.lock")
 for json in "" --json; do
     rc=0
@@ -93,7 +93,7 @@ for json in "" --json; do
         exit 1
     fi
     if [ -n "$json" ] && ! grep -q "yoq.errors/1" "$dir/out"; then echo "smoke: os --json add ant printed no errors document"; cat "$dir/out"; exit 1; fi
-    cmp -s "$cfg" "$dir/before.toml" || { echo "smoke: os $json add ant left the config changed"; exit 1; }
+    [ "$(sha256sum < "$cfg")" = "$config" ] || { echo "smoke: os $json add ant left the config changed"; exit 1; }
     [ "$(sha256sum < "$dir/machine.lock")" = "$lock" ] || { echo "smoke: os $json add ant changed the lock"; exit 1; }
 done
 
