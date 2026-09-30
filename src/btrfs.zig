@@ -77,18 +77,21 @@ pub fn delete(path: []const u8) Error!void {
 fn isReadOnly(path: []const u8) Error!bool {
     const fd = try open(path);
     defer _ = linux.close(fd);
-    var flags: u64 = 0;
-    try check(linux.ioctl(fd, subvol_getflags, @intFromPtr(&flags)));
-    return flags & subvol_rdonly != 0;
+    return try flagsOf(fd) & subvol_rdonly != 0;
 }
 
 pub fn setReadOnly(path: []const u8, read_only: bool) Error!void {
     const fd = try open(path);
     defer _ = linux.close(fd);
+    const old = try flagsOf(fd);
+    var flags = if (read_only) old | subvol_rdonly else old & ~subvol_rdonly;
+    try check(linux.ioctl(fd, subvol_setflags, @intFromPtr(&flags)));
+}
+
+fn flagsOf(fd: i32) Error!u64 {
     var flags: u64 = 0;
     try check(linux.ioctl(fd, subvol_getflags, @intFromPtr(&flags)));
-    flags = if (read_only) flags | subvol_rdonly else flags & ~subvol_rdonly;
-    try check(linux.ioctl(fd, subvol_setflags, @intFromPtr(&flags)));
+    return flags;
 }
 
 /// whether `path` is a btrfs subvolume's top directory.
@@ -148,6 +151,7 @@ fn check(rc: usize) Error!void {
 // -- tests --
 
 const testing = std.testing;
+const exec = @import("exec.zig");
 
 test "ioctl argument layouts match the kernel's" {
     try testing.expectEqual(4096, @sizeOf(VolArgs));
@@ -173,7 +177,6 @@ const Scratch = struct {
         const base = try std.fmt.allocPrint(a, "/tmp/os-btrfs-{d}", .{std.Io.Timestamp.now(io, .real).toNanoseconds()});
         const s: Scratch = .{ .dir = try std.fmt.allocPrint(a, "{s}/mnt", .{base}), .image = try std.fmt.allocPrint(a, "{s}/image", .{base}) };
         try std.Io.Dir.cwd().createDirPath(io, s.dir);
-        const exec = @import("exec.zig");
         for ([_][]const []const u8{
             &.{ "truncate", "-s", "256M", s.image },
             &.{ "mkfs.btrfs", "-q", s.image },
@@ -188,8 +191,8 @@ const Scratch = struct {
     }
 
     pub fn unmount(s: Scratch, a: std.mem.Allocator) void {
-        _ = @import("exec.zig").run(a, testing.io, &.{ "umount", s.dir }) catch {};
-        _ = @import("exec.zig").run(a, testing.io, &.{ "rm", "-rf", std.fs.path.dirnamePosix(s.dir).? }) catch {};
+        _ = exec.run(a, testing.io, &.{ "umount", s.dir }) catch {};
+        _ = exec.run(a, testing.io, &.{ "rm", "-rf", std.fs.path.dirnamePosix(s.dir).? }) catch {};
     }
 };
 
@@ -200,33 +203,28 @@ test "subvolumes, snapshots, and the read-only flag" {
     const s = try Scratch.mount(a) orelse return error.SkipZigTest;
     defer s.unmount(a);
     const io = testing.io;
-    const path = struct {
-        fn at(al: std.mem.Allocator, dir: []const u8, rel: []const u8) ![]const u8 {
-            return std.fs.path.join(al, &.{ dir, rel });
-        }
-    }.at;
 
-    const head = try path(a, s.dir, "head");
+    const head = try std.fs.path.join(a, &.{ s.dir, "head" });
     try create(head);
     try testing.expect(try isSubvolume(head));
     // a fresh filesystem's top level is a subvolume too.
     try testing.expect(try isSubvolume(s.dir));
     try testing.expectError(error.AlreadyExists, create(head));
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = try path(a, head, "motd"), .data = "one\n" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fs.path.join(a, &.{ head, "motd" }), .data = "one\n" });
 
     // a read-only snapshot keeps what head had.
-    const gen = try path(a, s.dir, "gen-1");
+    const gen = try std.fs.path.join(a, &.{ s.dir, "gen-1" });
     try snapshot(head, gen, true);
     try testing.expect(try isSubvolume(gen));
     try testing.expect(try isReadOnly(gen));
     try testing.expect(!try isReadOnly(head));
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = try path(a, head, "motd"), .data = "two\n" });
-    const kept = try std.Io.Dir.cwd().readFileAlloc(io, try path(a, gen, "motd"), a, .limited(64));
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fs.path.join(a, &.{ head, "motd" }), .data = "two\n" });
+    const kept = try std.Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(a, &.{ gen, "motd" }), a, .limited(64));
     try testing.expectEqualStrings("one\n", kept);
-    if (std.Io.Dir.cwd().writeFile(io, .{ .sub_path = try path(a, gen, "new"), .data = "" })) |_| return error.TestUnexpectedResult else |_| {}
+    if (std.Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fs.path.join(a, &.{ gen, "new" }), .data = "" })) |_| return error.TestUnexpectedResult else |_| {}
 
     // a writable copy of a generation, and the flag flipped both ways.
-    const again = try path(a, s.dir, "head-2");
+    const again = try std.fs.path.join(a, &.{ s.dir, "head-2" });
     try snapshot(gen, again, false);
     try testing.expect(!try isReadOnly(again));
     try setReadOnly(again, true);

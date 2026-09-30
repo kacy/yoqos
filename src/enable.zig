@@ -112,7 +112,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .found = loader,
         .fix = if (b.loader != null) "generations support grub, limine, refind, and systemd-boot." else "no bootloader os knows was found.",
     });
-    // limine and refind keep os's entries in their own config.
+    // every bootloader but grub keeps os's entries beside its own config.
     const own_conf = known != null and known.? != .grub;
     if (own_conf) try checks.append(a, .{
         .what = try std.fmt.allocPrint(a, "{s}'s config", .{loader}),
@@ -183,7 +183,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .what = "make the btrfs top level the default subvolume again",
         .why = try std.fmt.allocPrint(a, "{s} reads each generation's files from the top level. snapper's rollback moved the default to the root it made", .{loader}),
     });
-    // for limine and refind, this step is the switch, so it goes last. a
+    // for all but grub, this step is the switch, so it goes last. a
     // failure before it undoes the steps above.
     try steps.append(a, .{
         .kind = .boot_entry,
@@ -360,7 +360,6 @@ pub const Fstab = struct {
 /// the new root's fstab: a btrfs line for / names no subvolume, /var gets
 /// a line for @var when it moved, and the esp gets one if it had none.
 pub fn rewriteFstab(a: Allocator, text: []const u8, f: Fstab) ![]const u8 {
-    const uuid = f.uuid;
     var out: std.ArrayList(u8) = .empty;
     var root_opts: []const u8 = "rw,relatime";
     var has_esp = false;
@@ -382,8 +381,8 @@ pub fn rewriteFstab(a: Allocator, text: []const u8, f: Fstab) ![]const u8 {
         root_opts = try withoutSubvol(a, opts);
         try out.print(a, "{s} / btrfs {s} 0 0\n", .{ spec, root_opts });
     }
-    if (f.add_var) try out.print(a, "UUID={s} /var btrfs {s},subvol=/{s} 0 0\n", .{ uuid, root_opts, generation.var_subvol });
-    for (f.data) |d| try out.print(a, "UUID={s} /{s} btrfs {s},subvol=/{s} 0 0\n", .{ uuid, d.dir, root_opts, d.subvol });
+    if (f.add_var) try out.print(a, "UUID={s} /var btrfs {s},subvol=/{s} 0 0\n", .{ f.uuid, root_opts, generation.var_subvol });
+    for (f.data) |d| try out.print(a, "UUID={s} /{s} btrfs {s},subvol=/{s} 0 0\n", .{ f.uuid, d.dir, root_opts, d.subvol });
     if (f.bind_config) try out.print(a, "{s} /etc/yoq none bind,x-systemd.requires-mounts-for=/var 0 0\n", .{config_home});
     if (f.esp) |esp| {
         if (!has_esp) try out.print(a, "UUID={s} {s} vfat rw,relatime,fmask=0077,dmask=0077 0 2\n", .{ esp.uuid, esp.point });

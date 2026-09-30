@@ -36,12 +36,31 @@ pub const Entry = struct {
         return if (std.mem.eql(u8, e.subvol, "/")) "/boot" else std.fmt.allocPrint(a, "{s}/boot", .{e.subvol});
     }
 
-    /// `file`'s path from the top of the esp, for an entry with esp_dir.
-    fn onEsp(e: Entry, a: Allocator, file: []const u8) ![]const u8 {
-        const dir = e.esp_dir.?;
+    /// `file`'s path from the top of the esp, or of the root's filesystem
+    /// for an entry without esp_dir.
+    fn path(e: Entry, a: Allocator, file: []const u8) ![]u8 {
+        const dir = e.esp_dir orelse return std.fmt.allocPrint(a, "{s}/{s}", .{ try e.rootDir(a), file });
         return if (dir.len == 0) std.fmt.allocPrint(a, "/{s}", .{file}) else std.fmt.allocPrint(a, "/{s}/{s}", .{ dir, file });
     }
 };
+
+/// the id of generation `n`'s entry, like "gen-2".
+pub fn genId(a: Allocator, n: u32) ![]const u8 {
+    return std.fmt.allocPrint(a, "gen-{d}", .{n});
+}
+
+/// the title of the entry a trial boots, on limine, refind, and
+/// systemd-boot.
+pub const trial_title = "yoq trial boot";
+
+/// the entry a trial boots: the newest generation, with the watchdog on.
+fn trialEntry(a: Allocator, entries: []const Entry) !?Entry {
+    if (entries.len == 0) return null;
+    var t = entries[0];
+    t.title = trial_title;
+    t.args = try std.fmt.allocPrint(a, "{s} yoq.trial", .{t.args});
+    return t;
+}
 
 /// a title every bootloader can show and match: ascii, and without the
 /// characters limine's entry paths and refind's quotes treat specially.
@@ -74,10 +93,11 @@ pub const Grub = struct {
 /// there, since grub can write fat but not btrfs: `yoq_next` boots an
 /// entry once, and `yoq_default`, set while a generation is on trial, is
 /// both the default and what grub falls back to if an entry won't boot.
+/// `yoq_trial_arg` is "yoq.trial" on a trial boot, which starts the
+/// watchdog, and empty otherwise.
 pub fn grub(a: Allocator, c: Grub) ![]const u8 {
-    var out: std.Io.Writer.Allocating = .init(a);
-    const w = &out.writer;
-    w.print(
+    var out: std.ArrayList(u8) = .empty;
+    try out.print(a,
         \\# written by os: one entry per generation. edits here are overwritten.
         \\insmod part_gpt
         \\insmod fat
@@ -100,27 +120,25 @@ pub fn grub(a: Allocator, c: Grub) ![]const u8 {
         \\fi
         \\search --no-floppy --fs-uuid --set=root {s}
         \\
-    , .{ c.timeout, c.default, c.esp_uuid, c.root_uuid }) catch return error.OutOfMemory;
+    , .{ c.timeout, c.default, c.esp_uuid, c.root_uuid });
     for (c.entries) |e| {
         const dir = if (e.esp_dir) |d| (if (d.len == 0) "(${yoq_esp})" else try std.fmt.allocPrint(a, "(${{yoq_esp}})/{s}", .{d})) else try e.rootDir(a);
-        // ${yoq_trial_arg} is "yoq.trial" on a trial boot, which starts
-        // the watchdog; empty otherwise. the newest entry notes that it
-        // was tried, so a fallback after it counts, and an older entry
-        // picked by hand doesn't.
-        w.writeAll("\nmenuentry \"") catch return error.OutOfMemory;
         // a title is a quoted grub string: quotes, backslashes, and $ would
         // end it or expand.
+        try out.appendSlice(a, "\nmenuentry \"");
         for (e.title) |ch| {
-            if (ch == '"' or ch == '\\' or ch == '$') w.writeByte('\\') catch return error.OutOfMemory;
-            w.writeByte(ch) catch return error.OutOfMemory;
+            if (ch == '"' or ch == '\\' or ch == '$') try out.append(a, '\\');
+            try out.append(a, ch);
         }
-        w.print("\" --id {s} {{\n", .{e.id}) catch return error.OutOfMemory;
-        if (std.mem.eql(u8, e.id, "head")) w.writeAll("  if [ \"${yoq_trial_arg}\" ]; then set yoq_tried=1; save_env -f (${yoq_esp})/yoq/grubenv yoq_tried; fi\n") catch return error.OutOfMemory;
-        w.print("  linux {s}/{s} {s} ${{yoq_trial_arg}}\n  initrd", .{ dir, e.kernel, e.args }) catch return error.OutOfMemory;
-        for (e.initrds) |i| w.print(" {s}/{s}", .{ dir, i }) catch return error.OutOfMemory;
-        w.writeAll("\n}\n") catch return error.OutOfMemory;
+        try out.print(a, "\" --id {s} {{\n", .{e.id});
+        // the newest entry notes that it was tried, so a fallback after it
+        // counts, and an older entry picked by hand doesn't.
+        if (std.mem.eql(u8, e.id, "head")) try out.appendSlice(a, "  if [ \"${yoq_trial_arg}\" ]; then set yoq_tried=1; save_env -f (${yoq_esp})/yoq/grubenv yoq_tried; fi\n");
+        try out.print(a, "  linux {s}/{s} {s} ${{yoq_trial_arg}}\n  initrd", .{ dir, e.kernel, e.args });
+        for (e.initrds) |i| try out.print(a, " {s}/{s}", .{ dir, i });
+        try out.appendSlice(a, "\n}\n");
     }
-    return out.written();
+    return out.items;
 }
 
 /// the identifier limine gives an entry at the top of its menu, which
@@ -138,34 +156,30 @@ pub fn limineId(a: Allocator, title: []const u8) ![]const u8 {
 /// the lines around os's part of limine.conf.
 pub const limine_begin = "# yoq: generations, written by os. edits from here to the end line are overwritten.";
 pub const limine_end = "# yoq: end";
-/// the entry a trial boots: the newest generation, with the watchdog on.
-pub const limine_trial = "yoq trial boot";
 
 /// os's part of limine.conf: an entry per generation, newest first, then
 /// the one a trial boots. limine reads only fat, so every entry's files
 /// are on the esp, and its path names the partition holding the config.
 pub fn limine(a: Allocator, entries: []const Entry) ![]const u8 {
-    var out: std.Io.Writer.Allocating = .init(a);
-    const w = &out.writer;
-    w.print("{s}\n", .{limine_begin}) catch return error.OutOfMemory;
-    for (entries) |e| try limineEntry(a, w, try plainTitle(a, e.title), e, e.args);
-    if (entries.len > 0) try limineEntry(a, w, limine_trial, entries[0], try std.fmt.allocPrint(a, "{s} yoq.trial", .{entries[0].args}));
-    w.print("{s}\n", .{limine_end}) catch return error.OutOfMemory;
-    return out.written();
+    var out: std.ArrayList(u8) = .empty;
+    try out.print(a, "{s}\n", .{limine_begin});
+    for (entries) |e| try limineEntry(a, &out, e);
+    if (try trialEntry(a, entries)) |t| try limineEntry(a, &out, t);
+    try out.print(a, "{s}\n", .{limine_end});
+    return out.items;
 }
 
-/// one entry, titled `title`, outside os's section: what `os uninstall`
-/// leaves limine.
-pub fn limineOne(a: Allocator, title: []const u8, e: Entry) ![]const u8 {
-    var out: std.Io.Writer.Allocating = .init(a);
-    try limineEntry(a, &out.writer, title, e, e.args);
-    return out.written();
+/// one entry outside os's section: what `os uninstall` leaves limine.
+pub fn limineOne(a: Allocator, e: Entry) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try limineEntry(a, &out, e);
+    return out.items;
 }
 
-fn limineEntry(a: Allocator, w: *std.Io.Writer, title: []const u8, e: Entry, args: []const u8) !void {
-    w.print("/{s}\n    protocol: linux\n    path: boot():{s}\n", .{ title, try e.onEsp(a, e.kernel) }) catch return error.OutOfMemory;
-    for (e.initrds) |i| w.print("    module_path: boot():{s}\n", .{try e.onEsp(a, i)}) catch return error.OutOfMemory;
-    w.print("    cmdline: {s}\n", .{args}) catch return error.OutOfMemory;
+fn limineEntry(a: Allocator, out: *std.ArrayList(u8), e: Entry) !void {
+    try out.print(a, "/{s}\n    protocol: linux\n    path: boot():{s}\n", .{ try plainTitle(a, e.title), try e.path(a, e.kernel) });
+    for (e.initrds) |i| try out.print(a, "    module_path: boot():{s}\n", .{try e.path(a, i)});
+    try out.print(a, "    cmdline: {s}\n", .{e.args});
 }
 
 /// limine.conf with `section` in place of os's old one, before the first
@@ -227,21 +241,20 @@ pub const sdboot_trial = "yoq-trial.conf";
 pub fn sdboot(a: Allocator, entries: []const Entry) ![]const Named {
     var out: std.ArrayList(Named) = .empty;
     for (entries, 0..) |e, i| {
-        try out.append(a, .{ .name = try sdbootName(a, e.id), .text = try sdbootEntry(a, e.title, "yoq", entries.len - i, e, e.args) });
+        try out.append(a, .{ .name = try sdbootName(a, e.id), .text = try sdbootEntry(a, e, "yoq", entries.len - i) });
     }
-    if (entries.len > 0) {
-        const head = entries[0];
-        try out.append(a, .{ .name = sdboot_trial, .text = try sdbootEntry(a, "yoq trial boot", "yoq-trial", entries.len, head, try std.fmt.allocPrint(a, "{s} yoq.trial", .{head.args})) });
+    if (try trialEntry(a, entries)) |t| {
+        try out.append(a, .{ .name = sdboot_trial, .text = try sdbootEntry(a, t, "yoq-trial", entries.len) });
     }
     return out.items;
 }
 
 /// one entry file, for `os uninstall` too, which leaves one of its own.
-pub fn sdbootEntry(a: Allocator, title: []const u8, sort_key: []const u8, version: usize, e: Entry, args: []const u8) ![]const u8 {
+pub fn sdbootEntry(a: Allocator, e: Entry, sort_key: []const u8, version: usize) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
-    try out.print(a, "# written by os. edits here are overwritten.\ntitle {s}\nsort-key {s}\nversion {d}\nlinux {s}\n", .{ try plainTitle(a, title), sort_key, version, try e.onEsp(a, e.kernel) });
-    for (e.initrds) |i| try out.print(a, "initrd {s}\n", .{try e.onEsp(a, i)});
-    try out.print(a, "options {s}\n", .{args});
+    try out.print(a, "# written by os. edits here are overwritten.\ntitle {s}\nsort-key {s}\nversion {d}\nlinux {s}\n", .{ try plainTitle(a, e.title), sort_key, version, try e.path(a, e.kernel) });
+    for (e.initrds) |i| try out.print(a, "initrd {s}\n", .{try e.path(a, i)});
+    try out.print(a, "options {s}\n", .{e.args});
     return out.items;
 }
 
@@ -253,45 +266,35 @@ pub const Refind = struct {
 };
 
 /// the file refind.conf includes, next to it: an entry per generation,
-/// newest first and the default. refind reads btrfs through its driver,
-/// from the top level, so older roots keep their kernels.
+/// newest first and the default, then the one a trial boots. refind reads
+/// btrfs through its driver, from the top level, so older roots keep their
+/// kernels.
 pub fn refind(a: Allocator, c: Refind) ![]const u8 {
-    var out: std.Io.Writer.Allocating = .init(a);
-    const w = &out.writer;
-    w.writeAll("# written by os: one entry per generation. edits here are overwritten.\n") catch return error.OutOfMemory;
-    var all: std.ArrayList(Entry) = .empty;
-    try all.appendSlice(a, c.entries);
-    // the entry a trial boots: the newest generation, with the watchdog on.
-    if (c.entries.len > 0) {
-        var t = c.entries[0];
-        t.title = refind_trial;
-        t.args = try std.fmt.allocPrint(a, "{s} yoq.trial", .{t.args});
-        try all.append(a, t);
-    }
-    for (all.items) |e| {
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(a, "# written by os: one entry per generation. edits here are overwritten.\n");
+    const all = if (try trialEntry(a, c.entries)) |t| try std.mem.concat(a, Entry, &.{ c.entries, &.{t} }) else c.entries;
+    for (all) |e| {
         const volume = if (e.esp_dir != null) c.esp_part else c.root_part;
-        const kernel = if (e.esp_dir != null) try e.onEsp(a, e.kernel) else try std.fmt.allocPrint(a, "{s}/{s}", .{ try e.rootDir(a), e.kernel });
-        w.print("\nmenuentry \"{s}\" {{\n    volume {s}\n    loader {s}\n    options \"{s}", .{ try plainTitle(a, e.title), volume, kernel, e.args }) catch return error.OutOfMemory;
+        try out.print(a, "\nmenuentry \"{s}\" {{\n    volume {s}\n    loader {s}\n    options \"{s}", .{ try plainTitle(a, e.title), volume, try e.path(a, e.kernel), e.args });
         // the kernel loads its initrds itself, from its own volume; refind's
         // initrd line takes only one.
         for (e.initrds) |i| {
-            const path = if (e.esp_dir != null) try e.onEsp(a, i) else try std.fmt.allocPrint(a, "{s}/{s}", .{ try e.rootDir(a), i });
-            const back = try a.dupe(u8, path);
+            const back = try e.path(a, i);
             std.mem.replaceScalar(u8, back, '/', '\\');
-            w.print(" initrd={s}", .{back}) catch return error.OutOfMemory;
+            try out.print(a, " initrd={s}", .{back});
         }
-        w.writeAll("\"\n}\n") catch return error.OutOfMemory;
+        try out.appendSlice(a, "\"\n}\n");
     }
-    if (c.entries.len > 0) w.print("\ndefault_selection \"{s}\"\n", .{try plainTitle(a, c.entries[0].title)}) catch return error.OutOfMemory;
-    return out.written();
+    if (c.entries.len > 0) try out.print(a, "\ndefault_selection \"{s}\"\n", .{try plainTitle(a, c.entries[0].title)});
+    return out.items;
 }
 
-/// the line in refind.conf that reads os's file.
-pub const refind_include = "include yoq.conf";
+/// os's refind file, beside refind.conf, and the line there that reads it.
+pub const refind_file = "yoq.conf";
+pub const refind_include = "include " ++ refind_file;
 
-/// the entry a trial boots on refind, and the directory under EFI/ on the
-/// esp where a copy of refind boots it by default.
-pub const refind_trial = "yoq trial boot";
+/// the directory under EFI/ on the esp where a copy of refind boots the
+/// trial entry by default.
 pub const refind_trial_dir = "yoq-trial";
 
 /// os's refind file, from `text`, with `title` as the default.
@@ -316,14 +319,13 @@ pub fn refindHead(text: []const u8) ?[]const u8 {
 /// the refind.conf a trial's copy of refind reads: refind.conf and os's
 /// entries in one file, with the trial entry as the default.
 pub fn refindTrialConf(a: Allocator, conf: []const u8, yoq: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(a, "{s}\n{s}", .{ try unspliceRefind(a, conf), try refindDefault(a, yoq, refind_trial) });
+    return std.fmt.allocPrint(a, "{s}\n{s}", .{ try unspliceRefind(a, conf), try refindDefault(a, yoq, trial_title) });
 }
 
 /// refind.conf with os's include as its last line, so the default os
 /// sets outranks any earlier one.
 pub fn spliceRefind(a: Allocator, conf: []const u8) ![]const u8 {
-    const out = try unspliceRefind(a, conf);
-    return std.fmt.allocPrint(a, "{s}{s}\n", .{ out, refind_include });
+    return std.fmt.allocPrint(a, "{s}{s}\n", .{ try unspliceRefind(a, conf), refind_include });
 }
 
 /// refind.conf without os's include.
@@ -408,7 +410,7 @@ test "titles every bootloader can take" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     try testing.expectEqualStrings("yoq-2---2026-09-26---add-fd", try limineId(arena.allocator(), "yoq 2 · 2026-09-26 · add fd"));
-    try testing.expectEqualStrings("yoq-trial-boot", try limineId(arena.allocator(), limine_trial));
+    try testing.expectEqualStrings("yoq-trial-boot", try limineId(arena.allocator(), trial_title));
     try testing.expectEqualStrings("yoq 2 - 2026-09-26 - add fd", try plainTitle(arena.allocator(), "yoq 2 · 2026-09-26 · add fd"));
     try testing.expectEqualStrings("a-b-c-d-e", try plainTitle(arena.allocator(), "a/b\\c#d\"e"));
 }

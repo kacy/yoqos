@@ -165,14 +165,12 @@ pub fn mergeShadow(a: Allocator, current: []const u8, target: []const u8) ![]con
             continue;
         };
         // name:hash:lastchange:rest
-        var theirs = std.mem.splitScalar(u8, line, ':');
         var ours = std.mem.splitScalar(u8, now, ':');
-        _ = theirs.next();
         _ = ours.next();
         const hash = ours.next() orelse "";
         const changed = ours.next() orelse "";
-        _ = theirs.next();
-        _ = theirs.next();
+        var theirs = std.mem.splitScalar(u8, line, ':');
+        for (0..3) |_| _ = theirs.next();
         try out.print(a, "{s}:{s}:{s}:{s}\n", .{ name, hash, changed, theirs.rest() });
     }
     return out.items;

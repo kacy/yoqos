@@ -169,7 +169,7 @@ const Uninstaller = struct {
                 const conf = std.Io.Dir.cwd().readFileAlloc(u.ctx.io, conf_path, u.a, .limited(1 << 20)) catch return "can't read limine.conf";
                 // an earlier run may have replaced os's section already.
                 if (std.mem.indexOf(u8, conf, menu.limine_begin) != null) {
-                    const text = try menu.spliceLimine(u.a, conf, try menu.limineOne(u.a, "Arch Linux", try u.plainEntry()));
+                    const text = try menu.spliceLimine(u.a, conf, try menu.limineOne(u.a, try u.plainEntry()));
                     rootfs.writeAtomic(u.ctx.io, conf_path, text, null) catch return "can't write limine.conf";
                 }
                 // no one-shot or default left behind: the first entry boots.
@@ -178,7 +178,7 @@ const Uninstaller = struct {
             },
             .@"systemd-boot" => {
                 const dir = try m.sdbootEntries();
-                const text = try menu.sdbootEntry(u.a, "Arch Linux", "arch", 1, try u.plainEntry(), (try u.plainEntry()).args);
+                const text = try menu.sdbootEntry(u.a, try u.plainEntry(), "arch", 1);
                 rootfs.writeAtomic(u.ctx.io, try std.fs.path.join(u.a, &.{ dir, "arch-linux.conf" }), text, null) catch return "can't write arch-linux.conf";
                 if (try exec.runAll(u.a, u.ctx.io, &.{
                     &.{ "bootctl", "set-oneshot", "" },
