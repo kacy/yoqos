@@ -25,6 +25,7 @@ check "/usr/local/bin/os install /root/machines --disk /dev/vda1 --update 2>&1 |
 check "/usr/local/bin/os install /root/machines --disk /dev/vdb --update </dev/null >/dev/null 2>&1; echo \$?; lsblk -nro NAME /dev/vdb | wc -l" "2
 1"
 "$vm" ssh "/usr/local/bin/os install /root/machines --disk /dev/vdb --update --yes" | tail -n 20
+serial_console /dev/vdb1
 
 "$vm" start-installed
 check "findmnt -no FSROOT /" /@roots/1
