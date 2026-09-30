@@ -325,9 +325,19 @@ fn pathText(a: Allocator, path: []const []const u8) ![]u8 {
     return out.items;
 }
 
+/// where the last key written in `t`'s own place ends. sub-tables with a
+/// header of their own, like `[remove.x]` below `remove.aur = []`, sit
+/// elsewhere in the file, so they don't count.
 fn lastEnd(t: *const toml.Table) usize {
     var end: usize = 0;
-    for (t.entries.items) |e| end = @max(end, e.value.span.end);
+    for (t.entries.items) |e| {
+        switch (e.value.data) {
+            .table => |sub| if (sub.origin == .header or sub.origin == .implicit) continue,
+            .array => |arr| if (arr.of_tables) continue,
+            else => {},
+        }
+        end = @max(end, e.value.span.end);
+    }
     return end;
 }
 
@@ -493,6 +503,12 @@ fn expectFile(got: Error![]const u8, want: []const u8) !void {
     var info: toml.ErrorInfo = .{};
     var doc = try toml.parse(testing.allocator, out, &info);
     doc.deinit();
+}
+
+test "a dotted key goes next to its siblings, not under a later header" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    try expectEdit(addToList(arena.allocator(), "remove.aur = []\n[system]\n[remove.x]\n", &.{"remove"}, "packages", "git"), "remove.aur = []\nremove.packages = [\"git\"]\n[system]\n[remove.x]\n");
 }
 
 test "a key that isn't a table isn't given a section" {
