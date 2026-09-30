@@ -42,6 +42,7 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         } else return cli.usageError(ctx, usage_text);
     }
     if (!alpm.available) return cli.fail(ctx, "this build can't resolve packages. build with -Dalpm.", .{});
+    if (try cli.refused(ctx, cli.lockForEdit(ctx))) return 1;
 
     var w: cli.Work = .init(ctx);
     defer w.deinit();
