@@ -51,7 +51,7 @@ each release on github has an arch package and a tarball, with a
 `sha256sums.txt` beside them:
 
 ```
-sudo pacman -U yoq-os-0.1.1-1-x86_64.pkg.tar.zst
+sudo pacman -U yoq-os-0.1.2-1-x86_64.pkg.tar.zst
 ```
 
 the package holds the `os` command, a pacman hook that records direct
@@ -65,7 +65,7 @@ repository's `main` branch, or `yoq-os` from a release tag with
 ```
 cd dist
 makepkg -si                              # yoq-os-git, from main
-YOQ_VERSION=0.1.1 makepkg -si            # yoq-os 0.1.1, from v0.1.1
+YOQ_VERSION=0.1.2 makepkg -si            # yoq-os 0.1.2, from v0.1.2
 YOQ_SOURCE=file://$PWD/.. makepkg -si    # this checkout
 ```
 
@@ -505,7 +505,7 @@ it stopped.
    drive is erased; `lsblk` says which one it is.
 
    ```
-   sudo dd if=yoq-os-0.1.1-x86_64.iso of=/dev/sdX bs=4M status=progress oflag=sync
+   sudo dd if=yoq-os-0.1.2-x86_64.iso of=/dev/sdX bs=4M status=progress oflag=sync
    ```
 
 2. boot the new machine from the drive, in uefi mode. its boot menu says

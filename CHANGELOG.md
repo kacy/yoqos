@@ -1,6 +1,14 @@
 # changelog
 
-## unreleased
+## 0.1.2
+
+a new machine is easier to set up: `os init --new` writes a config to
+start from, the live iso shows the install steps, and an older lock
+installs from the arch linux archive. saved plans and json schemas help
+with scripting. there's also a batch of security and reliability fixes
+from a review of everything that runs as root.
+
+### new
 
 - `os init --new` writes a config for a machine with nothing on it yet,
   from a few questions and the hardware the live system sees: a kernel,
@@ -24,6 +32,8 @@
   and `os install` no longer needs `--update` for an older lock.
 - `os status` lists what changed on the running system after a staged
   generation was built, since those changes stay behind at the reboot.
+
+### fixes
 
 - `os edit` applies the config after saving it. it had been stopping after
   the commit.
