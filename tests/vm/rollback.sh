@@ -62,6 +62,7 @@ check "/usr/local/bin/os enable-rollback" "generations are on: this machine runs
 "$vm" ssh "/usr/local/bin/os add --yes tree" | tail -n 3
 check "ls /var/lib/yoq/generations | tr '\\n' ' '" "1.json 2.json "
 menu_generations 2
+check "/usr/local/bin/os events | grep -c '\"kind\":\"generation\",\"generation\":2,'" 1
 # what changed between them, and a doctor that finds the menu in place.
 check "/usr/local/bin/os diff 1 2 | grep -c '^  + tree '" 1
 check "/usr/local/bin/os doctor | grep -c '^  ok  boot menu'" 1
@@ -91,6 +92,7 @@ check "pacman -Q tree >/dev/null && echo tree" tree
 "$vm" ssh "echo root:carried-over | chpasswd"
 "$vm" ssh "echo kept > /root/after-2 && mkdir -p /home/someone && echo kept > /home/someone/after-2"
 "$vm" ssh "/usr/local/bin/os rollback --yes"
+check "/usr/local/bin/os events | grep -c '\"kind\":\"rollback\",\"generation\":1}'" 1
 # and one changed after the rollback, before the reboot, is carried at
 # shutdown.
 "$vm" ssh "echo root:changed-at-the-last-minute | chpasswd"

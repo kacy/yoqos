@@ -143,8 +143,18 @@ install -Dm755 "$os" /usr/bin/os
 install -Dm644 dist/yoq-drift.hook /usr/share/libalpm/hooks/yoq-drift.hook
 pacman -S --noconfirm --noprogressbar htop >/dev/null
 status_says "touched with pacman since the last apply: htop"
+"$os" --config "$cfg" --json plan > "$dir/drift-plan.json"
+hash=$(sed -n 's/^  "hash": "\(.*\)",$/\1/p' "$dir/drift-plan.json")
 "$os" --config "$cfg" apply --yes
 if status_says "touched with pacman"; then echo "drift survived an apply"; exit 1; fi
+
+# events: the pacman run, the apply with its plan's hash, and the config
+# commits, one json document a line.
+"$os" events > "$dir/events"
+grep '"kind":"pacman"' "$dir/events" | grep -q '"htop"' || { echo "smoke: no pacman event for htop"; cat "$dir/events"; exit 1; }
+grep '"kind":"apply"' "$dir/events" | tail -n 1 | grep -q "\"step\":\"done\",\"plan\":\"$hash\"" || { echo "smoke: the last apply event isn't plan $hash"; cat "$dir/events"; exit 1; }
+grep -q '"kind":"commit"' "$dir/events" || { echo "smoke: no commit events"; exit 1; }
+if grep -v '^{"schema":"yoq.event/1",' "$dir/events"; then echo "smoke: a line of os events isn't an event"; exit 1; fi
 rm /usr/share/libalpm/hooks/yoq-drift.hook
 
 # a config that leaves out base doesn't get to remove it.
