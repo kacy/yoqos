@@ -109,8 +109,7 @@ pub const Machine = struct {
     /// the next generation, from the root at `root`: its read-only record,
     /// the record file, and the menu with `root` at the top.
     fn add(m: *const Machine, records: []const generation.Record, n: u32, root: []const u8, reason: []const u8, time: i64, config: ?generation.Config) !?[]const u8 {
-        const dest = try m.at(&.{ generation.gens_dir, try std.fmt.allocPrint(m.a, "{d}", .{n}) });
-        btrfs.snapshot(try m.at(&.{root}), dest, true) catch |e| return try std.fmt.allocPrint(m.a, "can't snapshot {s}: {s}", .{ root, @errorName(e) });
+        btrfs.snapshot(try m.at(&.{root}), try m.numbered(generation.gens_dir, n), true) catch |e| return try std.fmt.allocPrint(m.a, "can't snapshot {s}: {s}", .{ root, @errorName(e) });
         const rec: generation.Record = .{
             .n = n,
             .time = time,
@@ -135,34 +134,32 @@ pub const Machine = struct {
         // a pending trial falls back to this one, so it stays too.
         const pending = if (trial.Store.of(m.a, m.io, m.boot)) |s| try s.current() else null;
         const fallback = if (pending) |t| t.fallback else 0;
-        var kept: std.ArrayList(generation.Record) = .empty;
+        // the roots still in use: the running one, and every kept one's.
         var roots: std.ArrayList([]const u8) = .empty;
         try roots.append(m.a, running[1..]);
+        var old: std.ArrayList(generation.Record) = .empty;
         for (records) |r| {
-            if (!generation.keeps(r, records, keep) and r.n != fallback) continue;
-            try kept.append(m.a, r);
-            try roots.append(m.a, r.root);
+            if (generation.keeps(r, records, keep) or r.n == fallback) {
+                try roots.append(m.a, r.root);
+            } else try old.append(m.a, r);
         }
-        if (kept.items.len == records.len) return null;
+        if (old.items.len == 0) return null;
         const head = try std.fmt.allocPrint(m.a, "/{s}", .{records[records.len - 1].root});
-        const failed = try m.dropOld(records, keep, fallback, running, &roots, removed);
+        const failed = try m.dropOld(old.items, running, &roots, removed);
         // the menu follows what's left, even after a failure halfway.
         const left = try readRecords(m.a, m.io, "/var");
         if (try m.writeMenu(head, left)) |w| return failed orelse w;
         return failed;
     }
 
-    fn dropOld(m: *const Machine, records: []const generation.Record, keep: usize, fallback: u32, running: []const u8, roots: *std.ArrayList([]const u8), removed: *std.ArrayList(u32)) !?[]const u8 {
-        for (records) |r| {
-            if (generation.keeps(r, records, keep) or r.n == fallback) continue;
+    fn dropOld(m: *const Machine, old: []const generation.Record, running: []const u8, roots: *std.ArrayList([]const u8), removed: *std.ArrayList(u32)) !?[]const u8 {
+        for (old) |r| {
             if (try m.forget(r.n)) |w| return w;
             const copy = try generation.bootCopy(m.a, r.n);
             if (!std.mem.eql(u8, copy, running)) {
                 if (try m.drop(try m.at(&.{copy}))) |w| return w;
             }
-            var used = false;
-            for (roots.items) |root| used = used or std.mem.eql(u8, root, r.root);
-            if (!used and std.mem.startsWith(u8, r.root, generation.roots_dir ++ "/")) {
+            if (!lists.contains(roots.items, r.root) and std.mem.startsWith(u8, r.root, generation.roots_dir ++ "/")) {
                 if (try m.drop(try m.at(&.{r.root}))) |w| return w;
                 // several removed generations can share a root; drop it once.
                 try roots.append(m.a, r.root);
@@ -177,17 +174,21 @@ pub const Machine = struct {
     pub fn free(m: *const Machine, records: []const generation.Record) !u32 {
         var n = generation.next(records);
         while (true) : (n += 1) {
-            const name = try std.fmt.allocPrint(m.a, "{d}", .{n});
-            if (!rootfs.pathExists(m.io, try m.at(&.{ generation.gens_dir, name })) and
-                !rootfs.pathExists(m.io, try m.at(&.{ generation.roots_dir, name }))) return n;
+            if (!rootfs.pathExists(m.io, try m.numbered(generation.gens_dir, n)) and
+                !rootfs.pathExists(m.io, try m.numbered(generation.roots_dir, n))) return n;
         }
+    }
+
+    /// generation `n`'s subvolume in `dir`, like @gens/3.
+    fn numbered(m: *const Machine, dir: []const u8, n: u32) ![]const u8 {
+        return m.at(&.{ dir, try std.fmt.allocPrint(m.a, "{d}", .{n}) });
     }
 
     /// removes generation `n`'s record, then its read-only snapshot, so
     /// a failure between the two leaves no record without a snapshot.
     fn forget(m: *const Machine, n: u32) !?[]const u8 {
         std.Io.Dir.cwd().deleteFile(m.io, try recordPath(m.a, "/var", n)) catch {};
-        return m.drop(try m.at(&.{ generation.gens_dir, try std.fmt.allocPrint(m.a, "{d}", .{n}) }));
+        return m.drop(try m.numbered(generation.gens_dir, n));
     }
 
     /// deletes a subvolume if it's there, read-only or not.
@@ -202,14 +203,14 @@ pub const Machine = struct {
     /// generation, then every older one, from a fresh writable copy of its
     /// record, then the system from before generations.
     pub fn writeMenu(m: *const Machine, head: []const u8, records: []const generation.Record) !?[]const u8 {
+        if (records.len == 0) return "no generations to put in the menu";
         const cmdline = m.cmdline orelse try rootfs.readProc(m.a, m.io, "/proc/cmdline");
         var entries: std.ArrayList(menu.Entry) = .empty;
-        if (records.len == 0) return "no generations to put in the menu";
         // records come sorted by number.
         const latest = records[records.len - 1];
-        var newest_entry = try m.entry("head", try generation.title(m.a, latest), head, cmdline);
-        if (m.headOnEsp(head)) newest_entry.esp_dir = "";
-        try entries.append(m.a, newest_entry);
+        var newest = try m.entry("head", try generation.title(m.a, latest), head, cmdline);
+        if (m.headOnEsp(head)) newest.esp_dir = "";
+        try entries.append(m.a, newest);
         var i = records.len;
         while (i > 0) {
             i -= 1;
@@ -217,7 +218,7 @@ pub const Machine = struct {
             if (r.n == latest.n) continue;
             const copy = try generation.bootCopy(m.a, r.n);
             if (try m.freshCopy(r.n, copy)) |w| return w;
-            try entries.append(m.a, try m.entry(try std.fmt.allocPrint(m.a, "gen-{d}", .{r.n}), try generation.title(m.a, r), copy, cmdline));
+            try entries.append(m.a, try m.entry(try menu.genId(m.a, r.n), try generation.title(m.a, r), copy, cmdline));
         }
         for (records) |r| {
             const from = r.from orelse continue;
@@ -232,8 +233,7 @@ pub const Machine = struct {
     }
 
     fn write(m: *const Machine, path: []const u8, text: []const u8) !?[]const u8 {
-        rootfs.writeAtomic(m.io, path, text, null) catch return try std.fmt.allocPrint(m.a, "can't write {s}", .{path});
-        return null;
+        return writeFile(m.a, m.io, path, text);
     }
 
     /// the loader's own config, which os adds its entries to.
@@ -244,30 +244,38 @@ pub const Machine = struct {
 
     /// limine and systemd-boot read only fat, so entries whose files are
     /// in a root's /boot get copies on the esp, named by content so
-    /// generations share them. `write` puts the menu in place; then copies
+    /// generations share them. `put` puts the menu in place; then copies
     /// no entry uses any more go.
     fn writeOnEsp(m: *const Machine, entries: []menu.Entry, comptime put: fn (*const Machine, []menu.Entry) anyerror!?[]const u8) !?[]const u8 {
         const dir = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir });
         if (try m.run(&.{ "mkdir", "-p", dir })) |w| return w;
         var used: std.ArrayList([]const u8) = .empty;
-        var why: []const u8 = "";
         for (entries) |*e| {
             if (e.esp_dir != null) continue;
             const from = try m.at(&.{ e.subvol, "boot" });
-            e.kernel = try m.espCopy(from, e.kernel, &used, &why) orelse return why;
-            const initrds = try m.a.alloc([]const u8, e.initrds.len);
-            for (e.initrds, initrds) |i, *out| out.* = try m.espCopy(from, i, &used, &why) orelse return why;
+            if (try m.espCopy(from, &e.kernel, &used)) |w| return w;
+            const initrds = try m.a.dupe([]const u8, e.initrds);
+            for (initrds) |*i| {
+                if (try m.espCopy(from, i, &used)) |w| return w;
+            }
             e.initrds = initrds;
             e.esp_dir = esp_boot_dir;
         }
         if (try put(m, entries)) |w| return w;
-        var d = std.Io.Dir.cwd().openDir(m.io, dir, .{ .iterate = true }) catch return null;
+        m.removeUnused(dir, used.items, "", "");
+        return null;
+    }
+
+    /// deletes the files in `dir` named `prefix`*`suffix` that aren't in
+    /// `used`.
+    fn removeUnused(m: *const Machine, dir: []const u8, used: []const []const u8, prefix: []const u8, suffix: []const u8) void {
+        var d = std.Io.Dir.cwd().openDir(m.io, dir, .{ .iterate = true }) catch return;
         defer d.close(m.io);
         var it = d.iterate();
         while (it.next(m.io) catch null) |f| {
-            if (!lists.contains(used.items, f.name)) d.deleteFile(m.io, f.name) catch {};
+            if (!std.mem.startsWith(u8, f.name, prefix) or !std.mem.endsWith(u8, f.name, suffix)) continue;
+            if (!lists.contains(used, f.name)) d.deleteFile(m.io, f.name) catch {};
         }
-        return null;
     }
 
     fn writeLimine(m: *const Machine, entries: []menu.Entry) anyerror!?[]const u8 {
@@ -281,16 +289,12 @@ pub const Machine = struct {
         const dir = try m.sdbootEntries();
         if (try m.run(&.{ "mkdir", "-p", dir })) |w| return w;
         const files = try menu.sdboot(m.a, entries);
+        var names: std.ArrayList([]const u8) = .empty;
         for (files) |f| {
             if (try m.write(try std.fs.path.join(m.a, &.{ dir, f.name }), f.text)) |w| return w;
+            try names.append(m.a, f.name);
         }
-        var d = std.Io.Dir.cwd().openDir(m.io, dir, .{ .iterate = true }) catch return null;
-        defer d.close(m.io);
-        var it = d.iterate();
-        while (it.next(m.io) catch null) |f| {
-            if (!std.mem.startsWith(u8, f.name, "yoq-") or !std.mem.endsWith(u8, f.name, ".conf")) continue;
-            if (lists.find(files, "name", f.name) == null) d.deleteFile(m.io, f.name) catch {};
-        }
+        m.removeUnused(dir, names.items, "yoq-", ".conf");
         return null;
     }
 
@@ -300,30 +304,24 @@ pub const Machine = struct {
         return std.fs.path.join(m.a, &.{ std.fs.path.dirnamePosix(conf).?, "entries" });
     }
 
-    /// copies `name` from `from` into the esp's boot directory, as
-    /// "<hash>-<name>", unless it's there already, and returns that name.
-    fn espCopy(m: *const Machine, from: []const u8, name: []const u8, used: *std.ArrayList([]const u8), why: *[]const u8) !?[]const u8 {
-        const src = try std.fs.path.join(m.a, &.{ from, name });
+    /// copies the file `name` from `from` into the esp's boot directory,
+    /// as "<hash>-<name>", unless it's there already, and makes `name`
+    /// that.
+    fn espCopy(m: *const Machine, from: []const u8, name: *[]const u8, used: *std.ArrayList([]const u8)) !?[]const u8 {
+        const src = try std.fs.path.join(m.a, &.{ from, name.* });
         const sum = switch (try exec.output(m.a, m.io, &.{ "sha256sum", src })) {
             .ok => |t| t,
-            .failed => |w| {
-                why.* = w;
-                return null;
-            },
+            .failed => |w| return w,
         };
-        if (sum.len < 16) {
-            why.* = try std.fmt.allocPrint(m.a, "can't hash {s}", .{src});
-            return null;
-        }
-        const copy = try std.fmt.allocPrint(m.a, "{s}-{s}", .{ sum[0..16], name });
+        if (sum.len < 16) return try std.fmt.allocPrint(m.a, "can't hash {s}", .{src});
+        const copy = try std.fmt.allocPrint(m.a, "{s}-{s}", .{ sum[0..16], name.* });
         try used.append(m.a, copy);
         const dest = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir, copy });
-        if (rootfs.pathExists(m.io, dest)) return copy;
-        if (try m.replaceFile(src, dest)) |w| {
-            why.* = w;
-            return null;
+        if (!rootfs.pathExists(m.io, dest)) {
+            if (try m.replaceFile(src, dest)) |w| return w;
         }
-        return copy;
+        name.* = copy;
+        return null;
     }
 
     /// copies `src` beside `dest` and renames it into place, so `dest`
@@ -353,12 +351,9 @@ pub const Machine = struct {
         // a failed trial falls back to.
         var file = text;
         if (trial.Store.of(m.a, m.io, m.boot)) |store| if (try store.current()) |t| {
-            const id = try std.fmt.allocPrint(m.a, "gen-{d}", .{t.fallback});
-            for (entries) |e| {
-                if (std.mem.eql(u8, e.id, id)) file = try menu.refindDefault(m.a, text, e.title);
-            }
+            if (lists.find(entries, "id", try menu.genId(m.a, t.fallback))) |e| file = try menu.refindDefault(m.a, text, e.title);
         };
-        if (try m.write(try std.fs.path.join(m.a, &.{ dir, "yoq.conf" }), file)) |w| return w;
+        if (try m.write(try std.fs.path.join(m.a, &.{ dir, menu.refind_file }), file)) |w| return w;
         return m.write(m.boot.loader_conf.?, try menu.spliceRefind(m.a, conf));
     }
 
@@ -369,8 +364,7 @@ pub const Machine = struct {
         if (std.mem.eql(u8, m.boot.root_subvol.?, copy)) return null;
         const path = try m.at(&.{copy});
         if (try m.drop(path)) |w| return w;
-        const saved = try m.at(&.{ generation.gens_dir, try std.fmt.allocPrint(m.a, "{d}", .{n}) });
-        btrfs.snapshot(saved, path, false) catch |e| return try std.fmt.allocPrint(m.a, "can't copy generation {d}: {s}", .{ n, @errorName(e) });
+        btrfs.snapshot(try m.numbered(generation.gens_dir, n), path, false) catch |e| return try std.fmt.allocPrint(m.a, "can't copy generation {d}: {s}", .{ n, @errorName(e) });
         return m.carry(copy);
     }
 
@@ -417,10 +411,6 @@ pub const Machine = struct {
         return null;
     }
 
-    /// whether /boot is the esp, as archinstall sets it up. kernels then
-    /// live outside every root, so each root keeps copies of its own in
-    /// its /boot directory, under the mount, where grub and refind read
-    /// them, and limine copies them from.
     /// whether the newest entry, for the root at `head`, boots the kernel
     /// on the esp: when /boot is the esp and `head` is the root running.
     /// a root not booted yet, like a staged one, keeps its own until a
@@ -429,6 +419,10 @@ pub const Machine = struct {
         return m.bootOnEsp() and std.mem.eql(u8, head, m.boot.root_subvol orelse "");
     }
 
+    /// whether /boot is the esp, as archinstall sets it up. kernels then
+    /// live outside every root, so each root keeps copies of its own in
+    /// its /boot directory, under the mount, where grub and refind read
+    /// them, and limine copies them from.
     pub fn bootOnEsp(m: *const Machine) bool {
         return m.esp_is_boot orelse std.mem.eql(u8, m.boot.esp orelse "", "/boot");
     }
@@ -549,8 +543,12 @@ pub fn writeRecord(a: Allocator, io: std.Io, var_dir: []const u8, r: generation.
     var json: std.Io.Writer.Allocating = .init(a);
     try std.json.Stringify.value(r, .{}, &json.writer);
     try json.writer.writeByte('\n');
-    const path = try recordPath(a, var_dir, r.n);
-    rootfs.writeAtomic(io, path, json.written(), null) catch return try std.fmt.allocPrint(a, "can't write {s}", .{path});
+    return writeFile(a, io, try recordPath(a, var_dir, r.n), json.written());
+}
+
+/// writes `text` to `path` whole, or says it couldn't.
+fn writeFile(a: Allocator, io: std.Io, path: []const u8, text: []const u8) !?[]const u8 {
+    rootfs.writeAtomic(io, path, text, null) catch return try std.fmt.allocPrint(a, "can't write {s}", .{path});
     return null;
 }
 
@@ -563,9 +561,8 @@ pub fn recordPath(a: Allocator, var_dir: []const u8, n: u32) ![]const u8 {
 pub fn writeUnits(a: Allocator, io: std.Io, root: []const u8, os_path: []const u8) !?[]const u8 {
     const dir = try std.fs.path.join(a, &.{ root, "etc/systemd/system" });
     for (try enable.units(a, os_path)) |u| {
-        const path = try std.fs.path.join(a, &.{ dir, u.name });
         const text = try std.fmt.allocPrint(a, "# written by os.\n{s}", .{u.text});
-        rootfs.writeAtomic(io, path, text, null) catch return try std.fmt.allocPrint(a, "can't write {s}", .{path});
+        if (try writeFile(a, io, try std.fs.path.join(a, &.{ dir, u.name }), text)) |w| return w;
         const link = try u.wantsLink(a) orelse continue;
         const at = try std.fs.path.join(a, &.{ dir, link });
         if (try exec.runAll(a, io, &.{
