@@ -24,8 +24,11 @@ pub const Diff = struct {
     changed: []const Changed,
 };
 
-pub fn diffCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (args.len < 1 or args.len > 2) return cli.usageError(ctx, usage_text);
+pub fn diffCmd(ctx: *Context, all: []const [:0]const u8) !u8 {
+    var buf: [2][]const u8 = undefined;
+    var it: cli.ArgIter = .{ .args = all };
+    const args = it.names(&buf) orelse &.{};
+    if (args.len < 1) return cli.usageError(ctx, usage_text);
     const from_n = std.fmt.parseInt(u32, args[0], 10) catch return cli.usageError(ctx, usage_text);
     var w: cli.Work = .init(ctx);
     defer w.deinit();

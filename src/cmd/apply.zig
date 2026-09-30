@@ -31,11 +31,13 @@ pub fn applyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const usage_text = "os apply [<saved plan>] [--yes]";
     var yes = false;
     var saved: ?[]const u8 = null;
-    for (args) |arg| {
-        if (cli.isYes(arg)) {
-            yes = true;
-        } else if (saved == null and arg.len > 0 and arg[0] != '-') {
+    var it: cli.ArgIter = .{ .args = args };
+    while (it.next()) |arg| {
+        if (!it.isFlag(arg)) {
+            if (saved != null or arg.len == 0) return cli.usageError(ctx, usage_text);
             saved = arg;
+        } else if (cli.isYes(arg)) {
+            yes = true;
         } else return cli.usageError(ctx, usage_text);
     }
     var w: cli.Work = .init(ctx);

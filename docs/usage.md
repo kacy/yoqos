@@ -1030,6 +1030,9 @@ global flags work before or after the command, as `--config path` or
 | `--root <dir>` | the machine's files live under `dir`, like a mounted install |
 | `--facts <file>` | read the machine from a facts file instead of looking at it |
 
+everything after `--` is a name, not a flag, even when it starts with `-`:
+`os why -- -x`. global flags after `--` don't count either.
+
 ## trying it without an arch machine
 
 `os facts --json` saves what `os` sees on a machine, and `--facts` reads that

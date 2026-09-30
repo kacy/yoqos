@@ -38,14 +38,13 @@ fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
     var aur = false;
     var names: std.ArrayList([]const u8) = .empty;
     defer names.deinit(ctx.gpa);
-    for (args) |arg| {
-        if ((op == .add or op == .remove) and cli.eql(arg, "--aur")) {
+    var it: cli.ArgIter = .{ .args = args };
+    while (it.next()) |arg| {
+        if (!it.isFlag(arg)) {
+            try names.append(ctx.gpa, arg);
+        } else if ((op == .add or op == .remove) and cli.eql(arg, "--aur")) {
             aur = true;
-        } else if (then.flag(arg)) {
-            continue;
-        } else if (isFlag(arg)) {
-            return cli.usageError(ctx, usage_text);
-        } else try names.append(ctx.gpa, arg);
+        } else if (!then.flag(arg)) return cli.usageError(ctx, usage_text);
     }
     if (names.items.len == 0) return cli.usageError(ctx, usage_text);
     return editConfig(ctx, op, names.items, then, aur);
@@ -53,21 +52,14 @@ fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
 
 const Then = applying.Then;
 
-fn isFlag(arg: []const u8) bool {
-    return std.mem.startsWith(u8, arg, "-");
-}
-
 /// `os adopt [package...]`: puts packages installed outside the config into
 /// it, all of them or the ones named.
 pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    const wanted = try a.alloc([]const u8, args.len);
-    for (args, wanted) |arg, *name| {
-        if (isFlag(arg)) return cli.usageError(ctx, "os adopt [package...]");
-        name.* = arg;
-    }
+    var it: cli.ArgIter = .{ .args = args };
+    const wanted = it.names(try a.alloc([]const u8, args.len)) orelse return cli.usageError(ctx, "os adopt [package...]");
     const state = try w.state() orelse return w.fail();
     const f = try w.facts() orelse return w.fail();
 
@@ -147,8 +139,9 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
 pub fn editCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const usage_text = "os edit [--no-apply]";
     var then: Then = .{ .apply = true };
-    for (args) |arg| {
-        if (!then.flag(arg)) return cli.usageError(ctx, usage_text);
+    var it: cli.ArgIter = .{ .args = args };
+    while (it.next()) |arg| {
+        if (!it.isFlag(arg) or !then.flag(arg)) return cli.usageError(ctx, usage_text);
     }
     if (!ctx.interactive) {
         try ctx.err.writeAll("os: edit opens an editor, so it needs a terminal. edit the config yourself, then `os apply`.\n");
@@ -391,6 +384,10 @@ test "empty and flag-like names are usage errors, not crashes" {
     try std.testing.expectEqual(2, t.code);
     try t.exec(&.{ "adopt", "-x" });
     try std.testing.expectEqual(2, t.code);
+    // after --, they're names, and the config says what's wrong with one.
+    try t.exec(&.{ "add", "--no-apply", "--", "-x" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E"));
 }
 
 test "add --aur puts a package in the aur list and leaves building to update" {

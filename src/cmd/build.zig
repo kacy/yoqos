@@ -60,8 +60,13 @@ const ignored = [_][]const u8{
 };
 
 pub fn buildCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (args.len != 2 or !cli.eql(args[0], "--clean")) return cli.usageError(ctx, usage_text);
-    const dir: []const u8 = args[1];
+    var it: cli.ArgIter = .{ .args = args };
+    const flag = it.next() orelse "";
+    if (!it.isFlag(flag) or !cli.eql(flag, "--clean")) return cli.usageError(ctx, usage_text);
+    var buf: [1][]const u8 = undefined;
+    const names = it.names(&buf) orelse &.{};
+    if (names.len != 1) return cli.usageError(ctx, usage_text);
+    const dir = names[0];
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();

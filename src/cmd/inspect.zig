@@ -20,7 +20,7 @@ pub fn configCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (!eql(it.next() orelse "", "show")) return cli.usageError(ctx, usage_text);
     var sources = false;
     while (it.next()) |arg| {
-        if (!eql(arg, "--resolved")) return cli.usageError(ctx, usage_text);
+        if (!it.isFlag(arg) or !eql(arg, "--resolved")) return cli.usageError(ctx, usage_text);
         sources = true;
     }
 
@@ -64,12 +64,14 @@ pub fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var save: ?[]const u8 = null;
     var it: cli.ArgIter = .{ .args = args };
     while (it.next()) |arg| {
-        if (eql(arg, "-v") or eql(arg, "--verbose")) {
+        if (!it.isFlag(arg)) {
+            return cli.usageError(ctx, usage_text);
+        } else if (eql(arg, "-v") or eql(arg, "--verbose")) {
             verbose = true;
         } else if (eql(arg, "-o") or eql(arg, "--output")) {
-            save = it.next() orelse return cli.usageError(ctx, usage_text);
+            save = it.value() orelse return cli.usageError(ctx, usage_text);
         } else if (eql(arg, "--lock")) {
-            in.lock_path = it.next() orelse return cli.usageError(ctx, usage_text);
+            in.lock_path = it.value() orelse return cli.usageError(ctx, usage_text);
         } else return cli.usageError(ctx, usage_text);
     }
 
@@ -113,12 +115,15 @@ pub fn statusCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 pub fn whyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (args.len != 1 or args[0].len == 0 or args[0][0] == '-') return cli.usageError(ctx, "os why <package>");
+    var buf: [1][]const u8 = undefined;
+    var it: cli.ArgIter = .{ .args = args };
+    const names = it.names(&buf) orelse &.{};
+    if (names.len != 1) return cli.usageError(ctx, "os why <package>");
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const state = try w.state() orelse return w.fail();
 
-    const ans = try why.explain(w.allocator(), state.config(), &state.lock, args[0]);
+    const ans = try why.explain(w.allocator(), state.config(), &state.lock, names[0]);
     if (ctx.json) try why.writeJson(ctx.out, &ans) else try why.writeText(ctx.out, &ans);
     return if (ans.root == null) 1 else 0;
 }
