@@ -99,8 +99,9 @@ const news_pieces = [_][]const u8{
 };
 
 const edit_pieces = toml_pieces ++ [_][]const u8{
-    "packages = [",        "\"git\"",  "\"a\"",      ", ",           "  ", "\n  ", "]\n", "[remove]\n", "remove = ", "remove.",
-    "remove.packages = [", "packages", "aur = []\n", "[remove.x]\n", "{ ", " }",   ", ]",
+    "packages = [",        "\"git\"",           "\"a\"",      ", ",           "  ", "\n  ", "]\n", "[remove]\n",              "remove = ",                       "remove.",
+    "remove.packages = [", "packages",          "aur = []\n", "[remove.x]\n", "{ ", " }",   ", ]", "[files.\"/etc/motd\"]\n", "files.\"/etc/x\".text = \"t\"\n", "files = { }\n",
+    "source = \"s\"\n",    "mode = \"0644\"\n",
 };
 
 /// the seeds a target starts from: the given texts, then every golden
@@ -385,6 +386,8 @@ fn fuzzEdits(_: void, s: *Smith) !void {
     const start = raw(s, &buf);
     const path = edit_paths[s.index(edit_paths.len)];
     const name = edit_names[s.index(edit_names.len)];
+    const file = file_paths[s.index(file_paths.len)];
+    const mode = file_modes[s.index(file_modes.len)];
     const text = more(s, &buf, start, &edit_pieces);
 
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
@@ -393,6 +396,8 @@ fn fuzzEdits(_: void, s: *Smith) !void {
     var info: toml.ErrorInfo = .{};
     var before = toml.parse(a, text, &info) catch return;
     defer before.deinit();
+
+    try expectFileAdded(a, text, before.root, file, mode);
 
     const added = edit.addToList(a, text, path, "packages", name) catch |e| switch (e) {
         // the key holds something other than a list; nothing to edit.
@@ -413,6 +418,58 @@ fn fuzzEdits(_: void, s: *Smith) !void {
     } else {
         try testing.expect(!listHolds(before.root, path, name));
     }
+}
+
+/// paths `os adopt` might take, some of them ones the seeds name already.
+const file_paths = [_][]const u8{ "/etc/motd", "/etc/x", "/etc/ssh/sshd_config", "/etc/a b", "/etc/\"q\"" };
+const file_modes = [_]?[]const u8{ null, "0600" };
+
+/// `addFile` gives valid toml where `[files."<path>"]` has the source and
+/// mode, and everything else is as it was, or refuses.
+fn expectFileAdded(a: Allocator, text: []const u8, before: *const toml.Table, path: []const u8, mode: ?[]const u8) !void {
+    const out = edit.addFile(a, text, path, "files/x", mode) catch |e| switch (e) {
+        error.BadToml => return,
+        else => return e,
+    };
+    var info: toml.ErrorInfo = .{};
+    var after = toml.parse(a, out, &info) catch |e| {
+        std.debug.print("adding file {s} made invalid toml ({s}):\n--- before\n{s}\n--- after\n{s}\n", .{ path, info.message(), text, out });
+        return e;
+    };
+    defer after.deinit();
+    errdefer std.debug.print("adding file {s} changed the wrong thing:\n--- before\n{s}\n--- after\n{s}\n", .{ path, text, out });
+
+    const files = after.root.get("files") orelse return error.TestUnexpectedResult;
+    const entry = files.data.table.get(path) orelse return error.TestUnexpectedResult;
+    try testing.expect(isString((entry.data.table.get("source") orelse return error.TestUnexpectedResult).*, "files/x"));
+    if (mode) |m| try testing.expect(isString((entry.data.table.get("mode") orelse return error.TestUnexpectedResult).*, m));
+
+    try testing.expect(sameEntriesExcept(before, after.root, "files"));
+    const old_files = before.get("files") orelse return;
+    try testing.expect(sameEntriesExcept(old_files.data.table, files.data.table, path));
+    const old_entry = old_files.data.table.get(path) orelse return;
+    for (old_entry.data.table.entries.items) |e| {
+        if (std.mem.eql(u8, e.key, "source") or (mode != null and std.mem.eql(u8, e.key, "mode"))) continue;
+        const now = entry.data.table.get(e.key) orelse return error.TestUnexpectedResult;
+        try testing.expect(sameValue(e.value, now.*));
+    }
+}
+
+/// the same entries, in order, leaving out `skip`.
+fn sameEntriesExcept(x: *const toml.Table, y: *const toml.Table, skip: []const u8) bool {
+    var i: usize = 0;
+    var j: usize = 0;
+    while (true) {
+        while (i < x.entries.items.len and std.mem.eql(u8, x.entries.items[i].key, skip)) i += 1;
+        while (j < y.entries.items.len and std.mem.eql(u8, y.entries.items[j].key, skip)) j += 1;
+        if (i == x.entries.items.len or j == y.entries.items.len) break;
+        const ex = x.entries.items[i];
+        const ey = y.entries.items[j];
+        if (!std.mem.eql(u8, ex.key, ey.key) or !sameValue(ex.value, ey.value)) return false;
+        i += 1;
+        j += 1;
+    }
+    return i == x.entries.items.len and j == y.entries.items.len;
 }
 
 const EditOp = enum { add, remove };
