@@ -2,6 +2,7 @@
 //! tests can drive it without a terminal.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 const output = @import("output.zig");
 const diag = @import("diag.zig");
@@ -13,6 +14,8 @@ const gens = @import("gens.zig");
 const observe = @import("observe.zig");
 const sync = @import("sync.zig");
 const history = @import("history.zig");
+const events = @import("events.zig");
+const journal = @import("journal.zig");
 const init_cmd = @import("cmd/init.zig");
 const apply_cmd = @import("cmd/apply.zig");
 const rollback = @import("cmd/rollback.zig");
@@ -380,9 +383,18 @@ pub const Work = struct {
 pub fn record(ctx: *Context, a: std.mem.Allocator, top: []const u8, message: []const u8) !void {
     const dir = std.fs.path.dirnamePosix(top) orelse ".";
     var why: []const u8 = "";
-    if (!try ctx.history.commit(a, dir, message, &why)) {
-        try ctx.err.print("os: saved, but couldn't record it in git: {s}\n", .{why});
+    switch (try ctx.history.commit(a, dir, message, &why)) {
+        .made => try note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .commit, .message = message }),
+        .unchanged => {},
+        .failed => try ctx.err.print("os: saved, but couldn't record it in git: {s}\n", .{why}),
     }
+}
+
+/// adds an event for `os events` to the machine's journal. tests never
+/// write the machine they run on.
+pub fn note(ctx: *Context, a: std.mem.Allocator, e: events.Event) !void {
+    if (builtin.is_test and eql(ctx.root, "/")) return;
+    try events.record(a, ctx.io, ctx.root, e);
 }
 
 /// writes a file through `ctx.files`. returns false after saying it
@@ -751,6 +763,26 @@ test "--config without a path is a usage error" {
     var t: TestRun = .{};
     try t.exec(&.{ "config", "show", "--config" });
     try std.testing.expectEqual(2, t.code);
+}
+
+test "a config commit is an event, and one with nothing to commit isn't" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrintSentinel(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}, 0);
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "packages = []\n");
+    try t.exec(&.{ "--root", root, "version" });
+    try record(&t.ctx, a, "/etc/yoq/machine.toml", "add fd");
+    try record(&t.ctx, a, "/etc/yoq/machine.toml", "nothing new");
+    var offsets: events.Offsets = @splat(0);
+    const got = try events.poll(a, std.testing.io, root, &offsets);
+    try std.testing.expectEqual(1, got.len);
+    try std.testing.expectEqual(.commit, got[0].kind);
+    try std.testing.expectEqualStrings("add fd", got[0].message.?);
 }
 
 test "global flags take a value either way" {

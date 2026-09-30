@@ -10,21 +10,24 @@ const Allocator = std.mem.Allocator;
 /// and is what `os rollback` takes.
 pub const Entry = struct { n: usize, rev: []const u8, message: []const u8 };
 
+/// what a commit came to. `unchanged` is nothing to commit, like git.
+pub const Commit = enum { made, unchanged, failed };
+
 /// a file as a commit has it, by its path inside the config directory.
 pub const File = struct { path: []const u8, bytes: []const u8 };
 
 pub const History = struct {
     ctx: *anyopaque,
     /// commits everything in `dir`, making it a repository first if it
-    /// isn't one. returns false, with a reason in `why`, if git failed.
-    commitFn: *const fn (ctx: *anyopaque, a: Allocator, dir: []const u8, message: []const u8, why: *[]const u8) error{OutOfMemory}!bool,
+    /// isn't one. a reason goes in `why` if git failed.
+    commitFn: *const fn (ctx: *anyopaque, a: Allocator, dir: []const u8, message: []const u8, why: *[]const u8) error{OutOfMemory}!Commit,
     /// every commit, oldest first. null, with a reason in `why`, if there's
     /// no history to read.
     logFn: *const fn (ctx: *anyopaque, a: Allocator, dir: []const u8, why: *[]const u8) error{OutOfMemory}!?[]const Entry,
     /// the files in `dir` as commit `rev` had them.
     filesFn: *const fn (ctx: *anyopaque, a: Allocator, dir: []const u8, rev: []const u8, why: *[]const u8) error{OutOfMemory}!?[]const File,
 
-    pub fn commit(h: History, a: Allocator, dir: []const u8, message: []const u8, why: *[]const u8) !bool {
+    pub fn commit(h: History, a: Allocator, dir: []const u8, message: []const u8, why: *[]const u8) !Commit {
         return h.commitFn(h.ctx, a, dir, message, why);
     }
 
@@ -73,7 +76,7 @@ pub const Git = struct {
         return out.items;
     }
 
-    fn commit(ctx: *anyopaque, a: Allocator, dir: []const u8, message: []const u8, why: *[]const u8) error{OutOfMemory}!bool {
+    fn commit(ctx: *anyopaque, a: Allocator, dir: []const u8, message: []const u8, why: *[]const u8) error{OutOfMemory}!Commit {
         const g: *Git = @ptrCast(@alignCast(ctx));
         // a config inside another repository, like a dotfiles one, is
         // committed there, and only what's in its own directory. one that
@@ -81,11 +84,11 @@ pub const Git = struct {
         const inside = try g.succeeds(a, &.{ "git", "-C", dir, "rev-parse", "--is-inside-work-tree" }) and
             !try g.succeeds(a, &.{ "git", "-C", dir, "check-ignore", "-q", "." });
         if (!inside) {
-            if (!try g.run(a, &.{ "git", "-C", dir, "init", "-q" }, why)) return false;
+            if (!try g.run(a, &.{ "git", "-C", dir, "init", "-q" }, why)) return .failed;
         }
-        if (!try g.run(a, &.{ "git", "-C", dir, "add", "-A", "--", "." }, why)) return false;
+        if (!try g.run(a, &.{ "git", "-C", dir, "add", "-A", "--", "." }, why)) return .failed;
         // nothing staged here means nothing changed: done.
-        if (try g.succeeds(a, &.{ "git", "-C", dir, "diff", "--cached", "--quiet", "--", "." })) return true;
+        if (try g.succeeds(a, &.{ "git", "-C", dir, "diff", "--cached", "--quiet", "--", "." })) return .unchanged;
         // root's config often has no identity. commit as os then, rather
         // than fail.
         const named = try g.succeeds(a, &.{ "git", "-C", dir, "config", "user.email" });
@@ -93,7 +96,7 @@ pub const Git = struct {
             &.{ "git", "-C", dir, "commit", "-q", "-m", message, "--", "." }
         else
             &.{ "git", "-C", dir, "-c", "user.name=os", "-c", "user.email=os@localhost", "commit", "-q", "-m", message, "--", "." };
-        return g.run(a, argv, why);
+        return if (try g.run(a, argv, why)) .made else .failed;
     }
 
     fn run(g: *Git, a: Allocator, argv: []const []const u8, why: *[]const u8) !bool {
@@ -167,7 +170,7 @@ pub const Recorder = struct {
         r.snapshots.deinit(r.gpa);
     }
 
-    fn commit(ctx: *anyopaque, _: Allocator, dir: []const u8, message: []const u8, _: *[]const u8) error{OutOfMemory}!bool {
+    fn commit(ctx: *anyopaque, _: Allocator, dir: []const u8, message: []const u8, _: *[]const u8) error{OutOfMemory}!Commit {
         const r: *Recorder = @ptrCast(@alignCast(ctx));
         var snap: std.ArrayList(File) = .empty;
         if (r.fs) |fs| {
@@ -181,11 +184,11 @@ pub const Recorder = struct {
         if (r.snapshots.items.len > 0 and sameFiles(r.snapshots.items[r.snapshots.items.len - 1], snap.items)) {
             freeFiles(r.gpa, snap.items);
             snap.deinit(r.gpa);
-            return true;
+            return .unchanged;
         }
         try r.messages.append(r.gpa, try r.gpa.dupe(u8, message));
         try r.snapshots.append(r.gpa, try snap.toOwnedSlice(r.gpa));
-        return true;
+        return .made;
     }
 
     fn log(ctx: *anyopaque, a: Allocator, _: []const u8, _: *[]const u8) error{OutOfMemory}!?[]const Entry {
@@ -219,15 +222,15 @@ test "git commits changes and skips empty ones" {
     const h = git.history();
     var why: []const u8 = "";
     try tmp.dir.writeFile(io, .{ .sub_path = "machine.toml", .data = "packages = []\n" });
-    if (!try h.commit(a, dir, "init: config", &why)) {
+    if (try h.commit(a, dir, "init: config", &why) == .failed) {
         // no git on this machine: nothing to check.
         if (std.mem.startsWith(u8, why, "can't run git")) return error.SkipZigTest;
         std.debug.print("git failed: {s}\n", .{why});
         return error.TestUnexpectedResult;
     }
-    try std.testing.expect(try h.commit(a, dir, "nothing changed", &why));
+    try std.testing.expectEqual(.unchanged, try h.commit(a, dir, "nothing changed", &why));
     try tmp.dir.writeFile(io, .{ .sub_path = "machine.toml", .data = "packages = [\"git\"]\n" });
-    try std.testing.expect(try h.commit(a, dir, "add git", &why));
+    try std.testing.expectEqual(.made, try h.commit(a, dir, "add git", &why));
 
     var why2: []const u8 = "";
     const entries = (try h.log(a, dir, &why2)).?;
