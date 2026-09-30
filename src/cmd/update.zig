@@ -27,16 +27,18 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var trust_aur = false;
     var it: cli.ArgIter = .{ .args = args };
     while (it.next()) |arg| {
-        if (then.flag(arg)) {
+        if (!it.isFlag(arg)) {
+            return cli.usageError(ctx, usage_text);
+        } else if (then.flag(arg)) {
             continue;
         } else if (eql(arg, "--trust-aur")) {
             trust_aur = true;
         } else if (eql(arg, "-v") or eql(arg, "--verbose")) {
             verbose = true;
         } else if (eql(arg, "--dbs")) {
-            dbs_dir = it.next() orelse return cli.usageError(ctx, usage_text);
+            dbs_dir = it.value() orelse return cli.usageError(ctx, usage_text);
         } else if (eql(arg, "--date")) {
-            const d = it.next() orelse return cli.usageError(ctx, usage_text);
+            const d = it.value() orelse return cli.usageError(ctx, usage_text);
             if (!lock.validDate(d)) return cli.usageError(ctx, usage_text);
             date = d;
         } else return cli.usageError(ctx, usage_text);

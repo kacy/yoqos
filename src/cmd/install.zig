@@ -38,16 +38,17 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var yes = false;
     var it: cli.ArgIter = .{ .args = args };
     while (it.next()) |arg| {
-        if (cli.eql(arg, "--disk")) {
-            disk = it.next() orelse return cli.usageError(ctx, usage_text);
+        if (!it.isFlag(arg)) {
+            if (source != null or arg.len == 0) return cli.usageError(ctx, usage_text);
+            source = arg;
+        } else if (cli.eql(arg, "--disk")) {
+            disk = it.value() orelse return cli.usageError(ctx, usage_text);
         } else if (cli.eql(arg, "--host")) {
-            host = it.next() orelse return cli.usageError(ctx, usage_text);
+            host = it.value() orelse return cli.usageError(ctx, usage_text);
         } else if (cli.eql(arg, "--update")) {
             update = true;
         } else if (cli.isYes(arg)) {
             yes = true;
-        } else if (source == null and arg.len > 0 and arg[0] != '-') {
-            source = arg;
         } else return cli.usageError(ctx, usage_text);
     }
     if (source == null or disk == null) return cli.usageError(ctx, usage_text);

@@ -24,8 +24,11 @@ const usage_text = "os uninstall [--yes] [--delete-generations]";
 pub fn uninstallCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var yes = false;
     var drop = false;
-    for (args) |arg| {
-        if (cli.isYes(arg)) {
+    var it: cli.ArgIter = .{ .args = args };
+    while (it.next()) |arg| {
+        if (!it.isFlag(arg)) {
+            return cli.usageError(ctx, usage_text);
+        } else if (cli.isYes(arg)) {
             yes = true;
         } else if (cli.eql(arg, "--delete-generations")) {
             drop = true;

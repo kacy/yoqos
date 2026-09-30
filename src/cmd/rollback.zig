@@ -38,13 +38,15 @@ pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var yes = false;
     var to_booted = false;
     var wanted: ?u32 = null;
-    for (args) |arg| {
-        if (cli.isYes(arg)) {
+    var it: cli.ArgIter = .{ .args = args };
+    while (it.next()) |arg| {
+        if (!it.isFlag(arg)) {
+            if (wanted != null) return cli.usageError(ctx, usage_text);
+            wanted = std.fmt.parseInt(u32, arg, 10) catch return cli.usageError(ctx, usage_text);
+        } else if (cli.isYes(arg)) {
             yes = true;
         } else if (cli.eql(arg, "--to-booted")) {
             to_booted = true;
-        } else if (wanted == null) {
-            wanted = std.fmt.parseInt(u32, arg, 10) catch return cli.usageError(ctx, usage_text);
         } else return cli.usageError(ctx, usage_text);
     }
     if (to_booted and wanted != null) return cli.usageError(ctx, usage_text);
@@ -188,8 +190,8 @@ pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var keep: usize = generation.default_keep;
     var it: cli.ArgIter = .{ .args = args };
     while (it.next()) |arg| {
-        if (!cli.eql(arg, "--keep")) return cli.usageError(ctx, usage_text);
-        keep = std.fmt.parseInt(usize, it.next() orelse return cli.usageError(ctx, usage_text), 10) catch return cli.usageError(ctx, usage_text);
+        if (!it.isFlag(arg) or !cli.eql(arg, "--keep")) return cli.usageError(ctx, usage_text);
+        keep = std.fmt.parseInt(usize, it.value() orelse return cli.usageError(ctx, usage_text), 10) catch return cli.usageError(ctx, usage_text);
         // the newest generation always stays.
         if (keep == 0) return cli.usageError(ctx, usage_text);
     }
@@ -229,11 +231,13 @@ pub fn pinCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const usage_text = "os pin [--remove] <n>";
     var pin = true;
     var wanted: ?u32 = null;
-    for (args) |arg| {
-        if (cli.eql(arg, "--remove")) {
-            pin = false;
-        } else if (wanted == null) {
+    var it: cli.ArgIter = .{ .args = args };
+    while (it.next()) |arg| {
+        if (!it.isFlag(arg)) {
+            if (wanted != null) return cli.usageError(ctx, usage_text);
             wanted = std.fmt.parseInt(u32, arg, 10) catch return cli.usageError(ctx, usage_text);
+        } else if (cli.eql(arg, "--remove")) {
+            pin = false;
         } else return cli.usageError(ctx, usage_text);
     }
     const n = wanted orelse return cli.usageError(ctx, usage_text);

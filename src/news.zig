@@ -25,8 +25,8 @@ pub fn parse(a: Allocator, xml: []const u8) ![]const Item {
         const date = dateOf(a, tag(item, "pubDate") orelse continue) orelse continue;
         try out.append(a, .{
             .date = date,
-            .title = try unescape(a, tag(item, "title") orelse continue),
-            .link = try unescape(a, tag(item, "link") orelse continue),
+            .title = try plain(a, try unescape(a, tag(item, "title") orelse continue)),
+            .link = try plain(a, try unescape(a, tag(item, "link") orelse continue)),
         });
     }
     return out.items;
@@ -70,6 +70,28 @@ fn unescape(a: Allocator, text: []const u8) ![]const u8 {
     return out;
 }
 
+/// `text` without control characters, so a title can't move the cursor or
+/// change colors when it's printed: escape sequences go whole, and other
+/// controls become spaces.
+fn plain(a: Allocator, text: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (ch == 0x1b) {
+            // a csi sequence, like ESC [ 31 m, runs to its final byte.
+            if (i + 1 < text.len and text[i + 1] == '[') {
+                i += 2;
+                while (i < text.len and (text[i] < 0x40 or text[i] > 0x7e)) i += 1;
+            }
+        } else if (ch == 0xc2 and i + 1 < text.len and text[i + 1] >= 0x80 and text[i + 1] <= 0x9f) {
+            // the utf-8 form of a c1 control, which some terminals act on.
+            i += 1;
+        } else try out.append(a, if (ch < 0x20 or ch == 0x7f) ' ' else ch);
+    }
+    return out.items;
+}
+
 test "items from the feed, and the ones between two dates" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -89,4 +111,14 @@ test "items from the feed, and the ones between two dates" {
     try std.testing.expectEqual(1, since.len);
     try std.testing.expectEqualStrings("https://archlinux.org/news/mkinitcpio-42/", since[0].link);
     try std.testing.expectEqual(0, (try between(a, items, "2026-09-22", "2026-09-25")).len);
+}
+
+test "titles lose control characters and escape sequences" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const items = try parse(a, "<item><title>\x1b[31mred\x1b[0m\x07 news\nhere \xc2\x9b2J\xc3\xa9</title><link>https://archlinux.org/news/x/\x1b]0;hi\x07</link><pubDate>Tue, 22 Sep 2026 09:09:27 +0000</pubDate></item>");
+    try std.testing.expectEqual(1, items.len);
+    try std.testing.expectEqualStrings("red  news here 2J\xc3\xa9", items[0].title);
+    try std.testing.expectEqualStrings("https://archlinux.org/news/x/]0;hi ", items[0].link);
 }

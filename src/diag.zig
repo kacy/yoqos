@@ -30,6 +30,7 @@ pub const Code = enum {
     apply_failed,
     plan_changed,
     unknown_service,
+    plan_moved,
 };
 
 pub const Entry = struct {
@@ -191,6 +192,14 @@ pub const table = [_]Entry{
         .explanation = "`[services]` names a service os doesn't know how to set up. names are short and " ++
             "stable, like `ssh` rather than `sshd` or `openssh`. for a unit os doesn't know, declare it with " ++
             "`[services.<name>] unit = \"<unit>.service\"` and `package = \"<package>\"`.",
+    },
+    .{
+        .code = .plan_moved,
+        .id = "E0129",
+        .title = "the plan changed before it was applied",
+        .explanation = "`os apply` plans again after you say yes, and applies only the plan it showed you. " ++
+            "the config, the lock, or the machine changed in between, like a pacman run in another terminal, " ++
+            "so os would now do something else and changed nothing. run the command again and look over the new plan.",
     },
 };
 

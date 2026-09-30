@@ -116,15 +116,43 @@ const commands = [_]Command{
     .{ .name = "schema", .summary = "print the json schema for the config or a json document", .handler = schemaCmd, .hidden = true },
 };
 
-/// walks a command's own arguments.
+/// walks a command's own arguments. after `--`, every argument is a
+/// name, even one that starts with `-`, like `os add -- -weird-name`.
 pub const ArgIter = struct {
     args: []const [:0]const u8,
     i: usize = 0,
+    /// `--` has gone by.
+    names_only: bool = false,
 
     pub fn next(it: *ArgIter) ?[]const u8 {
+        if (!it.names_only and it.i < it.args.len and eql(it.args[it.i], "--")) {
+            it.names_only = true;
+            it.i += 1;
+        }
+        return it.value();
+    }
+
+    /// the next argument as it is, `--` or not: the value of a flag.
+    pub fn value(it: *ArgIter) ?[]const u8 {
         if (it.i == it.args.len) return null;
         defer it.i += 1;
         return it.args[it.i];
+    }
+
+    /// whether `arg`, from `next`, is a flag rather than a name.
+    pub fn isFlag(it: *const ArgIter, arg: []const u8) bool {
+        return !it.names_only and std.mem.startsWith(u8, arg, "-");
+    }
+
+    /// the rest of a command's arguments when it takes only names, up to
+    /// `buf.len` of them. null for a flag, an empty name, or too many.
+    pub fn names(it: *ArgIter, buf: [][]const u8) ?[]const []const u8 {
+        var n: usize = 0;
+        while (it.next()) |arg| : (n += 1) {
+            if (it.isFlag(arg) or arg.len == 0 or n == buf.len) return null;
+            buf[n] = arg;
+        }
+        return buf[0..n];
     }
 };
 
@@ -166,7 +194,8 @@ fn takeGlobalFlags(ctx: *Context, raw: []const [:0]const u8) ![]const [:0]const 
     var rest: std.ArrayList([:0]const u8) = .empty;
     errdefer rest.deinit(ctx.gpa);
     var it: ArgIter = .{ .args = raw };
-    while (it.next()) |arg| {
+    while (it.value()) |arg| {
+        // the command sees `--` too, so what follows stays names there.
         if (eql(arg, "--")) {
             try rest.appendSlice(ctx.gpa, raw[it.i - 1 ..]);
             break;
@@ -193,7 +222,7 @@ fn valueFlag(ctx: *Context, arg: []const u8, it: *ArgIter) !bool {
     inline for (value_flags) |f| {
         // a value can't be empty, or another flag.
         if (eql(arg, f[0])) {
-            const v = it.next() orelse return error.MissingFlagValue;
+            const v = it.value() orelse return error.MissingFlagValue;
             if (v.len == 0 or v[0] == '-') return error.MissingFlagValue;
             @field(ctx, f[1]) = v;
             return true;
@@ -246,8 +275,10 @@ fn version(ctx: *Context, args: []const [:0]const u8) !u8 {
     return 0;
 }
 
-fn schemaCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (args.len > 1) return usageError(ctx, "os schema [<name>]");
+fn schemaCmd(ctx: *Context, raw: []const [:0]const u8) !u8 {
+    var buf: [1][]const u8 = undefined;
+    var it: ArgIter = .{ .args = raw };
+    const args = it.names(&buf) orelse return usageError(ctx, "os schema [<name>]");
     if (args.len == 0) {
         const Entry = struct { name: []const u8, what: []const u8 };
         var list: [schemas.docs.len]Entry = undefined;
@@ -262,8 +293,10 @@ fn schemaCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     return 0;
 }
 
-fn explain(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (args.len > 1) return usageError(ctx, "os explain [code]");
+fn explain(ctx: *Context, raw: []const [:0]const u8) !u8 {
+    var buf: [1][]const u8 = undefined;
+    var it: ArgIter = .{ .args = raw };
+    const args = it.names(&buf) orelse return usageError(ctx, "os explain [code]");
     if (args.len == 0) {
         if (ctx.json) {
             var all: [diag.table.len]diag.EntryJson = undefined;
@@ -411,7 +444,8 @@ pub fn readFile(ctx: *Context, a: std.mem.Allocator, path: []const u8) !?[]const
 
 /// fails a command that takes no arguments of its own if it got some.
 pub fn noArgs(ctx: *Context, args: []const [:0]const u8, usage_text: []const u8) !?u8 {
-    return if (args.len == 0) null else try usageError(ctx, usage_text);
+    var it: ArgIter = .{ .args = args };
+    return if (it.next() == null) null else try usageError(ctx, usage_text);
 }
 
 pub fn isYes(arg: []const u8) bool {
@@ -584,6 +618,8 @@ pub const TestRun = struct {
     fs: compose.MemFiles = .{},
     /// typed answers to any questions, which makes the run interactive.
     input: ?[]const u8 = null,
+    /// or a reader of the test's own for them, which does the same.
+    in: ?*std.Io.Reader = null,
     /// answers downloads. by default every download fails, so no test
     /// touches the network by accident.
     fetcher: ?sync.Fetcher = null,
@@ -616,6 +652,10 @@ pub const TestRun = struct {
         if (t.input) |text| {
             t.reader = .fixed(text);
             t.ctx.in = &t.reader;
+            t.ctx.interactive = true;
+        }
+        if (t.in) |r| {
+            t.ctx.in = r;
             t.ctx.interactive = true;
         }
         t.code = try run(&t.ctx, args);
@@ -710,6 +750,29 @@ test "--json after -- is left alone" {
     var t: TestRun = .{};
     try t.exec(&.{ "version", "--", "--json" });
     try std.testing.expect(!t.ctx.json);
+}
+
+test "after --, every argument is a name" {
+    var it: ArgIter = .{ .args = &.{ "-v", "--", "-x", "--" } };
+    try std.testing.expect(it.isFlag(it.next().?));
+    for ([_][]const u8{ "-x", "--" }) |want| {
+        const arg = it.next().?;
+        try std.testing.expectEqualStrings(want, arg);
+        try std.testing.expect(!it.isFlag(arg));
+    }
+    try std.testing.expectEqual(null, it.next());
+
+    var t: TestRun = .{};
+    try t.exec(&.{ "explain", "--", "E0213" });
+    try std.testing.expectEqual(0, t.code);
+    try t.exec(&.{ "explain", "--", "--json" });
+    try std.testing.expectEqual(2, t.code);
+    try std.testing.expect(!t.ctx.json);
+    try t.exec(&.{ "version", "--" });
+    try std.testing.expectEqual(0, t.code);
+    // a name isn't a flag, so a command without names turns it down.
+    try t.exec(&.{ "plan", "--", "-v" });
+    try std.testing.expectEqual(2, t.code);
 }
 
 test "help --json lists every command" {

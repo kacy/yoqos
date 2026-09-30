@@ -24,15 +24,18 @@ pub const Diff = struct {
     changed: []const Changed,
 };
 
-pub fn diffCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (args.len < 1 or args.len > 2) return cli.usageError(ctx, usage_text);
+pub fn diffCmd(ctx: *Context, all: []const [:0]const u8) !u8 {
+    var buf: [2][]const u8 = undefined;
+    var it: cli.ArgIter = .{ .args = all };
+    const args = it.names(&buf) orelse &.{};
+    if (args.len < 1) return cli.usageError(ctx, usage_text);
     const from_n = std.fmt.parseInt(u32, args[0], 10) catch return cli.usageError(ctx, usage_text);
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
     const boot = try w.generations() orelse return cli.noGenerations(ctx);
     const records = try gens.readRecords(a, ctx.io, "/var");
-    if (records.len == 0) return cli.usageError(ctx, usage_text);
+    if (records.len == 0) return cli.noGenerations(ctx);
     const to_n = if (args.len == 2) std.fmt.parseInt(u32, args[1], 10) catch return cli.usageError(ctx, usage_text) else records[records.len - 1].n;
     const from = generation.find(records, from_n) orelse return cli.noGeneration(ctx, from_n);
     const to = generation.find(records, to_n) orelse return cli.noGeneration(ctx, to_n);
