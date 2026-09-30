@@ -85,24 +85,55 @@ pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock
         const ok = switch (c.kind) {
             .setting => try settings.apply(a, io, t.root, c.subject, c.to.?, diags),
             .user => try users.apply(a, io, t.root, c, diags),
-            .file => if (c.op == .remove) try removeFile(a, io, t.root, c.subject, units, diags) else try writeFile(a, io, t.root, files, c.subject, units, diags),
+            .file => if (c.op == .remove) try removeFile(a, io, t.root, c.subject, diags) else try writeFile(a, io, t.root, files, c.subject, units, diags),
             else => true,
         };
         if (!ok) return null;
     }
+    if (rebuildsInitramfs(p.changes) and !try rebuildInitramfs(a, io, t.root, diags)) return null;
     if (units and !try changeUnits(a, p, false, diags)) return null;
     return .{ .skipped = skipped.items };
 }
 
 /// a drop-in here changes the initramfs.
 const mkinitcpio_dir = "/etc/mkinitcpio.conf.d/";
-/// rebuilds every initramfs. the full path skips wrappers earlier in PATH
-/// that ask questions, like omarchy's.
-const mkinitcpio: []const []const u8 = &.{ "/usr/bin/mkinitcpio", "-P" };
+/// the full path skips wrappers earlier in PATH that ask questions, like
+/// omarchy's.
+const mkinitcpio = "/usr/bin/mkinitcpio";
+
+/// whether `changes` write or remove a mkinitcpio drop-in. the kernel's
+/// own hook ran in the package transaction, before the drop-ins, so the
+/// initramfs is built again once they're all in place.
+pub fn rebuildsInitramfs(changes: []const planner.Change) bool {
+    for (changes) |c| {
+        if (c.kind == .file and std.mem.startsWith(u8, c.subject, mkinitcpio_dir)) return true;
+    }
+    return false;
+}
+
+/// the command that rebuilds every initramfs in `root`. another root (a
+/// staged one, a clean build, an install) builds inside a chroot, the way
+/// pacman ran the kernel's hook there.
+pub fn mkinitcpioArgv(a: Allocator, root: []const u8) ![]const []const u8 {
+    if (std.mem.eql(u8, root, "/")) return a.dupe([]const u8, &.{ mkinitcpio, "-P" });
+    return a.dupe([]const u8, &.{ "chroot", root, mkinitcpio, "-P" });
+}
+
+/// rebuilds the initramfs in `root`. a root without mkinitcpio has none
+/// to rebuild, like a test's.
+fn rebuildInitramfs(a: Allocator, io: std.Io, root: []const u8, diags: *diag.List) !bool {
+    const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
+    if (!fs.exists(mkinitcpio[1..])) return true;
+    if (try exec.run(a, io, try mkinitcpioArgv(a, root))) |why| {
+        try diags.add(.apply_failed, null, "the mkinitcpio drop-ins changed, but {s} -P failed: {s}", .{ mkinitcpio, why }, null);
+        return false;
+    }
+    return true;
+}
 
 /// writes a managed file whole, with its mode. on a running machine
 /// (`live`, as for units) the sysctl file and the module list are loaded
-/// right away, and a mkinitcpio drop-in rebuilds the initramfs.
+/// right away.
 fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.DesiredFile, path: []const u8, live: bool, diags: *diag.List) !bool {
     const d = lists.find(files, "path", path).?; // the plan came from these files.
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
@@ -119,8 +150,6 @@ fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.
         &.{ "sysctl", "-p", path }
     else if (std.mem.eql(u8, path, planner.modules_path))
         &.{ "systemctl", "restart", "systemd-modules-load.service" }
-    else if (std.mem.startsWith(u8, path, mkinitcpio_dir))
-        mkinitcpio
     else
         return true;
     if (try exec.run(a, io, then)) |why| {
@@ -157,9 +186,8 @@ fn includeRepos(a: Allocator, io: std.Io, root: []const u8, diags: *diag.List) !
     return true;
 }
 
-/// removes a file os generated that nothing asks for now. a mkinitcpio
-/// drop-in going rebuilds the initramfs on a running machine.
-fn removeFile(a: Allocator, io: std.Io, root: []const u8, path: []const u8, live: bool, diags: *diag.List) !bool {
+/// removes a file os generated that nothing asks for now.
+fn removeFile(a: Allocator, io: std.Io, root: []const u8, path: []const u8, diags: *diag.List) !bool {
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
     std.Io.Dir.cwd().deleteFile(io, try fs.path(std.mem.trimStart(u8, path, "/"))) catch |e| switch (e) {
         error.FileNotFound => {},
@@ -168,11 +196,6 @@ fn removeFile(a: Allocator, io: std.Io, root: []const u8, path: []const u8, live
             return false;
         },
     };
-    if (!live or !std.mem.startsWith(u8, path, mkinitcpio_dir)) return true;
-    if (try exec.run(a, io, mkinitcpio)) |why| {
-        try diags.add(.apply_failed, null, "removed {s}, but mkinitcpio failed: {s}", .{ path, why }, null);
-        return false;
-    }
     return true;
 }
 
@@ -253,4 +276,32 @@ test "files are written with their mode, and the plan comes back empty" {
     try testing.expect((try planner.plan(a, &c, &l, &f, &diags)).?.empty());
     try testing.expectEqualStrings("0600", f.file("/etc/ssh/sshd_config.d/10-local.conf").?.mode);
     try testing.expectEqualStrings("0644", f.file(planner.sysctl_path).?.mode);
+}
+
+test "mkinitcpio drop-ins rebuild the initramfs once" {
+    const drop: planner.Change = .{ .op = .add, .kind = .file, .subject = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf" };
+    const other: planner.Change = .{ .op = .add, .kind = .file, .subject = "/etc/sysctl.d/99-yoq.conf" };
+    const sibling: planner.Change = .{ .op = .add, .kind = .file, .subject = "/etc/mkinitcpio.conf.dx/a.conf" };
+    const gone: planner.Change = .{ .op = .remove, .kind = .file, .subject = "/etc/mkinitcpio.conf.d/50-local.conf" };
+    const pkg: planner.Change = .{ .op = .add, .kind = .package, .subject = "/etc/mkinitcpio.conf.d/x", .to = "1" };
+    try testing.expect(!rebuildsInitramfs(&.{}));
+    try testing.expect(!rebuildsInitramfs(&.{ other, sibling, pkg }));
+    try testing.expect(rebuildsInitramfs(&.{ other, drop }));
+    try testing.expect(rebuildsInitramfs(&.{ drop, gone }));
+    try testing.expect(rebuildsInitramfs(&.{gone}));
+}
+
+test "mkinitcpio runs in the root it builds for" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const live = try mkinitcpioArgv(a, "/");
+    try testing.expectEqual(2, live.len);
+    try testing.expectEqualStrings("/usr/bin/mkinitcpio", live[0]);
+    try testing.expectEqualStrings("-P", live[1]);
+    const staged = try mkinitcpioArgv(a, "/run/yoq/next");
+    try testing.expectEqual(4, staged.len);
+    try testing.expectEqualStrings("chroot", staged[0]);
+    try testing.expectEqualStrings("/run/yoq/next", staged[1]);
+    try testing.expectEqualStrings("/usr/bin/mkinitcpio", staged[2]);
 }
