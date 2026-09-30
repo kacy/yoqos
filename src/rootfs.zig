@@ -96,12 +96,27 @@ pub fn freeBytes(path: []const u8) ?u64 {
     const linux = std.os.linux;
     var z: [std.fs.max_path_bytes]u8 = undefined;
     const p = std.fmt.bufPrintZ(&z, "{s}", .{path}) catch return null;
-    // struct statfs on 64-bit linux; only the block size and count matter.
-    const Statfs = extern struct { type: i64, bsize: i64, blocks: u64, bfree: u64, bavail: u64, rest: [9]i64 };
     var st: Statfs = undefined;
     if (linux.errno(linux.syscall2(.statfs, @intFromPtr(p.ptr), @intFromPtr(&st))) != .SUCCESS) return null;
     return @as(u64, @intCast(st.bsize)) *| st.bavail;
 }
+
+/// struct statfs on 64-bit linux, whole: the kernel writes all of it, so
+/// a shorter one lets it write past the end.
+const Statfs = extern struct {
+    type: i64,
+    bsize: i64,
+    blocks: u64,
+    bfree: u64,
+    bavail: u64,
+    files: u64,
+    ffree: u64,
+    fsid: [2]i32,
+    namelen: i64,
+    frsize: i64,
+    flags: i64,
+    spare: [4]i64,
+};
 
 pub fn pathExists(io: std.Io, path: []const u8) bool {
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;
@@ -180,6 +195,8 @@ test "the boot time from /proc/stat" {
 }
 
 test "free space on a filesystem" {
+    // the kernel's struct statfs is 120 bytes on 64-bit linux.
+    try std.testing.expectEqual(120, @sizeOf(Statfs));
     try std.testing.expect(freeBytes(".").? > 0);
     try std.testing.expectEqual(null, freeBytes("/no/such/place"));
 }
