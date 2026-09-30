@@ -8,6 +8,8 @@ const facts = @import("facts.zig");
 const journal = @import("journal.zig");
 const drift = @import("drift.zig");
 const rootfs = @import("rootfs.zig");
+const lock = @import("lock.zig");
+const status = @import("status.zig");
 const Allocator = std.mem.Allocator;
 
 pub const schema = "yoq.event/1";
@@ -114,6 +116,38 @@ pub fn poll(a: Allocator, io: std.Io, root: []const u8, offsets: *Offsets) ![]Ev
     return out.items;
 }
 
+/// the unix milliseconds `--since` names: a number of them, or a utc date,
+/// yyyy-mm-dd, or date and time, yyyy-mm-ddThh:mm[:ss], with or without a
+/// trailing Z. null for anything else.
+pub fn parseSince(text: []const u8) ?i64 {
+    if (text.len > 0 and digits(text)) return std.fmt.parseInt(i64, text, 10) catch null;
+    const t = if (std.mem.endsWith(u8, text, "Z")) text[0 .. text.len - 1] else text;
+    if (t.len < 10 or !lock.validDate(t[0..10])) return null;
+    const day = status.epochDay(t[0..10]) orelse return null;
+    var secs: i64 = 0;
+    if (t.len > 10) {
+        const c = t[11..];
+        if (t[10] != 'T' or (c.len != 5 and c.len != 8)) return null;
+        if (c[2] != ':' or (c.len == 8 and c[5] != ':')) return null;
+        const h = twoDigits(c[0..2]) orelse return null;
+        const m = twoDigits(c[3..5]) orelse return null;
+        const s = if (c.len == 8) twoDigits(c[6..8]) orelse return null else 0;
+        if (h > 23 or m > 59 or s > 59) return null;
+        secs = h * 3600 + m * 60 + s;
+    }
+    return (day * 86400 + secs) * 1000;
+}
+
+fn digits(s: []const u8) bool {
+    for (s) |c| if (!std.ascii.isDigit(c)) return false;
+    return true;
+}
+
+fn twoDigits(s: []const u8) ?i64 {
+    if (!digits(s)) return null;
+    return std.fmt.parseInt(i64, s, 10) catch null;
+}
+
 // -- tests --
 
 const testing = std.testing;
@@ -160,6 +194,20 @@ test "the journal's apply lines and the drift log's lines are events too" {
     try testing.expectEqual(null, decode(a, "{\"time\":3,\"event\":\"odd\",\"plan\":\"x\"}"));
     try testing.expectEqual(null, decode(a, "{\"time\":3,\"kind\":\"odd\"}"));
     try testing.expectEqual(null, decode(a, "{\"time\":"));
+}
+
+test "--since takes unix milliseconds or a utc date and time" {
+    try testing.expectEqual(1790380800000, parseSince("1790380800000").?);
+    try testing.expectEqual(0, parseSince("0").?);
+    try testing.expectEqual(0, parseSince("1970-01-01").?);
+    try testing.expectEqual(1790726400000, parseSince("2026-09-30").?);
+    try testing.expectEqual(1790726400000, parseSince("2026-09-30T00:00Z").?);
+    try testing.expectEqual(1790726400000 + (13 * 3600 + 5 * 60) * 1000, parseSince("2026-09-30T13:05").?);
+    try testing.expectEqual(1790726400000 + (13 * 3600 + 5 * 60 + 9) * 1000, parseSince("2026-09-30T13:05:09Z").?);
+    try testing.expectEqual(951782400000, parseSince("2000-02-29").?);
+    for ([_][]const u8{ "", "-5", "+5", "yesterday", "2026-9-30", "2026-13-01", "2026-09-32", "+026-09-30", "2026-09-30T", "2026-09-30 13:05", "2026-09-30T24:00", "2026-09-30T13:60", "2026-09-30T13:05:60", "2026-09-30T1:05", "2026-09-30T13:05+02:00", "2026-09-30T13:05ZZ" }) |bad| {
+        try testing.expectEqual(null, parseSince(bad));
+    }
 }
 
 test "new lines wait for their newline, and a file started over is read again" {
