@@ -67,6 +67,8 @@ refind)
     ;;
 *)
     tests/vm/rollback.sh
+    # a drop-in built into a staged root, on one image of the two.
+    if [ "${VM_IMAGE:-cloud}" = cloud ]; then tests/vm/initramfs.sh; fi
     tests/vm/trial.sh
     tests/vm/desktop.sh
     tests/vm/ids.sh

@@ -10,13 +10,15 @@ key=$(cat "${VM_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/yoq-vm}/key.pub")
 "$vm" ssh "/usr/local/bin/os init >/dev/null 2>&1 || true"
 
 # the config repository the new machine comes from: this machine's, less
-# its aur packages, plus a way in over ssh for the test.
+# its aur packages, plus a way in over ssh for the test and a mkinitcpio
+# drop-in, which the new machine's initramfs has to be built with.
 cat > /tmp/yoq-access.toml <<TOML
 
 [files."/root/.ssh/authorized_keys"]
 text = "$key\n"
 mode = "0600"
 TOML
+cat tests/vm/initramfs.toml >> /tmp/yoq-access.toml
 "$vm" copy /tmp/yoq-access.toml /root/yoq-access.toml
 "$vm" ssh "rm -rf /root/machines && cp -a /etc/yoq/. /root/machines && cd /root/machines && sed -i '/^aur = /d' machine.toml && cat /root/yoq-access.toml >> machine.toml && git add -A && git -c user.name=t -c user.email=t@localhost commit -q -m 'a way in for tests'"
 
@@ -33,6 +35,7 @@ check "findmnt -no FSROOT /var" /@var
 check "findmnt -no FSROOT /etc/yoq" /@var/lib/yoq/config
 check "readlink /var/lib/pacman" /usr/lib/sysimage/pacman
 check "ls /var/lib/yoq/generations" 1.json
+check "lsinitcpio /boot/initramfs-linux.img | grep -c etc/yoq-initramfs-marker" 1
 check "git -C /etc/yoq log --format=%s | grep -c 'a way in for tests'" 1
 check "/usr/local/bin/os events | grep -c '\"kind\":\"install\",\"generation\":1,'" 1
 settled

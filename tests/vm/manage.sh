@@ -22,6 +22,17 @@ check "/usr/local/bin/os edit 2>&1 | grep -c 'needs a terminal'" 1
 "$vm" ssh "mkdir -p /run/yoq && (setsid flock /run/yoq/lock sleep 30 </dev/null >/dev/null 2>&1 &) ; sleep 1"
 check "/usr/local/bin/os apply --yes 2>&1 | grep -c 'is changing this machine'" 1
 "$vm" ssh "sleep 30"
+# a mkinitcpio drop-in os writes rebuilds the initramfs once every file
+# is in place: here it pulls in a marker file os writes too.
+"$vm" copy tests/vm/initramfs.toml /root/initramfs.toml
+"$vm" ssh "cp /etc/yoq/machine.toml /root/machine.toml.saved && cat /root/initramfs.toml >> /etc/yoq/machine.toml && /usr/local/bin/os apply --yes" | tail -n 2
+check "lsinitcpio /boot/initramfs-linux.img | grep -c etc/yoq-initramfs-marker" 1
+# the drop-in changing again rebuilds it again, without the marker now.
+"$vm" ssh "sed -i 's|^text = \"FILES+=.*|text = \"# nothing\\\\n\"|' /etc/yoq/machine.toml && /usr/local/bin/os apply --yes" | tail -n 2
+check "lsinitcpio /boot/initramfs-linux.img | grep -c etc/yoq-initramfs-marker" 0
+# files taken out of the config stay, so they go by hand.
+"$vm" ssh "cp /root/machine.toml.saved /etc/yoq/machine.toml && rm /etc/mkinitcpio.conf.d/50-yoq-test.conf /etc/yoq-initramfs-marker"
+check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 # leaving the manage rung takes only os's state; the config stays.
 check "/usr/local/bin/os uninstall --yes >/dev/null; echo \$?" 0
 check "test -e /var/lib/yoq && echo state || echo none" none
