@@ -19,8 +19,8 @@ pub fn configCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var it: cli.ArgIter = .{ .args = args };
     if (!eql(it.next() orelse "", "show")) return cli.usageError(ctx, usage_text);
     var sources = false;
-    while (it.next()) |a| {
-        if (!eql(a, "--resolved")) return cli.usageError(ctx, usage_text);
+    while (it.next()) |arg| {
+        if (!eql(arg, "--resolved")) return cli.usageError(ctx, usage_text);
         sources = true;
     }
 
@@ -63,12 +63,12 @@ pub fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var verbose = false;
     var save: ?[]const u8 = null;
     var it: cli.ArgIter = .{ .args = args };
-    while (it.next()) |a| {
-        if (eql(a, "-v") or eql(a, "--verbose")) {
+    while (it.next()) |arg| {
+        if (eql(arg, "-v") or eql(arg, "--verbose")) {
             verbose = true;
-        } else if (eql(a, "-o") or eql(a, "--output")) {
+        } else if (eql(arg, "-o") or eql(arg, "--output")) {
             save = it.next() orelse return cli.usageError(ctx, usage_text);
-        } else if (eql(a, "--lock")) {
+        } else if (eql(arg, "--lock")) {
             in.lock_path = it.next() orelse return cli.usageError(ctx, usage_text);
         } else return cli.usageError(ctx, usage_text);
     }
@@ -86,10 +86,8 @@ pub fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         // the same document --json prints: `os apply <file>` checks its hash.
         var doc: std.Io.Writer.Allocating = .init(result.allocator());
         try planner.writeJson(&doc.writer, result.allocator(), &result.plan);
-        std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = path, .data = doc.written() }) catch |e| {
-            try ctx.err.print("os: can't write {s}: {s}\n", .{ path, @errorName(e) });
-            return 1;
-        };
+        std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = path, .data = doc.written() }) catch |e|
+            return cli.fail(ctx, "can't write {s}: {s}", .{ path, @errorName(e) });
         if (!ctx.json) try ctx.out.print("\nsaved to {s}. `os apply {s}` applies this plan, and refuses if it changed.\n", .{ path, path });
     }
     return 0;
@@ -97,10 +95,9 @@ pub fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
 pub fn statusCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (try cli.noArgs(ctx, args, "os status")) |code| return code;
-    const in = cli.inputs(ctx);
     var w: cli.Work = .init(ctx);
     defer w.deinit();
-    const result = try w.plan(in) orelse return w.fail();
+    const result = try w.plan(cli.inputs(ctx)) orelse return w.fail();
 
     const s = try status.summarize(result.allocator(), result.state.config(), &result.state.lock, &result.facts, &result.plan);
     if (ctx.json) {

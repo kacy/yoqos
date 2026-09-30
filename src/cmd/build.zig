@@ -66,10 +66,9 @@ pub fn buildCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer w.deinit();
     const a = w.allocator();
     if (try cli.needsHost(ctx, "a build installs packages and mounts filesystems")) return 1;
-    if (try applying.refused(ctx, applying.blocker(ctx))) return 1;
-    if (dir.len == 0 or dir[0] != '/' or std.mem.eql(u8, std.mem.trimEnd(u8, dir, "/"), "")) {
-        try ctx.err.print("os: {s} has to be an absolute path, and not /.\n", .{dir});
-        return 1;
+    if (try cli.refused(ctx, applying.blocker(ctx))) return 1;
+    if (dir.len == 0 or dir[0] != '/' or std.mem.trimEnd(u8, dir, "/").len == 0) {
+        return cli.fail(ctx, "{s} has to be an absolute path, and not /.", .{dir});
     }
     // made here, only root can write in it: a directory someone else made
     // could have hooks or symlinks planted in it while the build runs.
@@ -78,18 +77,14 @@ pub fn buildCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var z: [std.fs.max_path_bytes]u8 = undefined;
     const dir_z = std.fmt.bufPrintZ(&z, "{s}", .{dir}) catch return cli.usageError(ctx, usage_text);
     if (std.os.linux.errno(std.os.linux.mkdir(dir_z, 0o755)) != .SUCCESS) {
-        try ctx.err.print("os: can't make {s}. a clean build starts from nothing, in a directory it makes itself, so it can't be there already.\n", .{dir});
-        return 1;
+        return cli.fail(ctx, "can't make {s}. a clean build starts from nothing, in a directory it makes itself, so it can't be there already.", .{dir});
     }
     var b: Builder = .{ .ctx = ctx, .a = a, .dir = dir };
     // on every way out: a bind of /dev left behind would take the host's
     // device nodes with it when someone removes the directory.
     {
         defer b.unmount();
-        if (try b.prepare()) |why| {
-            try ctx.err.print("os: {s}\n", .{why});
-            return 1;
-        }
+        if (try b.prepare()) |why| return cli.fail(ctx, "{s}", .{why});
         const code = try b.install();
         if (code != 0) return code;
     }
@@ -132,13 +127,7 @@ pub const Builder = struct {
     /// hooks expect, mounted as pacstrap mounts them. os's caches are this
     /// machine's, so packages it has already come from there.
     pub fn prepare(b: *Builder) !?[]const u8 {
-        if (b.staged) return b.mountAll(&.{
-            .{ "proc", &.{ "-t", "proc", "proc" } },
-            .{ "sys", &.{ "-t", "sysfs", "-o", "ro", "sys" } },
-            .{ "dev", &.{ "--rbind", "--make-rslave", "/dev" } },
-            .{ "run", &.{ "-t", "tmpfs", "-o", "mode=0755,nosuid,nodev", "run" } },
-            .{ "var", &.{ "--rbind", "--make-rslave", "/var" } },
-        });
+        if (b.staged) return b.mountAll(&(api_mounts ++ .{.{ "var", &.{ "--rbind", "--make-rslave", "/var" } }}));
         for ([_][]const u8{ "var/lib/pacman", "var/cache/yoq", "proc", "sys", "dev", "run", "tmp", "etc/pacman.d" }) |d| {
             if (try b.run(&.{ "mkdir", "-p", try b.in(d) })) |w| return w;
         }
@@ -166,24 +155,25 @@ pub const Builder = struct {
             \\unset _yoq_hooks _yoq_hook
             \\
         , null) catch return "can't write the build's mkinitcpio drop-in";
-        return b.mountAll(if (b.share_cache) &.{
-            .{ "proc", &.{ "-t", "proc", "proc" } },
-            .{ "sys", &.{ "-t", "sysfs", "-o", "ro", "sys" } },
-            .{ "dev", &.{ "--rbind", "--make-rslave", "/dev" } },
-            .{ "run", &.{ "-t", "tmpfs", "-o", "mode=0755,nosuid,nodev", "run" } },
-            .{ "var/cache/yoq", &.{ "--bind", "/var/cache/yoq" } },
-        } else &.{
-            .{ "proc", &.{ "-t", "proc", "proc" } },
-            .{ "sys", &.{ "-t", "sysfs", "-o", "ro", "sys" } },
-            .{ "dev", &.{ "--rbind", "--make-rslave", "/dev" } },
-            .{ "run", &.{ "-t", "tmpfs", "-o", "mode=0755,nosuid,nodev", "run" } },
-        });
+        return b.mountAll(if (b.share_cache)
+            &(api_mounts ++ .{.{ "var/cache/yoq", &.{ "--bind", "/var/cache/yoq" } }})
+        else
+            &api_mounts);
     }
 
+    /// a place under the new root, and the arguments that mount it there.
     const Mount = struct { []const u8, []const []const u8 };
 
-    /// mounts each of `mounts` at its place under the new root: the
-    /// filesystems package scripts and hooks expect, as pacstrap mounts them.
+    /// the filesystems package scripts and hooks expect, as pacstrap
+    /// mounts them.
+    const api_mounts = [_]Mount{
+        .{ "proc", &.{ "-t", "proc", "proc" } },
+        .{ "sys", &.{ "-t", "sysfs", "-o", "ro", "sys" } },
+        .{ "dev", &.{ "--rbind", "--make-rslave", "/dev" } },
+        .{ "run", &.{ "-t", "tmpfs", "-o", "mode=0755,nosuid,nodev", "run" } },
+    };
+
+    /// mounts each of `mounts` at its place under the new root.
     fn mountAll(b: *Builder, mounts: []const Mount) !?[]const u8 {
         for (mounts) |m| {
             const point = try b.in(m[0]);
@@ -228,8 +218,7 @@ pub const Builder = struct {
             if (c.kind != .unit) continue;
             const verb = if (c.op == .remove) "disable" else "enable";
             if (try b.run(&.{ "systemctl", try std.fmt.allocPrint(b.a, "--root={s}", .{b.dir}), verb, "--", c.subject })) |why| {
-                try ctx.err.print("os: couldn't {s} {s} in the build: {s}\n", .{ verb, c.subject, why });
-                return 1;
+                return cli.fail(ctx, "couldn't {s} {s} in the build: {s}", .{ verb, c.subject, why });
             }
         }
         return 0;

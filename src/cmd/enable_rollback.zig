@@ -21,7 +21,7 @@ const Allocator = std.mem.Allocator;
 pub fn enableRollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var yes = false;
     for (args) |arg| {
-        if (applying.isYes(arg)) yes = true else return cli.usageError(ctx, "os enable-rollback [--yes]");
+        if (cli.isYes(arg)) yes = true else return cli.usageError(ctx, "os enable-rollback [--yes]");
     }
     var w: cli.Work = .init(ctx);
     defer w.deinit();

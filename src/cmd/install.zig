@@ -44,7 +44,7 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             host = it.next() orelse return cli.usageError(ctx, usage_text);
         } else if (cli.eql(arg, "--update")) {
             update = true;
-        } else if (applying.isYes(arg)) {
+        } else if (cli.isYes(arg)) {
             yes = true;
         } else if (source == null and arg.len > 0 and arg[0] != '-') {
             source = arg;
@@ -55,7 +55,7 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         if (std.mem.indexOfAny(u8, h, "/.") != null or h.len == 0) return cli.usageError(ctx, usage_text);
     }
     if (try cli.needsHost(ctx, "install erases a disk and builds a machine on it")) return 1;
-    if (try applying.refused(ctx, applying.blocker(ctx))) return 1;
+    if (try cli.refused(ctx, applying.blocker(ctx))) return 1;
 
     var w: cli.Work = .init(ctx);
     defer w.deinit();
@@ -90,8 +90,7 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 fn fail(ctx: *Context, why: []const u8) !u8 {
-    try ctx.err.print("os: {s}\nos: the install stopped there. the disk isn't bootable yet; run it again to start over.\n", .{why});
-    return 1;
+    return cli.fail(ctx, "{s}\nos: the install stopped there. the disk isn't bootable yet; run it again to start over.", .{why});
 }
 
 const Step = struct {
@@ -157,7 +156,7 @@ const Installer = struct {
         };
         const c = &loaded.config;
         const l = try locking.readLock(ctx, in.a, ctx.config_path) orelse {
-            try ctx.err.print("os: the config has no machine.lock beside it. make one with `os update` on a machine it describes, or install with --update.\n", .{});
+            try ctx.err.writeAll("os: the config has no machine.lock beside it. make one with `os update` on a machine it describes, or install with --update.\n");
             return null;
         };
         var users: std.ArrayList([]const u8) = .empty;
@@ -286,8 +285,9 @@ const Installer = struct {
             &.{ "ln", "-s", "/" ++ generation.pacman_db, db },
         })) |w| return w;
         var why: []const u8 = "";
-        const fstab = try enable.rewriteFstab(in.a, try std.fmt.allocPrint(in.a, "UUID={s} / btrfs rw,relatime,compress=zstd 0 0\n", .{try in.uuid(in.root, &why) orelse return why}), .{
-            .uuid = try in.uuid(in.root, &why) orelse return why,
+        const root_uuid = try in.uuid(in.root, &why) orelse return why;
+        const fstab = try enable.rewriteFstab(in.a, try std.fmt.allocPrint(in.a, "UUID={s} / btrfs rw,relatime,compress=zstd 0 0\n", .{root_uuid}), .{
+            .uuid = root_uuid,
             .add_var = true,
             .data = &generation.data_dirs,
             .bind_config = true,

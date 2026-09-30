@@ -1,5 +1,7 @@
 const std = @import("std");
 const cli = @import("cli.zig");
+const alpm = @import("alpm.zig");
+const aur = @import("aur.zig");
 const disk = @import("disk.zig");
 const sync = @import("sync.zig");
 const history = @import("history.zig");
@@ -21,20 +23,21 @@ pub fn main(init: std.process.Init) !void {
     var git: history.Git = .{ .io = init.io };
     var http: sync.HttpFetcher = .init(init.gpa, init.io);
     defer http.deinit();
+    const env = init.environ_map;
     var ctx: cli.Context = .{
-        .io = init.io,
-        .files = disk_files.files(),
-        .fetcher = http.fetcher(),
-        .history = git.history(),
-        .in = &in.interface,
-        .interactive = tty,
-        .in_own_transaction = init.environ_map.get(@import("alpm.zig").own_env) != null,
-        .aur_url = init.environ_map.get("YOQ_AUR") orelse @import("aur.zig").default_url,
-        .editor = init.environ_map.get("VISUAL") orelse init.environ_map.get("EDITOR") orelse "vi",
         .gpa = init.gpa,
-        .config_path = try hostConfig(init.arena.allocator(), init.io),
+        .io = init.io,
         .out = &out.interface,
         .err = &err.interface,
+        .config_path = try hostConfig(init.arena.allocator(), init.io),
+        .fetcher = http.fetcher(),
+        .history = git.history(),
+        .files = disk_files.files(),
+        .in = &in.interface,
+        .interactive = tty,
+        .in_own_transaction = env.get(alpm.own_env) != null,
+        .aur_url = env.get("YOQ_AUR") orelse aur.default_url,
+        .editor = env.get("VISUAL") orelse env.get("EDITOR") orelse "vi",
     };
     const code = cli.run(&ctx, argv[1..]) catch |e| blk: {
         err.interface.print("os: {s}\n", .{@errorName(e)}) catch {};
@@ -51,13 +54,11 @@ pub fn main(init: std.process.Init) !void {
 /// under hosts/ named for this machine's hostname.
 fn hostConfig(a: std.mem.Allocator, io: std.Io) ![]const u8 {
     const cwd = std.Io.Dir.cwd();
-    cwd.access(io, cli.default_config, .{}) catch {
-        const name = cwd.readFileAlloc(io, "/etc/hostname", a, .limited(256)) catch return cli.default_config;
-        const path = try cli.hostConfigPath(a, std.mem.trim(u8, name, " \n"));
-        cwd.access(io, path, .{}) catch return cli.default_config;
-        return path;
-    };
-    return cli.default_config;
+    if (cwd.access(io, cli.default_config, .{})) |_| return cli.default_config else |_| {}
+    const name = cwd.readFileAlloc(io, "/etc/hostname", a, .limited(256)) catch return cli.default_config;
+    const path = try cli.hostConfigPath(a, std.mem.trim(u8, name, " \n"));
+    cwd.access(io, path, .{}) catch return cli.default_config;
+    return path;
 }
 
 test {
@@ -73,7 +74,7 @@ test {
     _ = @import("lock.zig");
     _ = @import("users.zig");
     _ = @import("rootfs.zig");
-    _ = @import("aur.zig");
+    _ = aur;
     _ = @import("exec.zig");
     _ = @import("news.zig");
     _ = @import("journal.zig");
@@ -87,11 +88,6 @@ test {
     _ = @import("install.zig");
     _ = @import("accounts.zig");
     _ = @import("newconfig.zig");
-    _ = @import("cmd/install.zig");
-    _ = @import("cmd/diff.zig");
-    _ = @import("cmd/doctor.zig");
-    _ = @import("cmd/docs.zig");
-    _ = @import("cmd/build.zig");
     _ = @import("gens.zig");
     _ = @import("planner.zig");
     _ = @import("pipeline.zig");
@@ -101,7 +97,7 @@ test {
     _ = @import("schema.zig");
     _ = @import("edit.zig");
     _ = @import("change.zig");
-    _ = @import("alpm.zig");
+    _ = alpm;
     _ = @import("observe.zig");
     _ = @import("sync.zig");
     _ = @import("systemd.zig");
