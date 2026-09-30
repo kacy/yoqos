@@ -196,6 +196,45 @@ pub fn title(a: Allocator, r: Record) ![]const u8 {
     return std.fmt.allocPrint(a, "yoq {d} · {s} · {s}", .{ r.n, try dateOf(a, r.time), r.reason });
 }
 
+/// room left over on the esp besides new boot files: fat rounds every
+/// file up to a whole cluster, and a copy goes in beside its name before
+/// it's renamed there.
+pub const esp_slack = 1 << 20;
+
+/// null if new boot files of `need` bytes fit in the `free` bytes of the
+/// esp at `esp`, or else what to say: how far short it is, and which of
+/// `records` `os gc --keep 1` would remove to make room. that's all but
+/// the first, the pinned ones, the newest, and the one whose root is
+/// `running_root`, the root this machine runs.
+pub fn espRoom(a: Allocator, esp: []const u8, need: u64, free: u64, records: []const Record, running_root: []const u8) !?[]const u8 {
+    if (need +| esp_slack <= free) return null;
+    const mib = 1 << 20;
+    const short = try std.fmt.allocPrint(a, "the esp at {s} has {d} MiB free, and the new boot files need {d} MiB", .{ esp, free / mib, (need + mib - 1) / mib });
+    var runs: u32 = 0;
+    for (records) |r| {
+        if (std.mem.eql(u8, r.root, std.mem.trimStart(u8, running_root, "/"))) runs = r.n;
+    }
+    var old: std.ArrayList(u32) = .empty;
+    for (records, 0..) |r, i| {
+        if (r.n == 1 or r.pinned or r.n == runs or i == records.len - 1) continue;
+        try old.append(a, r.n);
+    }
+    const n = old.items.len;
+    if (n == 0) return try std.fmt.allocPrint(a, "{s}. no generation is left to remove, so make room there by hand", .{short});
+    // "2", "2 and 4", "2, 4, and 5".
+    var list: std.ArrayList(u8) = .empty;
+    for (old.items, 0..) |g, i| {
+        const sep = if (i == 0) "" else if (n == 2) " and " else if (i == n - 1) ", and " else ", ";
+        try list.print(a, "{s}{d}", .{ sep, g });
+    }
+    return try std.fmt.allocPrint(a, "{s}. `os gc --keep 1` removes generation{s} {s}, with the boot files only {s}", .{
+        short,
+        if (n == 1) "" else "s",
+        list.items,
+        if (n == 1) "it uses" else "they use",
+    });
+}
+
 /// "2026-09-26" for unix seconds.
 pub fn dateOf(a: Allocator, secs: i64) ![]const u8 {
     const es: std.time.epoch.EpochSeconds = .{ .secs = @intCast(secs) };
@@ -220,6 +259,46 @@ test "which generations collection keeps" {
     var kept: [6]bool = undefined;
     for (recs, &kept) |r, *k| k.* = keeps(r, &recs, 2);
     try testing.expectEqualSlices(bool, &.{ true, false, true, false, true, true }, &kept);
+}
+
+test "boot files that don't fit on the esp name what gc would remove" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const mib = 1 << 20;
+    var recs = [_]Record{
+        .{ .n = 1, .time = 0, .root = "@roots/1", .reason = "enable-rollback" },
+        .{ .n = 2, .time = 0, .root = "@roots/1", .reason = "a" },
+        .{ .n = 3, .time = 0, .root = "@roots/1", .reason = "b", .pinned = true },
+        .{ .n = 4, .time = 0, .root = "@roots/1", .reason = "c" },
+        .{ .n = 5, .time = 0, .root = "@roots/5", .reason = "d" },
+        .{ .n = 6, .time = 0, .root = "@roots/6", .reason = "e" },
+    };
+    try testing.expectEqual(null, try espRoom(a, "/boot", 30 * mib, 64 * mib, &recs, "/@roots/5"));
+    // the room to spare counts too.
+    try testing.expect(try espRoom(a, "/boot", 30 * mib, 30 * mib, &recs, "/@roots/5") != null);
+    try testing.expectEqualStrings(
+        "the esp at /boot has 2 MiB free, and the new boot files need 31 MiB. `os gc --keep 1` removes generations 2 and 4, with the boot files only they use",
+        (try espRoom(a, "/boot", 30 * mib + 1, 2 * mib + 5, &recs, "/@roots/5")).?,
+    );
+    // several generations share a root; the newest of them is the one running.
+    try testing.expectEqualStrings(
+        "the esp at /boot has 0 MiB free, and the new boot files need 1 MiB. `os gc --keep 1` removes generations 2 and 5, with the boot files only they use",
+        (try espRoom(a, "/boot", 10, 0, &recs, "/@roots/1")).?,
+    );
+    try testing.expectEqualStrings(
+        "the esp at /boot has 0 MiB free, and the new boot files need 1 MiB. `os gc --keep 1` removes generations 2, 4, and 5, with the boot files only they use",
+        (try espRoom(a, "/boot", 10, 0, &recs, "/@roots/6")).?,
+    );
+    recs[1].pinned = true;
+    try testing.expectEqualStrings(
+        "the esp at /boot has 0 MiB free, and the new boot files need 1 MiB. `os gc --keep 1` removes generation 4, with the boot files only it uses",
+        (try espRoom(a, "/boot", 10, 0, &recs, "/@roots/5")).?,
+    );
+    try testing.expectEqualStrings(
+        "the esp at /efi has 0 MiB free, and the new boot files need 1 MiB. no generation is left to remove, so make room there by hand",
+        (try espRoom(a, "/efi", 10, 0, recs[0..2], "/@roots/1")).?,
+    );
 }
 
 test "a generation's kernel command line" {

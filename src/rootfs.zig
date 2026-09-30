@@ -90,6 +90,19 @@ fn parseBootTime(stat: []const u8) ?i64 {
     return null;
 }
 
+/// the bytes free for anyone to use on the filesystem holding `path`, or
+/// null if that can't be told.
+pub fn freeBytes(path: []const u8) ?u64 {
+    const linux = std.os.linux;
+    var z: [std.fs.max_path_bytes]u8 = undefined;
+    const p = std.fmt.bufPrintZ(&z, "{s}", .{path}) catch return null;
+    // struct statfs on 64-bit linux; only the block size and count matter.
+    const Statfs = extern struct { type: i64, bsize: i64, blocks: u64, bfree: u64, bavail: u64, rest: [9]i64 };
+    var st: Statfs = undefined;
+    if (linux.errno(linux.syscall2(.statfs, @intFromPtr(p.ptr), @intFromPtr(&st))) != .SUCCESS) return null;
+    return @as(u64, @intCast(st.bsize)) *| st.bavail;
+}
+
 pub fn pathExists(io: std.Io, path: []const u8) bool {
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
@@ -164,6 +177,11 @@ test "the boot time from /proc/stat" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expect((try bootTime(arena.allocator(), std.testing.io)).? > 0);
+}
+
+test "free space on a filesystem" {
+    try std.testing.expect(freeBytes(".").? > 0);
+    try std.testing.expectEqual(null, freeBytes("/no/such/place"));
 }
 
 test "a /proc file reads whole" {

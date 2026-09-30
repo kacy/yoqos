@@ -235,8 +235,8 @@ pub const Machine = struct {
         }
         return switch (m.loader) {
             .grub => m.write(try std.fs.path.join(m.a, &.{ m.boot.esp.?, "grub/grub.cfg" }), try menu.grub(m.a, .{ .esp_uuid = m.esp_uuid, .root_uuid = m.root_uuid, .default = "head", .entries = entries.items })),
-            .limine => m.writeOnEsp(entries.items, writeLimine),
-            .@"systemd-boot" => m.writeOnEsp(entries.items, writeSdboot),
+            .limine => m.writeOnEsp(entries.items, records, writeLimine),
+            .@"systemd-boot" => m.writeOnEsp(entries.items, records, writeSdboot),
             .refind => m.writeRefind(entries.items),
         };
     }
@@ -253,27 +253,42 @@ pub const Machine = struct {
 
     /// limine and systemd-boot read only fat, so entries whose files are
     /// in a root's /boot get copies on the esp, named by content so
-    /// generations share them. `put` puts the menu in place; then copies
-    /// no entry uses any more go.
-    fn writeOnEsp(m: *const Machine, entries: []menu.Entry, comptime put: fn (*const Machine, []menu.Entry) anyerror!?[]const u8) !?[]const u8 {
+    /// generations share them. copies that don't fit leave everything as
+    /// it was, and say which of `records` to remove to make room. `put`
+    /// puts the menu in place; then copies no entry uses any more go.
+    fn writeOnEsp(m: *const Machine, entries: []menu.Entry, records: []const generation.Record, comptime put: fn (*const Machine, []menu.Entry) anyerror!?[]const u8) !?[]const u8 {
         const dir = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir });
         if (try m.run(&.{ "mkdir", "-p", dir })) |w| return w;
         var used: std.ArrayList([]const u8) = .empty;
+        var missing: std.ArrayList(EspCopy) = .empty;
         for (entries) |*e| {
             if (e.esp_dir != null) continue;
             const from = try m.at(&.{ e.subvol, "boot" });
-            if (try m.espCopy(from, &e.kernel, &used)) |w| return w;
+            if (try m.espName(from, &e.kernel, &used, &missing)) |w| return w;
             const initrds = try m.a.dupe([]const u8, e.initrds);
             for (initrds) |*i| {
-                if (try m.espCopy(from, i, &used)) |w| return w;
+                if (try m.espName(from, i, &used, &missing)) |w| return w;
             }
             e.initrds = initrds;
             e.esp_dir = esp_boot_dir;
+        }
+        var need: u64 = 0;
+        for (missing.items) |c| need += c.size;
+        if (need > 0) {
+            if (rootfs.freeBytes(dir)) |room| {
+                if (try generation.espRoom(m.a, m.boot.esp.?, need, room, records, m.boot.root_subvol orelse "")) |w| return w;
+            }
+        }
+        for (missing.items) |c| {
+            if (try m.replaceFile(c.src, c.dest)) |w| return w;
         }
         if (try put(m, entries)) |w| return w;
         m.removeUnused(dir, used.items, "", "");
         return null;
     }
+
+    /// a boot file the esp doesn't have yet, and where it goes.
+    const EspCopy = struct { src: []const u8, dest: []const u8, size: u64 };
 
     /// deletes the files in `dir` named `prefix`*`suffix` that aren't in
     /// `used`.
@@ -313,10 +328,10 @@ pub const Machine = struct {
         return std.fs.path.join(m.a, &.{ std.fs.path.dirnamePosix(conf).?, "entries" });
     }
 
-    /// copies the file `name` from `from` into the esp's boot directory,
-    /// as "<hash>-<name>", unless it's there already, and makes `name`
-    /// that.
-    fn espCopy(m: *const Machine, from: []const u8, name: *[]const u8, used: *std.ArrayList([]const u8)) !?[]const u8 {
+    /// makes `name`, a file in `from`, the name of its copy in the esp's
+    /// boot directory, "<hash>-<name>", and adds that to `used`. if the
+    /// esp doesn't have it yet, it goes in `missing`.
+    fn espName(m: *const Machine, from: []const u8, name: *[]const u8, used: *std.ArrayList([]const u8), missing: *std.ArrayList(EspCopy)) !?[]const u8 {
         const src = try std.fs.path.join(m.a, &.{ from, name.* });
         const sum = switch (try exec.output(m.a, m.io, &.{ "sha256sum", src })) {
             .ok => |t| t,
@@ -324,12 +339,13 @@ pub const Machine = struct {
         };
         if (sum.len < 16) return try std.fmt.allocPrint(m.a, "can't hash {s}", .{src});
         const copy = try std.fmt.allocPrint(m.a, "{s}-{s}", .{ sum[0..16], name.* });
+        name.* = copy;
+        if (lists.contains(used.items, copy)) return null;
         try used.append(m.a, copy);
         const dest = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir, copy });
-        if (!rootfs.pathExists(m.io, dest)) {
-            if (try m.replaceFile(src, dest)) |w| return w;
-        }
-        name.* = copy;
+        if (rootfs.pathExists(m.io, dest)) return null;
+        const st = std.Io.Dir.cwd().statFile(m.io, src, .{}) catch return try std.fmt.allocPrint(m.a, "can't read {s}", .{src});
+        try missing.append(m.a, .{ .src = src, .dest = dest, .size = st.size });
         return null;
     }
 
@@ -339,7 +355,10 @@ pub const Machine = struct {
     /// boots it is synced too.
     fn replaceFile(m: *const Machine, src: []const u8, dest: []const u8) !?[]const u8 {
         const tmp = try std.fmt.allocPrint(m.a, "{s}.yoq-new", .{dest});
-        return exec.runAll(m.a, m.io, &.{ &.{ "cp", src, tmp }, &.{ "sync", tmp }, &.{ "mv", "-f", tmp, dest } });
+        const why = try exec.runAll(m.a, m.io, &.{ &.{ "cp", src, tmp }, &.{ "sync", tmp }, &.{ "mv", "-f", tmp, dest } }) orelse return null;
+        // a copy cut short, by a full esp say, would only take up room.
+        std.Io.Dir.cwd().deleteFile(m.io, tmp) catch {};
+        return why;
     }
 
     /// refind reads btrfs through its driver, so entries boot from each
