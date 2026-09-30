@@ -1,5 +1,42 @@
 # changelog
 
+## unreleased
+
+### new
+
+- `os events` prints what os did as json lines: applies, config commits,
+  generations, rollbacks, trials, gc, pins, enable-rollback, installs, and
+  pacman runs outside os. `--follow` keeps printing new ones, and `--since`
+  starts at a time.
+- `os schema lock` and `os schema events`.
+- `os why` answers for files (the config key that writes one, or the
+  package that owns it) and for units (the key that enables one).
+- `os adopt /etc/<file>` copies a file next to the config and adds a
+  `[files]` entry for it, then applies like `os add`.
+- `--` ends flags for every command.
+- `os status` lists services the config turns on that systemd can't
+  enable, since they have no `[Install]` section.
+- aur packages build against the lock's package date.
+- `os update` stops before any review with E0130 when a recipe needs an aur
+  package the config doesn't list.
+- a split aur recipe only installs the package named after it.
+
+### fixes
+
+- `os apply` plans again after the yes, and refuses with E0129 if the plan
+  changed in between.
+- a pacman lock left by a power cut no longer blocks every later apply:
+  `os apply` clears one from before this boot.
+- a staged change that can't be recorded fails the command instead of
+  exiting 0.
+- boot files that don't fit on the esp are refused before anything is
+  copied, naming the generations `os gc` would remove. a staged build that
+  fails on a nearly full disk says so.
+- config edits no longer write invalid toml under a key that isn't a table
+  or into an inline table, or leave a stray comma behind.
+- `os diff` with no generations says so. arch news titles lose control
+  characters, and news dates out of range are skipped.
+
 ## 0.1.2
 
 a new machine is easier to set up: `os init --new` writes a config to
