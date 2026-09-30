@@ -13,7 +13,13 @@ const c = @cImport({
     @cInclude("systemd/sd-daemon.h");
 });
 
-const manager = .{ "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager" };
+const destination = "org.freedesktop.systemd1";
+const object = "/org/freedesktop/systemd1";
+const manager_iface = "org.freedesktop.systemd1.Manager";
+const service_iface = "org.freedesktop.systemd1.Service";
+
+/// units by name, as they're found.
+const Found = std.StringArrayHashMapUnmanaged(facts.Unit);
 
 pub fn running() bool {
     return c.sd_booted() > 0;
@@ -44,7 +50,7 @@ pub fn units(a: Allocator, diags: *diag.List) api.Error!?[]facts.Unit {
     };
     defer _ = c.sd_bus_flush_close_unref(bus);
 
-    var found: std.StringArrayHashMapUnmanaged(facts.Unit) = .empty;
+    var found: Found = .empty;
     if (!try unitFiles(a, bus, &found, diags)) return null;
     if (!try loadedUnits(a, bus, &found, diags)) return null;
 
@@ -55,7 +61,7 @@ pub fn units(a: Allocator, diags: *diag.List) api.Error!?[]facts.Unit {
     return out.items;
 }
 
-fn entry(a: Allocator, found: *std.StringArrayHashMapUnmanaged(facts.Unit), name: []const u8) !*facts.Unit {
+fn entry(a: Allocator, found: *Found, name: []const u8) !*facts.Unit {
     const gop = try found.getOrPut(a, name);
     if (!gop.found_existing) {
         gop.key_ptr.* = try a.dupe(u8, name);
@@ -66,11 +72,11 @@ fn entry(a: Allocator, found: *std.StringArrayHashMapUnmanaged(facts.Unit), name
 
 /// calls a manager method with arguments in sd-bus's `types` notation.
 /// returns null after reporting the failure.
-fn call(bus: ?*c.sd_bus, method: [*:0]const u8, types: ?[*:0]const u8, args: anytype, diags: *diag.List) !?*c.sd_bus_message {
+fn call(bus: *c.sd_bus, method: [*:0]const u8, types: ?[*:0]const u8, args: anytype, diags: *diag.List) !?*c.sd_bus_message {
     var err: c.sd_bus_error = std.mem.zeroes(c.sd_bus_error);
     defer c.sd_bus_error_free(&err);
     var reply: ?*c.sd_bus_message = null;
-    if (@call(.auto, c.sd_bus_call_method, .{ bus, manager[0], manager[1], manager[2], method, &err, &reply, types } ++ args) < 0) {
+    if (@call(.auto, c.sd_bus_call_method, .{ bus, destination, object, manager_iface, method, &err, &reply, types } ++ args) < 0) {
         const why: []const u8 = if (err.message != null) std.mem.span(err.message) else "no reply";
         try diags.add(.systemd_failed, null, "systemd's {s} failed: {s}", .{ method, why }, null);
         return null;
@@ -79,7 +85,7 @@ fn call(bus: ?*c.sd_bus, method: [*:0]const u8, types: ?[*:0]const u8, args: any
 }
 
 /// calls a method whose reply doesn't matter.
-fn do(bus: ?*c.sd_bus, method: [*:0]const u8, types: ?[*:0]const u8, args: anytype, diags: *diag.List) !bool {
+fn do(bus: *c.sd_bus, method: [*:0]const u8, types: ?[*:0]const u8, args: anytype, diags: *diag.List) !bool {
     const m = try call(bus, method, types, args, diags) orelse return false;
     _ = c.sd_bus_message_unref(m);
     return true;
@@ -101,51 +107,54 @@ pub fn change(a: Allocator, unit: []const u8, verbs: []const api.Verb, diags: *d
     // the match goes in first so the signal can't slip past.
     var jobs: Jobs = .{ .a = a };
     var slot: ?*c.sd_bus_slot = null;
-    if (c.sd_bus_add_match(bus, &slot, "type='signal',sender='org.freedesktop.systemd1',path='/org/freedesktop/systemd1'," ++
-        "interface='org.freedesktop.systemd1.Manager',member='JobRemoved'", Jobs.removed, &jobs) < 0)
-    {
+    const match = "type='signal',sender='" ++ destination ++ "',path='" ++ object ++ "',interface='" ++ manager_iface ++ "',member='JobRemoved'";
+    if (c.sd_bus_add_match(bus, &slot, match, Jobs.removed, &jobs) < 0) {
         try diags.add(.systemd_failed, null, "can't watch systemd's jobs", .{}, null);
         return false;
     }
     defer _ = c.sd_bus_slot_unref(slot);
     if (!try do(bus, "Subscribe", null, .{}, diags)) return false;
 
-    for (verbs) |v| switch (v) {
-        .enable, .disable => {
-            const ok = if (v == .enable)
-                try do(bus, "EnableUnitFiles", "asbb", .{ @as(c_int, 1), name.ptr, @as(c_int, 0), @as(c_int, 0) }, diags)
-            else
-                try do(bus, "DisableUnitFiles", "asb", .{ @as(c_int, 1), name.ptr, @as(c_int, 0) }, diags);
-            if (!ok or !try do(bus, "Reload", null, .{}, diags)) return false;
-        },
-        .start, .stop, .restart => {
-            const method: [*:0]const u8 = switch (v) {
-                .start => "StartUnit",
-                .stop => "StopUnit",
-                else => "RestartUnit",
-            };
-            const m = try call(bus, method, "ss", .{ name.ptr, "replace" }, diags) orelse return false;
-            defer _ = c.sd_bus_message_unref(m);
-            var job: [*c]const u8 = null;
-            if (c.sd_bus_message_read(m, "o", &job) < 0) return badReply(diags, std.mem.span(method));
-            const waited = jobs.wait(bus, std.mem.span(job)) catch |e| switch (e) {
-                error.BusFailed => {
-                    try diags.add(.systemd_failed, null, "lost touch with systemd while waiting to {s} {s}", .{ @tagName(v), unit }, null);
-                    return false;
-                },
-                error.OutOfMemory => return error.OutOfMemory,
-            };
-            const result = waited orelse {
-                try diags.add(.systemd_failed, null, "{s} didn't {s} within 90 seconds", .{ unit, @tagName(v) }, null);
-                return false;
-            };
-            if (!std.mem.eql(u8, result, "done")) {
-                try diags.add(.systemd_failed, null, "{s} of {s} ended with \"{s}\"", .{ @tagName(v), unit, result }, try std.fmt.allocPrint(a, "journalctl -u {s} says why", .{unit}));
-                return false;
-            }
-        },
-    };
+    // an `as` argument is a count, then the strings.
+    const one: c_int = 1;
+    const no: c_int = 0;
+    for (verbs) |v| {
+        const ok = switch (v) {
+            .enable => try do(bus, "EnableUnitFiles", "asbb", .{ one, name.ptr, no, no }, diags) and try do(bus, "Reload", null, .{}, diags),
+            .disable => try do(bus, "DisableUnitFiles", "asb", .{ one, name.ptr, no }, diags) and try do(bus, "Reload", null, .{}, diags),
+            .start, .stop, .restart => try runJob(a, bus, &jobs, name, v, diags),
+        };
+        if (!ok) return false;
+    }
     return true;
+}
+
+/// starts, stops, or restarts `unit`, and waits for its job to finish.
+fn runJob(a: Allocator, bus: *c.sd_bus, jobs: *Jobs, unit: [:0]const u8, v: api.Verb, diags: *diag.List) !bool {
+    const method: [:0]const u8 = switch (v) {
+        .start => "StartUnit",
+        .stop => "StopUnit",
+        .restart => "RestartUnit",
+        .enable, .disable => unreachable,
+    };
+    const m = try call(bus, method.ptr, "ss", .{ unit.ptr, "replace" }, diags) orelse return false;
+    defer _ = c.sd_bus_message_unref(m);
+    var job: [*c]const u8 = null;
+    if (c.sd_bus_message_read(m, "o", &job) < 0) return badReply(diags, method);
+    const waited = jobs.wait(bus, std.mem.span(job)) catch |e| switch (e) {
+        error.BusFailed => {
+            try diags.add(.systemd_failed, null, "lost touch with systemd while waiting to {s} {s}", .{ @tagName(v), unit }, null);
+            return false;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    const result = waited orelse {
+        try diags.add(.systemd_failed, null, "{s} didn't {s} within 90 seconds", .{ unit, @tagName(v) }, null);
+        return false;
+    };
+    if (std.mem.eql(u8, result, "done")) return true;
+    try diags.add(.systemd_failed, null, "{s} of {s} ended with \"{s}\"", .{ @tagName(v), unit, result }, try std.fmt.allocPrint(a, "journalctl -u {s} says why", .{unit}));
+    return false;
 }
 
 /// finished jobs, from JobRemoved (uoss: id, job path, unit, result).
@@ -189,7 +198,7 @@ const Jobs = struct {
 };
 
 /// enablement from ListUnitFiles: a(ss) of unit path and state.
-fn unitFiles(a: Allocator, bus: ?*c.sd_bus, found: *std.StringArrayHashMapUnmanaged(facts.Unit), diags: *diag.List) !bool {
+fn unitFiles(a: Allocator, bus: *c.sd_bus, found: *Found, diags: *diag.List) !bool {
     const m = try call(bus, "ListUnitFiles", null, .{}, diags) orelse return false;
     defer _ = c.sd_bus_message_unref(m);
     if (c.sd_bus_message_enter_container(m, 'a', "(ss)") < 0) return badReply(diags, "ListUnitFiles");
@@ -210,7 +219,7 @@ fn unitFiles(a: Allocator, bus: ?*c.sd_bus, found: *std.StringArrayHashMapUnmana
 
 /// run state from ListUnits: a(ssssssouso), of which the first and fourth,
 /// the name and active state, matter here.
-fn loadedUnits(a: Allocator, bus: ?*c.sd_bus, found: *std.StringArrayHashMapUnmanaged(facts.Unit), diags: *diag.List) !bool {
+fn loadedUnits(a: Allocator, bus: *c.sd_bus, found: *Found, diags: *diag.List) !bool {
     const m = try call(bus, "ListUnits", null, .{}, diags) orelse return false;
     defer _ = c.sd_bus_message_unref(m);
     if (c.sd_bus_message_enter_container(m, 'a', "(ssssssouso)") < 0) return badReply(diags, "ListUnits");
@@ -235,25 +244,25 @@ fn loadedUnits(a: Allocator, bus: ?*c.sd_bus, found: *std.StringArrayHashMapUnma
 }
 
 /// whether an inactive service is a oneshot whose last run succeeded.
-fn oneshotRan(bus: ?*c.sd_bus, path: [*c]const u8) bool {
+fn oneshotRan(bus: *c.sd_bus, path: [*c]const u8) bool {
     return serviceProperty(bus, path, "Type", "oneshot") and serviceProperty(bus, path, "Result", "success");
 }
 
-fn serviceProperty(bus: ?*c.sd_bus, path: [*c]const u8, name: [*:0]const u8, want: []const u8) bool {
+fn serviceProperty(bus: *c.sd_bus, path: [*c]const u8, name: [*:0]const u8, want: []const u8) bool {
     var err: c.sd_bus_error = std.mem.zeroes(c.sd_bus_error);
     defer c.sd_bus_error_free(&err);
     var value: [*c]u8 = null;
-    if (c.sd_bus_get_property_string(bus, manager[0], path, "org.freedesktop.systemd1.Service", name, &err, &value) < 0) return false;
+    if (c.sd_bus_get_property_string(bus, destination, path, service_iface, name, &err, &value) < 0) return false;
     defer std.c.free(value);
     return std.mem.eql(u8, std.mem.span(value), want);
 }
 
 /// a service's main process, or 0 if it has none or systemd won't say.
-fn mainPid(bus: ?*c.sd_bus, path: [*c]const u8) u32 {
+fn mainPid(bus: *c.sd_bus, path: [*c]const u8) u32 {
     var err: c.sd_bus_error = std.mem.zeroes(c.sd_bus_error);
     defer c.sd_bus_error_free(&err);
     var pid: u32 = 0;
-    if (c.sd_bus_get_property_trivial(bus, manager[0], path, "org.freedesktop.systemd1.Service", "MainPID", &err, 'u', &pid) < 0) return 0;
+    if (c.sd_bus_get_property_trivial(bus, destination, path, service_iface, "MainPID", &err, 'u', &pid) < 0) return 0;
     return pid;
 }
 
