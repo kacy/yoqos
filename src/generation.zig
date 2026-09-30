@@ -235,6 +235,18 @@ pub fn espRoom(a: Allocator, esp: []const u8, need: u64, free: u64, records: []c
     });
 }
 
+/// under this much free space, a new root that didn't build likely ran
+/// out of room: a kernel's modules and initramfs images take a few
+/// hundred MiB.
+pub const build_room = 1 << 30;
+
+/// what to add when a new root didn't build on a filesystem with `free`
+/// bytes left, or null when that's plenty.
+pub fn lowSpace(a: Allocator, free: u64) !?[]const u8 {
+    if (free >= build_room) return null;
+    return try std.fmt.allocPrint(a, "the root filesystem has {d} MiB free, which is likely why. `os gc` removes old generations and the space only they use; make room and try again", .{free >> 20});
+}
+
 /// "2026-09-26" for unix seconds.
 pub fn dateOf(a: Allocator, secs: i64) ![]const u8 {
     const es: std.time.epoch.EpochSeconds = .{ .secs = @intCast(secs) };
@@ -298,6 +310,17 @@ test "boot files that don't fit on the esp name what gc would remove" {
     try testing.expectEqualStrings(
         "the esp at /efi has 0 MiB free, and the new boot files need 1 MiB. no generation is left to remove, so make room there by hand",
         (try espRoom(a, "/efi", 10, 0, recs[0..2], "/@roots/1")).?,
+    );
+}
+
+test "a build that failed on a nearly full filesystem says so" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqual(null, try lowSpace(a, build_room));
+    try testing.expectEqualStrings(
+        "the root filesystem has 12 MiB free, which is likely why. `os gc` removes old generations and the space only they use; make room and try again",
+        (try lowSpace(a, 12 << 20 | 5)).?,
     );
 }
 
