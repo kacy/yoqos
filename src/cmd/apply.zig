@@ -45,8 +45,7 @@ pub fn applyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const expect = if (saved) |path| try savedHash(ctx, w.allocator(), path) orelse return 1 else null;
     if (try cli.refused(ctx, applyBlocker(ctx))) return 1;
     const done = try run(ctx, yes, cli.inputs(ctx), .{ .expect = expect });
-    try recordGeneration(ctx, done, "apply");
-    return done.code;
+    return recordGeneration(ctx, done, "apply");
 }
 
 /// the hash in a plan `os plan -o` saved, or null after saying why
@@ -265,18 +264,20 @@ fn scriptsFailed(ctx: *Context, problems: []const diag.Diagnostic) !u8 {
 
 /// after a run that changed a machine with generations, and after the
 /// caller's commits: the machine as it is becomes the next generation,
-/// with the config's commit. the change is done either way, so a
-/// generation that can't be recorded is a warning.
-pub fn recordGeneration(ctx: *Context, done: Outcome, reason: []const u8) !void {
-    if (!done.changed_generation) return;
+/// with the config's commit. returns the command's exit code. a live
+/// change is done either way, so a generation that can't be recorded is a
+/// warning; a staged one that can't be recorded is gone, and that fails.
+pub fn recordGeneration(ctx: *Context, done: Outcome, reason: []const u8) !u8 {
+    if (!done.changed_generation) return done.code;
+    const lost: u8 = if (done.staged_root != null) 1 else done.code;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    const boot = try w.generations() orelse return;
+    const boot = try w.generations() orelse return lost;
     var why: []const u8 = "";
     const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse {
         try ctx.err.print("os: applied, but not recorded as a generation: {s}\n", .{why});
-        return;
+        return lost;
     };
     defer m.close();
     const now = std.Io.Timestamp.now(ctx.io, .real).toSeconds();
@@ -286,13 +287,14 @@ pub fn recordGeneration(ctx: *Context, done: Outcome, reason: []const u8) !void 
         if (done.staged_root != null) {
             try ctx.err.print("os: the change was built, but couldn't be recorded, so it's gone again: {s}. the running system is as it was; `os apply` tries again.\n", .{problem});
         } else try ctx.err.print("os: applied, but not recorded as a generation: {s}\n", .{problem});
-        return;
+        return lost;
     }
     const records = try gens.readRecords(a, ctx.io, "/var");
     if (records.len > 0) try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .generation, .generation = records[records.len - 1].n, .message = reason });
     if (!ctx.json) try ctx.out.writeAll("recorded as a new generation; the boot menu has it.\n");
     try collectOld(ctx, &m, generation.default_keep);
     if (done.needs_reboot) try armTrial(ctx, a, boot);
+    return done.code;
 }
 
 /// a generation that needs a reboot boots once on trial: the next boot

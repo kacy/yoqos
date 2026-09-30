@@ -139,8 +139,7 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
 fn applyAfter(ctx: *Context, then: Then, message: []const u8) !u8 {
     try ctx.out.writeByte('\n');
     const done = try applying.run(ctx, then.yes, cli.inputs(ctx), .{});
-    try applying.recordGeneration(ctx, done, message);
-    return done.code;
+    return applying.recordGeneration(ctx, done, message);
 }
 
 /// `os adopt <path>`: copies a file from /etc next to the config and adds
