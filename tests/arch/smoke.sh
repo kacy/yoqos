@@ -78,6 +78,25 @@ rc=0
 pacman -Q tree
 "$os" --config "$cfg" remove --yes tree
 
+# a package that needs something several packages provide, with no one to
+# ask which: os lists the choices and fails, and puts the config back.
+# ant needs a java environment, which each jdk provides.
+config=$(sha256sum < "$cfg")
+lock=$(sha256sum < "$dir/machine.lock")
+for json in "" --json; do
+    rc=0
+    # shellcheck disable=SC2086
+    "$os" --config "$cfg" $json add --no-apply ant < /dev/null > "$dir/out" 2> "$dir/err" || rc=$?
+    if [ "$rc" != 1 ] || ! grep -q "E0123" "$dir/out" "$dir/err" || ! grep -q "java-environment has more than one provider: .*jdk" "$dir/out" "$dir/err"; then
+        echo "smoke: os $json add ant didn't list the providers and fail (exit $rc):"
+        cat "$dir/out" "$dir/err"
+        exit 1
+    fi
+    if [ -n "$json" ] && ! grep -q "yoq.errors/1" "$dir/out"; then echo "smoke: os --json add ant printed no errors document"; cat "$dir/out"; exit 1; fi
+    [ "$(sha256sum < "$cfg")" = "$config" ] || { echo "smoke: os $json add ant left the config changed"; exit 1; }
+    [ "$(sha256sum < "$dir/machine.lock")" = "$lock" ] || { echo "smoke: os $json add ant changed the lock"; exit 1; }
+done
+
 # a user: created with its shell and groups, then moved between groups.
 printf '\n[users.yoqtest]\nshell = "bash"\ngroups = ["wheel"]\n' >> "$cfg"
 "$os" --config "$cfg" apply --yes

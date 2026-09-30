@@ -97,9 +97,9 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const path = try locking.writeLock(ctx, a, top, &l) orelse return w.fail();
     try cli.record(ctx, a, top, message);
     // the generation comes after the commit, so it records the new lock.
-    try applying.recordGeneration(ctx, outcome, message);
+    const code = try applying.recordGeneration(ctx, outcome, message);
     if (ctx.json) try output.writeDoc(ctx.out, "yoq.update/1", .{ .lock = path, .sync_date = l.sync_date, .packages = l.packages.len, .diff = d, .news = posted });
-    return outcome.code;
+    return code;
 }
 
 /// fetches every aur recipe the config lists, has each new or changed

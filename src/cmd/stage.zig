@@ -33,14 +33,14 @@ pub fn build(ctx: *Context, boot: facts.Boot, in: pipeline.Inputs) anyerror!?[]c
     const root = try std.fmt.allocPrint(a, "/{s}/{d}", .{ generation.roots_dir, n });
     if (!ctx.json) try ctx.out.print("building generation {d} beside the running system, which doesn't change.\n", .{n});
     btrfs.snapshot(try m.at(&.{boot.root_subvol.?}), try m.at(&.{root}), false) catch |e|
-        return fail(ctx, try std.fmt.allocPrint(a, "can't snapshot the running root: {s}", .{@errorName(e)}));
+        return fail(ctx, try withRoom(a, &m, try std.fmt.allocPrint(a, "can't snapshot the running root: {s}", .{@errorName(e)})));
     const code = buildIn(ctx, a, boot, root, in) catch |e| {
         _ = m.drop(try m.at(&.{root})) catch {};
         return e;
     };
     if (code != 0) {
         _ = try m.drop(try m.at(&.{root}));
-        return fail(ctx, try std.fmt.allocPrint(a, "generation {d} didn't build, and is gone again", .{n}));
+        return fail(ctx, try withRoom(a, &m, try std.fmt.allocPrint(a, "generation {d} didn't build, and is gone again", .{n})));
     }
     // its kernel moves onto the esp once it has booted well.
     rootfs.writeAtomic(ctx.io, generation.unsettled_path, root, null) catch {};
@@ -60,6 +60,12 @@ fn buildIn(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, root: []const 
     defer b.unmount();
     if (try b.prepare()) |why| return cli.fail(ctx, "{s}", .{why});
     return b.install();
+}
+
+/// `why`, and that the filesystem is nearly full, when it is.
+fn withRoom(a: std.mem.Allocator, m: *const gens.Machine, why: []const u8) ![]const u8 {
+    const hint = try generation.lowSpace(a, rootfs.freeBytes(m.top) orelse return why) orelse return why;
+    return std.fmt.allocPrint(a, "{s}. {s}", .{ why, hint });
 }
 
 fn fail(ctx: *Context, why: []const u8) !?[]const u8 {

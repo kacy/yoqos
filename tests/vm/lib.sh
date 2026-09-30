@@ -10,6 +10,8 @@ check() {
     got=$("$vm" ssh "$1") || rc=$?
     if [ "$got" != "$2" ]; then
         echo "$name: $1 gave '$got' (exit $rc), not '$2'"
+        # a script can name a command whose output explains a failure.
+        if [ -n "${on_failure:-}" ]; then "$vm" ssh "$on_failure" || true; fi
         exit 1
     fi
     echo "ok: $1 -> $got"
@@ -61,15 +63,40 @@ menu_file() {
     esac
 }
 
-# how many generations the boot menu lists.
-menu_generations() {
+# a command that counts the generations the boot menu lists.
+menu_count() {
     f=$(menu_file)
     case $VM_LOADER in
-    grub) check "grep -c -e '--id head' -e '--id gen-' $f" "$1" ;;
-    limine) check "grep -c '^/yoq [0-9]' $f" "$1" ;;
-    refind) check "grep -c '^menuentry \"yoq [0-9]' $f" "$1" ;;
-    systemd-boot) check "ls $f | grep -c -e '^yoq-head.conf' -e '^yoq-gen-'" "$1" ;;
+    grub) echo "grep -c -e '--id head' -e '--id gen-' $f" ;;
+    limine) echo "grep -c '^/yoq [0-9]' $f" ;;
+    refind) echo "grep -c '^menuentry \"yoq [0-9]' $f" ;;
+    systemd-boot) echo "ls $f | grep -c -e '^yoq-head.conf' -e '^yoq-gen-'" ;;
     esac
+}
+
+# how many generations the boot menu lists.
+menu_generations() {
+    check "$(menu_count)" "$1"
+}
+
+# runs $1 in the vm, which loses power partway through, and waits for the
+# boot after. $1 finishing with the machine still up fails the test.
+crash() {
+    old=$("$vm" ssh "cat /proc/sys/kernel/random/boot_id")
+    rc=0
+    "$vm" ssh "$1" || rc=$?
+    # ssh says 255 when the connection goes with the machine.
+    if [ "$rc" != 255 ]; then
+        echo "$name: $1 exited $rc, and the machine stayed up"
+        exit 1
+    fi
+    for _ in $(seq 60); do
+        id=$(timeout 20 "$vm" ssh "cat /proc/sys/kernel/random/boot_id" 2>/dev/null || true)
+        if [ -n "$id" ] && [ "$id" != "$old" ]; then return 0; fi
+        sleep 5
+    done
+    echo "$name: no boot after the power loss"
+    exit 1
 }
 
 # takes os's entries out of the boot menu, the way another tool that

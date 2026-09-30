@@ -139,8 +139,7 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
 fn applyAfter(ctx: *Context, then: Then, message: []const u8) !u8 {
     try ctx.out.writeByte('\n');
     const done = try applying.run(ctx, then.yes, cli.inputs(ctx), .{});
-    try applying.recordGeneration(ctx, done, message);
-    return done.code;
+    return applying.recordGeneration(ctx, done, message);
 }
 
 /// `os adopt <path>`: copies a file from /etc next to the config and adds
@@ -437,6 +436,22 @@ test "edits update the lock from the cached databases" {
     try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.openssh]") != null);
     try t.exec(&.{ "--root", root, "disable", "ssh" });
     try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: -2. next: os plan, then os apply\n"));
+
+    // a package that needs a provider picked, with no one to ask: the
+    // choices are listed, and the config and lock stay as they were.
+    const config_was = try a.dupe(u8, t.fs.get("/etc/yoq/machine.toml").?);
+    const lock_was = try a.dupe(u8, t.fs.get("/etc/yoq/machine.lock").?);
+    const listed = "java-runtime has more than one provider: jre-openjdk, jre17-openjdk";
+    try t.exec(&.{ "--root", root, "add", "jdk-tool" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0123]: " ++ listed));
+    try t.exec(&.{ "--root", root, "--json", "add", "jdk-tool" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "\"schema\": \"yoq.errors/1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "\"code\": \"E0123\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), listed) != null);
+    try std.testing.expectEqualStrings(config_was, t.fs.get("/etc/yoq/machine.toml").?);
+    try std.testing.expectEqualStrings(lock_was, t.fs.get("/etc/yoq/machine.lock").?);
 }
 
 test "adopt puts extra packages into the config" {

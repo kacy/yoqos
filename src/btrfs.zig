@@ -16,6 +16,8 @@ pub const Error = error{
     NameTooLong,
     /// something still uses it, like a mount.
     Busy,
+    /// the filesystem is full.
+    NoSpaceLeft,
     Unexpected,
 };
 
@@ -143,6 +145,7 @@ fn check(rc: usize) Error!void {
         .PERM, .ACCES, .ROFS => error.PermissionDenied,
         .NAMETOOLONG => error.NameTooLong,
         .BUSY, .NOTEMPTY => error.Busy,
+        .NOSPC, .DQUOT => error.NoSpaceLeft,
         .NOTTY, .OPNOTSUPP, .INVAL => error.NotBtrfs,
         else => error.Unexpected,
     };
