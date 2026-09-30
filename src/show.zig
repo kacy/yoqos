@@ -178,29 +178,23 @@ fn jsonValue(s: *std.json.Stringify, v: anytype) !void {
     switch (@typeInfo(T)) {
         .@"struct" => {
             if (comptime config.isVal(T)) return jsonSourced(s, v.v, v.src);
+            try s.beginObject();
             if (comptime config.isNamed(T)) {
-                try s.beginObject();
                 for (v.entries.items) |e| {
                     try s.objectField(e.name);
                     try jsonValue(s, e.value);
                 }
-                return s.endObject();
-            }
-            try s.beginObject();
-            inline for (comptime config.keysOf(T)) |name| {
+            } else inline for (comptime config.keysOf(T)) |name| {
+                // unset values are left out.
                 const field = @field(v, name);
-                if (@typeInfo(@TypeOf(field)) == .optional) {
-                    if (field) |inner| {
-                        try s.objectField(name);
-                        try jsonValue(s, inner);
-                    }
-                } else {
+                if (@typeInfo(@TypeOf(field)) != .optional or field != null) {
                     try s.objectField(name);
                     try jsonValue(s, field);
                 }
             }
             return s.endObject();
         },
+        .optional => if (v) |inner| try jsonValue(s, inner) else try s.write(null),
         else => try s.write(v),
     }
 }
