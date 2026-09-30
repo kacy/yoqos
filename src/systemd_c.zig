@@ -182,18 +182,25 @@ const Jobs = struct {
     }
 
     /// the job's result, or null if it didn't finish in time.
+    /// the wait is by the clock: every other signal systemd sends wakes
+    /// sd_bus_wait early.
     fn wait(j: *Jobs, bus: *c.sd_bus, path: []const u8) error{ OutOfMemory, BusFailed }!?[]const u8 {
-        var waited: usize = 0;
+        const deadline = monotonicSeconds() + 90;
         while (true) {
             if (j.out_of_memory) return error.OutOfMemory;
             if (j.done.get(path)) |r| return r;
             const r = c.sd_bus_process(bus, null);
             if (r > 0) continue;
             if (r < 0) return error.BusFailed;
-            if (waited == 90) return null;
+            if (monotonicSeconds() >= deadline) return null;
             _ = c.sd_bus_wait(bus, std.time.us_per_s);
-            waited += 1;
         }
+    }
+
+    fn monotonicSeconds() i64 {
+        var ts: std.os.linux.timespec = undefined;
+        _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+        return ts.sec;
     }
 };
 
