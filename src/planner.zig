@@ -447,7 +447,7 @@ fn normalMode(a: Allocator, mode: []const u8) ![]const u8 {
 
 /// whether the config has repositories of its own for pacman: declared
 /// ones, or the local one aur packages are built into.
-fn ownRepos(c: *const config.Config) bool {
+pub fn ownRepos(c: *const config.Config) bool {
     return c.repos.entries.items.len > 0 or c.aur.items.items.len > 0;
 }
 
@@ -480,6 +480,8 @@ pub const DesiredFile = struct {
     mode: []const u8 = config.File.default_mode,
     /// the key that makes the file, for ones `[files]` doesn't name.
     cause: ?[]const u8 = null,
+    /// where that key is set, when the config sets it.
+    src: ?config.Src = null,
     /// why a change to it needs a reboot, if one does.
     reboot: ?[]const u8 = null,
 };
@@ -565,7 +567,7 @@ fn sysctlFile(a: Allocator, c: *const config.Config) !?DesiredFile {
     var text: std.ArrayList(u8) = .empty;
     try text.appendSlice(a, header("[sysctl]"));
     for (try sortedNames(a, c.sysctl.entries.items)) |k| try text.print(a, "{s} = {s}\n", .{ k, c.sysctl.get(k).?.v.text });
-    return .{ .path = sysctl_path, .content = text.items, .cause = "sysctl" };
+    return .{ .path = sysctl_path, .content = text.items, .cause = "sysctl", .src = c.sysctl.entries.items[0].value.src };
 }
 
 fn modulesFile(a: Allocator, c: *const config.Config) !?DesiredFile {
@@ -573,7 +575,7 @@ fn modulesFile(a: Allocator, c: *const config.Config) !?DesiredFile {
     var text: std.ArrayList(u8) = .empty;
     try text.appendSlice(a, header("[boot] modules"));
     for (try sortedNames(a, c.boot.modules.items.items)) |n| try text.print(a, "{s}\n", .{n});
-    return .{ .path = modules_path, .content = text.items, .cause = "boot.modules" };
+    return .{ .path = modules_path, .content = text.items, .cause = "boot.modules", .src = c.boot.modules.items.items[0].src };
 }
 
 /// the `name` of each item, sorted, so a file doesn't depend on the
@@ -588,11 +590,12 @@ fn sortedNames(a: Allocator, items: anytype) ![]const []const u8 {
 fn loginFile(a: Allocator, c: *const config.Config) !?DesiredFile {
     const login = c.desktop.login orelse return null;
     return switch (login.v) {
-        .greetd => .{ .path = greetd_config_path, .content = greetd_config, .cause = "desktop.login" },
+        .greetd => .{ .path = greetd_config_path, .content = greetd_config, .cause = "desktop.login", .src = login.src },
         .tty => .{
             .path = tty_session_path,
             .content = try std.fmt.allocPrint(a, tty_session, .{catalog.sessionDesktop((c.desktop.session orelse return null).v)}),
             .cause = "desktop.login",
+            .src = login.src,
         },
         .sddm => null,
     };
@@ -615,7 +618,14 @@ fn reposFile(a: Allocator, c: *const config.Config, f: *const facts.Facts) !?Des
     }
     // the aur packages os builds, unsigned, in a local repository.
     if (c.aur.items.items.len > 0) try text.print(a, "\n[{s}]\nSigLevel = Optional TrustAll\nServer = file://{s}\n", .{ aur.repo_name, aur.repo_dir });
-    return .{ .path = facts.repos_conf, .content = text.items, .cause = "repos" };
+    return .{ .path = facts.repos_conf, .content = text.items, .cause = "repos", .src = reposSrc(c) };
+}
+
+/// where the config first asks for a repository of its own, if it does.
+pub fn reposSrc(c: *const config.Config) ?config.Src {
+    if (c.repos.entries.items.len > 0) return c.repos.entries.items[0].value.src;
+    if (c.aur.items.items.len > 0) return c.aur.items.items[0].src;
+    return null;
 }
 
 /// hyprland reads /etc/xdg/hypr when a user has no config of their own.
@@ -627,6 +637,7 @@ fn sessionFile(a: Allocator, c: *const config.Config) !?DesiredFile {
         .path = try std.fmt.allocPrint(a, "/etc/xdg/hypr/hyprland{s}", .{if (ext.len > 0) ext else ".conf"}),
         .content = content,
         .cause = "desktop.session_config",
+        .src = c.desktop.session_config.?.src,
     };
 }
 
@@ -641,7 +652,7 @@ fn nvidiaFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
     for (nvidia_modules) |m| {
         if (!lists.contains(f.initramfs_modules, m)) break;
     } else return null;
-    return .{ .path = nvidia_initramfs_path, .content = nvidia_initramfs_content, .cause = "hardware.gpu", .reboot = "initramfs" };
+    return .{ .path = nvidia_initramfs_path, .content = nvidia_initramfs_content, .cause = "hardware.gpu", .src = gpu.src, .reboot = "initramfs" };
 }
 
 /// what the observer should look at for this config: every file it might

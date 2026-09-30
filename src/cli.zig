@@ -108,7 +108,7 @@ const commands = [_]Command{
     .{ .name = "pin", .summary = "keep a generation through garbage collection", .handler = rollback.pinCmd },
     .{ .name = "history", .summary = "list the generations", .handler = rollback.historyCmd },
     .{ .name = "diff", .summary = "what differs between two generations: packages and config", .handler = diff_cmd.diffCmd },
-    .{ .name = "why", .summary = "say which config line brings in a package", .handler = inspect.whyCmd },
+    .{ .name = "why", .summary = "say which config line brings in a package, file, or unit", .handler = inspect.whyCmd },
     .{ .name = "config", .summary = "show the merged config (config show [--resolved])", .handler = inspect.configCmd },
     .{ .name = "facts", .summary = "show what os knows about this machine", .handler = inspect.factsCmd },
     .{ .name = "build", .summary = "build a root from the config and lock alone, and list what they don't explain here", .handler = build_cmd.buildCmd, .hidden = true },
