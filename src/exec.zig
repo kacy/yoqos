@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Child = std.process.Child;
 
 /// what a program printed when it succeeded, or what went wrong.
 pub const Output = union(enum) {
@@ -15,9 +16,27 @@ pub const Output = union(enum) {
 /// runs `argv` and waits for it.
 pub fn output(a: Allocator, io: std.Io, argv: []const []const u8) error{OutOfMemory}!Output {
     const r = std.process.run(a, io, .{ .argv = argv }) catch |e| return .{ .failed = try spawnFailed(a, argv, e) };
-    if (r.term == .exited and r.term.exited == 0) return .{ .ok = r.stdout };
+    if (succeeded(r.term)) return .{ .ok = r.stdout };
     const out = std.mem.trim(u8, if (r.stderr.len > 0) r.stderr else r.stdout, " \n");
-    return .{ .failed = if (out.len > 0) out else try std.fmt.allocPrint(a, "{s} failed", .{argv[0]}) };
+    return .{ .failed = if (out.len > 0) out else try failed(a, argv) };
+}
+
+/// runs `argv` for its effect. returns null when it succeeds, or what went
+/// wrong.
+pub fn run(a: Allocator, io: std.Io, argv: []const []const u8) error{OutOfMemory}!?[]const u8 {
+    return switch (try output(a, io, argv)) {
+        .ok => null,
+        .failed => |why| why,
+    };
+}
+
+/// runs each command in turn, stopping at the first that fails, and says
+/// why it failed.
+pub fn runAll(a: Allocator, io: std.Io, argvs: []const []const []const u8) error{OutOfMemory}!?[]const u8 {
+    for (argvs) |argv| {
+        if (try run(a, io, argv)) |why| return why;
+    }
+    return null;
 }
 
 /// runs `argv` like `run`, and keeps everything it printed, both streams,
@@ -27,8 +46,39 @@ pub fn runLogged(a: Allocator, io: std.Io, argv: []const []const u8, log: []cons
     const r = std.process.run(a, io, .{ .argv = argv }) catch |e| return try spawnFailed(a, argv, e);
     const both = try std.mem.concat(a, u8, &.{ r.stdout, r.stderr });
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = log, .data = both }) catch {};
-    if (r.term == .exited and r.term.exited == 0) return null;
+    if (succeeded(r.term)) return null;
     return try std.fmt.allocPrint(a, "{s} failed; its whole output is in {s}. the end of it:\n{s}", .{ argv[0], log, lastLines(both, 20) });
+}
+
+/// runs `argv` on the terminal os runs on, for a program that asks the
+/// person there something itself, like passwd. null when it succeeds.
+pub fn interactive(a: Allocator, io: std.Io, argv: []const []const u8) error{OutOfMemory}!?[]const u8 {
+    var child = std.process.spawn(io, .{ .argv = argv }) catch |e| return try spawnFailed(a, argv, e);
+    return wait(a, io, &child, argv);
+}
+
+/// runs `argv` with the file at `input` as its standard input, for a
+/// program that reads a script there, like sfdisk. what it prints goes
+/// nowhere; a failure says it failed.
+pub fn runFrom(a: Allocator, io: std.Io, argv: []const []const u8, input: []const u8) error{OutOfMemory}!?[]const u8 {
+    var f = std.Io.Dir.cwd().openFile(io, input, .{}) catch return try std.fmt.allocPrint(a, "can't read {s}", .{input});
+    defer f.close(io);
+    var child = std.process.spawn(io, .{ .argv = argv, .stdin = .{ .file = f }, .stdout = .ignore, .stderr = .ignore }) catch |e| return try spawnFailed(a, argv, e);
+    return wait(a, io, &child, argv);
+}
+
+/// waits for a spawned `argv` to exit. null when it succeeds.
+fn wait(a: Allocator, io: std.Io, child: *Child, argv: []const []const u8) error{OutOfMemory}!?[]const u8 {
+    const term = child.wait(io) catch |e| return try std.fmt.allocPrint(a, "{s} didn't finish: {s}", .{ argv[0], @errorName(e) });
+    return if (succeeded(term)) null else try failed(a, argv);
+}
+
+fn succeeded(term: Child.Term) bool {
+    return term == .exited and term.exited == 0;
+}
+
+fn failed(a: Allocator, argv: []const []const u8) error{OutOfMemory}![]const u8 {
+    return std.fmt.allocPrint(a, "{s} failed", .{argv[0]});
 }
 
 /// why `argv` couldn't start.
@@ -54,45 +104,6 @@ fn lastLines(text: []const u8, n: usize) []const u8 {
     return t[start..];
 }
 
-/// runs `argv` for its effect. returns null when it succeeds, or what went
-/// wrong.
-pub fn run(a: Allocator, io: std.Io, argv: []const []const u8) error{OutOfMemory}!?[]const u8 {
-    return switch (try output(a, io, argv)) {
-        .ok => null,
-        .failed => |why| why,
-    };
-}
-
-/// runs `argv` on the terminal os runs on, for a program that asks the
-/// person there something itself, like passwd. null when it succeeds.
-pub fn interactive(a: Allocator, io: std.Io, argv: []const []const u8) error{OutOfMemory}!?[]const u8 {
-    var child = std.process.spawn(io, .{ .argv = argv }) catch |e| return try spawnFailed(a, argv, e);
-    const term = child.wait(io) catch |e| return try std.fmt.allocPrint(a, "{s} didn't finish: {s}", .{ argv[0], @errorName(e) });
-    if (term == .exited and term.exited == 0) return null;
-    return try std.fmt.allocPrint(a, "{s} failed", .{argv[0]});
-}
-
-/// runs `argv` with the file at `input` as its standard input, for a
-/// program that reads a script there, like sfdisk. what it prints goes
-/// nowhere; a failure says it failed.
-pub fn runFrom(a: Allocator, io: std.Io, argv: []const []const u8, input: []const u8) error{OutOfMemory}!?[]const u8 {
-    var f = std.Io.Dir.cwd().openFile(io, input, .{}) catch return try std.fmt.allocPrint(a, "can't read {s}", .{input});
-    defer f.close(io);
-    var child = std.process.spawn(io, .{ .argv = argv, .stdin = .{ .file = f }, .stdout = .ignore, .stderr = .ignore }) catch |e| return try spawnFailed(a, argv, e);
-    const term = child.wait(io) catch |e| return try std.fmt.allocPrint(a, "{s} didn't finish: {s}", .{ argv[0], @errorName(e) });
-    if (term == .exited and term.exited == 0) return null;
-    return try std.fmt.allocPrint(a, "{s} failed", .{argv[0]});
-}
-
-/// runs each command in turn, stopping at the first that fails, and says
-/// why it failed.
-pub fn runAll(a: Allocator, io: std.Io, argvs: []const []const []const u8) error{OutOfMemory}!?[]const u8 {
-    for (argvs) |argv| {
-        if (try run(a, io, argv)) |why| return why;
-    }
-    return null;
-}
-
 test "a missing program and a failing one" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -102,4 +113,9 @@ test "a missing program and a failing one" {
     try std.testing.expectEqualStrings("false failed", (try run(a, std.testing.io, &.{"false"})).?);
     try std.testing.expectEqualStrings("hi\n", (try output(a, std.testing.io, &.{ "echo", "hi" })).ok);
     try std.testing.expectEqualStrings("false failed", (try runAll(a, std.testing.io, &.{ &.{"true"}, &.{"false"}, &.{"os-no-such-tool"} })).?);
+}
+
+test "a log's last lines" {
+    try std.testing.expectEqualStrings("b\nc", lastLines("a\nb\nc\n", 2));
+    try std.testing.expectEqualStrings("a\nb", lastLines("a\nb\n", 5));
 }
