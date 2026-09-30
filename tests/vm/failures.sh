@@ -35,10 +35,22 @@ fi
 # the scripts before can leave the lock ahead of the machine.
 "$vm" ssh "$os apply --yes" | tail -n 1
 check "$os plan" "$empty"
+# when a check fails, what os printed last and what the journal says.
+on_failure="echo '--- /tmp/out'; cat /tmp/out 2>/dev/null; echo '--- journal'; tail -n 5 /var/lib/yoq/journal 2>/dev/null"
 
 # the btrfs top level's @roots, listed.
 roots() {
     "$vm" ssh "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && ls /run/yoq-top/@roots | tr '\\n' ' '; umount /run/yoq-top"
+}
+
+# fails unless @roots is what it was, $1: a failed build leaves nothing.
+same_roots() {
+    got=$(roots)
+    if [ "$got" != "$1" ]; then
+        echo "$name: @roots was '$1' before, and '$got' after"
+        "$vm" ssh "$on_failure" || true
+        exit 1
+    fi
 }
 
 # a microcode package this machine doesn't have. adding one needs a
@@ -147,11 +159,7 @@ disk_full() {
     check "pacman -Q $pkg >/dev/null 2>&1 || echo not installed" "not installed"
     check "findmnt -rn -o TARGET | grep -c /run/yoq/next || true" 0
     "$vm" ssh "rm -f /var/yoq-filler-*; sync"
-    got=$(roots)
-    if [ "$got" != "$was" ]; then
-        echo "$name: @roots was '$was' before, and '$got' after"
-        exit 1
-    fi
+    same_roots "$was"
     "$vm" ssh "$os remove --no-apply $pkg" | tail -n 1
     check "$os plan" "$empty"
 }
@@ -183,11 +191,7 @@ esp_full() {
     check "ls $VM_ESP/yoq/boot | grep -c yoq-new || true" 0
     check "pacman -Q $pkg >/dev/null 2>&1 || echo not installed" "not installed"
     "$vm" ssh "rm -f $VM_ESP/yoq-filler /etc/yoq-esp-test /etc/mkinitcpio.conf.d/99-yoq-esp-test.conf; sync"
-    got=$(roots)
-    if [ "$got" != "$was" ]; then
-        echo "$name: @roots was '$was' before, and '$got' after"
-        exit 1
-    fi
+    same_roots "$was"
     "$vm" ssh "$os remove --no-apply $pkg" | tail -n 1
     check "$os plan" "$empty"
 }

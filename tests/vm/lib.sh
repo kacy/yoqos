@@ -10,6 +10,8 @@ check() {
     got=$("$vm" ssh "$1") || rc=$?
     if [ "$got" != "$2" ]; then
         echo "$name: $1 gave '$got' (exit $rc), not '$2'"
+        # a script can name a command whose output explains a failure.
+        if [ -n "${on_failure:-}" ]; then "$vm" ssh "$on_failure" || true; fi
         exit 1
     fi
     echo "ok: $1 -> $got"
