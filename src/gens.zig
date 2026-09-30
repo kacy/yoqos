@@ -327,10 +327,12 @@ pub const Machine = struct {
     }
 
     /// copies `src` beside `dest` and renames it into place, so `dest`
-    /// is never half written.
+    /// is never half written. the copy is synced before the rename: a
+    /// kernel copy on the esp is reused by its name, and the menu that
+    /// boots it is synced too.
     fn replaceFile(m: *const Machine, src: []const u8, dest: []const u8) !?[]const u8 {
         const tmp = try std.fmt.allocPrint(m.a, "{s}.yoq-new", .{dest});
-        return exec.runAll(m.a, m.io, &.{ &.{ "cp", src, tmp }, &.{ "mv", "-f", tmp, dest } });
+        return exec.runAll(m.a, m.io, &.{ &.{ "cp", src, tmp }, &.{ "sync", tmp }, &.{ "mv", "-f", tmp, dest } });
     }
 
     /// refind reads btrfs through its driver, so entries boot from each
