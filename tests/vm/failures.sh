@@ -20,6 +20,9 @@ empty="nothing to do. this machine matches its config."
 "$vm" ssh "$os init >/dev/null 2>&1 || true"
 generations=$("$vm" ssh "test -d /var/lib/yoq/generations && echo yes || echo no")
 newest_cmd="ls /var/lib/yoq/generations 2>/dev/null | sort -n | tail -n 1 | cut -d. -f1"
+# the journal's last apply line. os's other events, like commits and
+# generations, go in the journal too, with a kind instead of an event.
+last_apply="grep '\"event\":' /var/lib/yoq/journal | tail -n 1"
 if [ "$generations" = yes ]; then
     # a boot of a menu copy, or a trial that fell back, takes no changes
     # until the machine runs its newest generation.
@@ -74,13 +77,13 @@ crash_apply() {
     if [ "$generations" = yes ]; then settled; fi
     check "test -e /var/lib/pacman/db.lck && echo locked" locked
     check "pacman -Q sl >/dev/null 2>&1 || echo not yet" "not yet"
-    check "tail -n 1 /var/lib/yoq/journal | grep -c '\"event\":\"begin\"'" 1
+    check "$last_apply | grep -c '\"event\":\"begin\"'" 1
     # the menu still boots the generation from before the apply.
     check "$newest_cmd" "$before"
     check "$menu_cmd" "$menu"
     check "$os apply --yes 2>&1 | grep -c -e 'the last apply .* didn.t finish' -e 'left from before this boot'" 2
     check "pacman -Q sl >/dev/null && echo installed" installed
-    check "tail -n 1 /var/lib/yoq/journal | grep -c '\"event\":\"done\"'" 1
+    check "$last_apply | grep -c '\"event\":\"done\"'" 1
     check "$os plan" "$empty"
     if [ "$generations" = yes ]; then check "test \$($newest_cmd) -gt $before && echo recorded" recorded; fi
     "$vm" ssh "$os remove --yes sl" | tail -n 1
@@ -101,7 +104,7 @@ download() {
     "$vm" ssh "tail -n 4 /tmp/out"
     check "grep -q 'failed to retrieve some files' /tmp/out && echo named" named
     check "pacman -Q figlet >/dev/null 2>&1 || echo not installed" "not installed"
-    check "tail -n 1 /var/lib/yoq/journal | grep -c '\"event\":\"failed\"'" 1
+    check "$last_apply | grep -c '\"event\":\"failed\"'" 1
     check "$newest_cmd" "$before"
     check "$menu_cmd" "$menu"
 
