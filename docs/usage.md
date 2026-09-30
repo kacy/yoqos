@@ -33,8 +33,8 @@ running system instead of into it; see [generations.md](generations.md).
 | `os diff` | what differs between two generations |
 | `os doctor` | checks how `os` is set up on the machine |
 | `os enable`, `os disable` | turn services on or off in the config |
-| `os adopt` | puts packages installed outside the config into it |
-| `os why` | which config line brings a package in |
+| `os adopt` | puts packages installed outside the config into it, or a file from `/etc` |
+| `os why` | which config line brings a package, file, or unit in |
 | `os config show` | the config with all its includes merged |
 | `os facts` | what `os` sees on this machine |
 | `os explain` | the long explanation of an error code |
@@ -357,12 +357,22 @@ the same day doesn't download anything.
 ### adopt
 
 ```
-os adopt           # everything installed but not in the config
-os adopt htop      # just htop
+os adopt                        # everything installed but not in the config
+os adopt htop                   # just htop
+os adopt /etc/ssh/sshd_config   # a file, as it is now
 ```
 
 `adopt` is the other way to settle drift: instead of removing a package you
 installed with `pacman -S`, it puts it in the config.
+
+given a path, it takes a file you edited in `/etc`, or one with a `.pacnew`
+beside it, into the config. the file is copied to `files/<path>` next to the
+config, like `files/etc/ssh/sshd_config`, and gets a `[files]` entry with
+that `source` and its mode. then it applies like `os add` does, with
+`--yes` and `--no-apply`. it won't take files outside `/etc`, files `os`
+writes already, or symlinks. it also leaves out machine state like
+`/etc/shadow` and ssh host keys, and files not everyone can read: those may
+hold secrets, and the config should stay safe to publish.
 
 ### why
 
@@ -375,6 +385,23 @@ git: in packages  (/etc/yoq/machine.toml:2)
 `why` follows the lock's dependency graph back to the config line that
 brings a package in. it exits with 1 when nothing in the config needs the
 package.
+
+it takes files and units too. a path says which key makes `os` write the
+file, or, for one `os` leaves alone, which package ships it. a unit, or a
+service name like `ssh` that isn't a package, says which key enables or
+disables it:
+
+```
+$ os why /etc/sysctl.d/99-yoq.conf
+/etc/sysctl.d/99-yoq.conf: os writes it for sysctl  (/etc/yoq/machine.toml:9)
+$ os why /etc/ssh/sshd_config
+/etc/ssh/sshd_config: not managed by os; it comes with openssh
+`os adopt /etc/ssh/sshd_config` takes it into the config
+$ os why sshd.service
+sshd.service: enabled by services.ssh  (/etc/yoq/machine.toml:12)
+```
+
+with `--json`, files print `yoq.why-file/1` and units `yoq.why-unit/1`.
 
 ## history and rollback
 
@@ -798,7 +825,8 @@ a `[files]` entry is a file `os` writes whole. `text` is the content itself;
 names it, so a repository can keep them together. `mode` is octal, and
 `0644` unless you say otherwise. `os plan` shows a file that's missing, has
 different content, or has a different mode. files the config doesn't name
-are left alone, and so is a file you take out of the config.
+are left alone, and so is a file you take out of the config. `os adopt
+<path>` writes an entry for a file that's already there.
 
 a path is absolute and plain: no `.` or `..` parts, no trailing `/`, and
 nothing under `/etc/yoq` or `/var/lib/yoq`, which are `os`'s own. it also
