@@ -36,11 +36,19 @@ pub fn appendLine(a: Allocator, io: std.Io, root: []const u8, file: []const u8, 
     };
 }
 
-/// the plan hash of a run that started and never finished, if the last one
-/// didn't.
-pub fn unfinished(a: Allocator, io: std.Io, root: []const u8) !?[]const u8 {
+/// the begin line of a run that started and never finished, if the last
+/// one didn't.
+pub fn unfinished(a: Allocator, io: std.Io, root: []const u8) !?Line {
     const last = (try scan(a, io, root)).last orelse return null;
-    return if (std.mem.eql(u8, last.event, "begin")) last.plan else null;
+    return if (std.mem.eql(u8, last.event, "begin")) last else null;
+}
+
+/// records a run that was cut off after it made its changes as done. the
+/// line carries the run's own start time, not now: the run's pacman
+/// transactions never reached the drift log, and a pacman run outside os
+/// after the cut-off should still count as drift.
+pub fn settle(a: Allocator, io: std.Io, root: []const u8, begin: Line) !void {
+    try record(a, io, root, begin.time, "done", begin.plan);
 }
 
 /// when the last apply that got to the end finished, or null if none has.
@@ -74,7 +82,7 @@ test "the journal notices an unfinished run, and knows the last done" {
     try std.testing.expectEqual(null, try unfinished(a, io, root));
     try std.testing.expectEqual(null, try lastDone(a, io, root));
     try record(a, io, root, 1, "begin", "abc");
-    try std.testing.expectEqualStrings("abc", (try unfinished(a, io, root)).?);
+    try std.testing.expectEqualStrings("abc", (try unfinished(a, io, root)).?.plan);
     try record(a, io, root, 2, "done", "abc");
     try record(a, io, root, 3, "begin", "def");
     try record(a, io, root, 4, "failed", "def");
@@ -83,5 +91,26 @@ test "the journal notices an unfinished run, and knows the last done" {
     // other events after a run cut off don't hide it.
     try record(a, io, root, 5, "begin", "ghi");
     try appendLine(a, io, root, path, .{ .time = 6, .kind = "trial", .step = "passed" });
-    try std.testing.expectEqualStrings("ghi", (try unfinished(a, io, root)).?);
+    try std.testing.expectEqualStrings("ghi", (try unfinished(a, io, root)).?.plan);
+}
+
+test "settling a cut-off run leaves an ordinary done line" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try record(a, io, root, 1, "begin", "abc");
+    try record(a, io, root, 2, "done", "abc");
+    try record(a, io, root, 10, "begin", "def");
+    try appendLine(a, io, root, path, .{ .time = 11, .kind = "trial", .step = "passed" });
+    try settle(a, io, root, (try unfinished(a, io, root)).?);
+    try std.testing.expectEqual(null, try unfinished(a, io, root));
+    try std.testing.expectEqual(10, (try lastDone(a, io, root)).?);
+    const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
+    const text = std.mem.trimEnd(u8, try fs.read(path), "\n");
+    const last = text[std.mem.lastIndexOfScalar(u8, text, '\n').? + 1 ..];
+    try std.testing.expectEqualStrings("{\"time\":10,\"event\":\"done\",\"plan\":\"def\"}", last);
 }

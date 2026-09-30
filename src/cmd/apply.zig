@@ -149,6 +149,9 @@ pub const Outcome = struct {
     /// the change went into this root, staged beside the running one, not
     /// into the running system. it's the generation to record.
     staged_root: ?[]const u8 = null,
+    /// the generation's reason, over the caller's: a generation for an
+    /// earlier apply that was cut off is that apply's.
+    reason: ?[]const u8 = null,
 
     fn failed(w: *cli.Work) !Outcome {
         return .{ .code = try w.fail(), .matches = false };
@@ -177,14 +180,30 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
             return Outcome.failed(&w);
         }
     }
-    if (try journal.unfinished(a, ctx.io, ctx.root)) |hash| {
-        try ctx.err.print("os: the last apply (plan {s}) didn't finish. this one starts from the machine as it is now.\n", .{hash[0..@min(12, hash.len)]});
+    const cut = try journal.unfinished(a, ctx.io, ctx.root);
+    var settled_generation = false;
+    if (cut) |begin| {
+        const short = begin.plan[0..@min(12, begin.plan.len)];
+        switch (afterCutOff(true, p.empty())) {
+            .none => {},
+            .warn => try ctx.err.print("os: the last apply (plan {s}) didn't finish. this one starts from the machine as it is now.\n", .{short}),
+            .settle => {
+                // pacman's lock outlives a power cut after the commit too.
+                try clearStaleLock(ctx, a, try observe.pacmanDb(a, ctx.io, ctx.root));
+                try journal.settle(a, ctx.io, ctx.root, begin);
+                try ctx.err.print("os: the last apply (plan {s}) was cut off after it made its changes. the machine matches the config, so it's recorded as done.\n", .{short});
+                // its changes never became a generation either.
+                if (cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol)) {
+                    settled_generation = unrecorded(begin.time, try gens.readRecords(a, ctx.io, "/var"));
+                }
+            },
+        }
     }
     if (p.empty()) {
         if (ctx.json) {
             try output.writeDoc(ctx.out, "yoq.apply/1", .{ .applied = 0, .skipped = p.changes });
         } else try ctx.out.writeAll("nothing to do. this machine matches its config.\n");
-        return .{ .code = 0, .matches = true };
+        return .{ .code = 0, .matches = true, .changed_generation = settled_generation, .reason = if (settled_generation) "apply" else null };
     }
 
     if (!ctx.json and !opts.render.quiet) try planner.writeText(ctx.out, a, p, opts.render);
@@ -207,9 +226,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
         try ctx.out.flush();
         target.progress = &shown;
     }
-    if (try alpm.clearStaleLock(a, ctx.io, target.dbpath)) |path| {
-        try ctx.err.print("os: removed {s}, left from before this boot by a transaction that never finished.\n", .{path});
-    }
+    try clearStaleLock(ctx, a, target.dbpath);
     const units = liveUnits(ctx);
     const hash = try p.hash();
     try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "begin", &hash);
@@ -225,6 +242,49 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     if (w.diags.items.items.len > problems) code = try scriptsFailed(ctx, w.diags.items.items[problems..]);
     if (units and !ctx.json and changesPackages(p)) try offerRestarts(ctx, yes);
     return .{ .code = code, .matches = true, .changed_generation = on_generations, .needs_reboot = needs_reboot };
+}
+
+/// what a run does about the apply before it, from whether that one never
+/// finished and whether the plan now is empty. an empty plan means the
+/// cut-off apply got its changes made, so it's settled as done; otherwise
+/// this run does the rest and says so.
+pub fn afterCutOff(unfinished: bool, empty: bool) enum { none, warn, settle } {
+    if (!unfinished) return .none;
+    return if (empty) .settle else .warn;
+}
+
+/// whether an apply that began at `began` (unix milliseconds) changed the
+/// machine after its newest generation was recorded. records keep
+/// seconds, so one from the same second counts as older: an extra
+/// generation is better than a change none records.
+pub fn unrecorded(began: i64, records: []const generation.Record) bool {
+    if (records.len == 0) return false;
+    return records[records.len - 1].time <= @divFloor(began, 1000);
+}
+
+test "a cut-off apply is settled only when the plan is empty" {
+    try std.testing.expectEqual(.none, afterCutOff(false, true));
+    try std.testing.expectEqual(.none, afterCutOff(false, false));
+    try std.testing.expectEqual(.settle, afterCutOff(true, true));
+    try std.testing.expectEqual(.warn, afterCutOff(true, false));
+}
+
+test "a cut-off apply gets a generation unless one came after it" {
+    const r = struct {
+        fn at(n: u32, time: i64) generation.Record {
+            return .{ .n = n, .time = time, .root = "@roots/1", .reason = "apply" };
+        }
+    }.at;
+    try std.testing.expect(!unrecorded(5_000, &.{}));
+    try std.testing.expect(unrecorded(5_000, &.{ r(1, 1), r(2, 4) }));
+    try std.testing.expect(unrecorded(5_999, &.{r(1, 5)}));
+    try std.testing.expect(!unrecorded(5_000, &.{ r(1, 1), r(2, 6) }));
+}
+
+fn clearStaleLock(ctx: *Context, a: Allocator, dbpath: []const u8) !void {
+    if (try alpm.clearStaleLock(a, ctx.io, dbpath)) |path| {
+        try ctx.err.print("os: removed {s}, left from before this boot by a transaction that never finished.\n", .{path});
+    }
 }
 
 /// plans again once the plan was shown and said yes to, and refuses when
@@ -274,8 +334,9 @@ fn scriptsFailed(ctx: *Context, problems: []const diag.Diagnostic) !u8 {
 /// with the config's commit. returns the command's exit code. a live
 /// change is done either way, so a generation that can't be recorded is a
 /// warning; a staged one that can't be recorded is gone, and that fails.
-pub fn recordGeneration(ctx: *Context, done: Outcome, reason: []const u8) !u8 {
+pub fn recordGeneration(ctx: *Context, done: Outcome, caller_reason: []const u8) !u8 {
     if (!done.changed_generation) return done.code;
+    const reason = done.reason orelse caller_reason;
     const lost: u8 = if (done.staged_root != null) 1 else done.code;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
@@ -586,6 +647,33 @@ test "apply refuses when the plan changes while it waits for a yes" {
     try std.testing.expectEqual(1, t.code);
     try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "- nano 8.6-1") != null);
     try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0129]: the plan changed since it was shown"));
+}
+
+test "an apply cut off after its changes is settled by the next one" {
+    if (!alpm.available) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const root = try std.fmt.allocPrintSentinel(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}, 0);
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "[boot]\nkernel = \"none\"\n");
+    try t.fs.put("/etc/yoq/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n");
+    try t.fs.put("f.json", "{\"schema\":\"yoq.facts/1\",\"packages\":[]}");
+    try journal.record(a, io, root, 7, "begin", "0123456789abcdef");
+
+    try t.exec(&.{ "--root", root, "--facts", "f.json", "apply", "--yes" });
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expectEqualStrings("os: the last apply (plan 0123456789ab) was cut off after it made its changes. the machine matches the config, so it's recorded as done.\n", t.err.buffered());
+    try std.testing.expectEqual(null, try journal.unfinished(a, io, root));
+    try std.testing.expectEqual(7, (try journal.lastDone(a, io, root)).?);
+
+    try t.exec(&.{ "--root", root, "--facts", "f.json", "apply", "--yes" });
+    try std.testing.expectEqualStrings("", t.err.buffered());
+    try std.testing.expectEqualStrings("nothing to do. this machine matches its config.\n", t.out.buffered());
 }
 
 test "a full disk fails the apply with a message, not a crash" {

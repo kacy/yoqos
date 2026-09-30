@@ -54,4 +54,11 @@ test "pacman's changes since the last apply" {
     try std.testing.expectEqual(30, got[0].time);
     try std.testing.expectEqualStrings("btop", got[0].packages[1]);
     try std.testing.expectEqualStrings("vim", got[1].packages[0]);
+
+    // settling the cut-off apply drops what came before it, like any done
+    // apply, but not pacman's run after it.
+    try journal.settle(a, io, root, (try journal.unfinished(a, io, root)).?);
+    const left = try since(a, io, root);
+    try std.testing.expectEqual(1, left.len);
+    try std.testing.expectEqualStrings("vim", left[0].packages[0]);
 }
