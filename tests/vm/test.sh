@@ -37,8 +37,9 @@ trap '"$vm" stop' EXIT
 case ${VM_IMAGE:-cloud} in
 ext4)
     tests/vm/build.sh
-    # the manage rung's failures: power lost during an apply, and no network.
-    tests/vm/failures.sh crash download
+    # the manage rung's failures: power lost during an apply or right
+    # after its transaction, and no network.
+    tests/vm/failures.sh crash committed download
     # generations need btrfs: enable-rollback says so, and changes nothing.
     tests/vm/manage.sh "root filesystem: ext4"
     tests/vm/aur.sh
@@ -73,7 +74,7 @@ refind)
     tests/vm/desktop.sh
     tests/vm/ids.sh
     # failures with generations, on one image of the two.
-    if [ "${VM_IMAGE:-cloud}" = cloud ]; then tests/vm/failures.sh crash download disk; fi
+    if [ "${VM_IMAGE:-cloud}" = cloud ]; then tests/vm/failures.sh crash committed download disk; fi
     tests/vm/leave.sh
     ;;
 esac

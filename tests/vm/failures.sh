@@ -5,6 +5,8 @@
 # which run:
 #
 #   crash     the power goes during a live apply
+#   committed the power goes after a live apply's transaction, before os
+#             records it as done
 #   download  no network during an apply and an update
 #   disk      the disk fills up while the next generation builds
 #   esp       a new generation's boot files don't fit on the esp, where
@@ -98,6 +100,38 @@ crash_apply() {
     check "$last_apply | grep -c '\"event\":\"done\"'" 1
     check "$os plan" "$empty"
     if [ "$generations" = yes ]; then check "test \$($newest_cmd) -gt $before && echo recorded" recorded; fi
+    "$vm" ssh "$os remove --yes sl" | tail -n 1
+    check "$os plan" "$empty"
+}
+
+# the power goes once pacman has installed sl, before os writes "done" in
+# the journal: a PostTransaction hook pulls the plug. the next apply finds
+# nothing to do, so it records the cut-off apply as done, and on a machine
+# with generations, records the generation that apply never got to.
+crash_committed() {
+    "$vm" ssh "$os add --no-apply sl" | tail -n 1
+    check "grep -cF '[packages.sl]' /etc/yoq/machine.lock" 1
+    "$vm" ssh "mkdir -p /etc/pacman.d/hooks && printf '#!/bin/sh\\nrm -f /etc/pacman.d/hooks/00-yoq-power-loss.hook\\nsync\\necho b > /proc/sysrq-trigger\\n' > /root/power-loss && chmod +x /root/power-loss && printf '[Trigger]\\nOperation = Install\\nType = Package\\nTarget = sl\\n\\n[Action]\\nDescription = losing power\\nWhen = PostTransaction\\nExec = /root/power-loss\\n' > /etc/pacman.d/hooks/00-yoq-power-loss.hook && sync"
+    before=$("$vm" ssh "$newest_cmd")
+    crash "$os apply --yes"
+    if [ "$generations" = yes ]; then settled; fi
+    check "pacman -Qq sl" sl
+    check "$last_apply | grep -c '\"event\":\"begin\"'" 1
+    check "$newest_cmd" "$before"
+    check "$os apply --yes >/tmp/out 2>&1; echo \$?" 0
+    check "grep -c 'was cut off after it made its changes. the machine matches the config, so it.s recorded as done' /tmp/out" 1
+    check "grep -c 'didn.t finish' /tmp/out || true" 0
+    check "test -e /var/lib/pacman/db.lck && echo locked || echo clear" clear
+    check "$last_apply | grep -c '\"event\":\"done\"'" 1
+    if [ "$generations" = yes ]; then
+        check "test \$($newest_cmd) -gt $before && echo recorded" recorded
+        check "grep -c '\"reason\":\"apply\"' /var/lib/yoq/generations/\$($newest_cmd).json" 1
+    fi
+    # settled: the next apply has nothing to say, and records nothing.
+    after=$("$vm" ssh "$newest_cmd")
+    check "$os apply --yes 2>&1" "$empty"
+    check "$newest_cmd" "$after"
+    check "$os plan" "$empty"
     "$vm" ssh "$os remove --yes sl" | tail -n 1
     check "$os plan" "$empty"
 }
@@ -199,6 +233,7 @@ esp_full() {
 for what in "$@"; do
     case $what in
     crash) crash_apply ;;
+    committed) crash_committed ;;
     download) download ;;
     disk) disk_full ;;
     esp) esp_full ;;
