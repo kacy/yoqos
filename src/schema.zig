@@ -6,6 +6,7 @@ const std = @import("std");
 const config = @import("config.zig");
 const diag = @import("diag.zig");
 const facts = @import("facts.zig");
+const lists = @import("lists.zig");
 const planner = @import("planner.zig");
 const status = @import("status.zig");
 
@@ -25,10 +26,7 @@ pub const docs = [_]Doc{
 };
 
 pub fn find(name: []const u8) ?Doc {
-    for (docs) |d| {
-        if (std.mem.eql(u8, d.name, name)) return d;
-    }
-    return null;
+    return docs[lists.indexOf(&docs, "name", name) orelse return null];
 }
 
 const draft = "https://json-schema.org/draft/2020-12/schema";
@@ -37,28 +35,44 @@ fn open(w: *std.Io.Writer) std.json.Stringify {
     return .{ .writer = w, .options = .{ .whitespace = .indent_2 } };
 }
 
+/// opens a top-level schema with its draft and id, up to an open
+/// "properties".
+fn beginTop(s: *std.json.Stringify, id: []const u8) !void {
+    try s.beginObject();
+    try s.objectField("$schema");
+    try s.write(draft);
+    try s.objectField("$id");
+    try s.write(id);
+    try beginProperties(s);
+}
+
+/// an object's type, and its "properties" left open.
+fn beginProperties(s: *std.json.Stringify) !void {
+    try s.objectField("type");
+    try s.write("object");
+    try s.objectField("properties");
+    try s.beginObject();
+}
+
+/// closes an object schema that allows no other keys.
+fn endClosed(s: *std.json.Stringify) !void {
+    try s.objectField("additionalProperties");
+    try s.write(false);
+    try s.endObject();
+}
+
 /// a json document: its "schema" tag, then `T`'s fields.
 fn docSchema(comptime T: type, comptime tag: []const u8) fn (*std.Io.Writer) anyerror!void {
     return struct {
         fn write(w: *std.Io.Writer) anyerror!void {
             var s = open(w);
-            try s.beginObject();
-            try s.objectField("$schema");
-            try s.write(draft);
-            try s.objectField("$id");
-            try s.write(tag);
-            try s.objectField("type");
-            try s.write("object");
-            try s.objectField("properties");
-            try s.beginObject();
+            try beginTop(&s, tag);
             try s.objectField("schema");
             try s.write(.{ .@"const" = tag });
             try fields(&s, T, .json);
             try s.endObject();
             try required(&s, T, &.{"schema"});
-            try s.objectField("additionalProperties");
-            try s.write(false);
-            try s.endObject();
+            try endClosed(&s);
             try w.writeByte('\n');
         }
     }.write;
@@ -67,24 +81,14 @@ fn docSchema(comptime T: type, comptime tag: []const u8) fn (*std.Io.Writer) any
 /// machine.toml: the config's keys, and the ones only a file has.
 fn configSchema(w: *std.Io.Writer) anyerror!void {
     var s = open(w);
-    try s.beginObject();
-    try s.objectField("$schema");
-    try s.write(draft);
-    try s.objectField("$id");
-    try s.write("yoq.config/1");
-    try s.objectField("type");
-    try s.write("object");
-    try s.objectField("properties");
-    try s.beginObject();
+    try beginTop(&s, "yoq.config/1");
     try fields(&s, config.Config, .toml);
     inline for (.{ "include", "unset", "remove" }) |k| {
         try s.objectField(k);
         try value(&s, @FieldType(config.Part, k), .toml);
     }
     try s.endObject();
-    try s.objectField("additionalProperties");
-    try s.write(false);
-    try s.endObject();
+    try endClosed(&s);
     try w.writeByte('\n');
 }
 
@@ -147,16 +151,11 @@ fn value(s: *std.json.Stringify, comptime T: type, comptime mode: Mode) !void {
             // std.ArrayList
             if (@hasField(T, "items") and @hasField(T, "capacity")) return array(s, @typeInfo(@FieldType(T, "items")).pointer.child, mode);
             try s.beginObject();
-            try s.objectField("type");
-            try s.write("object");
-            try s.objectField("properties");
-            try s.beginObject();
+            try beginProperties(s);
             try fields(s, T, mode);
             try s.endObject();
             if (mode == .json) try required(s, T, &.{});
-            try s.objectField("additionalProperties");
-            try s.write(false);
-            return s.endObject();
+            return endClosed(s);
         },
         else => @compileError("no json schema for " ++ @typeName(T)),
     }
