@@ -75,10 +75,15 @@ fn at(a: Allocator, src: config.Src) ![]const u8 {
 }
 
 fn add(a: Allocator, c: *const config.Config, text: *[]const u8, name: []const u8, aur: bool) !Note {
-    const set = if (aur) &c.aur else &c.packages;
+    const set = listOf(c, aur);
     if (set.indexOf(name)) |i| return .{ .name = name, .what = .unchanged, .detail = try at(a, set.items.items[i].src), .aur = aur };
     text.* = (try edit.addToList(a, text.*, &.{}, listKey(aur), name)).?;
     return .{ .name = name, .what = .added, .aur = aur };
+}
+
+/// the list add and remove edit: `aur`, or `packages`.
+fn listOf(c: *const config.Config, aur: bool) *const config.Set {
+    return if (aur) &c.aur else &c.packages;
 }
 
 fn listKey(aur: bool) []const u8 {
@@ -86,7 +91,7 @@ fn listKey(aur: bool) []const u8 {
 }
 
 fn remove(a: Allocator, c: *const config.Config, top: []const u8, text: *[]const u8, name: []const u8, aur: bool, diags: *diag.List) !?Note {
-    const set = if (aur) &c.aur else &c.packages;
+    const set = listOf(c, aur);
     if (set.indexOf(name)) |i| {
         // a set keeps its first source, so an include shows up here even if
         // the top file lists the package too. take it out of both.
@@ -140,8 +145,8 @@ pub fn check(gpa: Allocator, files: compose.Files, path: []const u8, text: []con
     const c = &loaded.config;
     for (notes) |n| {
         const ok = switch (n.what) {
-            .added => (if (n.aur) &c.aur else &c.packages).contains(n.name),
-            .removed, .excluded => !(if (n.aur) &c.aur else &c.packages).contains(n.name),
+            .added => listOf(c, n.aur).contains(n.name),
+            .removed, .excluded => !listOf(c, n.aur).contains(n.name),
             .enabled, .disabled => if (c.services.get(n.name)) |s| s.enabled != null and s.enabled.?.v == (n.what == .enabled) else false,
             .chosen => if (c.providers.get(n.name)) |p| std.mem.eql(u8, p.v, n.detail.?) else false,
             .unchanged => true,
