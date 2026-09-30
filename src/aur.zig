@@ -32,8 +32,12 @@ pub const SrcInfo = struct {
     pkgrel: []const u8 = "",
     /// the packages it builds: one, or several for a split package.
     pkgnames: []const []const u8 = &.{},
-    /// what it needs to build and run, by name, without version bounds.
+    /// what it needs to build, and what the package named after the recipe
+    /// needs to run, by name, without version bounds.
     needs: []const []const u8 = &.{},
+    /// the names the package named after the recipe provides, besides its
+    /// own.
+    provides: []const []const u8 = &.{},
     /// the recipe commit this came from, once fetched.
     commit: []const u8 = "",
 };
@@ -42,6 +46,11 @@ pub fn parseSrcInfo(a: Allocator, text: []const u8) !?SrcInfo {
     var out: SrcInfo = .{ .pkgbase = "" };
     var names: std.ArrayList([]const u8) = .empty;
     var needs: std.ArrayList([]const u8) = .empty;
+    var provides: std.ArrayList([]const u8) = .empty;
+    // "" in the pkgbase part, then the package whose part it is. a split
+    // package's other parts say what those packages need, which os doesn't
+    // install.
+    var part: []const u8 = "";
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
@@ -51,18 +60,43 @@ pub fn parseSrcInfo(a: Allocator, text: []const u8) !?SrcInfo {
         if (std.mem.eql(u8, key, "pkgbase")) out.pkgbase = value;
         if (std.mem.eql(u8, key, "pkgver")) out.pkgver = value;
         if (std.mem.eql(u8, key, "pkgrel")) out.pkgrel = value;
-        if (std.mem.eql(u8, key, "pkgname")) try names.append(a, value);
-        // depends_x86_64 and the like count too.
-        for ([_][]const u8{ "depends", "makedepends", "checkdepends" }) |k| {
-            if (!std.mem.startsWith(u8, key, k)) continue;
-            const name = value[0 .. std.mem.indexOfAny(u8, value, "<>=:") orelse value.len];
-            if (!lists.contains(needs.items, name)) try needs.append(a, name);
+        if (std.mem.eql(u8, key, "pkgname")) {
+            try names.append(a, value);
+            part = value;
         }
+        const ours = part.len == 0 or std.mem.eql(u8, part, out.pkgbase);
+        const name = value[0 .. std.mem.indexOfAny(u8, value, "<>=:") orelse value.len];
+        // depends_x86_64 and the like count too.
+        const kinds: []const []const u8 = if (part.len == 0) &.{ "depends", "makedepends", "checkdepends" } else &.{"depends"};
+        for (kinds) |k| {
+            if (ours and std.mem.startsWith(u8, key, k) and !lists.contains(needs.items, name)) try needs.append(a, name);
+        }
+        if (ours and std.mem.startsWith(u8, key, "provides") and !lists.contains(provides.items, name)) try provides.append(a, name);
     }
     if (out.pkgbase.len == 0) return null;
     out.pkgnames = names.items;
     out.needs = needs.items;
+    out.provides = provides.items;
     return out;
+}
+
+/// what an aur recipe needs that no sync database and no other recipe has.
+pub const Missing = struct {
+    need: []const u8,
+    /// the recipe that needs it.
+    by: []const u8,
+};
+
+/// the needs of `recipes` that are in `unresolvable`, the names no sync
+/// database has, and that no recipe among them builds or provides either.
+pub fn missingNeeds(a: Allocator, recipes: []const SrcInfo, unresolvable: []const []const u8) ![]const Missing {
+    var out: std.ArrayList(Missing) = .empty;
+    for (recipes) |r| {
+        for (r.needs) |n| {
+            if (lists.contains(unresolvable, n) and providerOf(recipes, n) == null) try out.append(a, .{ .need = n, .by = r.pkgbase });
+        }
+    }
+    return out.items;
 }
 
 /// `recipes` ordered so each comes after the ones among them it needs.
@@ -95,10 +129,27 @@ pub fn buildOrder(a: Allocator, recipes: []const SrcInfo, why: *[]const u8) !?[]
     return out.items;
 }
 
-/// the recipe among `recipes` that builds `name`, by its pkgbase.
+/// the aur packages among `recipes` that `r` needs, by package name, for
+/// installing into the chroot before it builds.
+pub fn aurNeeds(a: Allocator, recipes: []const SrcInfo, r: SrcInfo) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    for (r.needs) |n| {
+        const from = providerOf(recipes, n) orelse continue;
+        if (std.mem.eql(u8, from, r.pkgbase)) continue;
+        // a need met by what a package provides installs that package.
+        const pkg = for (recipes) |q| {
+            if (lists.contains(q.pkgnames, n)) break n;
+        } else from;
+        if (!lists.contains(out.items, pkg)) try out.append(a, pkg);
+    }
+    return out.items;
+}
+
+/// the recipe among `recipes` that builds or provides `name`, by its
+/// pkgbase.
 fn providerOf(recipes: []const SrcInfo, name: []const u8) ?[]const u8 {
     for (recipes) |r| {
-        if (lists.contains(r.pkgnames, name)) return r.pkgbase;
+        if (lists.contains(r.pkgnames, name) or lists.contains(r.provides, name)) return r.pkgbase;
     }
     return null;
 }
@@ -225,13 +276,13 @@ pub const Builder = struct {
     }
 
     /// builds the recipe `info` names, at its commit, in the chroot, with
-    /// the aur packages it needs from the local repository installed there
+    /// `needs`, aur packages from the local repository, installed there
     /// first, and adds what it builds to the local repository. a commit
     /// built before isn't built again.
-    pub fn build(b: Builder, info: SrcInfo) !?[]const u8 {
+    pub fn build(b: Builder, info: SrcInfo, needs: []const []const u8) !?[]const u8 {
         const name = info.pkgbase;
         const commit = info.commit;
-        const with = try b.packageFiles(info.needs);
+        const with = try b.packageFiles(needs);
         const marker = try std.fmt.allocPrint(b.a, "{s}/.built/{s}-{s}", .{ b.dirs.repo, name, commit });
         if (rootfs.pathExists(b.io, marker)) return null;
         const dir = try b.recipeDir(name);
@@ -376,6 +427,52 @@ test "what a .SRCINFO builds and needs" {
     try testing.expectEqualStrings("go", info.needs[0]);
     try testing.expectEqualStrings("glibc", info.needs[3]);
     try testing.expectEqual(null, try parseSrcInfo(arena.allocator(), "no recipe here"));
+
+    // a split package: what the others need doesn't count.
+    const split = (try parseSrcInfo(arena.allocator(),
+        \\pkgbase = foo
+        \\    pkgver = 1
+        \\    makedepends = cmake
+        \\    depends = glibc
+        \\    provides = foo-api
+        \\
+        \\pkgname = foo
+        \\    depends = foo-common
+        \\    depends = libbar>=2
+        \\    provides = libfoo.so=1-64
+        \\
+        \\pkgname = foo-common
+        \\    depends = only-common
+        \\
+    )).?;
+    try testing.expectEqual(2, split.pkgnames.len);
+    const needs = [_][]const u8{ "cmake", "glibc", "foo-common", "libbar" };
+    try testing.expectEqual(needs.len, split.needs.len);
+    for (needs, split.needs) |want, got| try testing.expectEqualStrings(want, got);
+    try testing.expectEqual(2, split.provides.len);
+    try testing.expectEqualStrings("libfoo.so", split.provides[1]);
+}
+
+test "aur needs no repository or recipe has" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const app: SrcInfo = .{ .pkgbase = "app", .pkgnames = &.{"app"}, .needs = &.{ "lib-a", "libapi", "glibc", "helper" } };
+    const lib: SrcInfo = .{ .pkgbase = "lib", .pkgnames = &.{ "lib-a", "lib-b" }, .provides = &.{"libapi"} };
+    const recipes = [_]SrcInfo{ app, lib };
+    // glibc is in a sync database; the rest aren't.
+    const missing = try missingNeeds(a, &recipes, &.{ "lib-a", "libapi", "helper" });
+    try testing.expectEqual(1, missing.len);
+    try testing.expectEqualStrings("helper", missing[0].need);
+    try testing.expectEqualStrings("app", missing[0].by);
+    try testing.expectEqual(0, (try missingNeeds(a, &recipes, &.{})).len);
+
+    // what goes into the chroot before app builds: lib-a by name, and lib
+    // for what it provides.
+    const with = try aurNeeds(a, &recipes, app);
+    try testing.expectEqual(2, with.len);
+    try testing.expectEqualStrings("lib-a", with[0]);
+    try testing.expectEqualStrings("lib", with[1]);
 }
 
 test "aur packages build after the aur packages they need" {

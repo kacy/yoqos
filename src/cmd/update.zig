@@ -55,13 +55,20 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const old_lock = try locking.readLock(ctx, a, top);
     const old: ?*const lock.Lock = if (old_lock) |*o| o else null;
     const rs = try pastRepos(ctx, a, try locking.repos(ctx, a, &loaded.config), sync_date);
-    // aur packages are built first, into the local repository resolution
-    // reads.
-    const recipes = try buildAur(ctx, &w, &loaded.config, old, rs, trust_aur) orelse return 1;
-    const dbs = if (dbs_dir) |dir|
+    const cache = try locking.cacheDir(ctx, a);
+    // the databases without os's aur repository, which may not exist yet:
+    // aur recipes are checked against them before anything builds.
+    const arch_dbs = if (dbs_dir) |dir|
         try syncDbs(ctx, a, dir) orelse return 1
     else
-        try sync.databases(a, ctx.io, ctx.fetcher, rs, try locking.cacheDir(ctx, a), sync_date, &w.diags) orelse return w.fail();
+        try sync.databases(a, ctx.io, ctx.fetcher, try withoutLocal(a, rs), cache, sync_date, &w.diags) orelse return w.fail();
+    // aur packages are built first, into the local repository resolution
+    // reads.
+    const recipes = try buildAur(ctx, &w, &loaded.config, old, rs, arch_dbs, trust_aur) orelse return w.fail();
+    const dbs = if (dbs_dir != null)
+        arch_dbs
+    else
+        try sync.databases(a, ctx.io, ctx.fetcher, rs, cache, sync_date, &w.diags) orelse return w.fail();
 
     var l = try locking.resolveLock(ctx, &w, &loaded.config, top, dbs, sync_date, &.{}) orelse return w.fail();
     try locking.pinRecipes(a, &l, recipes, old);
@@ -99,8 +106,9 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 /// one reviewed, and builds them, needs first. returns each built
 /// package's recipe commit, or null after saying why it stopped. builds
 /// get their arch packages from `rs`, the repositories the new lock
-/// resolves against, as of its date.
-fn buildAur(ctx: *Context, w: *cli.Work, c: *const config.Config, old: ?*const lock.Lock, rs: []const sync.Repo, trust: bool) !?locking.Recipes {
+/// resolves against, as of its date, and `dbs` are arch's databases for
+/// that date.
+fn buildAur(ctx: *Context, w: *cli.Work, c: *const config.Config, old: ?*const lock.Lock, rs: []const sync.Repo, dbs: []const alpm.SyncDb, trust: bool) !?locking.Recipes {
     const a = w.allocator();
     var out: locking.Recipes = .empty;
     if (c.aur.items.items.len == 0) return out;
@@ -124,12 +132,17 @@ fn buildAur(ctx: *Context, w: *cli.Work, c: *const config.Config, old: ?*const l
             try ctx.err.print("os: {s}'s recipe says its pkgbase is {s}. os builds a recipe only under its own name.\n", .{ pkg.name, info.pkgbase });
             return null;
         }
-        // a recipe is reviewed when it's new, or changed since the lock.
-        const was = if (old) |o| if (o.package(pkg.name)) |p| p.recipe else null else null;
-        if (was == null or !eql(was.?, commit)) {
-            if (!try reviewRecipe(ctx, a, b, pkg.name, was, commit, trust)) return null;
-        }
         try infos.append(a, info);
+    }
+    // before anyone reads a recipe: one that can't build or install
+    // without an aur package the config leaves out stops here, by name.
+    if (!try checkNeeds(ctx, w, infos.items, dbs)) return null;
+    for (infos.items) |info| {
+        // a recipe is reviewed when it's new, or changed since the lock.
+        const was = if (old) |o| if (o.package(info.pkgbase)) |p| p.recipe else null else null;
+        if (was == null or !eql(was.?, info.commit)) {
+            if (!try reviewRecipe(ctx, a, b, info.pkgbase, was, info.commit, trust)) return null;
+        }
     }
     var why: []const u8 = "";
     const order = try aur.buildOrder(a, infos.items, &why) orelse {
@@ -138,13 +151,31 @@ fn buildAur(ctx: *Context, w: *cli.Work, c: *const config.Config, old: ?*const l
     };
     for (order) |info| {
         if (!ctx.json) try ctx.out.print("building {s} {s}-{s} from the aur...\n", .{ info.pkgbase, info.pkgver, info.pkgrel });
-        if (try b.build(info)) |problem| {
+        if (try b.build(info, try aur.aurNeeds(a, infos.items, info))) |problem| {
             try ctx.err.print("os: building {s} failed: {s}\n", .{ info.pkgbase, problem });
             return null;
         }
         for (info.pkgnames) |name| try out.put(a, name, info.commit);
     }
     return out;
+}
+
+/// whether everything `recipes` need is in `dbs` or among them. what
+/// isn't goes to `w.diags`.
+fn checkNeeds(ctx: *Context, w: *cli.Work, recipes: []const aur.SrcInfo, dbs: []const alpm.SyncDb) !bool {
+    const a = w.allocator();
+    var names: std.ArrayList([]const u8) = .empty;
+    for (recipes) |r| {
+        for (r.needs) |n| {
+            if (!lists.contains(names.items, n)) try names.append(a, n);
+        }
+    }
+    const unresolvable = try locking.unsatisfied(ctx, w, dbs, names.items) orelse return false;
+    const missing = try aur.missingNeeds(a, recipes, unresolvable);
+    for (missing) |m| {
+        try w.diags.addHint(.aur_missing, null, "{s} needs {s}, which isn't in the arch repositories or in `aur`", .{ m.by, m.need }, "if it's on the aur, add it: os add --aur {s}", .{m.need});
+    }
+    return missing.len == 0;
 }
 
 /// shows what to review in `name`'s recipe and asks. a script passes
@@ -170,6 +201,14 @@ fn reviewRecipe(ctx: *Context, a: Allocator, b: aur.Builder, name: []const u8, w
 fn pastRepos(ctx: *Context, a: Allocator, rs: []const sync.Repo, date: []const u8) ![]const sync.Repo {
     if (eql(date, try locking.today(ctx.io, a))) return rs;
     return sync.archived(a, rs, date);
+}
+
+fn withoutLocal(a: Allocator, rs: []const sync.Repo) ![]const sync.Repo {
+    var out: std.ArrayList(sync.Repo) = .empty;
+    for (rs) |r| {
+        if (!r.local) try out.append(a, r);
+    }
+    return out.items;
 }
 
 /// arch news posted after the old lock's date, up to the new one. a feed

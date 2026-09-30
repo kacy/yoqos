@@ -31,6 +31,7 @@ pub const Code = enum {
     plan_changed,
     unknown_service,
     plan_moved,
+    aur_missing,
 };
 
 pub const Entry = struct {
@@ -200,6 +201,15 @@ pub const table = [_]Entry{
         .explanation = "`os apply` plans again after you say yes, and applies only the plan it showed you. " ++
             "the config, the lock, or the machine changed in between, like a pacman run in another terminal, " ++
             "so os would now do something else and changed nothing. run the command again and look over the new plan.",
+    },
+    .{
+        .code = .aur_missing,
+        .id = "E0130",
+        .title = "an aur package needs one the config doesn't list",
+        .explanation = "an aur recipe's .SRCINFO depends on a package that isn't in the arch repositories " ++
+            "and isn't in `aur`. that's usually another aur package, and os builds only the aur packages the " ++
+            "config names, so add it: `os add --aur <package>`, then `os update` again. os builds them in " ++
+            "order.",
     },
 };
 
