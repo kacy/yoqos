@@ -75,6 +75,8 @@ refind)
     tests/vm/ids.sh
     # failures with generations, on one image of the two.
     if [ "${VM_IMAGE:-cloud}" = cloud ]; then tests/vm/failures.sh crash committed download disk; fi
+    # the esp is /boot here, so a rollback puts a kernel on it.
+    if [ "${VM_IMAGE:-cloud}" = archinstall ]; then tests/vm/failures.sh restore; fi
     tests/vm/leave.sh
     ;;
 esac

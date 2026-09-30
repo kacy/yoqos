@@ -11,9 +11,11 @@
 #   disk      the disk fills up while the next generation builds
 #   esp       a new generation's boot files don't fit on the esp, where
 #             limine and systemd-boot need copies of them
+#   restore   with grub and the esp at /boot, a rolled-back generation's
+#             boot files don't fit on the esp
 #
 # runs after the smoke test; on a machine with generations, after
-# rollback.sh. disk and esp need generations.
+# rollback.sh. disk, esp, and restore need generations.
 set -eu
 . tests/vm/lib.sh
 
@@ -198,35 +200,76 @@ disk_full() {
     check "$os plan" "$empty"
 }
 
-# the esp fills up, then a change that needs a reboot builds the next
-# generation. its new initramfs and microcode don't fit on the esp, so it
-# isn't recorded, and os says which generations to collect for room.
+# fills the esp up, leaving 2 MiB: less than a new initramfs, or the
+# 8 MiB file esp_restore makes.
+fill_esp() {
+    "$vm" ssh "avail=\$(df --output=avail -B1M $VM_ESP | tail -n 1); dd if=/dev/zero of=$VM_ESP/yoq-filler bs=1M count=\$((avail - 2)) status=none; sync; df -m $VM_ESP | tail -n 1"
+}
+
+# the esp fills up, then a change that needs a reboot would build the next
+# generation. its new initramfs doesn't fit on the esp, so the plan says
+# so, with the generations to collect for room, and apply stops before it
+# builds anything.
 esp_full() {
     pkg=$(ucode)
     "$vm" ssh "$os add --no-apply $pkg" | tail -n 1
-    # trial.sh's generations had this microcode already, and mkinitcpio
-    # builds the same image from the same files, so the esp would have
-    # the copies. a file of this run's own in the initramfs makes it new.
-    # the next root is a snapshot of this one, so it has the drop-in, and
-    # the microcode's firmware makes its build run mkinitcpio.
-    "$vm" ssh "mkdir -p /etc/mkinitcpio.conf.d && date +%s%N > /etc/yoq-esp-test && echo 'FILES+=(/etc/yoq-esp-test)' > /etc/mkinitcpio.conf.d/99-yoq-esp-test.conf"
     before=$("$vm" ssh "$newest_cmd")
     menu=$("$vm" ssh "$menu_cmd")
     was=$(roots)
-    # 2 MiB left: a new initramfs alone is bigger.
-    "$vm" ssh "avail=\$(df --output=avail -B1M $VM_ESP | tail -n 1); dd if=/dev/zero of=$VM_ESP/yoq-filler bs=1M count=\$((avail - 2)) status=none; sync; df -m $VM_ESP | tail -n 1"
-    check "$os apply --yes >/tmp/out 2>&1; echo \$?" 1
+    fill_esp
+    check "$os plan >/tmp/out 2>&1; echo \$?" 1
     "$vm" ssh "tail -n 4 /tmp/out"
-    check "grep -c 'the esp at $VM_ESP has .* MiB free' /tmp/out" 1
+    check "grep -c 'error.E0131.: the esp at $VM_ESP has .* MiB free' /tmp/out" 1
     check "grep -c 'os gc --keep 1. removes generation' /tmp/out" 1
+    check "$os apply --yes >/tmp/out 2>&1; echo \$?" 1
+    check "grep -c 'error.E0131.' /tmp/out" 1
+    check "grep -c 'building generation' /tmp/out || true" 0
     check "$newest_cmd" "$before"
     check "$menu_cmd" "$menu"
     on_trial no
     check "ls $VM_ESP/yoq/boot | grep -c yoq-new || true" 0
     check "pacman -Q $pkg >/dev/null 2>&1 || echo not installed" "not installed"
-    "$vm" ssh "rm -f $VM_ESP/yoq-filler /etc/yoq-esp-test /etc/mkinitcpio.conf.d/99-yoq-esp-test.conf; sync"
+    "$vm" ssh "rm -f $VM_ESP/yoq-filler; sync"
     same_roots "$was"
     "$vm" ssh "$os remove --no-apply $pkg" | tail -n 1
+    check "$os plan" "$empty"
+}
+
+# with grub and the esp at /boot, only the running root's boot files are
+# on the esp, and a rollback puts the target's there. with the esp full,
+# the rollback goes ahead all the same, copies nothing, and says so; the
+# new generation boots the kernel in its own root, and the first good
+# boot once there's room puts its files on the esp.
+esp_restore() {
+    # a boot file only the older generation has, so the rollback has one
+    # to copy. grub's entries boot vmlinuz-linux, whatever else is there.
+    fake=$VM_ESP/vmlinuz-yoq-test
+    "$vm" ssh "head -c 8M /dev/urandom > $fake"
+    "$vm" ssh "$os add --yes figlet" | tail -n 1
+    target=$("$vm" ssh "$newest_cmd")
+    "$vm" ssh "rm $fake"
+    "$vm" ssh "$os remove --yes figlet" | tail -n 1
+    check "$os plan" "$empty"
+    fill_esp
+    check "$os rollback --yes $target >/tmp/out 2>&1; echo \$?" 0
+    "$vm" ssh "tail -n 4 /tmp/out"
+    check "grep -c 'boot files don.t fit on the esp, so nothing was copied there' /tmp/out" 1
+    check "grep -c 'the esp at $VM_ESP has .* MiB free, and the new boot files need' /tmp/out" 1
+    check "grep -c 'removing generations won.t help' /tmp/out" 1
+    check "ls $VM_ESP | grep -c -e yoq-new -e vmlinuz-yoq-test || true" 0
+    root=$(newest_root)
+    check "cat /var/lib/yoq/unsettled" "/$root"
+    "$vm" ssh "rm -f $VM_ESP/yoq-filler; sync"
+    "$vm" reboot
+    settled
+    check "findmnt -no FSROOT /" "/$root"
+    check "test -e /var/lib/yoq/unsettled && echo noted || echo none" none
+    check "test -s $fake && echo moved" moved
+    # the rolled-back config has figlet; the next generation drops it,
+    # and the esp's files, without the fake, go into its root.
+    check "$os plan" "$empty"
+    "$vm" ssh "rm $fake"
+    "$vm" ssh "$os remove --yes figlet" | tail -n 1
     check "$os plan" "$empty"
 }
 
@@ -237,6 +280,7 @@ for what in "$@"; do
     download) download ;;
     disk) disk_full ;;
     esp) esp_full ;;
+    restore) esp_restore ;;
     *)
         echo "$name: no failure called $what"
         exit 2
