@@ -23,6 +23,9 @@ pub const Unit = struct {
     /// enabling or disabling it changes nothing, as for a unit without an
     /// [install] section: it only starts and stops.
     fixed: bool = false,
+    /// its unit file has no [install] section at all, so only another
+    /// unit starts it at boot.
+    static: bool = false,
     active: bool = false,
     /// the unit tried to run and failed.
     failed: bool = false,

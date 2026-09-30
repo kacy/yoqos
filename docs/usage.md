@@ -145,7 +145,10 @@ next `os apply`. the hook records nothing for os's own transactions.
 when an upgrade leaves a new default beside a config file you changed, as
 `<file>.pacnew`, status lists it too. for files `os` writes itself, `os`
 keeps its version and the `.pacnew` is only there to read. status also
-lists services still running files an upgrade replaced, and on a machine
+lists services still running files an upgrade replaced, services the
+config turns on whose unit has no `[Install]` section (they start, but
+`enable` does nothing for them, so they won't come back at boot unless
+another unit pulls them in), and on a machine
 with generations, a `note:` line when `os` fell back from a generation
 that didn't come up healthy.
 
