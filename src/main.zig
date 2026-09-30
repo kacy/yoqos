@@ -79,6 +79,7 @@ test {
     _ = @import("news.zig");
     _ = @import("journal.zig");
     _ = @import("drift.zig");
+    _ = @import("events.zig");
     _ = @import("btrfs.zig");
     _ = @import("enable.zig");
     _ = @import("generation.zig");

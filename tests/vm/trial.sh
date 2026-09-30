@@ -21,6 +21,7 @@ settled
 # what the trial boot was, for when it isn't what the checks expect.
 "$vm" ssh "findmnt -no FSROOT /; cat /proc/cmdline; journalctl -b -u yoq-health --no-pager -o cat | tail -n 8; efibootmgr 2>/dev/null | head -n 3" || true
 check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'the default now'" 1
+check "/usr/local/bin/os events | grep '\"kind\":\"trial\"' | tail -n 1 | grep -c '\"step\":\"passed\"'" 1
 on_trial no
 check "test -e /run/systemd/sleep.conf.d/yoq.conf && echo blocked || echo free" free
 check "pacman -Q amd-ucode >/dev/null && echo installed" installed
@@ -43,6 +44,7 @@ show_env
 falls_back "$before"
 on_trial no
 check "/usr/local/bin/os status | grep -c '^note: generation'" 1
+check "/usr/local/bin/os events | grep '\"kind\":\"trial\"' | tail -n 1 | grep -c '\"step\":\"failed\"'" 1
 check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 
 # a trial boot that hangs before it's up: the watchdog reboots it, and the

@@ -285,6 +285,8 @@ pub fn recordGeneration(ctx: *Context, done: Outcome, reason: []const u8) !void 
         } else try ctx.err.print("os: applied, but not recorded as a generation: {s}\n", .{problem});
         return;
     }
+    const records = try gens.readRecords(a, ctx.io, "/var");
+    if (records.len > 0) try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .generation, .generation = records[records.len - 1].n, .message = reason });
     if (!ctx.json) try ctx.out.writeAll("recorded as a new generation; the boot menu has it.\n");
     try collectOld(ctx, &m, generation.default_keep);
     if (done.needs_reboot) try armTrial(ctx, a, boot);
@@ -307,6 +309,7 @@ fn armTrial(ctx: *Context, a: Allocator, boot: facts.Boot) !void {
         try ctx.err.print("os: couldn't set up the trial boot: {s}. the next boot runs generation {d} without a fallback.\n", .{ problem, n });
         return;
     }
+    try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .trial, .step = .armed, .generation = n });
     if (!ctx.json) try ctx.out.print("reboot to finish. the next boot tries generation {d} once; if it doesn't come up healthy, the machine goes back to generation {d}.\n", .{ n, before });
 }
 

@@ -9,7 +9,7 @@ const journal = @import("journal.zig");
 const rootfs = @import("rootfs.zig");
 const Allocator = std.mem.Allocator;
 
-const path = "var/lib/yoq/drift";
+pub const path = "var/lib/yoq/drift";
 
 /// records a pacman transaction that touched `packages`. the hook leaves
 /// out os's own. a record that can't be written is dropped: the hook

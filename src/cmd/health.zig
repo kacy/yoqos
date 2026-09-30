@@ -16,6 +16,7 @@ const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
 const trial = @import("../trial.zig");
 const rollback = @import("rollback.zig");
+const journal = @import("../journal.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
@@ -54,6 +55,7 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const problems = try check(ctx, a);
     if (problems.len == 0) {
         if (try store.end()) |why| return cli.fail(ctx, "generation {d} is healthy, but couldn't make it the default: {s}", .{ t.n, why });
+        try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .trial, .step = .passed, .generation = t.n });
         try ctx.out.print("generation {d} came up healthy. it's the default now.\n", .{t.n});
         if (try settleBoot(ctx, a, boot)) |why| try ctx.err.print("os: {s}\n", .{why});
         return 0;
@@ -76,6 +78,7 @@ fn fellBack(ctx: *Context, a: Allocator, store: trial.Store, boot: facts.Boot, t
         _ = try store.end();
         return 1;
     };
+    try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .trial, .step = .failed, .generation = tried });
     const reason = try std.fmt.allocPrint(a, "fell back from {d} to {d}", .{ tried, n });
     const made = try rollback.startFrom(ctx, a, boot, target, running, reason) orelse return 1;
     const notice = try std.fmt.allocPrint(a, "generation {d} didn't come up healthy, so this machine went back to generation {d}. it's generation {d} now, with its config. `os rollback {d}` tries {d} again.\n", .{ tried, n, made, tried, tried });

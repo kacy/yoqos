@@ -51,6 +51,22 @@ pub const Lock = struct {
     }
 };
 
+/// the keys at the top of the file, and in a package's table, which is
+/// keyed by the package's name. the reader and `os schema lock` both take
+/// them from here.
+pub const top_keys = keyList(Lock, "version", null);
+pub const package_keys = keyList(Package, null, "name");
+
+fn keyList(comptime T: type, comptime extra: ?[]const u8, comptime skip: ?[]const u8) []const []const u8 {
+    comptime {
+        var out: []const []const u8 = if (extra) |e| &.{e} else &.{};
+        for (std.meta.fieldNames(T)) |n| {
+            if (skip == null or !std.mem.eql(u8, n, skip.?)) out = out ++ .{n};
+        }
+        return out;
+    }
+}
+
 pub fn write(w: *std.Io.Writer, l: *const Lock) !void {
     try w.print("# machine.lock: written by os. don't edit it by hand.\nversion = {d}\n", .{format_version});
     try writeField(w, "sync_date", l.sync_date);
@@ -213,7 +229,7 @@ const Reader = struct {
     }
 
     fn lock(r: *Reader, root: *const toml.Table) Error!Lock {
-        try r.onlyKeys(root, &.{ "version", "sync_date", "keyring", "providers", "packages" }, "");
+        try r.onlyKeys(root, top_keys, "");
         const version = try r.int(root, "version", "");
         if (version != format_version) return r.bad(null, "lock format {d} isn't supported", .{version});
 
@@ -250,7 +266,7 @@ const Reader = struct {
     fn package(r: *Reader, e: *const toml.Entry) Error!Package {
         const t = try r.table(&e.value, e.key);
         const prefix = try std.fmt.allocPrint(r.a, "packages.{s}.", .{e.key});
-        try r.onlyKeys(t, &.{ "version", "repo", "sha256", "depends", "recipe" }, prefix);
+        try r.onlyKeys(t, package_keys, prefix);
         var p: Package = .{
             .name = try r.a.dupe(u8, e.key),
             .version = try r.str(t, "version", prefix),

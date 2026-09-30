@@ -1006,10 +1006,30 @@ document on stdout under `--json`; other problems, like a file that can't
 be written, are an `os: ...` line on stderr either way.
 
 `os schema <name>` prints the json schema for a document: `plan`, `facts`,
-`status`, or `errors`. `os schema config` is one for `machine.toml`, which
-editors that check toml against a json schema, like taplo, can use.
-`os schema` alone lists them. the schemas come from the same code that
-writes and reads the documents, so they can't fall out of date.
+`status`, `errors`, or `events`. `os schema config` describes
+`machine.toml`, which editors that check toml against a json schema, like
+taplo, can use, and `os schema lock` describes `machine.lock`. `os schema`
+alone lists them. the schemas come from the same code that writes and reads
+the documents, so they can't fall out of date.
+
+`os events` prints what `os` has done on this machine, oldest first, as one
+`yoq.event/1` json document a line. that covers applies with their plan's
+hash, config commits, new generations, rollbacks, trial boots, and pacman
+runs outside `os` that the drift hook caught. `--follow` keeps watching and
+prints new events as they land, like `tail -f`. every event has a `time` in
+unix milliseconds and a `kind`, and the other fields depend on the kind;
+`os schema events` has them all.
+
+```
+$ os events --follow
+{"schema":"yoq.event/1","time":1790380800000,"kind":"pacman","packages":["htop"]}
+{"schema":"yoq.event/1","time":1790380860000,"kind":"apply","step":"begin","plan":"e4bd7044..."}
+{"schema":"yoq.event/1","time":1790380900000,"kind":"apply","step":"done","plan":"e4bd7044..."}
+```
+
+the events don't have a store of their own. they come from the apply
+journal, `/var/lib/yoq/journal`, where `os` also notes its other events,
+and the drift log, `/var/lib/yoq/drift`.
 
 exit codes:
 
