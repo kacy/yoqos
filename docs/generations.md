@@ -267,6 +267,12 @@ generation booted from the menu, since that generation's record is what
 `os rollback --to-booted` needs, or while a new generation waits for the
 next boot.
 
+limine and systemd-boot need copies of each generation's boot files on the
+esp. when a new generation's files don't fit, `os` doesn't record it, and
+says which generations `os gc --keep 1` would remove to make room. the
+running system stays as it was. a staged change that fails to build on a
+nearly full disk also says the disk is the likely reason.
+
 ## what this doesn't do yet
 
 - changes that don't need a reboot still apply live. if one of those
