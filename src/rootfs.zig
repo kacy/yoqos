@@ -28,7 +28,7 @@ pub const Root = struct {
         return r.writeMode(rel, bytes, null);
     }
 
-    /// `write`, with the file's permission bits set to `mode`, if given,
+    /// `write`, with the file's permission bits set to `bits`, if given,
     /// before it takes the old one's place.
     pub fn writeMode(r: Root, rel: []const u8, bytes: []const u8, bits: ?u32) error{ OutOfMemory, WriteFailed }!void {
         return writeAtomic(r.io, try r.path(rel), bytes, bits);
