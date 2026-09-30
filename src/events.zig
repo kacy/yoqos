@@ -317,4 +317,12 @@ test "polling reads both logs in time order, then only what's new" {
     const next = try poll(a, io, root, &offsets);
     try testing.expectEqual(1, next.len);
     try testing.expectEqual(3, next[0].generation.?);
+
+    // an apply cut off and settled later reads as its begin, then done.
+    try journal.record(a, io, root, 50, "begin", "def");
+    try journal.settle(a, io, root, (try journal.unfinished(a, io, root)).?);
+    const settled = try poll(a, io, root, &offsets);
+    try testing.expectEqual(2, settled.len);
+    try testing.expectEqual(.done, settled[1].step.?);
+    try testing.expectEqualStrings("def", settled[1].plan.?);
 }
