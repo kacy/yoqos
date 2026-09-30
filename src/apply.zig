@@ -95,8 +95,6 @@ pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock
     return .{ .skipped = skipped.items };
 }
 
-/// a drop-in here changes the initramfs.
-const mkinitcpio_dir = "/etc/mkinitcpio.conf.d/";
 /// the full path skips wrappers earlier in PATH that ask questions, like
 /// omarchy's.
 const mkinitcpio = "/usr/bin/mkinitcpio";
@@ -106,7 +104,7 @@ const mkinitcpio = "/usr/bin/mkinitcpio";
 /// initramfs is built again once they're all in place.
 pub fn rebuildsInitramfs(changes: []const planner.Change) bool {
     for (changes) |c| {
-        if (c.kind == .file and std.mem.startsWith(u8, c.subject, mkinitcpio_dir)) return true;
+        if (c.kind == .file and planner.isInitramfsDropIn(c.subject)) return true;
     }
     return false;
 }
