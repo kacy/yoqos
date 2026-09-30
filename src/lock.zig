@@ -173,6 +173,16 @@ pub fn parse(a: Allocator, path: []const u8, bytes: []const u8, diags: *diag.Lis
 
 const fix_hint = "restore it from git or run `os update`";
 
+/// yyyy-mm-dd, the way sync dates are written. the date names a
+/// directory in the database cache, so nothing else gets through.
+pub fn validDate(d: []const u8) bool {
+    if (d.len != 10 or d[4] != '-' or d[7] != '-') return false;
+    for (d, 0..) |ch, i| {
+        if (i != 4 and i != 7 and !std.ascii.isDigit(ch)) return false;
+    }
+    return true;
+}
+
 /// a git commit id, as a lock's recipe holds one: 40 lowercase hex
 /// digits, and never something git would read as an option.
 pub fn validCommit(s: []const u8) bool {
@@ -211,6 +221,7 @@ const Reader = struct {
             .sync_date = try r.str(root, "sync_date", ""),
             .keyring = try r.str(root, "keyring", ""),
         };
+        if (!validDate(l.sync_date)) return r.bad(root.get("sync_date").?.span, "sync_date isn't a yyyy-mm-dd date", .{});
         if (root.get("providers")) |v| {
             const t = try r.table(v, "providers");
             const out = try r.a.alloc(Provider, t.entries.items.len);
@@ -409,6 +420,7 @@ test "damaged locks are rejected with a reason" {
     try expectBad(head ++ "[packages.git]\nversion = \"1\"\nrepo = \"core\"\nsha256 = \"" ++ hash_a ++ "\"\ndepends = [\"gone\"]\n", "git depends on gone, which isn't in the lock");
     try expectBad(head ++ "<<<<<<< HEAD\n", "expected a key, found '<'");
     try expectBad(head ++ "extra = 1\n", "unknown key extra");
+    try expectBad("version = 1\nsync_date = \"../../etc\"\nkeyring = \"1\"\n", "sync_date isn't a yyyy-mm-dd date");
 }
 
 test "diff between locks" {
