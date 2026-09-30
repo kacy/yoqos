@@ -934,11 +934,17 @@ own; `--yes` alone doesn't build an unreviewed one. without a terminal,
 `os update` stops, unless `--trust-aur` says to build them as they are.
 
 a recipe builds only under its own name: one whose `.SRCINFO` gives a
-different pkgbase is refused.
+different pkgbase is refused. from a split recipe, which builds several
+packages, only the one named after the recipe goes into `yoq-aur`, and a
+split recipe with no package of that name is refused.
 
-an aur package that needs another aur package needs that one in `aur` too;
-`os` builds them in order. an `aur` list brings in devtools, which the
-builds need, and they build against today's arch packages. `os add`, `os
+an aur package that needs another aur package needs that one in `aur` too,
+and `os` builds them in order. before it builds anything, `os update` reads
+what each recipe's `.SRCINFO` needs. a need that's in neither the arch
+repositories nor `aur` stops it with E0130, which names the package to add.
+an `aur` list brings in devtools, which the builds need. builds get their
+arch packages as of the lock's date, from the arch linux archive when that
+isn't today, so they match what the lock installs. `os add`, `os
 remove`, and the like keep the recipes the lock already has; only `os
 update` builds.
 
