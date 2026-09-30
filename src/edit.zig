@@ -261,6 +261,19 @@ fn addKey(a: Allocator, d: *const Doc, path: []const []const u8, key: []const u8
     const found = d.find(path) orelse {
         // a new section would define the key a second time.
         if (d.taken(path)) return error.BadToml;
+        // the nearest table on the path that exists. an inline one is
+        // closed to sections, so the rest goes inside it as inline tables.
+        var n = path.len - 1;
+        while (n > 0 and d.find(path[0..n]) == null) n -= 1;
+        if (n > 0) {
+            const origin = d.find(path[0..n]).?.table.origin;
+            if (origin == .inline_table or origin == .inline_dotted) {
+                var inner = try std.fmt.allocPrint(a, "{{ {s} = {s} }}", .{ k, value });
+                var i = path.len - 1;
+                while (i > n) : (i -= 1) inner = try std.fmt.allocPrint(a, "{{ {s} = {s} }}", .{ try keyText(a, path[i]), inner });
+                return addKey(a, d, path[0..n], path[n], inner);
+            }
+        }
         return try appendSection(a, text, path, key, value);
     };
     const t = found.table;
@@ -509,6 +522,14 @@ test "a dotted key goes next to its siblings, not under a later header" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     try expectEdit(addToList(arena.allocator(), "remove.aur = []\n[system]\n[remove.x]\n", &.{"remove"}, "packages", "git"), "remove.aur = []\nremove.packages = [\"git\"]\n[system]\n[remove.x]\n");
+}
+
+test "a file goes inside an inline files table" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFile(addFile(a, "files = { }\n", "/etc/motd", "files/etc/motd", "0600"), "files = { \"/etc/motd\" = { source = \"files/etc/motd\", mode = \"0600\" } }\n");
+    try expectFile(addFile(a, "files = { \"/etc/x\" = { text = \"t\" } }\n", "/etc/motd", "m", null), "files = { \"/etc/x\" = { text = \"t\" }, \"/etc/motd\" = { source = \"m\" } }\n");
 }
 
 test "a key that isn't a table isn't given a section" {
