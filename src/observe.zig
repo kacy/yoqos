@@ -422,6 +422,42 @@ pub fn pacmanDb(a: Allocator, io: std.Io, root: []const u8) ![]const u8 {
     return std.fs.path.join(a, &.{ root, "var/lib/pacman" });
 }
 
+/// the installed package whose file list has `path`, like `pacman -Qo`
+/// but without following symlinks. null if none does.
+pub fn fileOwner(a: Allocator, io: std.Io, root: []const u8, path: []const u8) !?[]const u8 {
+    const local = try std.fs.path.join(a, &.{ try pacmanDb(a, io, root), "local" });
+    var dir = std.Io.Dir.cwd().openDir(io, local, .{ .iterate = true }) catch return null;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |e| {
+        if (e.kind != .directory) continue;
+        const list = try rootfs.readStreaming(a, io, try std.fs.path.join(a, &.{ local, e.name, "files" })) orelse continue;
+        if (listsFile(list, path)) return try a.dupe(u8, packageOfDir(e.name));
+    }
+    return null;
+}
+
+/// whether a local database `files` entry lists `path`. it writes paths
+/// without the leading slash.
+fn listsFile(text: []const u8, path: []const u8) bool {
+    const rel = std.mem.trimStart(u8, path, "/");
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var in_files = false;
+    while (lines.next()) |line| {
+        if (line.len > 0 and line[0] == '%') {
+            in_files = std.mem.eql(u8, line, "%FILES%");
+        } else if (in_files and std.mem.eql(u8, line, rel)) return true;
+    }
+    return false;
+}
+
+/// "openssh-10.0p1-2" is openssh: neither pkgver nor pkgrel has a dash.
+fn packageOfDir(name: []const u8) []const u8 {
+    const rel = std.mem.lastIndexOfScalar(u8, name, '-') orelse return name;
+    const ver = std.mem.lastIndexOfScalar(u8, name[0..rel], '-') orelse return name;
+    return name[0..ver];
+}
+
 /// "amd" or "intel" from /proc/cpuinfo's vendor_id, or the raw vendor.
 fn cpuVendor(text: []const u8) ?[]const u8 {
     var lines = std.mem.splitScalar(u8, text, '\n');
@@ -507,7 +543,7 @@ fn stagedChanges(a: Allocator, io: std.Io, running: ?[]const u8, pacman: []const
 /// files in /etc a new root gets from the running one as it boots, or that
 /// aren't the machine's to begin with: passwords and accounts, its
 /// identity, host keys, the keyring, and os's own config.
-fn carriedEtc(path: []const u8) bool {
+pub fn carriedEtc(path: []const u8) bool {
     for ([_][]const u8{ "shadow", "gshadow", "passwd", "group", "machine-id", "adjtime", "subuid", "subgid", "ld.so.cache" }) |f| {
         if (std.mem.eql(u8, path, f) or (std.mem.startsWith(u8, path, f) and path.len == f.len + 1 and path[f.len] == '-')) return true;
     }
@@ -745,6 +781,25 @@ test "files with a new upstream default beside them" {
     try testing.expectEqual(2, f.pacnew.len);
     try testing.expectEqualStrings("/etc/pacman.conf", f.pacnew[0]);
     try testing.expectEqualStrings("/etc/ssh/sshd_config", f.pacnew[1]);
+}
+
+test "the package that owns a file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+    try tmp.dir.createDirPath(io, "var/lib/pacman/local/openssh-10.0p1-2");
+    try tmp.dir.writeFile(io, .{ .sub_path = "var/lib/pacman/local/openssh-10.0p1-2/files", .data = "%FILES%\netc/\netc/ssh/\netc/ssh/sshd_config\n\n%BACKUP%\netc/ssh/sshd_config\tabc\n" });
+    try tmp.dir.createDirPath(io, "var/lib/pacman/local/lib32-foo-bar-1:2.0-1");
+    try tmp.dir.writeFile(io, .{ .sub_path = "var/lib/pacman/local/lib32-foo-bar-1:2.0-1/files", .data = "%FILES%\netc/foo.conf\n" });
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try testing.expectEqualStrings("openssh", (try fileOwner(a, io, root, "/etc/ssh/sshd_config")).?);
+    try testing.expectEqualStrings("lib32-foo-bar", (try fileOwner(a, io, root, "/etc/foo.conf")).?);
+    try testing.expectEqual(null, try fileOwner(a, io, root, "/etc/motd"));
+    // a backup line isn't a file line.
+    try testing.expect(!listsFile("%BACKUP%\netc/motd\n", "/etc/motd"));
 }
 
 test "which bootloader an esp at /boot holds" {
