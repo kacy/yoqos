@@ -19,8 +19,8 @@ running system instead of into it; see [generations.md](generations.md).
 | --- | --- |
 | `os init` | writes a config that describes this machine |
 | `os status` | what matches the config, what changed, what's failing |
-| `os plan` | every change applying would make |
-| `os apply` | makes those changes, after asking |
+| `os plan` | every change applying would make; `-o <file>` saves it |
+| `os apply` | makes those changes, after asking; `os apply <file>` applies a saved plan |
 | `os history` | the generations |
 | `os rollback` | goes back to an earlier generation |
 | `os enable-rollback` | turns on whole-system generations (btrfs, with grub, limine, refind, or systemd-boot) |
@@ -39,6 +39,11 @@ running system instead of into it; see [generations.md](generations.md).
 | `os facts` | what `os` sees on this machine |
 | `os explain` | the long explanation of an error code |
 | `os help`, `os version` | the command list, and the version |
+| `os schema` | json schemas for the config and for what `--json` prints |
+| `os docs` | this page, the readme, and generations.md, as one document |
+| `os build --clean` | builds a root from the config and the lock alone |
+
+`os help` doesn't list the last three.
 
 ## installing
 
@@ -210,7 +215,9 @@ it installs exactly the versions in the lock, checks each package against
 the lock's checksum and arch's signatures, and marks packages as explicit or
 dependencies to match the config. it uses the machine's own pacman.conf for
 mirrors and download settings. packages come from the lock's date, so run
-`os update` first to move to today's.
+`os update` first to move to today's. mirrors keep only today's packages,
+so for a lock from an earlier day, anything the cache doesn't have comes
+from the arch linux archive, which is slower.
 
 afterwards it plans again and says if anything still differs. arch doesn't
 restart services after an upgrade, so when packages changed, `apply` also
@@ -311,8 +318,10 @@ when a package depends on something several packages provide, like
 want and saves the answer in `[providers]` as a commit of its own, so it
 only asks once. without a terminal, it stops and says which choices to make.
 
-`--dbs <dir>` resolves against databases you already have instead of
-downloading, and `--date yyyy-mm-dd` names the date they're from.
+`--date yyyy-mm-dd` resolves against arch's packages as they were on that
+day, from the arch linux archive. `--dbs <dir>` resolves against databases
+you already have instead of downloading them, and `--date` then names the
+day they're from.
 
 an update can move hundreds of packages, so its plan is a summary:
 
@@ -367,8 +376,8 @@ rollback work on whole copies of the system instead; see
 [generations.md](generations.md).
 
 `/etc/yoq` is a git repository. every change `os` makes there, from `init`,
-`add`, `remove`, `enable`, `disable`, `adopt`, `update`, and `rollback`, is a
-commit with a short message, like `add fd` (`adopt` commits as `add`). if
+`add`, `remove`, `enable`, `disable`, `adopt`, `edit`, `update`, and
+`rollback`, is a commit with a short message, like `add fd` (`adopt` commits as `add`). if
 the config lives inside another repository, like a dotfiles one, `os`
 commits there, and only what's in the config's own directory. each commit
 is a generation of the machine's config, numbered from the first, and `*`
@@ -385,11 +394,10 @@ $ os history
 `os rollback` goes back one generation, and `os rollback 2` goes back to
 generation 2. it applies that generation's config and lock like `os apply`
 does, with the plan and a question first, installing the older package
-versions from the local cache. once the machine matches, it writes those
-files back to `/etc/yoq` as a new generation, `rollback to 2: ...`, so
-nothing is lost and `os rollback` again undoes the rollback. if the cached
-package databases for that generation's date are gone, the plan stops and
-says to run `os update`.
+versions from the local cache, or from the arch linux archive when the
+cache doesn't have them any more. once the machine matches, it writes
+those files back to `/etc/yoq` as a new generation, `rollback to 2: ...`,
+so nothing is lost and `os rollback` again undoes the rollback.
 
 this rolls back packages, settings, services, users, and the files the
 config names, not files that package scripts changed, or anything else `os`
@@ -440,8 +448,8 @@ that:
 - the pacman hook that notices changes made with pacman is installed;
 - no apply stopped partway.
 
-with generations, it also checks that the boot menu has them, that os's
-units are there, and that the esp has room for another kernel. a sudo
+it also checks that the esp has room for another kernel, and with
+generations, that the boot menu has them and that os's units are there. a sudo
 rule without a password shows up too: anything running as that user could
 change the machine without asking. each check that fails says what to do,
 and the exit code is 1 when one does.
@@ -461,9 +469,11 @@ boot the running root without `os`:
 - grub reads a menu from `grub-mkconfig` in `/boot/grub` again.
 - limine gets one plain entry where `os`'s section was.
 - refind boots the kernel in `/boot` through `refind_linux.conf`.
+- systemd-boot gets one entry of its own, `arch-linux.conf`, as its
+  default, where os's were.
 
-limine and refind need the esp mounted at `/boot` for this, since that's
-where arch installs the kernel.
+limine, refind, and systemd-boot need the esp mounted at `/boot` for this,
+since that's where arch installs the kernel.
 
 the other generations stay as btrfs subvolumes unless you say yes when it
 asks, or pass `--delete-generations`. the running root stays where it is,
@@ -482,6 +492,7 @@ it stopped.
   own live iso, built from the same profile, with `os` and everything `os
   install` runs added.
 - a usb drive of 2 gb or more.
+- a disk of 16 gib or more for the new machine.
 - a machine that boots in uefi mode. secure boot has to be off: the iso
   isn't signed for it, and `os` doesn't support it yet.
 - a config repository that describes the machine, or nothing at all:
@@ -497,9 +508,9 @@ it stopped.
    sudo dd if=yoq-os-0.1.1-x86_64.iso of=/dev/sdX bs=4M status=progress oflag=sync
    ```
 
-2. boot the new machine from the drive, in uefi mode. it comes up at a
-   root shell, like arch's iso, with a short version of these steps on
-   the screen.
+2. boot the new machine from the drive, in uefi mode. its boot menu says
+   "yoq os live medium". it comes up at a root shell, like arch's iso,
+   with a banner and a short version of these steps on the screen.
 
 3. get online. a wired connection comes up by itself. for wi-fi:
 
@@ -527,10 +538,13 @@ it stopped.
 6. install from the config repository:
 
    ```
+   os install /root/machines --disk /dev/nvme0n1 --update
    os install https://github.com/you/machines --host atlas --disk /dev/nvme0n1 --update
    ```
 
-   the first argument is the repository, as a url or a directory.
+   the first argument is the repository, as a url or a directory. a
+   directory with a git repository in it is cloned, so only what's
+   committed comes along.
    `--host atlas` picks `hosts/atlas/machine.toml` in a repository for
    several machines; without it, `os` uses the repository's own
    `machine.toml`. for a private repository, git asks for your name and a
@@ -580,7 +594,7 @@ you give them a password with `passwd -R /mnt/yoq <user>` before
 rebooting.
 
 it checks first that the firmware is uefi and that the disk is a whole
-disk nothing has mounted. it also checks that the tools it runs are
+disk of 16 gib or more that nothing has mounted. it also checks that the tools it runs are
 there, and that the lock has a kernel and grub. arch's own iso works too,
 with `os` added: `pacman -U` the release package, or copy the binary. on
 another live system, `pacman -S dosfstools btrfs-progs grub git` first.
@@ -941,7 +955,7 @@ includes merge in order, and the including file always wins.
 - package lists merge: every file's packages count.
 - other values replace: the last one set wins.
 - `[remove] packages = ["nano"]` takes a package out of what the includes
-  asked for.
+  asked for, and `[remove] aur` does the same for aur packages.
 - `unset = ["desktop.audio"]` clears a key an include set. names with dots
   work as written, `sysctl.vm.swappiness`, or quoted,
   `sysctl."vm.swappiness"`.
@@ -1001,8 +1015,8 @@ exit codes:
 [generations.md](generations.md) as one markdown document: the version
 that came with the installed `os`.
 
-global flags work before or after the command. a flag's value can't be
-empty or start with `-`:
+global flags work before or after the command, as `--config path` or
+`--config=path`. a flag's value can't be empty or start with `-`:
 
 | flag | meaning |
 | --- | --- |
