@@ -14,6 +14,7 @@ const facts = @import("../facts.zig");
 const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
 const trial = @import("../trial.zig");
+const journal = @import("../journal.zig");
 const Context = cli.Context;
 
 pub fn historyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
@@ -89,6 +90,7 @@ pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         if (!try cli.writeFile(ctx, try std.fs.path.join(a, &.{ dir, f.path }), f.bytes)) return 1;
     }
     try cli.record(ctx, a, top, try std.fmt.allocPrint(a, "rollback to {d}: {s}", .{ target.n, target.message }));
+    try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .rollback, .generation = @intCast(target.n) });
     return done.code;
 }
 
@@ -129,6 +131,7 @@ fn rollbackGeneration(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, wan
     try ctx.out.print("generation {d} ({s} · {s}) becomes generation {d}, and the next boot runs it.\n/var and /home stay as they are.\n", .{ n, try generation.dateOf(a, target.time), target.reason, generation.next(records) });
     if (try cli.approve(ctx, yes, "roll back", "roll back?")) |code| return code;
     const made = try startFrom(ctx, a, boot, target, source, reason) orelse return 1;
+    try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .rollback, .generation = n });
     try ctx.out.print("generation {d} is ready. reboot to start it.\n", .{made});
     return 0;
 }
@@ -145,6 +148,7 @@ pub fn startFrom(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, target: 
         try ctx.err.print("os: {s}\n", .{w});
         return null;
     }
+    try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .generation, .generation = made, .message = reason });
     // a trial still waiting is overtaken: the next boot runs this.
     if (trial.Store.of(a, ctx.io, boot)) |store| if (try store.end()) |w| try ctx.err.print("os: couldn't end the pending trial: {s}\n", .{w});
     if (config) |c| {
