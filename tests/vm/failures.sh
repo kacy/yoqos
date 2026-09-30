@@ -162,6 +162,12 @@ disk_full() {
 esp_full() {
     pkg=$(ucode)
     "$vm" ssh "$os add --no-apply $pkg" | tail -n 1
+    # trial.sh's generations had this microcode already, and mkinitcpio
+    # builds the same image from the same files, so the esp would have
+    # the copies. a file of this run's own in the initramfs makes it new.
+    # the next root is a snapshot of this one, so it has the drop-in, and
+    # the microcode's firmware makes its build run mkinitcpio.
+    "$vm" ssh "mkdir -p /etc/mkinitcpio.conf.d && date +%s%N > /etc/yoq-esp-test && echo 'FILES+=(/etc/yoq-esp-test)' > /etc/mkinitcpio.conf.d/99-yoq-esp-test.conf"
     before=$("$vm" ssh "$newest_cmd")
     menu=$("$vm" ssh "$menu_cmd")
     was=$(roots)
@@ -176,7 +182,7 @@ esp_full() {
     on_trial no
     check "ls $VM_ESP/yoq/boot | grep -c yoq-new || true" 0
     check "pacman -Q $pkg >/dev/null 2>&1 || echo not installed" "not installed"
-    "$vm" ssh "rm -f $VM_ESP/yoq-filler; sync"
+    "$vm" ssh "rm -f $VM_ESP/yoq-filler /etc/yoq-esp-test /etc/mkinitcpio.conf.d/99-yoq-esp-test.conf; sync"
     got=$(roots)
     if [ "$got" != "$was" ]; then
         echo "$name: @roots was '$was' before, and '$got' after"
