@@ -132,14 +132,19 @@ const Installer = struct {
         if (try in.run(&.{ "mkdir", "-p", std.fs.path.dirnamePosix(staging).? })) |w| return w;
         const local = rootfs.pathExists(in.ctx.io, source);
         const git = !local or rootfs.pathExists(in.ctx.io, try std.fs.path.join(in.a, &.{ source, ".git" }));
+        // a password or token in the url stays out of the new machine's
+        // config repository, which anyone there can read, and out of
+        // messages.
+        const shown = try withoutCredentials(in.a, source);
         const why = if (git)
-            try in.run(&.{ "git", "clone", "-q", "--", source, staging })
+            try in.run(&.{ "git", "clone", "-q", "--", source, staging }) orelse
+                if (shown.len != source.len) try in.run(&.{ "git", "-C", staging, "remote", "set-url", "origin", shown }) else null
         else
             try exec.runAll(in.a, in.ctx.io, &.{ &.{ "mkdir", "-p", staging }, &.{ "cp", "-a", try std.fmt.allocPrint(in.a, "{s}/.", .{source}), staging } });
-        if (why) |w| return try std.fmt.allocPrint(in.a, "can't fetch the config from {s}: {s}", .{ source, w });
+        if (why) |w| return try std.fmt.allocPrint(in.a, "can't fetch the config from {s}: {s}", .{ shown, try std.mem.replaceOwned(u8, in.a, w, source, shown) });
         if (host) |h| in.config_rel = try std.fmt.allocPrint(in.a, "hosts/{s}/machine.toml", .{h});
         const path = try std.fs.path.join(in.a, &.{ staging, in.config_rel });
-        if (!rootfs.pathExists(in.ctx.io, path)) return try std.fmt.allocPrint(in.a, "{s} has no {s}", .{ source, in.config_rel });
+        if (!rootfs.pathExists(in.ctx.io, path)) return try std.fmt.allocPrint(in.a, "{s} has no {s}", .{ shown, in.config_rel });
         in.ctx.config_path = path;
         return null;
     }
@@ -393,6 +398,29 @@ const Installer = struct {
         _ = exec.run(in.a, in.ctx.io, &.{ "umount", "-R", install.target }) catch {};
     }
 };
+
+/// `url` without a user and password before its host, like
+/// "https://user:token@host/repo" as "https://host/repo". an ssh url's
+/// user is only a name, and ssh needs it.
+fn withoutCredentials(a: std.mem.Allocator, url: []const u8) ![]const u8 {
+    if (!std.mem.startsWith(u8, url, "https://") and !std.mem.startsWith(u8, url, "http://")) return url;
+    const scheme = std.mem.indexOf(u8, url, "://").?;
+    const host = scheme + 3;
+    const end = std.mem.indexOfScalarPos(u8, url, host, '/') orelse url.len;
+    const at = std.mem.lastIndexOfScalar(u8, url[host..end], '@') orelse return url;
+    return std.mem.concat(a, u8, &.{ url[0..host], url[host + at + 1 ..] });
+}
+
+test "a url's credentials stay out" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqualStrings("https://host/repo.git", try withoutCredentials(a, "https://user:tok@en@host/repo.git"));
+    try std.testing.expectEqualStrings("https://host/a@b", try withoutCredentials(a, "https://host/a@b"));
+    try std.testing.expectEqualStrings("git@host:repo", try withoutCredentials(a, "git@host:repo"));
+    try std.testing.expectEqualStrings("ssh://git@host/repo", try withoutCredentials(a, "ssh://git@host/repo"));
+    try std.testing.expectEqualStrings("/srv/config", try withoutCredentials(a, "/srv/config"));
+}
 
 test {
     _ = lock;
