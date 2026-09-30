@@ -55,6 +55,17 @@ const Doc = struct {
         return .{ .table = t, .value = value, .dotted = path[header..] };
     }
 
+    /// whether some key on `path` holds something other than a table.
+    fn taken(d: *const Doc, path: []const []const u8) bool {
+        var t: *const toml.Table = d.doc.root;
+        for (path) |p| {
+            const v = t.get(p) orelse return false;
+            if (v.data != .table) return true;
+            t = v.data.table;
+        }
+        return false;
+    }
+
     /// the offset just past the end of the line holding `off`.
     fn lineEnd(d: *const Doc, off: usize) usize {
         const nl = std.mem.indexOfScalarPos(u8, d.text, off, '\n') orelse return d.text.len;
@@ -152,22 +163,23 @@ pub fn addToList(a: Allocator, text_in: []const u8, path: []const []const u8, ke
     // had none.
     const new_line = try std.fmt.allocPrint(a, "{s}{s},\n", .{ indent, q });
     var out = try splice(a, text, d.lineStart(close), 0, new_line);
-    if (!hasCommaAfter(text, last.span.end, close)) out = try splice(a, out, last.span.end, 0, ",");
+    if (commaAfter(text, last.span.end, close) == null) out = try splice(a, out, last.span.end, 0, ",");
     return out;
 }
 
-/// whether a comma follows `from`, skipping spaces and comments, before `limit`.
-fn hasCommaAfter(text: []const u8, from: usize, limit: usize) bool {
+/// where the comma after `from` is, skipping spaces, line breaks, and
+/// comments, before `limit`.
+fn commaAfter(text: []const u8, from: usize, limit: usize) ?usize {
     var i = from;
     while (i < limit) : (i += 1) {
         switch (text[i]) {
-            ',' => return true,
+            ',' => return i,
             ' ', '\t', '\r', '\n' => {},
-            '#' => i = std.mem.indexOfScalarPos(u8, text, i, '\n') orelse return false,
-            else => return false,
+            '#' => i = std.mem.indexOfScalarPos(u8, text, i, '\n') orelse return null,
+            else => return null,
         }
     }
-    return false;
+    return null;
 }
 
 fn skipBlanks(text: []const u8, from: usize, limit: usize) usize {
@@ -198,21 +210,24 @@ fn removeOne(a: Allocator, text: []const u8, path: []const []const u8, key: []co
     const start = it.span.start.offset;
     var end: usize = it.span.end;
 
-    // alone on its line: take the whole line, comma and comment included.
+    const comma = commaAfter(text, end, v.span.end - 1);
+
+    // alone on its line, with its comma if it has one: take the whole
+    // line, comment included.
     const ls = d.lineStart(start);
     const le = d.lineEnd(start);
     var rest = skipBlanks(text, end, le);
     if (rest < le and text[rest] == ',') rest = skipBlanks(text, rest + 1, le);
     const blank_before = std.mem.trim(u8, text[ls..start], " \t").len == 0;
-    if (blank_before and (rest == le or text[rest] == '\n' or text[rest] == '#' or text[rest] == '\r')) {
+    const own_comma = comma == null or comma.? < le;
+    if (blank_before and own_comma and (rest == le or text[rest] == '\n' or text[rest] == '#' or text[rest] == '\r')) {
         return try splice(a, text, ls, le - ls, "");
     }
 
-    // on a shared line: take the item and the comma after it, or the comma
-    // before it when it's last.
-    const j = skipBlanks(text, end, text.len);
-    if (j < text.len and text[j] == ',') {
-        end = skipBlanks(text, j + 1, text.len);
+    // otherwise take the item and the comma after it, wherever that is,
+    // or the comma before it when it's last.
+    if (comma) |c| {
+        end = skipBlanks(text, c + 1, text.len);
         return try splice(a, text, start, end - start, "");
     }
     const from = if (i > 0) items[i - 1].span.end else start;
@@ -243,7 +258,24 @@ fn setKey(a: Allocator, text_in: []const u8, path: []const []const u8, key: []co
 fn addKey(a: Allocator, d: *const Doc, path: []const []const u8, key: []const u8, value: []const u8) Error![]u8 {
     const text = d.text;
     const k = try keyText(a, key);
-    const found = d.find(path) orelse return try appendSection(a, text, path, key, value);
+    const found = d.find(path) orelse {
+        // a new section would define the key a second time.
+        if (d.taken(path)) return error.BadToml;
+        // the nearest table on the path that exists. an inline one is
+        // closed to sections, so the rest goes inside it as inline tables.
+        var n = path.len - 1;
+        while (n > 0 and d.find(path[0..n]) == null) n -= 1;
+        if (n > 0) {
+            const origin = d.find(path[0..n]).?.table.origin;
+            if (origin == .inline_table or origin == .inline_dotted) {
+                var inner = try std.fmt.allocPrint(a, "{{ {s} = {s} }}", .{ k, value });
+                var i = path.len - 1;
+                while (i > n) : (i -= 1) inner = try std.fmt.allocPrint(a, "{{ {s} = {s} }}", .{ try keyText(a, path[i]), inner });
+                return addKey(a, d, path[0..n], path[n], inner);
+            }
+        }
+        return try appendSection(a, text, path, key, value);
+    };
     const t = found.table;
     switch (t.origin) {
         .inline_table, .inline_dotted => {
@@ -306,9 +338,19 @@ fn pathText(a: Allocator, path: []const []const u8) ![]u8 {
     return out.items;
 }
 
+/// where the last key written in `t`'s own place ends. sub-tables with a
+/// header of their own, like `[remove.x]` below `remove.aur = []`, sit
+/// elsewhere in the file, so they don't count.
 fn lastEnd(t: *const toml.Table) usize {
     var end: usize = 0;
-    for (t.entries.items) |e| end = @max(end, e.value.span.end);
+    for (t.entries.items) |e| {
+        switch (e.value.data) {
+            .table => |sub| if (sub.origin == .header or sub.origin == .implicit) continue,
+            .array => |arr| if (arr.of_tables) continue,
+            else => {},
+        }
+        end = @max(end, e.value.span.end);
+    }
     return end;
 }
 
@@ -397,6 +439,14 @@ test "remove from lists" {
     try expectEdit(removeFromList(a, "packages = [\"nano\",\t\"git\"]\n", &.{}, "packages", "nano"), "packages = [\"git\"]\n");
 }
 
+test "remove takes the comma after an item past a comment or line break" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectEdit(removeFromList(a, "packages = [\"a\" # x\n , \"b\"]\n", &.{}, "packages", "a"), "packages = [\"b\"]\n");
+    try expectEdit(removeFromList(a, "packages = [\n  \"a\"\n  , \"b\"\n]\n", &.{}, "packages", "a"), "packages = [\n  \"b\"\n]\n");
+}
+
 test "enable and disable services" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -466,6 +516,31 @@ fn expectFile(got: Error![]const u8, want: []const u8) !void {
     var info: toml.ErrorInfo = .{};
     var doc = try toml.parse(testing.allocator, out, &info);
     doc.deinit();
+}
+
+test "a dotted key goes next to its siblings, not under a later header" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    try expectEdit(addToList(arena.allocator(), "remove.aur = []\n[system]\n[remove.x]\n", &.{"remove"}, "packages", "git"), "remove.aur = []\nremove.packages = [\"git\"]\n[system]\n[remove.x]\n");
+}
+
+test "a file goes inside an inline files table" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFile(addFile(a, "files = { }\n", "/etc/motd", "files/etc/motd", "0600"), "files = { \"/etc/motd\" = { source = \"files/etc/motd\", mode = \"0600\" } }\n");
+    try expectFile(addFile(a, "files = { \"/etc/x\" = { text = \"t\" } }\n", "/etc/motd", "m", null), "files = { \"/etc/x\" = { text = \"t\" }, \"/etc/motd\" = { source = \"m\" } }\n");
+}
+
+test "a key that isn't a table isn't given a section" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectError(error.BadToml, addToList(a, "packages = [\"git\"]\nremove = +inf\n", &.{"remove"}, "packages", "git"));
+    try testing.expectError(error.BadToml, setProvider(a, "providers = 5\n", "sh", "bash"));
+    try testing.expectError(error.BadToml, setService(a, "[[services]]\n", "ssh", true));
+    try testing.expectError(error.BadToml, addFile(a, "files = 5\n", "/etc/motd", "files/etc/motd", null));
+    try testing.expectError(error.BadToml, addFile(a, "[files]\n\"/etc/motd\" = \"hi\"\n", "/etc/motd", "files/etc/motd", "0600"));
 }
 
 test "odd names are quoted" {

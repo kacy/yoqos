@@ -59,6 +59,9 @@ fn dateOf(a: Allocator, rfc822: []const u8) ?[]const u8 {
     const month = for (months, 1..) |m, i| {
         if (std.mem.eql(u8, m, month_name)) break i;
     } else return null;
+    // the date is compared as text with lock dates, so it has to come out
+    // as yyyy-mm-dd.
+    if (day < 1 or day > 31 or year > 9999) return null;
     return std.fmt.allocPrint(a, "{d:0>4}-{d:0>2}-{d:0>2}", .{ year, month, day }) catch null;
 }
 
@@ -121,4 +124,16 @@ test "titles lose control characters and escape sequences" {
     try std.testing.expectEqual(1, items.len);
     try std.testing.expectEqualStrings("red  news here 2J\xc3\xa9", items[0].title);
     try std.testing.expectEqualStrings("https://archlinux.org/news/x/]0;hi ", items[0].link);
+}
+
+test "items with a date out of range are skipped" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const items = try parse(arena.allocator(),
+        \\<item><title>t</title><link>l</link><pubDate>Tue, 99 Sep 20266 00:00:00 +0000</pubDate></item>
+        \\<item><title>t</title><link>l</link><pubDate>Tue, 0 Sep 2026 00:00:00 +0000</pubDate></item>
+        \\<item><title>t</title><link>l</link><pubDate>Tue, 31 Sep 2026 00:00:00 +0000</pubDate></item>
+    );
+    try std.testing.expectEqual(1, items.len);
+    try std.testing.expectEqualStrings("2026-09-31", items[0].date);
 }
