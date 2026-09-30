@@ -266,7 +266,7 @@ pub fn cached(a: Allocator, io: std.Io, rs: []const Repo, cache: []const u8, dat
 }
 
 /// whether every server `r` has is a directory on this machine.
-fn servedFromDisk(r: Repo) bool {
+pub fn servedFromDisk(r: Repo) bool {
     for (r.servers) |sv| {
         if (!std.mem.startsWith(u8, sv, "file://")) return false;
     }
@@ -280,7 +280,7 @@ fn localDb(a: Allocator, r: Repo) !?[]const u8 {
 }
 
 /// the repository's servers, or the fallback if pacman.conf names none.
-fn serversOf(r: Repo) []const []const u8 {
+pub fn serversOf(r: Repo) []const []const u8 {
     return if (r.servers.len > 0) r.servers else &.{fallback_server};
 }
 

@@ -10,6 +10,7 @@ const exec = @import("exec.zig");
 const lists = @import("lists.zig");
 const rootfs = @import("rootfs.zig");
 const lock = @import("lock.zig");
+const sync = @import("sync.zig");
 const Allocator = std.mem.Allocator;
 
 /// the local repository's name, as pacman and the lock see it.
@@ -102,6 +103,27 @@ fn providerOf(recipes: []const SrcInfo, name: []const u8) ?[]const u8 {
     return null;
 }
 
+/// the pacman.conf builds use inside the chroot: `repos`, the ones the
+/// lock resolves against, with their servers written out. arch-nspawn
+/// rewrites the chroot's mirrorlist from the host's on every run, so
+/// servers in the mirrorlist would build against today's packages even
+/// for a lock from an earlier day. repositories on this machine's disk are
+/// left out: the chroot can't see them, and aur packages a build needs go
+/// in with `-I`.
+pub fn chrootPacmanConf(a: Allocator, repos: []const sync.Repo) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    // LocalFileSigLevel is for the aur packages -I installs, which os built
+    // and didn't sign.
+    try out.appendSlice(a, "[options]\nArchitecture = auto\nSigLevel = Required DatabaseOptional\nLocalFileSigLevel = Optional\n");
+    for (repos) |r| {
+        if (r.local or sync.servedFromDisk(r)) continue;
+        try out.print(a, "\n[{s}]\n", .{r.name});
+        if (!r.signed) try out.appendSlice(a, "SigLevel = Optional TrustAll\n");
+        for (sync.serversOf(r)) |server| try out.print(a, "Server = {s}\n", .{server});
+    }
+    return out.items;
+}
+
 /// the directories os keeps aur work in, under a machine's root.
 pub const Dirs = struct {
     /// the recipes, one git clone each, and build logs.
@@ -143,6 +165,8 @@ pub const Builder = struct {
     dirs: Dirs,
     /// the aur's address, or a stand-in, like a local directory in tests.
     url: []const u8 = default_url,
+    /// the chroot's pacman.conf, from `chrootPacmanConf`.
+    pacman_conf: []const u8,
 
     fn recipeDir(b: Builder, name: []const u8) ![]const u8 {
         return std.fs.path.join(b.a, &.{ b.dirs.src, name });
@@ -213,12 +237,17 @@ pub const Builder = struct {
         const dir = try b.recipeDir(name);
         if (try b.git(&.{ "-C", dir, "checkout", "-q", "--detach", commit })) |w| return w;
         if (try b.git(&.{ "-C", dir, "clean", "-q", "-fdx" })) |w| return w;
-        // one chroot for every build, with base-devel, made once.
+        // one chroot for every build, with base-devel, made once. its
+        // pacman.conf is written again for each build, since the lock's
+        // date moves, and -u below brings its packages to that date.
         const chroot_root = try std.fs.path.join(b.a, &.{ b.dirs.chroot, "root" });
+        const conf = try std.fs.path.join(b.a, &.{ b.dirs.chroot, "pacman.conf" });
+        if (try b.createDir(b.dirs.chroot)) |w| return w;
+        if (try b.write(conf, b.pacman_conf)) |w| return w;
         if (!rootfs.pathExists(b.io, chroot_root)) {
-            if (try b.createDir(b.dirs.chroot)) |w| return w;
-            if (try b.run(&.{ "mkarchroot", chroot_root, "base-devel" })) |w| return w;
+            if (try b.run(&.{ "mkarchroot", "-C", conf, chroot_root, "base-devel" })) |w| return w;
         }
+        if (try b.write(try std.fs.path.join(b.a, &.{ chroot_root, "etc/pacman.conf" }), b.pacman_conf)) |w| return w;
         // makechrootpkg won't build as root; it builds as this user.
         if (try b.run(&.{ "id", "-u", build_user }) != null) {
             if (try b.run(&.{ "useradd", "--system", "--no-create-home", "--shell", "/usr/bin/nologin", build_user })) |w| return w;
@@ -246,8 +275,7 @@ pub const Builder = struct {
             if (try b.run(&.{ "mv", "-f", file, dest })) |w| return w;
             if (try b.run(&.{ "repo-add", "-q", "-R", db, dest })) |w| return w;
         }
-        rootfs.writeAtomic(b.io, marker, commit, null) catch return try std.fmt.allocPrint(b.a, "can't write {s}", .{marker});
-        return null;
+        return b.write(marker, commit);
     }
 
     /// the package files in the local repository that `names` are in, for
@@ -273,6 +301,11 @@ pub const Builder = struct {
         }
         lists.sortStrings(out.items);
         return out.items;
+    }
+
+    fn write(b: Builder, path: []const u8, text: []const u8) !?[]const u8 {
+        rootfs.writeAtomic(b.io, path, text, null) catch return try std.fmt.allocPrint(b.a, "can't write {s}", .{path});
+        return null;
     }
 
     /// makes `path` and its parents. null when it worked.
@@ -360,6 +393,41 @@ test "aur packages build after the aur packages they need" {
     const y: SrcInfo = .{ .pkgbase = "y", .pkgnames = &.{"y"}, .needs = &.{"x"} };
     try testing.expectEqual(null, try buildOrder(a, &.{ x, y }, &why));
     try testing.expectEqualStrings("x, y", why);
+}
+
+test "the chroot builds from the lock's servers" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const repos = [_]sync.Repo{
+        .{ .name = "core", .servers = &.{"https://m.example/$repo/os/$arch"} },
+        .{ .name = "extra", .servers = &.{} },
+        .{ .name = "omarchy", .servers = &.{"https://pkgs.example/$arch"}, .signed = false },
+        .{ .name = "mine", .servers = &.{"file:///srv/mine"} },
+        .{ .name = repo_name, .servers = &.{"file:///var/cache/yoq/aur/repo"}, .signed = false, .local = true },
+    };
+    // a lock from an earlier day: arch's own repositories from the archive.
+    try testing.expectEqualStrings(
+        \\[options]
+        \\Architecture = auto
+        \\SigLevel = Required DatabaseOptional
+        \\LocalFileSigLevel = Optional
+        \\
+        \\[core]
+        \\Server = https://archive.archlinux.org/repos/2026/09/20/$repo/os/$arch
+        \\
+        \\[extra]
+        \\Server = https://archive.archlinux.org/repos/2026/09/20/$repo/os/$arch
+        \\
+        \\[omarchy]
+        \\SigLevel = Optional TrustAll
+        \\Server = https://pkgs.example/$arch
+        \\
+    , try chrootPacmanConf(a, try sync.archived(a, &repos, "2026-09-20")));
+    // today's: the machine's own servers, or arch's fallback.
+    const now = try chrootPacmanConf(a, &repos);
+    try testing.expect(std.mem.indexOf(u8, now, "[core]\nServer = https://m.example/$repo/os/$arch\n") != null);
+    try testing.expect(std.mem.indexOf(u8, now, "[extra]\nServer = https://geo.mirror.pkgbuild.com/$repo/os/$arch\n") != null);
 }
 
 test "a package file's name" {

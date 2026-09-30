@@ -54,13 +54,14 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const sync_date = date orelse try locking.today(ctx.io, a);
     const old_lock = try locking.readLock(ctx, a, top);
     const old: ?*const lock.Lock = if (old_lock) |*o| o else null;
+    const rs = try pastRepos(ctx, a, try locking.repos(ctx, a, &loaded.config), sync_date);
     // aur packages are built first, into the local repository resolution
     // reads.
-    const recipes = try buildAur(ctx, &w, &loaded.config, old, trust_aur) orelse return 1;
+    const recipes = try buildAur(ctx, &w, &loaded.config, old, rs, trust_aur) orelse return 1;
     const dbs = if (dbs_dir) |dir|
         try syncDbs(ctx, a, dir) orelse return 1
     else
-        try sync.databases(a, ctx.io, ctx.fetcher, try pastRepos(ctx, a, try locking.repos(ctx, a, &loaded.config), sync_date), try locking.cacheDir(ctx, a), sync_date, &w.diags) orelse return w.fail();
+        try sync.databases(a, ctx.io, ctx.fetcher, rs, try locking.cacheDir(ctx, a), sync_date, &w.diags) orelse return w.fail();
 
     var l = try locking.resolveLock(ctx, &w, &loaded.config, top, dbs, sync_date, &.{}) orelse return w.fail();
     try locking.pinRecipes(a, &l, recipes, old);
@@ -96,14 +97,16 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
 /// fetches every aur recipe the config lists, has each new or changed
 /// one reviewed, and builds them, needs first. returns each built
-/// package's recipe commit, or null after saying why it stopped.
-fn buildAur(ctx: *Context, w: *cli.Work, c: *const config.Config, old: ?*const lock.Lock, trust: bool) !?locking.Recipes {
+/// package's recipe commit, or null after saying why it stopped. builds
+/// get their arch packages from `rs`, the repositories the new lock
+/// resolves against, as of its date.
+fn buildAur(ctx: *Context, w: *cli.Work, c: *const config.Config, old: ?*const lock.Lock, rs: []const sync.Repo, trust: bool) !?locking.Recipes {
     const a = w.allocator();
     var out: locking.Recipes = .empty;
     if (c.aur.items.items.len == 0) return out;
     // builds need root, for the chroot; say so before fetching anything.
     if (try cli.refused(ctx, applying.blocker(ctx))) return null;
-    const b: aur.Builder = .{ .a = a, .io = ctx.io, .dirs = try aur.Dirs.under(a, ctx.root), .url = ctx.aur_url };
+    const b: aur.Builder = .{ .a = a, .io = ctx.io, .dirs = try aur.Dirs.under(a, ctx.root), .url = ctx.aur_url, .pacman_conf = try aur.chrootPacmanConf(a, rs) };
     var infos: std.ArrayList(aur.SrcInfo) = .empty;
     for (c.aur.items.items) |pkg| {
         var why: []const u8 = "";
