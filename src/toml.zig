@@ -195,41 +195,33 @@ const Parser = struct {
         return t;
     }
 
+    fn addEntry(p: *Parser, parent: *Table, key: KeyPart, value: Value) !void {
+        try parent.entries.append(p.a, .{ .key = key.name, .key_span = key.span, .value = value });
+    }
+
     fn addTable(p: *Parser, parent: *Table, part: KeyPart, origin: Table.Origin) !*Table {
         const t = try p.newTable(origin, part.span.start);
-        try parent.entries.append(p.a, .{
-            .key = part.name,
-            .key_span = part.span,
-            .value = .{ .span = part.span, .data = .{ .table = t } },
-        });
+        try p.addEntry(parent, part, .{ .span = part.span, .data = .{ .table = t } });
         return t;
     }
 
     fn parseDocument(p: *Parser) ParseError!*Table {
         if (!std.unicode.utf8ValidateSlice(p.src)) {
-            var bad: usize = 0;
-            while (bad < p.src.len) {
-                const n = std.unicode.utf8ByteSequenceLength(p.src[bad]) catch break;
-                if (bad + n > p.src.len) break;
-                _ = std.unicode.utf8Decode(p.src[bad .. bad + n]) catch break;
-                bad += n;
-            }
-            while (p.i < bad) p.advance();
+            p.advanceBy(validUtf8Prefix(p.src));
             return p.fail(.toml_syntax, p.pos(), "the file isn't valid utf-8", .{});
         }
         const root = try p.newTable(.root, p.pos());
         var current = root;
         while (true) {
             try p.skipBlank();
-            if (p.peek() == null) break;
-            if (p.peek().? == '[') {
+            const c = p.peek() orelse return root;
+            if (c == '[') {
                 current = try p.parseHeader(root);
             } else {
                 try p.parseKeyValue(current, .dotted);
             }
             try p.expectLineEnd();
         }
-        return root;
     }
 
     fn skipWs(p: *Parser) void {
@@ -344,7 +336,7 @@ const Parser = struct {
             const arr = try p.a.create(Array);
             arr.* = .{ .of_tables = true };
             try arr.items.append(p.a, elem_value);
-            try t.entries.append(p.a, .{ .key = last.name, .key_span = last.span, .value = .{ .span = header_span, .data = .{ .array = arr } } });
+            try p.addEntry(t, last, .{ .span = header_span, .data = .{ .array = arr } });
             return elem;
         }
 
@@ -357,7 +349,7 @@ const Parser = struct {
             return p.failDuplicate(last);
         }
         const nt = try p.newTable(.header, start);
-        try t.entries.append(p.a, .{ .key = last.name, .key_span = last.span, .value = .{ .span = header_span, .data = .{ .table = nt } } });
+        try p.addEntry(t, last, .{ .span = header_span, .data = .{ .table = nt } });
         return nt;
     }
 
@@ -388,7 +380,7 @@ const Parser = struct {
         }
         const last = parts[parts.len - 1];
         if (t.get(last.name) != null) return p.failDuplicate(last);
-        try t.entries.append(p.a, .{ .key = last.name, .key_span = last.span, .value = value });
+        try p.addEntry(t, last, value);
     }
 
     fn parseValue(p: *Parser) ParseError!Value {
@@ -502,13 +494,16 @@ const Parser = struct {
                 },
                 '\\' => try p.parseEscape(&out),
                 '\n', '\r' => return p.fail(.toml_syntax, start, "this string is never closed; use \"\"\" for text over several lines", .{}),
-                else => {
-                    if (isControl(c)) return p.fail(.toml_syntax, p.pos(), "control character in a string", .{});
-                    try out.append(p.a, c);
-                    p.advance();
-                },
+                else => try p.stringByte(c, &out),
             }
         }
+    }
+
+    /// takes one plain byte of a string's text.
+    fn stringByte(p: *Parser, c: u8, out: *std.ArrayList(u8)) ParseError!void {
+        if (isControl(c)) return p.fail(.toml_syntax, p.pos(), "control character in a string", .{});
+        try out.append(p.a, c);
+        p.advance();
     }
 
     fn parseEscape(p: *Parser, out: *std.ArrayList(u8)) ParseError!void {
@@ -602,11 +597,7 @@ const Parser = struct {
                     }
                 },
                 '\n', '\r' => try p.multilineNewline(&out),
-                else => {
-                    if (isControl(c)) return p.fail(.toml_syntax, p.pos(), "control character in a string", .{});
-                    try out.append(p.a, c);
-                    p.advance();
-                },
+                else => try p.stringByte(c, &out),
             }
         }
     }
@@ -649,15 +640,23 @@ const Parser = struct {
             switch (c) {
                 '\'' => if (try p.quoteRun('\'', start, &out)) return out.toOwnedSlice(p.a),
                 '\n', '\r' => try p.multilineNewline(&out),
-                else => {
-                    if (isControl(c)) return p.fail(.toml_syntax, p.pos(), "control character in a string", .{});
-                    try out.append(p.a, c);
-                    p.advance();
-                },
+                else => try p.stringByte(c, &out),
             }
         }
     }
 };
+
+/// how many bytes at the start of `s` are valid utf-8.
+fn validUtf8Prefix(s: []const u8) usize {
+    var i: usize = 0;
+    while (i < s.len) {
+        const n = std.unicode.utf8ByteSequenceLength(s[i]) catch break;
+        if (i + n > s.len) break;
+        _ = std.unicode.utf8Decode(s[i .. i + n]) catch break;
+        i += n;
+    }
+    return i;
+}
 
 fn isControl(c: u8) bool {
     return (c < 0x20 and c != '\t') or c == 0x7f;
@@ -805,16 +804,20 @@ fn expectParse(src: []const u8) !Document {
     };
 }
 
-fn expectError(src: []const u8, code: diag.Code, line: u32, column: u32, contains: []const u8) !void {
+/// parses `src`, which should fail, and returns what the parser said.
+fn expectInvalid(src: []const u8) !ErrorInfo {
     var info: ErrorInfo = .{};
-    if (parse(testing.allocator, src, &info)) |d| {
-        var doc = d;
-        doc.deinit();
-        std.debug.print("expected an error for:\n{s}\n", .{src});
-        return error.TestExpectedError;
-    } else |e| {
+    var doc = parse(testing.allocator, src, &info) catch |e| {
         try testing.expectEqual(error.Syntax, e);
-    }
+        return info;
+    };
+    doc.deinit();
+    std.debug.print("expected an error for:\n{s}\n", .{src});
+    return error.TestExpectedError;
+}
+
+fn expectError(src: []const u8, code: diag.Code, line: u32, column: u32, contains: []const u8) !void {
+    const info = try expectInvalid(src);
     try testing.expectEqual(code, info.code);
     testing.expectEqual(line, info.pos.line) catch |e| {
         std.debug.print("message: {s}\n", .{info.message()});
@@ -825,16 +828,6 @@ fn expectError(src: []const u8, code: diag.Code, line: u32, column: u32, contain
         std.debug.print("message \"{s}\" doesn't contain \"{s}\"\n", .{ info.message(), contains });
         return error.TestUnexpectedMessage;
     }
-}
-
-fn expectInvalid(src: []const u8) !void {
-    var info: ErrorInfo = .{};
-    if (parse(testing.allocator, src, &info)) |d| {
-        var doc = d;
-        doc.deinit();
-        std.debug.print("expected an error for:\n{s}\n", .{src});
-        return error.TestExpectedError;
-    } else |_| {}
 }
 
 fn str(t: *const Table, key: []const u8) []const u8 {
@@ -1067,7 +1060,7 @@ test "bad numbers" {
         "a = 01\n",  "a = 1__0\n", "a = _1\n",                   "a = 1_\n",   "a = +0x10\n",
         "a = 0xG\n", "a = 1.\n",   "a = .5\n",                   "a = 1.e5\n", "a = 03.14\n",
         "a = 1e\n",  "a = 1_.0\n", "a = 99999999999999999999\n",
-    }) |src| try expectInvalid(src);
+    }) |src| _ = try expectInvalid(src);
 }
 
 test "error positions and messages" {
@@ -1127,7 +1120,7 @@ test "invalid documents" {
         "a = truex\n",
         "a = [1 2]\n",
         "a = \xff\n",
-    }) |src| try expectInvalid(src);
+    }) |src| _ = try expectInvalid(src);
 }
 
 test "writeString round-trips" {
