@@ -9,6 +9,7 @@ const compose = @import("compose.zig");
 const pipeline = @import("pipeline.zig");
 const facts_mod = @import("facts.zig");
 const generation = @import("generation.zig");
+const gens = @import("gens.zig");
 const observe = @import("observe.zig");
 const sync = @import("sync.zig");
 const history = @import("history.zig");
@@ -169,11 +170,10 @@ fn takeGlobalFlags(ctx: *Context, raw: []const [:0]const u8) ![]const [:0]const 
         if (eql(arg, "--")) {
             try rest.appendSlice(ctx.gpa, raw[it.i - 1 ..]);
             break;
-        } else if (eql(arg, "--json")) {
+        }
+        if (eql(arg, "--json")) {
             ctx.json = true;
-        } else if (try valueFlag(ctx, arg, &it)) |_| {
-            continue;
-        } else {
+        } else if (!try valueFlag(ctx, arg, &it)) {
             try rest.append(ctx.gpa, raw[it.i - 1]);
         }
     }
@@ -187,24 +187,24 @@ const value_flags = .{
     .{ "--facts", "facts_path" },
 };
 
-/// sets the context field for a global flag with a value. returns null if
-/// `arg` isn't one.
-fn valueFlag(ctx: *Context, arg: []const u8, it: *ArgIter) !?void {
+/// sets the context field for a global flag with a value. false if `arg`
+/// isn't one.
+fn valueFlag(ctx: *Context, arg: []const u8, it: *ArgIter) !bool {
     inline for (value_flags) |f| {
         // a value can't be empty, or another flag.
         if (eql(arg, f[0])) {
             const v = it.next() orelse return error.MissingFlagValue;
             if (v.len == 0 or v[0] == '-') return error.MissingFlagValue;
             @field(ctx, f[1]) = v;
-            return {};
+            return true;
         }
         if (std.mem.startsWith(u8, arg, f[0] ++ "=")) {
             if (arg.len == f[0].len + 1) return error.MissingFlagValue;
             @field(ctx, f[1]) = arg[f[0].len + 1 ..];
-            return {};
+            return true;
         }
     }
-    return null;
+    return false;
 }
 
 fn usage(w: *std.Io.Writer) !void {
@@ -285,7 +285,10 @@ pub const Work = struct {
     /// the exit code for a command that couldn't go on: the problems
     /// found are printed now, or already were.
     pub fn fail(w: *const Work) !u8 {
-        return if (w.failed()) reportDiags(w.ctx, &w.diags) else 1;
+        if (!w.failed()) return 1;
+        // with --json, the problems are the one document on stdout.
+        if (w.ctx.json) try w.diags.writeJson(w.ctx.out) else try w.diags.render(w.ctx.err);
+        return 1;
     }
 
     /// facts from --facts, or observed from the machine. null if they
@@ -371,6 +374,41 @@ pub fn noArgs(ctx: *Context, args: []const [:0]const u8, usage_text: []const u8)
     return if (args.len == 0) null else try usageError(ctx, usage_text);
 }
 
+pub fn isYes(arg: []const u8) bool {
+    return eql(arg, "--yes") or eql(arg, "-y");
+}
+
+/// says what went wrong, as "os: ...", and returns the exit code for a
+/// failed command.
+pub fn fail(ctx: *Context, comptime fmt: []const u8, args: anytype) !u8 {
+    try ctx.err.print("os: " ++ fmt ++ "\n", args);
+    return 1;
+}
+
+/// says `why`, if there is one, for commands that can't do anything else.
+pub fn refused(ctx: *Context, why: ?[]const u8) !bool {
+    try ctx.err.print("os: {s}.\n", .{why orelse return false});
+    return true;
+}
+
+/// the btrfs top level of a machine with generations, or null after
+/// saying why it can't be opened.
+pub fn openMachine(ctx: *Context, a: std.mem.Allocator, boot: facts_mod.Boot) !?gens.Machine {
+    var why: []const u8 = "";
+    return try gens.Machine.open(a, ctx.io, boot, &why) orelse {
+        try ctx.err.print("os: {s}\n", .{why});
+        return null;
+    };
+}
+
+pub fn noGenerations(ctx: *Context) !u8 {
+    return fail(ctx, "this machine has no generations. `os enable-rollback` turns them on.", .{});
+}
+
+pub fn noGeneration(ctx: *Context, n: u32) !u8 {
+    return fail(ctx, "there's no generation {d}. `os history` lists them.", .{n});
+}
+
 /// says why facts couldn't be read.
 fn factsError(ctx: *Context, e: pipeline.Error, path: ?[]const u8) !void {
     const from = path orelse "this machine";
@@ -387,7 +425,11 @@ pub fn inputs(ctx: *const Context) pipeline.Inputs {
     return .{ .config_path = ctx.config_path, .root = ctx.root, .facts_path = ctx.facts_path };
 }
 
-/// asks a yes or no question. anything but y or yes is no.
+/// a path under the machine's root, like /etc/pacman.conf.
+pub fn machinePath(ctx: *const Context, a: std.mem.Allocator, path: []const u8) ![]const u8 {
+    return std.fs.path.join(a, &.{ ctx.root, path });
+}
+
 /// asks before `what`, unless `yes`. null to go ahead, or the exit code:
 /// 2 with no terminal to ask on, 0 when the answer is no.
 pub fn approve(ctx: *Context, yes: bool, what: []const u8, question: []const u8) !?u8 {
@@ -453,18 +495,15 @@ pub fn lockMachine() ?[]const u8 {
 /// the end of input.
 pub fn ask(ctx: *Context, a: std.mem.Allocator, question: []const u8, default: ?[]const u8) !?[]const u8 {
     if (default) |d| try ctx.out.print("{s} [{s}] ", .{ question, d }) else try ctx.out.print("{s} ", .{question});
-    try ctx.out.flush();
-    const read = ctx.in.?.takeDelimiter('\n') catch return null;
-    const answer = std.mem.trim(u8, read orelse return null, " \t\r");
+    const answer = try readAnswer(ctx) orelse return null;
     if (answer.len == 0) return default;
     return try a.dupe(u8, answer);
 }
 
+/// asks a yes or no question. anything but y or yes is no.
 pub fn confirm(ctx: *Context, question: []const u8) !bool {
     try ctx.out.print("{s} [y/N] ", .{question});
-    try ctx.out.flush();
-    const read = ctx.in.?.takeDelimiter('\n') catch return false;
-    const answer = std.mem.trim(u8, read orelse return false, " \t\r");
+    const answer = try readAnswer(ctx) orelse return false;
     return std.ascii.eqlIgnoreCase(answer, "y") or std.ascii.eqlIgnoreCase(answer, "yes");
 }
 
@@ -475,10 +514,7 @@ pub fn choose(ctx: *Context, question: []const u8, options: []const []const u8) 
     for (options, 1..) |o, i| try ctx.out.print("  {d}) {s}\n", .{ i, o });
     while (true) {
         try ctx.out.writeAll("pick one [1]: ");
-        try ctx.out.flush();
-        const read = ctx.in.?.takeDelimiter('\n') catch return null;
-        const line = read orelse return null;
-        const answer = std.mem.trim(u8, line, " \t\r");
+        const answer = try readAnswer(ctx) orelse return null;
         if (answer.len == 0) return 0;
         const n = std.fmt.parseInt(usize, answer, 10) catch 0;
         if (n >= 1 and n <= options.len) return n - 1;
@@ -486,15 +522,12 @@ pub fn choose(ctx: *Context, question: []const u8, options: []const []const u8) 
     }
 }
 
-/// prints collected problems to stderr, or as a json document on stdout
-/// with --json. returns the exit code for a failed command.
-fn reportDiags(ctx: *Context, diags: *const diag.List) !u8 {
-    if (ctx.json) {
-        try diags.writeJson(ctx.out);
-    } else {
-        try diags.render(ctx.err);
-    }
-    return 1;
+/// flushes the question and reads one answer, trimmed. null at the end of
+/// input.
+fn readAnswer(ctx: *Context) !?[]const u8 {
+    try ctx.out.flush();
+    const line = ctx.in.?.takeDelimiter('\n') catch return null;
+    return std.mem.trim(u8, line orelse return null, " \t\r");
 }
 
 fn schemaCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
@@ -508,10 +541,7 @@ fn schemaCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         } else for (list) |e| try ctx.out.print("{s: <8}{s}\n", .{ e.name, e.what });
         return 0;
     }
-    const d = schemas.find(args[0]) orelse {
-        try ctx.err.print("os: there's no schema called {s}. `os schema` lists them.\n", .{args[0]});
-        return 1;
-    };
+    const d = schemas.find(args[0]) orelse return fail(ctx, "there's no schema called {s}. `os schema` lists them.", .{args[0]});
     try d.write(ctx.out);
     return 0;
 }
@@ -610,11 +640,6 @@ const offline: sync.Fetcher = .{ .ctx = undefined, .fetchFn = struct {
         return null;
     }
 }.f };
-
-/// a path under the machine's root, like /etc/pacman.conf.
-pub fn machinePath(ctx: *const Context, a: std.mem.Allocator, path: []const u8) ![]const u8 {
-    return std.fs.path.join(a, &.{ ctx.root, path });
-}
 
 test {
     _ = init_cmd;

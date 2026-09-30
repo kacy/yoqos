@@ -27,8 +27,7 @@ pub fn build(ctx: *Context, boot: facts.Boot, in: pipeline.Inputs) anyerror!?[]c
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    var why: []const u8 = "";
-    const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse return fail(ctx, why);
+    const m = try cli.openMachine(ctx, a, boot) orelse return null;
     defer m.close();
     const n = try m.free(try gens.readRecords(a, ctx.io, "/var"));
     const root = try std.fmt.allocPrint(a, "/{s}/{d}", .{ generation.roots_dir, n });
@@ -52,21 +51,15 @@ fn buildIn(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, root: []const 
     if (try exec.runAll(a, ctx.io, &.{
         &.{ "mkdir", "-p", mount_point },
         &.{ "mount", "-o", try std.fmt.allocPrint(a, "subvol={s}", .{root}), boot.root_device.?, mount_point },
-    })) |why| {
-        try ctx.err.print("os: {s}\n", .{why});
-        return 1;
-    }
+    })) |why| return cli.fail(ctx, "{s}", .{why});
     defer _ = exec.run(a, ctx.io, &.{ "umount", "-R", "-l", mount_point }) catch {};
     var b: building.Builder = .{ .ctx = ctx, .a = a, .dir = mount_point, .staged = true, .inputs = in };
     defer b.unmount();
-    if (try b.prepare()) |why| {
-        try ctx.err.print("os: {s}\n", .{why});
-        return 1;
-    }
+    if (try b.prepare()) |why| return cli.fail(ctx, "{s}", .{why});
     return b.install();
 }
 
 fn fail(ctx: *Context, why: []const u8) !?[]const u8 {
-    try ctx.err.print("os: {s}\n", .{why});
+    _ = try cli.fail(ctx, "{s}", .{why});
     return null;
 }

@@ -44,7 +44,7 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             host = it.next() orelse return cli.usageError(ctx, usage_text);
         } else if (cli.eql(arg, "--update")) {
             update = true;
-        } else if (applying.isYes(arg)) {
+        } else if (cli.isYes(arg)) {
             yes = true;
         } else if (source == null and arg.len > 0 and arg[0] != '-') {
             source = arg;
@@ -55,7 +55,7 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         if (std.mem.indexOfAny(u8, h, "/.") != null or h.len == 0) return cli.usageError(ctx, usage_text);
     }
     if (try cli.needsHost(ctx, "install erases a disk and builds a machine on it")) return 1;
-    if (try applying.refused(ctx, applying.blocker(ctx))) return 1;
+    if (try cli.refused(ctx, applying.blocker(ctx))) return 1;
 
     var w: cli.Work = .init(ctx);
     defer w.deinit();

@@ -32,16 +32,16 @@ pub fn applyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var yes = false;
     var saved: ?[]const u8 = null;
     for (args) |arg| {
-        if (isYes(arg)) {
+        if (cli.isYes(arg)) {
             yes = true;
         } else if (saved == null and arg.len > 0 and arg[0] != '-') {
             saved = arg;
         } else return cli.usageError(ctx, usage_text);
     }
-    var arena: std.heap.ArenaAllocator = .init(ctx.gpa);
-    defer arena.deinit();
-    const expect = if (saved) |path| try savedHash(ctx, arena.allocator(), path) orelse return 1 else null;
-    if (try refused(ctx, applyBlocker(ctx))) return 1;
+    var w: cli.Work = .init(ctx);
+    defer w.deinit();
+    const expect = if (saved) |path| try savedHash(ctx, w.allocator(), path) orelse return 1 else null;
+    if (try cli.refused(ctx, applyBlocker(ctx))) return 1;
     const done = try run(ctx, yes, cli.inputs(ctx), .{ .expect = expect });
     try recordGeneration(ctx, done, "apply");
     return done.code;
@@ -54,16 +54,11 @@ fn savedHash(ctx: *Context, a: Allocator, path: []const u8) !?[]const u8 {
         try ctx.err.print("os: can't read {s}: {s}\n", .{ path, @errorName(e) });
         return null;
     };
-    const doc = std.json.parseFromSliceLeaky(struct { schema: []const u8, hash: []const u8 }, a, text, .{ .ignore_unknown_fields = true }) catch null;
-    if (doc == null or !cli.eql(doc.?.schema, planner.schema)) {
-        try ctx.err.print("os: {s} isn't a plan. `os plan -o <file>` saves one.\n", .{path});
-        return null;
-    }
-    return doc.?.hash;
-}
-
-pub fn isYes(arg: []const u8) bool {
-    return cli.eql(arg, "--yes") or cli.eql(arg, "-y");
+    const Saved = struct { schema: []const u8, hash: []const u8 };
+    const doc = std.json.parseFromSliceLeaky(Saved, a, text, .{ .ignore_unknown_fields = true }) catch null;
+    if (doc) |d| if (cli.eql(d.schema, planner.schema)) return d.hash;
+    try ctx.err.print("os: {s} isn't a plan. `os plan -o <file>` saves one.\n", .{path});
+    return null;
 }
 
 /// whether a command that changes the config or lock applies the change
@@ -74,7 +69,7 @@ pub const Then = struct {
 
     /// takes `arg` if it's one of the flags.
     pub fn flag(t: *Then, arg: []const u8) bool {
-        if (isYes(arg)) {
+        if (cli.isYes(arg)) {
             t.yes = true;
         } else if (cli.eql(arg, "--no-apply")) {
             t.apply = false;
@@ -134,12 +129,6 @@ fn bootState(io: std.Io) enum { normal, copy, pending } {
     return if (std.mem.eql(u8, records[records.len - 1].root, subvol[1..])) .normal else .pending;
 }
 
-/// says `why`, if there is one, for commands that can't do anything else.
-pub fn refused(ctx: *Context, why: ?[]const u8) !bool {
-    try ctx.err.print("os: {s}.\n", .{why orelse return false});
-    return true;
-}
-
 /// how a run went: its exit code, and whether the machine now matches
 /// the plan's inputs, because the plan was empty or every step worked.
 pub const Outcome = struct {
@@ -159,17 +148,16 @@ pub const Outcome = struct {
     }
 };
 
-/// plans from `in`, shows the plan, asks unless `yes`, applies it, and
-/// checks the result. the caller has checked `blocker`, and records a
-/// generation afterwards with `recordGeneration`.
 pub const RunOptions = struct {
     render: planner.RenderOptions = .{},
     /// the hash of a saved plan: the run applies that plan or nothing.
     expect: ?[]const u8 = null,
 };
 
+/// plans from `in`, shows the plan, asks unless `yes`, applies it, and
+/// checks the result. the caller has checked `blocker`, and records a
+/// generation afterwards with `recordGeneration`.
 pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Outcome {
-    const render = opts.render;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
@@ -186,17 +174,20 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
         try ctx.err.print("os: the last apply (plan {s}) didn't finish. this one starts from the machine as it is now.\n", .{hash[0..@min(12, hash.len)]});
     }
     if (p.empty()) {
-        if (!ctx.json) try ctx.out.writeAll("nothing to do. this machine matches its config.\n");
-        if (ctx.json) try output.writeDoc(ctx.out, "yoq.apply/1", .{ .applied = 0, .skipped = p.changes });
+        if (ctx.json) {
+            try output.writeDoc(ctx.out, "yoq.apply/1", .{ .applied = 0, .skipped = p.changes });
+        } else try ctx.out.writeAll("nothing to do. this machine matches its config.\n");
         return .{ .code = 0, .matches = true };
     }
 
-    if (!ctx.json and !render.quiet) try planner.writeText(ctx.out, a, p, render);
+    if (!ctx.json and !opts.render.quiet) try planner.writeText(ctx.out, a, p, opts.render);
     if (try cli.approve(ctx, yes, "apply", "apply this?")) |code| return .{ .code = code, .matches = false };
 
+    const on_generations = cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol);
+    const needs_reboot = (try p.rebootReasons(a)).len > 0;
     // a change that needs a reboot, on a machine with generations, goes
     // into the next root instead of the running one.
-    if (cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol) and (try p.rebootReasons(a)).len > 0) {
+    if (on_generations and needs_reboot) {
         const root = try stage.build(ctx, result.facts.boot, in) orelse return .{ .code = 1, .matches = false };
         return .{ .code = 0, .matches = true, .changed_generation = true, .needs_reboot = true, .staged_root = root };
     }
@@ -216,12 +207,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     var code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units);
     if (w.diags.items.items.len > problems) code = try scriptsFailed(ctx, w.diags.items.items[problems..]);
     if (units and !ctx.json and changesPackages(p)) try offerRestarts(ctx, yes);
-    return .{
-        .code = code,
-        .matches = true,
-        .changed_generation = cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol),
-        .needs_reboot = (try p.rebootReasons(a)).len > 0,
-    };
+    return .{ .code = code, .matches = true, .changed_generation = on_generations, .needs_reboot = needs_reboot };
 }
 
 /// adds the system accounts packages made to the history of system ids,

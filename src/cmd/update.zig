@@ -102,7 +102,7 @@ fn buildAur(ctx: *Context, w: *cli.Work, c: *const config.Config, old: ?*const l
     var out: locking.Recipes = .empty;
     if (c.aur.items.items.len == 0) return out;
     // builds need root, for the chroot; say so before fetching anything.
-    if (try applying.refused(ctx, applying.blocker(ctx))) return null;
+    if (try cli.refused(ctx, applying.blocker(ctx))) return null;
     const b: aur.Builder = .{ .a = a, .io = ctx.io, .dirs = try aur.Dirs.under(a, ctx.root), .url = ctx.aur_url };
     var infos: std.ArrayList(aur.SrcInfo) = .empty;
     for (c.aur.items.items) |it| {

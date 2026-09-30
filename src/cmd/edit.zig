@@ -36,34 +36,25 @@ fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
     };
     var then: Then = .{ .apply = true };
     var aur = false;
-    var rest: std.ArrayList([:0]const u8) = .empty;
-    defer rest.deinit(ctx.gpa);
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(ctx.gpa);
     for (args) |arg| {
         if ((op == .add or op == .remove) and cli.eql(arg, "--aur")) {
             aur = true;
-        } else if (!then.flag(arg)) try rest.append(ctx.gpa, arg);
+        } else if (then.flag(arg)) {
+            continue;
+        } else if (isFlag(arg)) {
+            return cli.usageError(ctx, usage_text);
+        } else try names.append(ctx.gpa, arg);
     }
-    if (rest.items.len == 0) return cli.usageError(ctx, usage_text);
-    const names = try namesOf(ctx, ctx.gpa, rest.items, usage_text) orelse return 2;
-    defer ctx.gpa.free(names);
-    return editConfig(ctx, op, names, then, aur);
+    if (names.items.len == 0) return cli.usageError(ctx, usage_text);
+    return editConfig(ctx, op, names.items, then, aur);
 }
 
 const Then = applying.Then;
 
-/// the arguments as names. returns null after a usage error if one looks
-/// like a flag.
-fn namesOf(ctx: *Context, a: std.mem.Allocator, args: []const [:0]const u8, usage_text: []const u8) !?[]const []const u8 {
-    const out = try a.alloc([]const u8, args.len);
-    for (args, out) |arg, *n| {
-        if (std.mem.startsWith(u8, arg, "-")) {
-            a.free(out);
-            _ = try cli.usageError(ctx, usage_text);
-            return null;
-        }
-        n.* = arg;
-    }
-    return out;
+fn isFlag(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "-");
 }
 
 /// `os adopt [package...]`: puts packages installed outside the config into
@@ -72,7 +63,11 @@ pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    const wanted = try namesOf(ctx, a, args, "os adopt [package...]") orelse return 2;
+    const wanted = try a.alloc([]const u8, args.len);
+    for (args, wanted) |arg, *name| {
+        if (isFlag(arg)) return cli.usageError(ctx, "os adopt [package...]");
+        name.* = arg;
+    }
     const state = try w.state() orelse return w.fail();
     const f = try w.facts() orelse return w.fail();
 
@@ -80,10 +75,7 @@ pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     for (wanted) |name| {
         for (extra) |e| {
             if (cli.eql(e, name)) break;
-        } else {
-            try ctx.err.print("os: {s} isn't installed outside the config\n", .{name});
-            return 1;
-        }
+        } else return cli.fail(ctx, "{s} isn't installed outside the config", .{name});
     }
     const names = if (wanted.len > 0) wanted else extra;
     if (names.len == 0) {
@@ -135,11 +127,7 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
         // lock can't follow, like a package that doesn't exist, is taken
         // back: the config stays one that plans.
         if (!build_first) locked = try relock(ctx, top, !now);
-        if (locked == .failed) {
-            _ = try cli.writeFile(ctx, top, text);
-            try ctx.err.print("os: {s} is back as it was.\n", .{top});
-            return 1;
-        }
+        if (locked == .failed) return putBack(ctx, top, text);
         try cli.record(ctx, a, top, message);
     }
     if (ctx.json) try output.writeDoc(ctx.out, "yoq.change/1", .{ .file = top, .changed = outcome.changed(), .notes = outcome.notes });
@@ -175,10 +163,7 @@ pub fn editCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     while (words.next()) |word| try argv.append(a, word);
     try argv.append(a, top);
     while (true) {
-        if (try exec.interactive(a, ctx.io, argv.items)) |why| {
-            try ctx.err.print("os: {s}\n", .{why});
-            return 1;
-        }
+        if (try exec.interactive(a, ctx.io, argv.items)) |why| return cli.fail(ctx, "{s}", .{why});
         const after = try cli.readFile(ctx, a, top) orelse return 1;
         if (std.mem.eql(u8, before, after)) {
             try ctx.out.writeAll("no changes.\n");
@@ -191,17 +176,20 @@ pub fn editCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         return 1;
     }
     const now = then.applies(ctx);
-    if (try relock(ctx, top, !now) == .failed) {
-        _ = try cli.writeFile(ctx, top, before);
-        try ctx.err.print("os: {s} is back as it was.\n", .{top});
-        return 1;
-    }
+    if (try relock(ctx, top, !now) == .failed) return putBack(ctx, top, before);
     try cli.record(ctx, a, top, "edit");
     if (!now) return 0;
     try ctx.out.writeByte('\n');
     const done = try applying.run(ctx, then.yes, cli.inputs(ctx), .{});
     try applying.recordGeneration(ctx, done, "edit");
     return done.code;
+}
+
+/// writes `top` back as it was before a change the lock couldn't follow,
+/// so the config stays one that plans.
+fn putBack(ctx: *Context, top: []const u8, text: []const u8) !u8 {
+    _ = try cli.writeFile(ctx, top, text);
+    return cli.fail(ctx, "{s} is back as it was.", .{top});
 }
 
 /// whether the config loads now, after saying what's wrong if it doesn't.

@@ -66,7 +66,7 @@ pub fn buildCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer w.deinit();
     const a = w.allocator();
     if (try cli.needsHost(ctx, "a build installs packages and mounts filesystems")) return 1;
-    if (try applying.refused(ctx, applying.blocker(ctx))) return 1;
+    if (try cli.refused(ctx, applying.blocker(ctx))) return 1;
     if (dir.len == 0 or dir[0] != '/' or std.mem.eql(u8, std.mem.trimEnd(u8, dir, "/"), "")) {
         try ctx.err.print("os: {s} has to be an absolute path, and not /.\n", .{dir});
         return 1;
