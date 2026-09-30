@@ -52,37 +52,23 @@ pub const Lock = struct {
 };
 
 pub fn write(w: *std.Io.Writer, l: *const Lock) !void {
-    try w.print("# machine.lock: written by os. don't edit it by hand.\nversion = {d}\nsync_date = ", .{format_version});
-    try toml.writeString(w, l.sync_date);
-    try w.writeAll("\nkeyring = ");
-    try toml.writeString(w, l.keyring);
-    try w.writeByte('\n');
+    try w.print("# machine.lock: written by os. don't edit it by hand.\nversion = {d}\n", .{format_version});
+    try writeField(w, "sync_date", l.sync_date);
+    try writeField(w, "keyring", l.keyring);
 
     if (l.providers.len > 0) {
         try w.writeAll("\n[providers]\n");
-        for (l.providers) |p| {
-            try toml.writeKey(w, p.name);
-            try w.writeAll(" = ");
-            try toml.writeString(w, p.chosen);
-            try w.writeByte('\n');
-        }
+        for (l.providers) |p| try writeField(w, p.name, p.chosen);
     }
 
     for (l.packages) |p| {
         try w.writeAll("\n[packages.");
         try toml.writeKey(w, p.name);
-        try w.writeAll("]\nversion = ");
-        try toml.writeString(w, p.version);
-        try w.writeAll("\nrepo = ");
-        try toml.writeString(w, p.repo);
-        try w.writeAll("\nsha256 = ");
-        try toml.writeString(w, p.sha256);
-        try w.writeByte('\n');
-        if (p.recipe) |rc| {
-            try w.writeAll("recipe = ");
-            try toml.writeString(w, rc);
-            try w.writeByte('\n');
-        }
+        try w.writeAll("]\n");
+        try writeField(w, "version", p.version);
+        try writeField(w, "repo", p.repo);
+        try writeField(w, "sha256", p.sha256);
+        if (p.recipe) |rc| try writeField(w, "recipe", rc);
         if (p.depends.len > 0) {
             try w.writeAll("depends = [");
             for (p.depends, 0..) |d, i| {
@@ -92,6 +78,14 @@ pub fn write(w: *std.Io.Writer, l: *const Lock) !void {
             try w.writeAll("]\n");
         }
     }
+}
+
+/// a `key = "value"` line.
+fn writeField(w: *std.Io.Writer, key: []const u8, value: []const u8) !void {
+    try toml.writeKey(w, key);
+    try w.writeAll(" = ");
+    try toml.writeString(w, value);
+    try w.writeByte('\n');
 }
 
 /// sorts packages, providers, and each dependency list, so equal locks
@@ -179,10 +173,6 @@ pub fn parse(a: Allocator, path: []const u8, bytes: []const u8, diags: *diag.Lis
 
 const fix_hint = "restore it from git or run `os update`";
 
-fn validSha256(s: []const u8) bool {
-    return lowerHex(s, 64);
-}
-
 /// a git commit id, as a lock's recipe holds one: 40 lowercase hex
 /// digits, and never something git would read as an option.
 pub fn validCommit(s: []const u8) bool {
@@ -256,7 +246,7 @@ const Reader = struct {
             .repo = try r.str(t, "repo", prefix),
             .sha256 = try r.str(t, "sha256", prefix),
         };
-        if (!validSha256(p.sha256)) return r.bad(t.get("sha256").?.span, "{s}sha256 isn't a sha-256 hash", .{prefix});
+        if (!lowerHex(p.sha256, 64)) return r.bad(t.get("sha256").?.span, "{s}sha256 isn't a sha-256 hash", .{prefix});
         if (t.get("recipe")) |rv| {
             p.recipe = try r.str(t, "recipe", prefix);
             if (!validCommit(p.recipe.?)) return r.bad(rv.span, "{s}recipe isn't a git commit", .{prefix});
