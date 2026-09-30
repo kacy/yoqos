@@ -140,6 +140,11 @@ const Parser = struct {
     i: usize = 0,
     line: u32 = 1,
     line_start: usize = 0,
+    /// lists and inline tables open around the value being parsed. they
+    /// recurse, so a limit keeps a hostile file from using up the stack.
+    depth: u32 = 0,
+
+    const max_depth = 64;
 
     fn pos(p: *const Parser) Pos {
         return .{ .offset = @intCast(p.i), .line = p.line, .column = @intCast(p.i - p.line_start + 1) };
@@ -288,6 +293,7 @@ const Parser = struct {
                     break :blk p.src[b..p.i];
                 },
             };
+            if (parts.items.len >= max_depth) return p.fail(.toml_syntax, start, "this key has too many parts", .{});
             try parts.append(p.a, .{ .name = name, .span = .{ .start = start, .end = @intCast(p.i) } });
             p.skipWs();
             if (p.peek() != '.') return;
@@ -389,8 +395,12 @@ const Parser = struct {
         const data: Value.Data = switch (c) {
             '"' => .{ .string = if (p.startsWith("\"\"\"")) try p.parseMultilineBasic() else try p.parseBasicString() },
             '\'' => .{ .string = if (p.startsWith("'''")) try p.parseMultilineLiteral() else try p.parseLiteralString() },
-            '[' => .{ .array = try p.parseArray() },
-            '{' => .{ .table = try p.parseInlineTable(start) },
+            '[', '{' => blk: {
+                if (p.depth >= max_depth) return p.fail(.toml_syntax, start, "lists and tables are nested too deeply", .{});
+                p.depth += 1;
+                defer p.depth -= 1;
+                break :blk if (c == '[') .{ .array = try p.parseArray() } else .{ .table = try p.parseInlineTable(start) };
+            },
             't', 'f' => .{ .boolean = try p.parseBool() },
             else => try p.parseNumber(),
         };
@@ -1148,6 +1158,16 @@ test "writeKey quotes only when needed" {
 
 test "invalid utf-8 is reported where it starts" {
     try expectError("a = \"é\"\nb = \"\xff\"\n", .toml_syntax, 2, 6, "utf-8");
+}
+
+test "deep nesting is an error, not a crash" {
+    const deep = "a = " ++ "[" ** 100_000 ++ "]" ** 100_000 ++ "\n";
+    try expectError(deep, .toml_syntax, 1, 69, "nested too deeply");
+    try expectError("a = " ++ "{b = " ** 100 ++ "1" ++ "}" ** 100 ++ "\n", .toml_syntax, 1, 325, "nested too deeply");
+    try expectError("a" ++ ".a" ** 100 ++ " = 1\n", .toml_syntax, 1, 129, "too many parts");
+    var info: ErrorInfo = .{};
+    var ok = try parse(testing.allocator, "a = " ++ "[" ** 64 ++ "]" ** 64 ++ "\n", &info);
+    ok.deinit();
 }
 
 test "mutated documents never crash the parser" {
