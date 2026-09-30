@@ -104,6 +104,17 @@ pub fn bootCopy(a: Allocator, n: u32) ![]const u8 {
     return std.fmt.allocPrint(a, "/{s}/boot-{d}", .{ roots_dir, n });
 }
 
+/// the writable copy a menu for `records` has no use for: the newest
+/// generation's, since the newest boots its own root. a menu written for a
+/// newer generation that then went, like a staged one that couldn't be
+/// recorded, leaves one. null if there are no records, or if the copy is
+/// `running_root`, the root this machine runs.
+pub fn spareCopy(a: Allocator, records: []const Record, running_root: []const u8) !?[]const u8 {
+    if (records.len == 0) return null;
+    const copy = try bootCopy(a, records[records.len - 1].n);
+    return if (std.mem.eql(u8, copy, running_root)) null else copy;
+}
+
 /// the generation whose copy the root at `subvol` is, if it's one.
 pub fn bootCopyOf(subvol: []const u8) ?u32 {
     const prefix = "/" ++ roots_dir ++ "/boot-";
@@ -333,6 +344,19 @@ test "a generation's kernel command line" {
     try testing.expectEqualStrings("/@roots/boot-2", try bootCopy(arena.allocator(), 2));
     try testing.expectEqual(2, bootCopyOf("/@roots/boot-2"));
     try testing.expectEqual(null, bootCopyOf("/@roots/2"));
+}
+
+test "the newest generation's copy is spare, unless it's running" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const recs = [_]Record{
+        .{ .n = 1, .time = 0, .root = "@roots/1", .reason = "enable-rollback" },
+        .{ .n = 14, .time = 0, .root = "@roots/14", .reason = "add tree" },
+    };
+    try testing.expectEqualStrings("/@roots/boot-14", (try spareCopy(a, &recs, "/@roots/14")).?);
+    try testing.expectEqual(null, try spareCopy(a, &recs, "/@roots/boot-14"));
+    try testing.expectEqual(null, try spareCopy(a, &.{}, "/@roots/1"));
 }
 
 test "which files in /boot a root keeps" {

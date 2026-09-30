@@ -217,6 +217,9 @@ pub const Machine = struct {
         var entries: std.ArrayList(menu.Entry) = .empty;
         // records come sorted by number.
         const latest = records[records.len - 1];
+        if (try generation.spareCopy(m.a, records, m.boot.root_subvol orelse "")) |spare| {
+            if (try m.drop(try m.at(&.{spare}))) |w| return w;
+        }
         var newest = try m.entry("head", try generation.title(m.a, latest), head, cmdline);
         if (m.headOnEsp(head)) newest.esp_dir = "";
         try entries.append(m.a, newest);
