@@ -111,7 +111,7 @@ fn lockSchema(w: *std.Io.Writer) anyerror!void {
         const T = @FieldType(lock.Lock, k);
         if (comptime @typeInfo(T) == .pointer and @typeInfo(T).pointer.size == .slice and @typeInfo(@typeInfo(T).pointer.child) == .@"struct") {
             try keyed(&s, @typeInfo(T).pointer.child);
-        } else try value(&s, T, .toml);
+        } else if (!try patterned(&s, k)) try value(&s, T, .toml);
     }
     try s.endObject();
     try required(&s, lock.Lock, &.{"version"}, "");
@@ -121,6 +121,7 @@ fn lockSchema(w: *std.Io.Writer) anyerror!void {
 
 /// what the lock reader checks in a string, besides its type.
 const patterns = .{
+    .{ "sync_date", "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
     .{ "sha256", "^[0-9a-f]{64}$" },
     .{ "recipe", "^[0-9a-f]{40}$" },
 };
@@ -424,7 +425,7 @@ test "the lock's schema fits what the lock writer writes, and every golden lock"
     var out: std.Io.Writer.Allocating = .init(a);
     try lock.write(&out.writer, &l);
     try testing.expect(try fitsLock(a, schema, out.written()));
-    const head = "version = 1\nsync_date = \"x\"\nkeyring = \"1\"\n";
+    const head = "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n";
     try testing.expect(!try fitsLock(a, schema, "version = 1\n"));
     try testing.expect(!try fitsLock(a, schema, head ++ "extra = 1\n"));
     try testing.expect(!try fitsLock(a, schema, head ++ "[packages.git]\nversion = 1\n"));
