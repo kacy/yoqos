@@ -494,6 +494,14 @@ pub fn needsHost(ctx: *Context, what: []const u8) !bool {
     return true;
 }
 
+/// takes the machine lock before root edits the config or lock, so two
+/// runs can't both read the old file and each write over the other.
+/// says who has it when another os does.
+pub fn lockForEdit(ctx: *Context) ?[]const u8 {
+    if (!eql(ctx.root, "/") or std.os.linux.geteuid() != 0) return null;
+    return lockMachine();
+}
+
 /// where os locks the running machine while it changes it.
 const lock_path = "/run/yoq/lock";
 var lock_held = false;

@@ -289,6 +289,13 @@ pub fn refind(a: Allocator, c: Refind) ![]const u8 {
     return out.items;
 }
 
+/// why refind can't boot with `args`, or null if it can. refind reads the
+/// options as one quoted string, and a quote in them would end it early.
+pub fn refindArgsProblem(a: Allocator, args: []const u8) !?[]const u8 {
+    if (std.mem.indexOfScalar(u8, args, '"') == null) return null;
+    return try std.fmt.allocPrint(a, "refind can't take kernel arguments with a double quote in them: {s}", .{args});
+}
+
 /// os's refind file, beside refind.conf, and the line there that reads it.
 pub const refind_file = "yoq.conf";
 pub const refind_include = "include " ++ refind_file;
@@ -484,6 +491,13 @@ test "systemd-boot's entry files" {
     , files[1].text);
     try testing.expect(std.mem.indexOf(u8, files[2].text, "sort-key yoq-trial\n") != null);
     try testing.expect(std.mem.endsWith(u8, files[2].text, "options root=UUID=r rw yoq.trial\n"));
+}
+
+test "refind can't take a quote in the kernel arguments" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectEqual(null, try refindArgsProblem(arena.allocator(), "root=UUID=r rw quiet"));
+    try testing.expect(try refindArgsProblem(arena.allocator(), "rw acpi_osi=\"!Windows 2012\"") != null);
 }
 
 test "refind's entries, and its include" {

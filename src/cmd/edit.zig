@@ -91,6 +91,7 @@ pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 /// edits the config for `op` on each name, writes it, and brings the lock
 /// along.
 fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: Then, aur: bool) !u8 {
+    if (try cli.refused(ctx, cli.lockForEdit(ctx))) return 1;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
@@ -153,6 +154,7 @@ pub fn editCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.err.writeAll("os: edit opens an editor, so it needs a terminal. edit the config yourself, then `os apply`.\n");
         return 2;
     }
+    if (try cli.refused(ctx, cli.lockForEdit(ctx))) return 1;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();

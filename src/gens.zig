@@ -80,7 +80,14 @@ pub const Machine = struct {
         const not_staged = try std.fmt.allocPrint(m.a, "{s} isn't a root os staged", .{root});
         if (!std.mem.startsWith(u8, root, prefix)) return not_staged;
         const n = std.fmt.parseInt(u32, root[prefix.len..], 10) catch return not_staged;
-        return m.add(records, n, root, reason, time, config);
+        const why = try m.add(records, n, root, reason, time, config) orelse return null;
+        // unrecorded, nothing boots the staged root: it goes, and so does
+        // its note, rather than wait forever.
+        _ = try m.forget(n);
+        _ = try m.drop(try m.at(&.{root}));
+        std.Io.Dir.cwd().deleteFile(m.io, generation.unsettled_path) catch {};
+        _ = try m.writeMenu(m.boot.root_subvol.?, records);
+        return why;
     }
 
     /// starts a new generation from `source`, a generation's record or a
@@ -327,10 +334,12 @@ pub const Machine = struct {
     }
 
     /// copies `src` beside `dest` and renames it into place, so `dest`
-    /// is never half written.
+    /// is never half written. the copy is synced before the rename: a
+    /// kernel copy on the esp is reused by its name, and the menu that
+    /// boots it is synced too.
     fn replaceFile(m: *const Machine, src: []const u8, dest: []const u8) !?[]const u8 {
         const tmp = try std.fmt.allocPrint(m.a, "{s}.yoq-new", .{dest});
-        return exec.runAll(m.a, m.io, &.{ &.{ "cp", src, tmp }, &.{ "mv", "-f", tmp, dest } });
+        return exec.runAll(m.a, m.io, &.{ &.{ "cp", src, tmp }, &.{ "sync", tmp }, &.{ "mv", "-f", tmp, dest } });
     }
 
     /// refind reads btrfs through its driver, so entries boot from each
@@ -338,6 +347,9 @@ pub const Machine = struct {
     /// which includes it, and the driver goes in if it's missing.
     fn writeRefind(m: *const Machine, entries: []const menu.Entry) !?[]const u8 {
         const conf = try m.loaderConf() orelse return "can't read refind.conf";
+        for (entries) |e| {
+            if (try menu.refindArgsProblem(m.a, e.args)) |w| return w;
+        }
         const dir = std.fs.path.dirnamePosix(m.boot.loader_conf.?).?;
         const driver = try std.fs.path.join(m.a, &.{ dir, "drivers_x64/btrfs_x64.efi" });
         if (!rootfs.pathExists(m.io, driver)) {
@@ -396,11 +408,23 @@ pub const Machine = struct {
         const fs: rootfs.Root = .{ .a = m.a, .io = m.io, .dir = root };
         const here: rootfs.Root = .{ .a = m.a, .io = m.io, .dir = "/" };
         // system accounts it lacks, so an id given out once stays taken,
-        // and a package installed again there gets its old one.
-        const users = try accounts.merge(m.a, try here.read("etc/passwd"), try fs.read("etc/passwd"));
-        const groups = try accounts.merge(m.a, try here.read("etc/group"), try fs.read("etc/group"));
-        const shadow = try accounts.addLines(m.a, try generation.mergeShadow(m.a, try here.read("etc/shadow"), try fs.read("etc/shadow")), try here.read("etc/shadow"), users.added, 7);
-        const gshadow = try accounts.addLines(m.a, try fs.read("etc/gshadow"), try here.read("etc/gshadow"), groups.added, 2);
+        // and a package installed again there gets its old one. a file
+        // that's there but can't be read stops the carry: taken as empty,
+        // it would be written back without its accounts.
+        var text: [2][4][]const u8 = undefined;
+        for ([_]rootfs.Root{ here, fs }, &text) |r, *out| {
+            for ([_][]const u8{ "etc/passwd", "etc/group", "etc/shadow", "etc/gshadow" }, out) |rel, *t| {
+                t.* = std.Io.Dir.cwd().readFileAlloc(m.io, try r.path(rel), m.a, .limited(64 << 20)) catch |e| switch (e) {
+                    error.OutOfMemory => return e,
+                    error.FileNotFound => "",
+                    else => return try std.fmt.allocPrint(m.a, "can't read {s}: {s}", .{ try r.path(rel), @errorName(e) }),
+                };
+            }
+        }
+        const users = try accounts.merge(m.a, text[0][0], text[1][0]);
+        const groups = try accounts.merge(m.a, text[0][1], text[1][1]);
+        const shadow = try accounts.addLines(m.a, try generation.mergeShadow(m.a, text[0][2], text[1][2]), text[0][2], users.added, 7);
+        const gshadow = try accounts.addLines(m.a, text[1][3], text[0][3], groups.added, 2);
         const files = [_]struct { []const u8, []const u8, u32 }{
             .{ "etc/passwd", users.text, 0o644 },
             .{ "etc/group", groups.text, 0o644 },

@@ -91,15 +91,22 @@ fn fellBack(ctx: *Context, a: Allocator, store: trial.Store, boot: facts.Boot, t
 /// needs it.
 fn settleBoot(ctx: *Context, a: Allocator, boot: facts.Boot) !?[]const u8 {
     const note = std.Io.Dir.cwd().readFileAlloc(ctx.io, generation.unsettled_path, a, .limited(256)) catch return null;
-    std.Io.Dir.cwd().deleteFile(ctx.io, generation.unsettled_path) catch {};
-    if (!std.mem.eql(u8, std.mem.trim(u8, note, " \n"), boot.root_subvol.?)) return null;
+    if (!std.mem.eql(u8, std.mem.trim(u8, note, " \n"), boot.root_subvol.?)) {
+        std.Io.Dir.cwd().deleteFile(ctx.io, generation.unsettled_path) catch {};
+        return null;
+    }
+    // the note stays until the kernel is on the esp, so a boot where that
+    // failed tries again.
     var why: []const u8 = "";
     const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse return why;
     defer m.close();
-    if (!m.bootOnEsp()) return null;
     const running = boot.root_subvol.?;
-    if (try m.restoreBoot(running)) |w| return w;
-    return m.writeMenu(running, try gens.readRecords(a, ctx.io, "/var"));
+    if (m.bootOnEsp()) {
+        if (try m.restoreBoot(running)) |w| return w;
+        if (try m.writeMenu(running, try gens.readRecords(a, ctx.io, "/var"))) |w| return w;
+    }
+    std.Io.Dir.cwd().deleteFile(ctx.io, generation.unsettled_path) catch {};
+    return null;
 }
 
 /// what's wrong with the running machine, if anything.

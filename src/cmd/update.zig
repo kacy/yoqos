@@ -37,11 +37,12 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             dbs_dir = it.next() orelse return cli.usageError(ctx, usage_text);
         } else if (eql(arg, "--date")) {
             const d = it.next() orelse return cli.usageError(ctx, usage_text);
-            if (!validDate(d)) return cli.usageError(ctx, usage_text);
+            if (!lock.validDate(d)) return cli.usageError(ctx, usage_text);
             date = d;
         } else return cli.usageError(ctx, usage_text);
     }
     if (!alpm.available) return cli.fail(ctx, "this build can't resolve packages. build with -Dalpm.", .{});
+    if (try cli.refused(ctx, cli.lockForEdit(ctx))) return 1;
 
     var w: cli.Work = .init(ctx);
     defer w.deinit();
@@ -164,15 +165,6 @@ fn reviewRecipe(ctx: *Context, a: Allocator, b: aur.Builder, name: []const u8, w
 fn pastRepos(ctx: *Context, a: Allocator, rs: []const sync.Repo, date: []const u8) ![]const sync.Repo {
     if (eql(date, try locking.today(ctx.io, a))) return rs;
     return sync.archived(a, rs, date);
-}
-
-/// yyyy-mm-dd, the way sync dates are written.
-fn validDate(d: []const u8) bool {
-    if (d.len != 10 or d[4] != '-' or d[7] != '-') return false;
-    for (d, 0..) |ch, i| {
-        if (i != 4 and i != 7 and !std.ascii.isDigit(ch)) return false;
-    }
-    return true;
 }
 
 /// arch news posted after the old lock's date, up to the new one. a feed

@@ -79,7 +79,17 @@ pub fn buildCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (std.os.linux.errno(std.os.linux.mkdir(dir_z, 0o755)) != .SUCCESS) {
         return cli.fail(ctx, "can't make {s}. a clean build starts from nothing, in a directory it makes itself, so it can't be there already.", .{dir});
     }
-    var b: Builder = .{ .ctx = ctx, .a = a, .dir = dir };
+    // unmounting finds the mounts by this path in mountinfo, which has it
+    // resolved and escapes spaces and the like, so it has to match that.
+    const real = std.Io.Dir.cwd().realPathFileAlloc(ctx.io, dir, a) catch {
+        try ctx.err.print("os: can't resolve {s}.\n", .{dir});
+        return 1;
+    };
+    if (std.mem.indexOfAny(u8, real, " \t\n\\") != null) {
+        try ctx.err.print("os: {s} can't have spaces or backslashes in it.\n", .{real});
+        return 1;
+    }
+    var b: Builder = .{ .ctx = ctx, .a = a, .dir = real };
     // on every way out: a bind of /dev left behind would take the host's
     // device nodes with it when someone removes the directory.
     {

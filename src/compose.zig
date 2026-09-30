@@ -21,12 +21,23 @@ pub const Files = struct {
     /// replaces the file in one step, so a crash leaves the old or the new
     /// content, never half of each.
     writeFn: *const fn (ctx: *anyopaque, path: []const u8, bytes: []const u8) WriteError!void,
+    /// reads `rel` under `dir` without following a symlink on the way, or
+    /// with none, reads the two joined.
+    readBelowFn: ?*const fn (ctx: *anyopaque, gpa: Allocator, dir: []const u8, rel: []const u8) BelowError![]u8 = null,
 
     pub const ReadError = error{ FileNotFound, ReadFailed, OutOfMemory };
+    pub const BelowError = ReadError || error{Symlink};
     pub const WriteError = error{ WriteFailed, OutOfMemory };
 
     pub fn read(f: Files, gpa: Allocator, path: []const u8) ReadError![]u8 {
         return f.readFn(f.ctx, gpa, path);
+    }
+
+    pub fn readBelow(f: Files, gpa: Allocator, dir: []const u8, rel: []const u8) BelowError![]u8 {
+        if (f.readBelowFn) |below| return below(f.ctx, gpa, dir, rel);
+        const path = try std.fs.path.resolvePosix(gpa, &.{ dir, rel });
+        defer gpa.free(path);
+        return f.read(gpa, path);
     }
 
     pub fn write(f: Files, path: []const u8, bytes: []const u8) WriteError!void {
@@ -138,12 +149,19 @@ const Loader = struct {
     }
 
     /// a file named next to the config, relative to the file that names
-    /// it, which its span records. null after saying it can't be read.
+    /// it, which its span records. null after saying it can't be read. a
+    /// relative path can't go through a symlink: one in a repository
+    /// could point anywhere, like /etc/shadow, and the config wouldn't say.
     fn readSource(l: *Loader, source: config.Str, what: []const u8) !?[]const u8 {
         const dir = std.fs.path.dirnamePosix(source.src.file) orelse ".";
         const path = try std.fs.path.resolvePosix(l.a, &.{ dir, source.v });
-        return l.files.read(l.a, path) catch |err| switch (err) {
+        const read = if (std.fs.path.isAbsolutePosix(source.v)) l.files.read(l.a, path) else l.files.readBelow(l.a, dir, source.v);
+        return read catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
+            error.Symlink => {
+                try l.diags.add(.source_missing, source.src, "{s} goes through a symlink, for {s}", .{ path, what }, "name the file itself, or write its absolute path");
+                return null;
+            },
             else => {
                 try l.diags.add(.source_missing, source.src, "{s} can't be read, for {s}", .{ path, what }, null);
                 return null;

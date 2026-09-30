@@ -116,6 +116,14 @@ pub fn writeAtomic(io: std.Io, path: []const u8, bytes: []const u8, bits: ?u32) 
         if (linux.errno(linux.fsync(fd)) != .SUCCESS) return error.WriteFailed;
     }
     if (linux.errno(linux.rename(tmp, dest)) != .SUCCESS) return error.WriteFailed;
+    // the rename itself is only durable once the directory is on disk. a
+    // filesystem that can't sync a directory still has the new file.
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir = std.fmt.bufPrintZ(&dir_buf, "{s}", .{std.fs.path.dirnamePosix(path) orelse "."}) catch return;
+    const dfd = linux.open(dir, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
+    if (linux.errno(dfd) != .SUCCESS) return;
+    defer _ = linux.close(@intCast(dfd));
+    if (linux.errno(linux.fsync(@intCast(dfd))) == .IO) return error.WriteFailed;
 }
 
 test "an atomic write keeps its mode, and a symlink in the way stays untouched" {

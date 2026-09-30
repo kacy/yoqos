@@ -26,7 +26,13 @@ const Allocator = std.mem.Allocator;
 /// `w.diags`, when it can't.
 pub fn resolveLock(ctx: *Context, w: *cli.Work, c: *const config.Config, top: []const u8, dbs: []const alpm.SyncDb, sync_date: []const u8, installed: []const facts.Package) !?lock.Lock {
     const a = w.allocator();
-    const scratch = try std.fmt.allocPrint(a, "/tmp/os-resolve-{d}", .{std.Io.Timestamp.now(ctx.io, .real).toNanoseconds()});
+    const scratch = try std.fmt.allocPrintSentinel(a, "/tmp/os-resolve-{d}", .{std.Io.Timestamp.now(ctx.io, .real).toNanoseconds()}, 0);
+    // made fresh and private: one someone else made first could hold
+    // symlinks that the writes into it would follow.
+    if (std.os.linux.errno(std.os.linux.mkdir(scratch, 0o700)) != .SUCCESS) {
+        try w.diags.add(.alpm_failed, null, "can't make a scratch directory for resolving at {s}", .{scratch}, null);
+        return null;
+    }
     defer std.Io.Dir.cwd().deleteTree(ctx.io, scratch) catch {};
 
     var in = try resolveInput(a, c);

@@ -77,6 +77,10 @@ pub const Summary = struct {
 
 pub const Plan = struct {
     changes: []const Change,
+    /// each file the plan writes, by path and the sha-256 of its content.
+    /// changes don't show content, so this goes into the hash instead: a
+    /// saved plan can't write something other than what was reviewed.
+    content: []const u8 = "",
 
     /// how many changes of each op the whole plan has.
     pub fn summary(p: *const Plan) Summary {
@@ -120,6 +124,7 @@ pub const Plan = struct {
         var buf: [256]u8 = undefined;
         var hw: std.Io.Writer.Hashing(std.crypto.hash.sha2.Sha256) = .init(&buf);
         try std.json.Stringify.value(p.changes, .{}, &hw.writer);
+        try hw.writer.writeAll(p.content);
         try hw.writer.flush();
         return std.fmt.bytesToHex(hw.hasher.finalResult(), .lower);
     }
@@ -211,9 +216,10 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
     try planSettings(a, c, f, &changes);
     try planUnits(a, c, f, &changes);
     try planUsers(a, c, f, &changes);
-    try planFiles(a, c, f, &changes);
+    var content: std.ArrayList(u8) = .empty;
+    try planFiles(a, c, f, &changes, &content);
     if (!try planRepos(a, c, f, &changes, diags)) return null;
-    return .{ .changes = changes.items };
+    return .{ .changes = changes.items, .content = content.items };
 }
 
 /// packages: the lock's closure of the wanted packages is what should be
@@ -387,7 +393,7 @@ fn sameShell(current: []const u8, want: []const u8) bool {
 /// files: written when missing or when their content differs, and their
 /// mode set when only that differs. generated files nothing asks for any
 /// more are removed; other files the config doesn't name are left alone.
-fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
+fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change), content: *std.ArrayList(u8)) !void {
     const want = try desiredFiles(a, c, f);
     var files: std.ArrayList(Change) = .empty;
     for (want) |d| {
@@ -413,6 +419,10 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
             ch.to = try std.fmt.allocPrint(a, "write, mode {s}", .{mode});
         }
         try files.append(a, ch);
+    }
+    for (files.items) |ch| {
+        const d = lists.find(want, "path", ch.subject).?;
+        try content.print(a, "{s} {s}\n", .{ d.path, facts.sha256Hex(d.content) });
     }
     for (generated_paths) |p| {
         if (lists.indexOf(want, "path", p) != null) continue;
@@ -978,6 +988,21 @@ test "reason changes and explicit dependencies" {
     try testing.expectEqual(1, p.changes.len);
     try testing.expectEqual(Kind.reason, p.changes[0].kind);
     try testing.expectEqualStrings("explicit", p.changes[0].to.?);
+}
+
+test "a file's content is part of the plan's hash" {
+    var t: T = .{};
+    defer t.deinit();
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{lockPkg("linux", "1", &.{})} };
+    var f: facts.Facts = .{};
+    f.normalize();
+    var hashes: [2][64]u8 = undefined;
+    for ([_][]const u8{ "10", "60" }, &hashes) |v, *h| {
+        const c = try t.cfg(try std.fmt.allocPrint(t.a(), "[sysctl]\n\"vm.swappiness\" = {s}\n", .{v}));
+        const p = (try plan(t.a(), &c, &l, &f, &t.diags)).?;
+        h.* = try p.hash();
+    }
+    try testing.expect(!std.mem.eql(u8, &hashes[0], &hashes[1]));
 }
 
 test "the same inputs give the same plan and hash" {

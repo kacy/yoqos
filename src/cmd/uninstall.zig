@@ -138,6 +138,10 @@ const Uninstaller = struct {
         const db = "/var/lib/pacman";
         const fresh = db ++ ".yoq-new";
         if (!u.exists(moved)) return null;
+        // a run that stopped after the move left a real directory at db;
+        // mv would put the copy inside it.
+        const st = std.Io.Dir.cwd().statFile(u.ctx.io, db, .{ .follow_symlinks = false }) catch null;
+        if (st != null and st.?.kind == .directory) return u.run(&.{ "rm", "-rf", moved });
         return exec.runAll(u.a, u.ctx.io, &.{
             &.{ "rm", "-rf", fresh },
             &.{ "cp", "-a", "--reflink=auto", moved, fresh },
@@ -190,7 +194,9 @@ const Uninstaller = struct {
             .refind => {
                 const conf_path = u.boot.loader_conf orelse return "can't find refind.conf";
                 const conf = std.Io.Dir.cwd().readFileAlloc(u.ctx.io, conf_path, u.a, .limited(1 << 20)) catch return "can't read refind.conf";
-                const text = try menu.refindLinux(u.a, try u.plainEntry());
+                const plain = try u.plainEntry();
+                if (try menu.refindArgsProblem(u.a, plain.args)) |w| return w;
+                const text = try menu.refindLinux(u.a, plain);
                 rootfs.writeAtomic(u.ctx.io, try std.fs.path.join(u.a, &.{ esp, "refind_linux.conf" }), text, null) catch return "can't write refind_linux.conf";
                 rootfs.writeAtomic(u.ctx.io, conf_path, try menu.unspliceRefind(u.a, conf), null) catch return "can't write refind.conf";
                 const dir = std.fs.path.dirnamePosix(conf_path).?;

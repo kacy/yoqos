@@ -126,6 +126,9 @@ pub const Store = struct {
             if (try exec.run(s.a, s.io, &.{ "cp", "-a", from, trial_dir })) |w| return w;
         }
         if (try s.write(try std.fs.path.join(s.a, &.{ trial_dir, "refind.conf" }), try menu.refindTrialConf(s.a, main, yoq))) |w| return w;
+        // one entry at a time: an earlier trial's, or one a failed arm
+        // left, would stay in nvram and be the one found by its label.
+        try s.dropFirmwareEntries();
         const entry = try s.firmwareEntry(trial_dir, binary) orelse return "can't add a boot entry for the trial";
         if (try exec.run(s.a, s.io, &.{ "efibootmgr", "-q", "-n", entry })) |w| return w;
         if (try s.write(yoq_path, try menu.refindDefault(s.a, yoq, try generation.title(s.a, fallback)))) |w| return w;
@@ -159,6 +162,19 @@ pub const Store = struct {
             .ok => |t| std.mem.trim(u8, t, " \n"),
             .failed => null,
         };
+    }
+
+    /// removes every firmware entry with the trial's label.
+    fn dropFirmwareEntries(s: Store) !void {
+        const listing = switch (try exec.output(s.a, s.io, &.{"efibootmgr"})) {
+            .ok => |t| t,
+            .failed => return,
+        };
+        var lines = std.mem.splitScalar(u8, listing, '\n');
+        while (lines.next()) |line| {
+            const id = firmwareNumber(line) orelse continue;
+            _ = try exec.run(s.a, s.io, &.{ "efibootmgr", "-q", "-b", id, "-B" });
+        }
     }
 
     /// the trial hasn't booted yet: the next boot tries it again.
@@ -195,9 +211,7 @@ pub const Store = struct {
     /// removes the trial's firmware entry and copy of refind, and makes
     /// the newest generation refind's default again.
     fn endRefind(s: Store) !?[]const u8 {
-        if (try s.state()) |words| {
-            if (words[2].len > 0) _ = try exec.run(s.a, s.io, &.{ "efibootmgr", "-q", "-b", words[2], "-B" });
-        }
+        try s.dropFirmwareEntries();
         _ = try exec.run(s.a, s.io, &.{ "rm", "-rf", try s.refindTrialDir() });
         const conf = s.conf orelse return null;
         const yoq_path = try std.fs.path.join(s.a, &.{ std.fs.path.dirnamePosix(conf).?, menu.refind_file });
