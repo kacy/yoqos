@@ -340,6 +340,9 @@ pub const Machine = struct {
     /// which includes it, and the driver goes in if it's missing.
     fn writeRefind(m: *const Machine, entries: []const menu.Entry) !?[]const u8 {
         const conf = try m.loaderConf() orelse return "can't read refind.conf";
+        for (entries) |e| {
+            if (try menu.refindArgsProblem(m.a, e.args)) |w| return w;
+        }
         const dir = std.fs.path.dirnamePosix(m.boot.loader_conf.?).?;
         const driver = try std.fs.path.join(m.a, &.{ dir, "drivers_x64/btrfs_x64.efi" });
         if (!rootfs.pathExists(m.io, driver)) {
