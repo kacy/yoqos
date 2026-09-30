@@ -93,12 +93,21 @@ fn parseBootTime(stat: []const u8) ?i64 {
 /// the bytes free for anyone to use on the filesystem holding `path`, or
 /// null if that can't be told.
 pub fn freeBytes(path: []const u8) ?u64 {
+    return (space(path) orelse return null).free;
+}
+
+pub const Space = struct { free: u64, size: u64 };
+
+/// the bytes free for anyone to use on the filesystem holding `path`, and
+/// its size, or null if that can't be told.
+pub fn space(path: []const u8) ?Space {
     const linux = std.os.linux;
     var z: [std.fs.max_path_bytes]u8 = undefined;
     const p = std.fmt.bufPrintZ(&z, "{s}", .{path}) catch return null;
     var st: Statfs = undefined;
     if (linux.errno(linux.syscall2(.statfs, @intFromPtr(p.ptr), @intFromPtr(&st))) != .SUCCESS) return null;
-    return @as(u64, @intCast(st.bsize)) *| st.bavail;
+    const block: u64 = @intCast(st.bsize);
+    return .{ .free = block *| st.bavail, .size = block *| st.blocks };
 }
 
 /// struct statfs on 64-bit linux, whole: the kernel writes all of it, so
@@ -198,6 +207,7 @@ test "free space on a filesystem" {
     // the kernel's struct statfs is 120 bytes on 64-bit linux.
     try std.testing.expectEqual(120, @sizeOf(Statfs));
     try std.testing.expect(freeBytes(".").? > 0);
+    try std.testing.expect(space(".").?.size >= space(".").?.free);
     try std.testing.expectEqual(null, freeBytes("/no/such/place"));
 }
 

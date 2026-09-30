@@ -7,6 +7,7 @@
 const std = @import("std");
 const exec = @import("exec.zig");
 const generation = @import("generation.zig");
+const gens = @import("gens.zig");
 const accounts = @import("accounts.zig");
 const menu = @import("menu.zig");
 const facts = @import("facts.zig");
@@ -184,8 +185,20 @@ const Reader = struct {
             }
         }
         b.loader = try r.loader(b.esp);
-        if (b.esp) |esp| b.loader_conf = try r.loaderConf(b.loader orelse "", esp);
-        if (generation.running(b.root_subvol)) b.menu_missing = try r.menuMissing(b);
+        if (b.esp) |esp| {
+            b.loader_conf = try r.loaderConf(b.loader orelse "", esp);
+            if (rootfs.space(esp)) |s| {
+                b.esp_free = s.free;
+                b.esp_size = s.size;
+            }
+            b.boot_files = try r.bootFiles();
+        }
+        if (generation.running(b.root_subvol)) {
+            b.menu_missing = try r.menuMissing(b);
+            var recorded: std.ArrayList(facts.Generation) = .empty;
+            for (try gens.readRecords(r.a, r.io, "/var")) |g| try recorded.append(r.a, .{ .n = g.n, .root = g.root, .pinned = g.pinned });
+            b.generations = recorded.items;
+        }
         if (b.root_subvol != null) {
             b.top_is_default = switch (try exec.output(r.a, r.io, &.{ "btrfs", "subvolume", "get-default", "/" })) {
                 // "ID 5 (FS_TREE)" for the top level.
@@ -195,6 +208,20 @@ const Reader = struct {
             };
         }
         return b;
+    }
+
+    /// the kernels, initramfs images, and microcode in /boot, with their
+    /// sizes, by name.
+    fn bootFiles(r: Reader) ![]const facts.BootFile {
+        var out: std.ArrayList(facts.BootFile) = .empty;
+        var dir = std.Io.Dir.cwd().openDir(r.io, try r.path("boot"), .{}) catch return out.items;
+        defer dir.close(r.io);
+        for (try r.names("boot", .file)) |name| {
+            if (!generation.bootFile(name)) continue;
+            const st = dir.statFile(r.io, name, .{}) catch continue;
+            try out.append(r.a, .{ .name = name, .size = st.size });
+        }
+        return out.items;
     }
 
     /// the file that should hold os's boot entries, if it doesn't.
