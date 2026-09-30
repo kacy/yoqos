@@ -97,13 +97,13 @@ pub const Git = struct {
     }
 
     fn run(g: *Git, a: Allocator, argv: []const []const u8, why: *[]const u8) !bool {
-        why.* = try exec.run(a, g.io, argv) orelse return true;
+        why.* = try exec.run(a, g.io, try cleanEnv(a, argv)) orelse return true;
         return false;
     }
 
     /// what `argv` printed, or null with the reason in `why`.
     fn output(g: *Git, a: Allocator, argv: []const []const u8, why: *[]const u8) !?[]const u8 {
-        return switch (try exec.output(a, g.io, argv)) {
+        return switch (try exec.output(a, g.io, try cleanEnv(a, argv))) {
             .ok => |text| text,
             .failed => |w| {
                 why.* = w;
@@ -117,6 +117,14 @@ pub const Git = struct {
         return g.run(a, argv, &ignored);
     }
 };
+
+/// `argv` run without the variables that point git at another repository.
+/// os run from a git hook, or under `git rebase --exec`, inherits GIT_DIR,
+/// and git would then commit there instead of in the config directory.
+fn cleanEnv(a: Allocator, argv: []const []const u8) ![]const []const u8 {
+    const prefix = [_][]const u8{ "env", "-u", "GIT_DIR", "-u", "GIT_WORK_TREE", "-u", "GIT_INDEX_FILE", "-u", "GIT_OBJECT_DIRECTORY", "-u", "GIT_COMMON_DIR", "--" };
+    return std.mem.concat(a, []const u8, &.{ &prefix, argv });
+}
 
 fn sameFiles(x: []const File, y: []const File) bool {
     if (x.len != y.len) return false;
