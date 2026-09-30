@@ -163,22 +163,23 @@ pub fn addToList(a: Allocator, text_in: []const u8, path: []const []const u8, ke
     // had none.
     const new_line = try std.fmt.allocPrint(a, "{s}{s},\n", .{ indent, q });
     var out = try splice(a, text, d.lineStart(close), 0, new_line);
-    if (!hasCommaAfter(text, last.span.end, close)) out = try splice(a, out, last.span.end, 0, ",");
+    if (commaAfter(text, last.span.end, close) == null) out = try splice(a, out, last.span.end, 0, ",");
     return out;
 }
 
-/// whether a comma follows `from`, skipping spaces and comments, before `limit`.
-fn hasCommaAfter(text: []const u8, from: usize, limit: usize) bool {
+/// where the comma after `from` is, skipping spaces, line breaks, and
+/// comments, before `limit`.
+fn commaAfter(text: []const u8, from: usize, limit: usize) ?usize {
     var i = from;
     while (i < limit) : (i += 1) {
         switch (text[i]) {
-            ',' => return true,
+            ',' => return i,
             ' ', '\t', '\r', '\n' => {},
-            '#' => i = std.mem.indexOfScalarPos(u8, text, i, '\n') orelse return false,
-            else => return false,
+            '#' => i = std.mem.indexOfScalarPos(u8, text, i, '\n') orelse return null,
+            else => return null,
         }
     }
-    return false;
+    return null;
 }
 
 fn skipBlanks(text: []const u8, from: usize, limit: usize) usize {
@@ -209,21 +210,24 @@ fn removeOne(a: Allocator, text: []const u8, path: []const []const u8, key: []co
     const start = it.span.start.offset;
     var end: usize = it.span.end;
 
-    // alone on its line: take the whole line, comma and comment included.
+    const comma = commaAfter(text, end, v.span.end - 1);
+
+    // alone on its line, with its comma if it has one: take the whole
+    // line, comment included.
     const ls = d.lineStart(start);
     const le = d.lineEnd(start);
     var rest = skipBlanks(text, end, le);
     if (rest < le and text[rest] == ',') rest = skipBlanks(text, rest + 1, le);
     const blank_before = std.mem.trim(u8, text[ls..start], " \t").len == 0;
-    if (blank_before and (rest == le or text[rest] == '\n' or text[rest] == '#' or text[rest] == '\r')) {
+    const own_comma = comma == null or comma.? < le;
+    if (blank_before and own_comma and (rest == le or text[rest] == '\n' or text[rest] == '#' or text[rest] == '\r')) {
         return try splice(a, text, ls, le - ls, "");
     }
 
-    // on a shared line: take the item and the comma after it, or the comma
-    // before it when it's last.
-    const j = skipBlanks(text, end, text.len);
-    if (j < text.len and text[j] == ',') {
-        end = skipBlanks(text, j + 1, text.len);
+    // otherwise take the item and the comma after it, wherever that is,
+    // or the comma before it when it's last.
+    if (comma) |c| {
+        end = skipBlanks(text, c + 1, text.len);
         return try splice(a, text, start, end - start, "");
     }
     const from = if (i > 0) items[i - 1].span.end else start;
@@ -410,6 +414,14 @@ test "remove from lists" {
     try expectEdit(removeFromList(a, "packages = [\"git\"]\n", &.{}, "packages", "nano"), null);
     try expectEdit(removeFromList(a, "packages = [\"base\",\"nano\",\"nano\"]\n", &.{}, "packages", "nano"), "packages = [\"base\"]\n");
     try expectEdit(removeFromList(a, "packages = [\"nano\",\t\"git\"]\n", &.{}, "packages", "nano"), "packages = [\"git\"]\n");
+}
+
+test "remove takes the comma after an item past a comment or line break" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectEdit(removeFromList(a, "packages = [\"a\" # x\n , \"b\"]\n", &.{}, "packages", "a"), "packages = [\"b\"]\n");
+    try expectEdit(removeFromList(a, "packages = [\n  \"a\"\n  , \"b\"\n]\n", &.{}, "packages", "a"), "packages = [\n  \"b\"\n]\n");
 }
 
 test "enable and disable services" {
