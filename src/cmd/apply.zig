@@ -188,6 +188,8 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
             .none => {},
             .warn => try ctx.err.print("os: the last apply (plan {s}) didn't finish. this one starts from the machine as it is now.\n", .{short}),
             .settle => {
+                // pacman's lock outlives a power cut after the commit too.
+                try clearStaleLock(ctx, a, try observe.pacmanDb(a, ctx.io, ctx.root));
                 try journal.settle(a, ctx.io, ctx.root, begin);
                 try ctx.err.print("os: the last apply (plan {s}) was cut off after it made its changes. the machine matches the config, so it's recorded as done.\n", .{short});
                 // its changes never became a generation either.
@@ -224,9 +226,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
         try ctx.out.flush();
         target.progress = &shown;
     }
-    if (try alpm.clearStaleLock(a, ctx.io, target.dbpath)) |path| {
-        try ctx.err.print("os: removed {s}, left from before this boot by a transaction that never finished.\n", .{path});
-    }
+    try clearStaleLock(ctx, a, target.dbpath);
     const units = liveUnits(ctx);
     const hash = try p.hash();
     try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "begin", &hash);
@@ -279,6 +279,12 @@ test "a cut-off apply gets a generation unless one came after it" {
     try std.testing.expect(unrecorded(5_000, &.{ r(1, 1), r(2, 4) }));
     try std.testing.expect(unrecorded(5_999, &.{r(1, 5)}));
     try std.testing.expect(!unrecorded(5_000, &.{ r(1, 1), r(2, 6) }));
+}
+
+fn clearStaleLock(ctx: *Context, a: Allocator, dbpath: []const u8) !void {
+    if (try alpm.clearStaleLock(a, ctx.io, dbpath)) |path| {
+        try ctx.err.print("os: removed {s}, left from before this boot by a transaction that never finished.\n", .{path});
+    }
 }
 
 /// plans again once the plan was shown and said yes to, and refuses when
