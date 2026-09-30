@@ -138,6 +138,10 @@ const Uninstaller = struct {
         const db = "/var/lib/pacman";
         const fresh = db ++ ".yoq-new";
         if (!u.exists(moved)) return null;
+        // a run that stopped after the move left a real directory at db;
+        // mv would put the copy inside it.
+        const st = std.Io.Dir.cwd().statFile(u.ctx.io, db, .{ .follow_symlinks = false }) catch null;
+        if (st != null and st.?.kind == .directory) return u.run(&.{ "rm", "-rf", moved });
         return exec.runAll(u.a, u.ctx.io, &.{
             &.{ "rm", "-rf", fresh },
             &.{ "cp", "-a", "--reflink=auto", moved, fresh },
