@@ -343,6 +343,98 @@ fn unitStep(on: bool, have: ?*const facts.Unit) ?UnitStep {
     return null;
 }
 
+/// users the config declares get created, or brought to its shell and
+/// groups. the groups listed are all of them: others are left. users the
+/// config doesn't mention are left alone, since removing an account by
+/// accident costs too much.
+fn planUsers(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
+    for (c.users.entries.items) |e| {
+        const name = e.name;
+        const want_groups = e.value.groups.items.items;
+        const cause = try std.fmt.allocPrint(a, "users.{s}", .{name});
+        // each change is one step `apply` can take: a new user is created,
+        // then gets its shell and groups like any other.
+        const found = lists.find(f.users, "name", name);
+        if (found == null) try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = "new user", .cause = cause });
+        if (e.value.shell) |sh| {
+            const current = if (found) |u| u.shell orelse "" else "";
+            if (!sameShell(current, sh.v)) try changes.append(a, .{
+                .op = .change,
+                .kind = .user,
+                .subject = name,
+                .from = if (found != null) try std.fmt.allocPrint(a, "shell {s}", .{std.fs.path.basename(current)}) else null,
+                .to = try std.fmt.allocPrint(a, "shell {s}", .{sh.v}),
+                .cause = cause,
+            });
+        }
+        const have_groups: []const []const u8 = if (found) |u| u.groups else &.{};
+        for (want_groups) |g| {
+            if (!lists.contains(have_groups, g.name)) try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = try std.fmt.allocPrint(a, "join {s}", .{g.name}), .cause = cause });
+        }
+        if (want_groups.len == 0) continue;
+        for (have_groups) |g| {
+            if (!e.value.groups.contains(g)) try changes.append(a, .{ .op = .remove, .kind = .user, .subject = name, .from = try std.fmt.allocPrint(a, "leave {s}", .{g}), .cause = cause });
+        }
+    }
+}
+
+/// a shell given by name, like "zsh", matches any path ending in it.
+fn sameShell(current: []const u8, want: []const u8) bool {
+    if (std.mem.eql(u8, current, want)) return true;
+    return std.mem.indexOfScalar(u8, want, '/') == null and std.mem.eql(u8, std.fs.path.basename(current), want);
+}
+
+/// files: written when missing or when their content differs, and their
+/// mode set when only that differs. generated files nothing asks for any
+/// more are removed; other files the config doesn't name are left alone.
+fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
+    const want = try desiredFiles(a, c, f);
+    var files: std.ArrayList(Change) = .empty;
+    for (want) |d| {
+        const mode = try normalMode(a, d.mode);
+        var ch: Change = .{
+            .op = .change,
+            .kind = .file,
+            .subject = d.path,
+            .cause = d.cause orelse try std.fmt.allocPrint(a, "files.\"{s}\"", .{d.path}),
+            .reboot = d.reboot,
+        };
+        if (f.file(d.path)) |have| {
+            if (!std.mem.eql(u8, have.sha256, &facts.sha256Hex(d.content))) {
+                ch.to = try std.fmt.allocPrint(a, "rewrite, mode {s}", .{mode});
+            } else if (!std.mem.eql(u8, have.mode, mode)) {
+                // only the mode: nothing the reboot was for changes.
+                ch.from = have.mode;
+                ch.to = try std.fmt.allocPrint(a, "mode {s}", .{mode});
+                ch.reboot = null;
+            } else continue;
+        } else {
+            ch.op = .add;
+            ch.to = try std.fmt.allocPrint(a, "write, mode {s}", .{mode});
+        }
+        try files.append(a, ch);
+    }
+    for (generated_paths) |p| {
+        if (lists.indexOf(want, "path", p) != null) continue;
+        const have = f.file(p) orelse continue;
+        if (!have.ours) continue;
+        try files.append(a, .{
+            .op = .remove,
+            .kind = .file,
+            .subject = p,
+            .to = "remove: os wrote it, and nothing asks for it now",
+            .reboot = if (std.mem.eql(u8, p, nvidia_initramfs_path)) "initramfs" else null,
+        });
+    }
+    lists.sortByField(Change, "subject", files.items);
+    try changes.appendSlice(a, files.items);
+}
+
+/// "644" and "0644" are the same mode; facts write four digits.
+fn normalMode(a: Allocator, mode: []const u8) ![]const u8 {
+    return if (mode.len == 3) std.fmt.allocPrint(a, "0{s}", .{mode}) else mode;
+}
+
 /// whether the config has repositories of its own for pacman: declared
 /// ones, or the local one aur packages are built into.
 fn ownRepos(c: *const config.Config) bool {
@@ -559,94 +651,6 @@ fn filePaths(a: Allocator, c: *const config.Config) ![]const []const u8 {
         if (!lists.contains(out.items, p)) try out.append(a, p);
     }
     return out.items;
-}
-
-/// files: written when missing or when their content differs, and their
-/// mode set when only that differs. files the config doesn't name are
-/// left alone.
-fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
-    const want = try desiredFiles(a, c, f);
-    var files: std.ArrayList(Change) = .empty;
-    for (want) |d| {
-        const mode = try normalMode(a, d.mode);
-        var ch: Change = .{
-            .op = .change,
-            .kind = .file,
-            .subject = d.path,
-            .cause = d.cause orelse try std.fmt.allocPrint(a, "files.\"{s}\"", .{d.path}),
-            .reboot = d.reboot,
-        };
-        if (f.file(d.path)) |have| {
-            if (!std.mem.eql(u8, have.sha256, &facts.sha256Hex(d.content))) {
-                ch.to = try std.fmt.allocPrint(a, "rewrite, mode {s}", .{mode});
-            } else if (!std.mem.eql(u8, have.mode, mode)) {
-                // only the mode: nothing the reboot was for changes.
-                ch.from = have.mode;
-                ch.to = try std.fmt.allocPrint(a, "mode {s}", .{mode});
-                ch.reboot = null;
-            } else continue;
-        } else {
-            ch.op = .add;
-            ch.to = try std.fmt.allocPrint(a, "write, mode {s}", .{mode});
-        }
-        try files.append(a, ch);
-    }
-    for (generated_paths) |p| {
-        if (lists.find(want, "path", p) != null) continue;
-        const have = f.file(p) orelse continue;
-        if (!have.ours) continue;
-        try files.append(a, .{
-            .op = .remove,
-            .kind = .file,
-            .subject = p,
-            .to = "remove: os wrote it, and nothing asks for it now",
-            .reboot = if (std.mem.eql(u8, p, nvidia_initramfs_path)) "initramfs" else null,
-        });
-    }
-    lists.sortByField(Change, "subject", files.items);
-    try changes.appendSlice(a, files.items);
-}
-
-/// "644" and "0644" are the same mode; facts write four digits.
-fn normalMode(a: Allocator, mode: []const u8) ![]const u8 {
-    return if (mode.len == 3) std.fmt.allocPrint(a, "0{s}", .{mode}) else mode;
-}
-
-/// users the config declares get created, or brought to its shell and
-/// groups. the groups listed are all of them: others are left. users the
-/// config doesn't mention are left alone, since removing an account by
-/// accident costs too much.
-fn planUsers(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
-    for (c.users.entries.items) |e| {
-        const name = e.name;
-        const want_groups = e.value.groups.items.items;
-        const cause = try std.fmt.allocPrint(a, "users.{s}", .{name});
-        // each change is one step `apply` can take: a new user is created,
-        // then gets its shell and groups like any other.
-        const found = lists.find(f.users, "name", name);
-        if (found == null) try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = "new user", .cause = cause });
-        if (e.value.shell) |sh| {
-            const current = if (found) |u| u.shell orelse "" else "";
-            const same = std.mem.eql(u8, current, sh.v) or
-                (std.mem.indexOfScalar(u8, sh.v, '/') == null and std.mem.eql(u8, std.fs.path.basename(current), sh.v));
-            if (!same) try changes.append(a, .{
-                .op = .change,
-                .kind = .user,
-                .subject = name,
-                .from = if (found != null) try std.fmt.allocPrint(a, "shell {s}", .{std.fs.path.basename(current)}) else null,
-                .to = try std.fmt.allocPrint(a, "shell {s}", .{sh.v}),
-                .cause = cause,
-            });
-        }
-        const have_groups: []const []const u8 = if (found) |u| u.groups else &.{};
-        for (want_groups) |g| {
-            if (!lists.contains(have_groups, g.name)) try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = try std.fmt.allocPrint(a, "join {s}", .{g.name}), .cause = cause });
-        }
-        if (e.value.groups.items.items.len == 0) continue;
-        for (have_groups) |g| {
-            if (!e.value.groups.contains(g)) try changes.append(a, .{ .op = .remove, .kind = .user, .subject = name, .from = try std.fmt.allocPrint(a, "leave {s}", .{g}), .cause = cause });
-        }
-    }
 }
 
 // -- output --
