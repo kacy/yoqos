@@ -152,6 +152,30 @@ const Questions = struct {
     }
 };
 
+fn registerDbs(a: Allocator, h: Handle, dbs: []const api.SyncDb, diags: *diag.List) Error!bool {
+    for (dbs) |db| {
+        if (c.alpm_register_syncdb(h.h, (try a.dupeZ(u8, db.name)).ptr, 0) == null) {
+            try diags.add(.alpm_failed, null, "can't load the {s} database: {s}", .{ db.name, h.lastError() }, null);
+            return false;
+        }
+    }
+    return true;
+}
+
+pub fn unsatisfied(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Error!?[]const []const u8 {
+    const scratch = try Scratch.make(a, io, in, diags) orelse return null;
+    const h = try Handle.open(a, scratch.root, scratch.dbpath, diags) orelse return null;
+    defer h.close();
+    if (!try registerDbs(a, h, in.dbs, diags)) return null;
+    // with no question callback, a name several packages provide counts
+    // as satisfied without asking which.
+    var out: std.ArrayList([]const u8) = .empty;
+    for (in.wants) |w| {
+        if (c.alpm_find_dbs_satisfier(h.h, c.alpm_get_syncdbs(h.h), (try a.dupeZ(u8, w)).ptr) == null) try out.append(a, w);
+    }
+    return out.items;
+}
+
 pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Error!Resolved {
     const scratch = try Scratch.make(a, io, in, diags) orelse return .failed;
     const h = try Handle.open(a, scratch.root, scratch.dbpath, diags) orelse return .failed;
@@ -159,12 +183,7 @@ pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Er
     // set on each pass below, before libalpm asks anything.
     var questions: Questions = undefined;
     _ = c.alpm_option_set_questioncb(h.h, Questions.answer, &questions);
-    for (in.dbs) |db| {
-        if (c.alpm_register_syncdb(h.h, (try a.dupeZ(u8, db.name)).ptr, 0) == null) {
-            try diags.add(.alpm_failed, null, "can't load the {s} database: {s}", .{ db.name, h.lastError() }, null);
-            return .failed;
-        }
-    }
+    if (!try registerDbs(a, h, in.dbs, diags)) return .failed;
 
     // a dependency that names a real package gets that package, even when
     // something already in the set provides the name: curl needs

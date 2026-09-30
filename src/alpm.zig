@@ -70,6 +70,13 @@ pub fn resolve(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Er
     return if (comptime available) impl.resolve(a, io, in, diags) else error.AlpmUnavailable;
 }
 
+/// the names in `in.wants` that no package in the sync databases is
+/// called or provides. null, with the reason in `diags`, if the databases
+/// can't be read.
+pub fn unsatisfied(a: Allocator, io: std.Io, in: ResolveInput, diags: *diag.List) Error!?[]const []const u8 {
+    return if (comptime available) impl.unsatisfied(a, io, in, diags) else error.AlpmUnavailable;
+}
+
 /// the parts of libalpm's download sandbox to turn off.
 pub const Sandbox = struct {
     no_filesystem: bool = false,
@@ -259,6 +266,22 @@ test "missing packages, missing dependencies, and conflicts" {
     try t3.init();
     try testing.expect(try t3.resolve(&.{ "vim", "neovim" }, &.{}) == .failed);
     try t3.expectDiag(.unresolvable, "vim and neovim conflict");
+}
+
+test "names no sync database has, by package name or what packages provide" {
+    if (!available) return error.SkipZigTest;
+    var t: Fixture = .{};
+    defer t.deinit();
+    try t.init();
+    const got = (try unsatisfied(t.arena.allocator(), testing.io, .{
+        .dbs = &fixture_dbs,
+        .wants = &.{ "git", "sh", "java-runtime", "yay", "nope" },
+        .sync_date = "2026-09-25",
+        .scratch = t.scratch,
+    }, &t.diags)).?;
+    try testing.expectEqual(2, got.len);
+    try testing.expectEqualStrings("yay", got[0]);
+    try testing.expectEqualStrings("nope", got[1]);
 }
 
 test "copied sync databases look old to pacman -Sy, with no stale signature" {

@@ -10,6 +10,7 @@ const exec = @import("exec.zig");
 const lists = @import("lists.zig");
 const rootfs = @import("rootfs.zig");
 const lock = @import("lock.zig");
+const sync = @import("sync.zig");
 const Allocator = std.mem.Allocator;
 
 /// the local repository's name, as pacman and the lock see it.
@@ -31,8 +32,12 @@ pub const SrcInfo = struct {
     pkgrel: []const u8 = "",
     /// the packages it builds: one, or several for a split package.
     pkgnames: []const []const u8 = &.{},
-    /// what it needs to build and run, by name, without version bounds.
+    /// what it needs to build, and what the package named after the recipe
+    /// needs to run, by name, without version bounds.
     needs: []const []const u8 = &.{},
+    /// the names the package named after the recipe provides, besides its
+    /// own.
+    provides: []const []const u8 = &.{},
     /// the recipe commit this came from, once fetched.
     commit: []const u8 = "",
 };
@@ -41,6 +46,11 @@ pub fn parseSrcInfo(a: Allocator, text: []const u8) !?SrcInfo {
     var out: SrcInfo = .{ .pkgbase = "" };
     var names: std.ArrayList([]const u8) = .empty;
     var needs: std.ArrayList([]const u8) = .empty;
+    var provides: std.ArrayList([]const u8) = .empty;
+    // "" in the pkgbase part, then the package whose part it is. a split
+    // package's other parts say what those packages need, which os doesn't
+    // install.
+    var part: []const u8 = "";
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
@@ -50,18 +60,63 @@ pub fn parseSrcInfo(a: Allocator, text: []const u8) !?SrcInfo {
         if (std.mem.eql(u8, key, "pkgbase")) out.pkgbase = value;
         if (std.mem.eql(u8, key, "pkgver")) out.pkgver = value;
         if (std.mem.eql(u8, key, "pkgrel")) out.pkgrel = value;
-        if (std.mem.eql(u8, key, "pkgname")) try names.append(a, value);
-        // depends_x86_64 and the like count too.
-        for ([_][]const u8{ "depends", "makedepends", "checkdepends" }) |k| {
-            if (!std.mem.startsWith(u8, key, k)) continue;
-            const name = value[0 .. std.mem.indexOfAny(u8, value, "<>=:") orelse value.len];
-            if (!lists.contains(needs.items, name)) try needs.append(a, name);
+        if (std.mem.eql(u8, key, "pkgname")) {
+            try names.append(a, value);
+            part = value;
         }
+        const ours = part.len == 0 or std.mem.eql(u8, part, out.pkgbase);
+        const name = value[0 .. std.mem.indexOfAny(u8, value, "<>=:") orelse value.len];
+        // depends_x86_64 and the like count too.
+        const kinds: []const []const u8 = if (part.len == 0) &.{ "depends", "makedepends", "checkdepends" } else &.{"depends"};
+        for (kinds) |k| {
+            if (ours and std.mem.startsWith(u8, key, k) and !lists.contains(needs.items, name)) try needs.append(a, name);
+        }
+        if (ours and std.mem.startsWith(u8, key, "provides") and !lists.contains(provides.items, name)) try provides.append(a, name);
     }
     if (out.pkgbase.len == 0) return null;
     out.pkgnames = names.items;
     out.needs = needs.items;
+    out.provides = provides.items;
     return out;
+}
+
+/// what's wrong with building the recipe fetched for `name`, or null if
+/// nothing is. the build's paths come from pkgbase, so it has to be the
+/// recipe that was fetched and reviewed, and os installs only the package
+/// named after the recipe, so it has to build one.
+pub fn nameProblem(a: Allocator, name: []const u8, info: SrcInfo) !?[]const u8 {
+    if (!std.mem.eql(u8, info.pkgbase, name)) {
+        return try std.fmt.allocPrint(a, "{s}'s recipe says its pkgbase is {s}. os builds a recipe only under its own name.", .{ name, info.pkgbase });
+    }
+    if (!lists.contains(info.pkgnames, name)) {
+        return try std.fmt.allocPrint(a, "{s}'s recipe is a split package that builds {s}, but none of them is {s}. os installs only the package named after its recipe, so it can't use this one.", .{ name, try std.mem.join(a, ", ", info.pkgnames), name });
+    }
+    return null;
+}
+
+/// what an aur recipe needs that no sync database and no other recipe has.
+pub const Missing = struct {
+    need: []const u8,
+    /// the recipe that needs it.
+    by: []const u8,
+    /// the recipe among them that splits it off, which os doesn't install.
+    split_from: ?[]const u8 = null,
+};
+
+/// the needs of `recipes` that are in `unresolvable`, the names no sync
+/// database has, and that no recipe among them installs either.
+pub fn missingNeeds(a: Allocator, recipes: []const SrcInfo, unresolvable: []const []const u8) ![]const Missing {
+    var out: std.ArrayList(Missing) = .empty;
+    for (recipes) |r| {
+        for (r.needs) |n| {
+            if (!lists.contains(unresolvable, n) or providerOf(recipes, n) != null) continue;
+            const split_from = for (recipes) |q| {
+                if (lists.contains(q.pkgnames, n)) break q.pkgbase;
+            } else null;
+            try out.append(a, .{ .need = n, .by = r.pkgbase, .split_from = split_from });
+        }
+    }
+    return out.items;
 }
 
 /// `recipes` ordered so each comes after the ones among them it needs.
@@ -94,12 +149,46 @@ pub fn buildOrder(a: Allocator, recipes: []const SrcInfo, why: *[]const u8) !?[]
     return out.items;
 }
 
-/// the recipe among `recipes` that builds `name`, by its pkgbase.
+/// the aur packages among `recipes` that `r` needs, for installing into
+/// the chroot before it builds.
+pub fn aurNeeds(a: Allocator, recipes: []const SrcInfo, r: SrcInfo) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    for (r.needs) |n| {
+        const from = providerOf(recipes, n) orelse continue;
+        if (!std.mem.eql(u8, from, r.pkgbase) and !lists.contains(out.items, from)) try out.append(a, from);
+    }
+    return out.items;
+}
+
+/// the recipe among `recipes` whose package is `name` or provides it. a
+/// recipe's package is the one named after it, its pkgbase: the other
+/// packages a split recipe builds aren't installed.
 fn providerOf(recipes: []const SrcInfo, name: []const u8) ?[]const u8 {
     for (recipes) |r| {
-        if (lists.contains(r.pkgnames, name)) return r.pkgbase;
+        if (std.mem.eql(u8, r.pkgbase, name) or lists.contains(r.provides, name)) return r.pkgbase;
     }
     return null;
+}
+
+/// the pacman.conf builds use inside the chroot: `repos`, the ones the
+/// lock resolves against, with their servers written out. arch-nspawn
+/// rewrites the chroot's mirrorlist from the host's on every run, so
+/// servers in the mirrorlist would build against today's packages even
+/// for a lock from an earlier day. repositories on this machine's disk are
+/// left out: the chroot can't see them, and aur packages a build needs go
+/// in with `-I`.
+pub fn chrootPacmanConf(a: Allocator, repos: []const sync.Repo) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    // LocalFileSigLevel is for the aur packages -I installs, which os built
+    // and didn't sign.
+    try out.appendSlice(a, "[options]\nArchitecture = auto\nSigLevel = Required DatabaseOptional\nLocalFileSigLevel = Optional\n");
+    for (repos) |r| {
+        if (r.local or sync.servedFromDisk(r)) continue;
+        try out.print(a, "\n[{s}]\n", .{r.name});
+        if (!r.signed) try out.appendSlice(a, "SigLevel = Optional TrustAll\n");
+        for (sync.serversOf(r)) |server| try out.print(a, "Server = {s}\n", .{server});
+    }
+    return out.items;
 }
 
 /// the directories os keeps aur work in, under a machine's root.
@@ -143,6 +232,8 @@ pub const Builder = struct {
     dirs: Dirs,
     /// the aur's address, or a stand-in, like a local directory in tests.
     url: []const u8 = default_url,
+    /// the chroot's pacman.conf, from `chrootPacmanConf`.
+    pacman_conf: []const u8,
 
     fn recipeDir(b: Builder, name: []const u8) ![]const u8 {
         return std.fs.path.join(b.a, &.{ b.dirs.src, name });
@@ -201,24 +292,29 @@ pub const Builder = struct {
     }
 
     /// builds the recipe `info` names, at its commit, in the chroot, with
-    /// the aur packages it needs from the local repository installed there
+    /// `needs`, aur packages from the local repository, installed there
     /// first, and adds what it builds to the local repository. a commit
     /// built before isn't built again.
-    pub fn build(b: Builder, info: SrcInfo) !?[]const u8 {
+    pub fn build(b: Builder, info: SrcInfo, needs: []const []const u8) !?[]const u8 {
         const name = info.pkgbase;
         const commit = info.commit;
-        const with = try b.packageFiles(info.needs);
+        const with = try b.packageFiles(needs);
         const marker = try std.fmt.allocPrint(b.a, "{s}/.built/{s}-{s}", .{ b.dirs.repo, name, commit });
         if (rootfs.pathExists(b.io, marker)) return null;
         const dir = try b.recipeDir(name);
         if (try b.git(&.{ "-C", dir, "checkout", "-q", "--detach", commit })) |w| return w;
         if (try b.git(&.{ "-C", dir, "clean", "-q", "-fdx" })) |w| return w;
-        // one chroot for every build, with base-devel, made once.
+        // one chroot for every build, with base-devel, made once. its
+        // pacman.conf is written again for each build, since the lock's
+        // date moves, and -u below brings its packages to that date.
         const chroot_root = try std.fs.path.join(b.a, &.{ b.dirs.chroot, "root" });
+        const conf = try std.fs.path.join(b.a, &.{ b.dirs.chroot, "pacman.conf" });
+        if (try b.createDir(b.dirs.chroot)) |w| return w;
+        if (try b.write(conf, b.pacman_conf)) |w| return w;
         if (!rootfs.pathExists(b.io, chroot_root)) {
-            if (try b.createDir(b.dirs.chroot)) |w| return w;
-            if (try b.run(&.{ "mkarchroot", chroot_root, "base-devel" })) |w| return w;
+            if (try b.run(&.{ "mkarchroot", "-C", conf, chroot_root, "base-devel" })) |w| return w;
         }
+        if (try b.write(try std.fs.path.join(b.a, &.{ chroot_root, "etc/pacman.conf" }), b.pacman_conf)) |w| return w;
         // makechrootpkg won't build as root; it builds as this user.
         if (try b.run(&.{ "id", "-u", build_user }) != null) {
             if (try b.run(&.{ "useradd", "--system", "--no-create-home", "--shell", "/usr/bin/nologin", build_user })) |w| return w;
@@ -236,18 +332,17 @@ pub const Builder = struct {
         for (with) |pkg| try argv.appendSlice(b.a, &.{ "-I", pkg });
         const log = try std.fmt.allocPrint(b.a, "{s}/{s}.log", .{ b.dirs.src, name });
         if (try exec.runLogged(b.a, b.io, argv.items, log)) |w| return w;
-        // what it built lands beside the recipe; into the repository with it.
+        // what it built lands beside the recipe. only the package named
+        // after it goes into the repository: not a split recipe's others,
+        // nor a -debug package, which the config didn't ask for.
         if (try b.createDir(try std.fs.path.join(b.a, &.{ b.dirs.repo, ".built" }))) |w| return w;
-        const built = try b.packagesIn(work);
-        if (built.len == 0) return try std.fmt.allocPrint(b.a, "building {s} made no package", .{name});
+        const file = ownPackage(try b.packagesIn(work), name) orelse
+            return try std.fmt.allocPrint(b.a, "building {s} made no package called {s}", .{ name, name });
         const db = try std.fmt.allocPrint(b.a, "{s}/{s}.db.tar.gz", .{ b.dirs.repo, repo_name });
-        for (built) |file| {
-            const dest = try std.fs.path.join(b.a, &.{ b.dirs.repo, std.fs.path.basename(file) });
-            if (try b.run(&.{ "mv", "-f", file, dest })) |w| return w;
-            if (try b.run(&.{ "repo-add", "-q", "-R", db, dest })) |w| return w;
-        }
-        rootfs.writeAtomic(b.io, marker, commit, null) catch return try std.fmt.allocPrint(b.a, "can't write {s}", .{marker});
-        return null;
+        const dest = try std.fs.path.join(b.a, &.{ b.dirs.repo, std.fs.path.basename(file) });
+        if (try b.run(&.{ "mv", "-f", file, dest })) |w| return w;
+        if (try b.run(&.{ "repo-add", "-q", "-R", db, dest })) |w| return w;
+        return b.write(marker, commit);
     }
 
     /// the package files in the local repository that `names` are in, for
@@ -273,6 +368,11 @@ pub const Builder = struct {
         }
         lists.sortStrings(out.items);
         return out.items;
+    }
+
+    fn write(b: Builder, path: []const u8, text: []const u8) !?[]const u8 {
+        rootfs.writeAtomic(b.io, path, text, null) catch return try std.fmt.allocPrint(b.a, "can't write {s}", .{path});
+        return null;
     }
 
     /// makes `path` and its parents. null when it worked.
@@ -311,6 +411,14 @@ pub fn packageName(file: []const u8) ?[]const u8 {
     return stem;
 }
 
+/// the file among `files` that holds the package `name`.
+fn ownPackage(files: []const []const u8, name: []const u8) ?[]const u8 {
+    for (files) |f| {
+        if (std.mem.eql(u8, packageName(std.fs.path.basename(f)) orelse continue, name)) return f;
+    }
+    return null;
+}
+
 fn fail(why: *[]const u8, message: []const u8) ?[]const u8 {
     why.* = message;
     return null;
@@ -343,14 +451,84 @@ test "what a .SRCINFO builds and needs" {
     try testing.expectEqualStrings("go", info.needs[0]);
     try testing.expectEqualStrings("glibc", info.needs[3]);
     try testing.expectEqual(null, try parseSrcInfo(arena.allocator(), "no recipe here"));
+
+    // a split package: what the others need doesn't count.
+    const split = (try parseSrcInfo(arena.allocator(),
+        \\pkgbase = foo
+        \\    pkgver = 1
+        \\    makedepends = cmake
+        \\    depends = glibc
+        \\    provides = foo-api
+        \\
+        \\pkgname = foo
+        \\    depends = foo-common
+        \\    depends = libbar>=2
+        \\    provides = libfoo.so=1-64
+        \\
+        \\pkgname = foo-common
+        \\    depends = only-common
+        \\
+    )).?;
+    try testing.expectEqual(2, split.pkgnames.len);
+    const needs = [_][]const u8{ "cmake", "glibc", "foo-common", "libbar" };
+    try testing.expectEqual(needs.len, split.needs.len);
+    for (needs, split.needs) |want, got| try testing.expectEqualStrings(want, got);
+    try testing.expectEqual(2, split.provides.len);
+    try testing.expectEqualStrings("libfoo.so", split.provides[1]);
+}
+
+test "aur needs no repository or recipe has" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const app: SrcInfo = .{ .pkgbase = "app", .pkgnames = &.{"app"}, .needs = &.{ "lib", "libapi", "glibc", "helper", "lib-extra" } };
+    const lib: SrcInfo = .{ .pkgbase = "lib", .pkgnames = &.{ "lib", "lib-extra" }, .provides = &.{"libapi"} };
+    const recipes = [_]SrcInfo{ app, lib };
+    // glibc is in a sync database; the rest aren't. lib-extra is lib's
+    // recipe's, but os installs only lib from it.
+    const missing = try missingNeeds(a, &recipes, &.{ "lib", "libapi", "helper", "lib-extra" });
+    try testing.expectEqual(2, missing.len);
+    try testing.expectEqualStrings("helper", missing[0].need);
+    try testing.expectEqualStrings("app", missing[0].by);
+    try testing.expectEqual(null, missing[0].split_from);
+    try testing.expectEqualStrings("lib-extra", missing[1].need);
+    try testing.expectEqualStrings("lib", missing[1].split_from.?);
+    try testing.expectEqual(0, (try missingNeeds(a, &recipes, &.{})).len);
+
+    // what goes into the chroot before app builds: lib, by name and for
+    // what it provides, once.
+    const with = try aurNeeds(a, &recipes, app);
+    try testing.expectEqual(1, with.len);
+    try testing.expectEqualStrings("lib", with[0]);
+}
+
+test "a recipe builds only the package named after it" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqual(null, try nameProblem(a, "foo", .{ .pkgbase = "foo", .pkgnames = &.{ "foo", "foo-common" } }));
+    try testing.expectEqualStrings(
+        "foo's recipe says its pkgbase is bar. os builds a recipe only under its own name.",
+        (try nameProblem(a, "foo", .{ .pkgbase = "bar", .pkgnames = &.{"foo"} })).?,
+    );
+    try testing.expectEqualStrings(
+        "foo's recipe is a split package that builds foo-cli, foo-gui, but none of them is foo. os installs only the package named after its recipe, so it can't use this one.",
+        (try nameProblem(a, "foo", .{ .pkgbase = "foo", .pkgnames = &.{ "foo-cli", "foo-gui" } })).?,
+    );
+}
+
+test "the package named after a recipe, among what it built" {
+    const built = [_][]const u8{ "foo-common-1-1-any.pkg.tar.zst", "foo-debug-1-1-x86_64.pkg.tar.zst", "foo-1-1-x86_64.pkg.tar.zst" };
+    try testing.expectEqualStrings("foo-1-1-x86_64.pkg.tar.zst", ownPackage(&built, "foo").?);
+    try testing.expectEqual(null, ownPackage(built[0..2], "foo"));
 }
 
 test "aur packages build after the aur packages they need" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const app: SrcInfo = .{ .pkgbase = "app", .pkgnames = &.{"app"}, .needs = &.{ "lib-a", "glibc" } };
-    const lib: SrcInfo = .{ .pkgbase = "lib", .pkgnames = &.{ "lib-a", "lib-b" }, .needs = &.{"glibc"} };
+    const app: SrcInfo = .{ .pkgbase = "app", .pkgnames = &.{"app"}, .needs = &.{ "libapi", "glibc" } };
+    const lib: SrcInfo = .{ .pkgbase = "lib", .pkgnames = &.{ "lib", "lib-b" }, .needs = &.{"glibc"}, .provides = &.{"libapi"} };
     var why: []const u8 = "";
     const order = (try buildOrder(a, &.{ app, lib }, &why)).?;
     try testing.expectEqualStrings("lib", order[0].pkgbase);
@@ -360,6 +538,41 @@ test "aur packages build after the aur packages they need" {
     const y: SrcInfo = .{ .pkgbase = "y", .pkgnames = &.{"y"}, .needs = &.{"x"} };
     try testing.expectEqual(null, try buildOrder(a, &.{ x, y }, &why));
     try testing.expectEqualStrings("x, y", why);
+}
+
+test "the chroot builds from the lock's servers" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const repos = [_]sync.Repo{
+        .{ .name = "core", .servers = &.{"https://m.example/$repo/os/$arch"} },
+        .{ .name = "extra", .servers = &.{} },
+        .{ .name = "omarchy", .servers = &.{"https://pkgs.example/$arch"}, .signed = false },
+        .{ .name = "mine", .servers = &.{"file:///srv/mine"} },
+        .{ .name = repo_name, .servers = &.{"file:///var/cache/yoq/aur/repo"}, .signed = false, .local = true },
+    };
+    // a lock from an earlier day: arch's own repositories from the archive.
+    try testing.expectEqualStrings(
+        \\[options]
+        \\Architecture = auto
+        \\SigLevel = Required DatabaseOptional
+        \\LocalFileSigLevel = Optional
+        \\
+        \\[core]
+        \\Server = https://archive.archlinux.org/repos/2026/09/20/$repo/os/$arch
+        \\
+        \\[extra]
+        \\Server = https://archive.archlinux.org/repos/2026/09/20/$repo/os/$arch
+        \\
+        \\[omarchy]
+        \\SigLevel = Optional TrustAll
+        \\Server = https://pkgs.example/$arch
+        \\
+    , try chrootPacmanConf(a, try sync.archived(a, &repos, "2026-09-20")));
+    // today's: the machine's own servers, or arch's fallback.
+    const now = try chrootPacmanConf(a, &repos);
+    try testing.expect(std.mem.indexOf(u8, now, "[core]\nServer = https://m.example/$repo/os/$arch\n") != null);
+    try testing.expect(std.mem.indexOf(u8, now, "[extra]\nServer = https://geo.mirror.pkgbuild.com/$repo/os/$arch\n") != null);
 }
 
 test "a package file's name" {

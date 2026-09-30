@@ -26,13 +26,7 @@ const Allocator = std.mem.Allocator;
 /// `w.diags`, when it can't.
 pub fn resolveLock(ctx: *Context, w: *cli.Work, c: *const config.Config, top: []const u8, dbs: []const alpm.SyncDb, sync_date: []const u8, installed: []const facts.Package) !?lock.Lock {
     const a = w.allocator();
-    const scratch = try std.fmt.allocPrintSentinel(a, "/tmp/os-resolve-{d}", .{std.Io.Timestamp.now(ctx.io, .real).toNanoseconds()}, 0);
-    // made fresh and private: one someone else made first could hold
-    // symlinks that the writes into it would follow.
-    if (std.os.linux.errno(std.os.linux.mkdir(scratch, 0o700)) != .SUCCESS) {
-        try w.diags.add(.alpm_failed, null, "can't make a scratch directory for resolving at {s}", .{scratch}, null);
-        return null;
-    }
+    const scratch = try scratchDir(ctx, w) orelse return null;
     defer std.Io.Dir.cwd().deleteTree(ctx.io, scratch) catch {};
 
     var in = try resolveInput(a, c);
@@ -57,6 +51,29 @@ pub fn resolveLock(ctx: *Context, w: *cli.Work, c: *const config.Config, top: []
         if (!try saveProviders(ctx, w, top, picked)) return null;
         in.providers = try std.mem.concat(a, lock.Provider, &.{ in.providers, picked });
     }
+}
+
+/// the names among `names` that nothing in `dbs` is called or provides.
+/// null, with reasons in `w.diags`, if the databases can't be read.
+pub fn unsatisfied(ctx: *Context, w: *cli.Work, dbs: []const alpm.SyncDb, names: []const []const u8) !?[]const []const u8 {
+    const a = w.allocator();
+    const scratch = try scratchDir(ctx, w) orelse return null;
+    defer std.Io.Dir.cwd().deleteTree(ctx.io, scratch) catch {};
+    return alpm.unsatisfied(a, ctx.io, .{ .dbs = dbs, .wants = names, .sync_date = "", .scratch = scratch }, &w.diags);
+}
+
+/// a new directory for libalpm's scratch root, or null with the reason in
+/// `w.diags`.
+fn scratchDir(ctx: *Context, w: *cli.Work) !?[]const u8 {
+    const a = w.allocator();
+    const scratch = try std.fmt.allocPrintSentinel(a, "/tmp/os-resolve-{d}", .{std.Io.Timestamp.now(ctx.io, .real).toNanoseconds()}, 0);
+    // made fresh and private: one someone else made first could hold
+    // symlinks that the writes into it would follow.
+    if (std.os.linux.errno(std.os.linux.mkdir(scratch, 0o700)) != .SUCCESS) {
+        try w.diags.add(.alpm_failed, null, "can't make a scratch directory for resolving at {s}", .{scratch}, null);
+        return null;
+    }
+    return scratch;
 }
 
 /// what the config asks the resolver for: its wanted packages and provider
