@@ -92,20 +92,20 @@ pub fn writeText(w: *std.Io.Writer, ans: *const Answer) !void {
         try w.writeAll("  (the default)\n");
     }
     // the chain already names the package's parent, so list the others.
-    const parent: ?[]const u8 = if (ans.chain.len > 1) ans.chain[ans.chain.len - 2] else null;
+    // package names are never empty, so "" matches none.
+    const parent = if (ans.chain.len > 1) ans.chain[ans.chain.len - 2] else "";
     var others: usize = 0;
-    for (ans.needed_by) |n| others += @intFromBool(parent == null or !std.mem.eql(u8, n, parent.?));
-    if (others > 0) {
-        try w.print("also needed by {d} more: ", .{others});
-        var first = true;
-        for (ans.needed_by) |n| {
-            if (parent != null and std.mem.eql(u8, n, parent.?)) continue;
-            if (!first) try w.writeAll(", ");
-            first = false;
-            try w.writeAll(n);
-        }
-        try w.writeByte('\n');
+    for (ans.needed_by) |n| others += @intFromBool(!std.mem.eql(u8, n, parent));
+    if (others == 0) return;
+    try w.print("also needed by {d} more: ", .{others});
+    var first = true;
+    for (ans.needed_by) |n| {
+        if (std.mem.eql(u8, n, parent)) continue;
+        if (!first) try w.writeAll(", ");
+        first = false;
+        try w.writeAll(n);
     }
+    try w.writeByte('\n');
 }
 
 pub fn writeJson(w: *std.Io.Writer, ans: *const Answer) !void {

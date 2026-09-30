@@ -100,13 +100,9 @@ pub fn buildPlan(gpa: Allocator, io: std.Io, files: compose.Files, in: Inputs, d
     errdefer state.deinit();
     const a = state.arena.allocator();
     const f = try getFacts(files, io, a, in.facts_path, in.root, try planner.wanted(a, state.config()), diags);
-    if (diags.items.items.len > 0) {
-        state.deinit();
-        return null;
+    if (diags.items.items.len == 0) {
+        if (try planner.plan(a, state.config(), &state.lock, &f, diags)) |p| return .{ .state = state, .facts = f, .plan = p };
     }
-    const p = try planner.plan(a, state.config(), &state.lock, &f, diags) orelse {
-        state.deinit();
-        return null;
-    };
-    return .{ .state = state, .facts = f, .plan = p };
+    state.deinit();
+    return null;
 }
