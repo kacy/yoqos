@@ -584,6 +584,8 @@ pub const TestRun = struct {
     fs: compose.MemFiles = .{},
     /// typed answers to any questions, which makes the run interactive.
     input: ?[]const u8 = null,
+    /// or a reader of the test's own for them, which does the same.
+    in: ?*std.Io.Reader = null,
     /// answers downloads. by default every download fails, so no test
     /// touches the network by accident.
     fetcher: ?sync.Fetcher = null,
@@ -616,6 +618,10 @@ pub const TestRun = struct {
         if (t.input) |text| {
             t.reader = .fixed(text);
             t.ctx.in = &t.reader;
+            t.ctx.interactive = true;
+        }
+        if (t.in) |r| {
+            t.ctx.in = r;
             t.ctx.interactive = true;
         }
         t.code = try run(&t.ctx, args);

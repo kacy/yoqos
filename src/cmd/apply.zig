@@ -187,6 +187,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
 
     if (!ctx.json and !opts.render.quiet) try planner.writeText(ctx.out, a, p, opts.render);
     if (try cli.approve(ctx, yes, "apply", "apply this?")) |code| return .{ .code = code, .matches = false };
+    if (try movedSince(ctx, in, &(try p.hash()))) return .{ .code = 1, .matches = false };
 
     const on_generations = cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol);
     const needs_reboot = (try p.rebootReasons(a)).len > 0;
@@ -213,6 +214,23 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     if (w.diags.items.items.len > problems) code = try scriptsFailed(ctx, w.diags.items.items[problems..]);
     if (units and !ctx.json and changesPackages(p)) try offerRestarts(ctx, yes);
     return .{ .code = code, .matches = true, .changed_generation = on_generations, .needs_reboot = needs_reboot };
+}
+
+/// plans again once the plan was shown and said yes to, and refuses when
+/// it isn't the same plan any more: anything could have changed while it
+/// waited for the answer, and apply runs only what was shown.
+fn movedSince(ctx: *Context, in: pipeline.Inputs, shown: []const u8) !bool {
+    var w: cli.Work = .init(ctx);
+    defer w.deinit();
+    const result = try w.plan(in) orelse {
+        _ = try w.fail();
+        return true;
+    };
+    const now = try result.plan.hash();
+    if (cli.eql(shown, &now)) return false;
+    try w.diags.add(.plan_moved, null, "the plan changed since it was shown (shown {s}, now {s}), so nothing was applied", .{ shown[0..12], now[0..12] }, "run it again and look over the new plan");
+    _ = try w.fail();
+    return true;
 }
 
 /// adds the system accounts packages made to the history of system ids,
@@ -515,4 +533,38 @@ test "a hook that fails after the packages change fails the apply, with a warnin
     try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "os: the packages changed, but a hook or package script failed.") != null);
     // the packages did change.
     try std.Io.Dir.cwd().access(io, try std.fs.path.join(a, &.{ m.root, "usr/share/doc/git/README" }), .{});
+}
+
+test "apply refuses when the plan changes while it waits for a yes" {
+    if (!alpm.available) return error.SkipZigTest;
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n");
+    try t.fs.put("/etc/yoq/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n[packages.git]\nversion = \"2.51.0-1\"\nrepo = \"extra\"\nsha256 = \"" ++ "a" ** 64 ++ "\"\n");
+    try t.fs.put("f.json",
+        \\{"schema":"yoq.facts/1","packages":[{"name":"nano","version":"8.6-1"}]}
+    );
+    // says yes, but only after nano went away behind the plan's back.
+    const Answer = struct {
+        reader: std.Io.Reader = .{ .vtable = &.{ .stream = stream }, .buffer = &.{}, .seek = 0, .end = 0 },
+        fs: *@import("../compose.zig").MemFiles,
+        answered: bool = false,
+        buf: [16]u8 = undefined,
+
+        fn stream(r: *std.Io.Reader, w: *std.Io.Writer, _: std.Io.Limit) std.Io.Reader.StreamError!usize {
+            const self: *@This() = @fieldParentPtr("reader", r);
+            if (self.answered) return error.EndOfStream;
+            self.answered = true;
+            self.fs.put("f.json", "{\"schema\":\"yoq.facts/1\",\"packages\":[]}") catch return error.ReadFailed;
+            try w.writeAll("y\n");
+            return 2;
+        }
+    };
+    var answer: Answer = .{ .fs = &t.fs };
+    answer.reader.buffer = &answer.buf;
+    t.in = &answer.reader;
+    try t.exec(&.{ "--root", "/nonexistent", "--facts", "f.json", "apply" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "- nano 8.6-1") != null);
+    try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0129]: the plan changed since it was shown"));
 }

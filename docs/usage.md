@@ -203,13 +203,17 @@ apply this? [y/N] y
 applied 1 change.
 ```
 
-`apply` shows the plan, asks, and then makes the changes. services being
-turned off stop first, then one pacman transaction installs and removes
-packages, then the settings change, then new services are enabled and
-started. `apply` waits for each start and stop to finish, and a service
-that fails to start stops the apply with the unit's name. services change
-only when systemd runs the machine: not under `--root`, and not in a
-container.
+`apply` shows the plan, asks, and then makes the changes. once you say yes
+it plans again, and if the plan isn't the one it showed, because the
+config, the lock, or the machine changed in the meantime, it stops with
+E0129 and changes nothing. run it again and look over the new plan.
+
+services being turned off stop first, then one pacman transaction installs
+and removes packages, then the settings change, then new services are
+enabled and started. `apply` waits for each start and stop to finish, and a
+service that fails to start stops the apply with the unit's name. services
+change only when systemd runs the machine: not under `--root`, and not in
+a container.
 
 it installs exactly the versions in the lock, checks each package against
 the lock's checksum and arch's signatures, and marks packages as explicit or
@@ -987,7 +991,8 @@ error[E0213]: unknown service "sshd"
 `os explain E0213` prints the long explanation, and `os explain` lists every
 code. E0127 is a step of an apply that failed, like a file that couldn't be
 written or a tool that didn't work; the message has the details. E0128 is a
-saved plan that's out of date.
+saved plan that's out of date, and E0129 a plan that changed between being
+shown and the yes.
 
 ## scripting
 
