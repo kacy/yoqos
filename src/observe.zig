@@ -40,17 +40,19 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
     if (try r.file("etc/vconsole.conf")) |text| f.keymap = shellVar(text, "KEYMAP");
     if (try r.file("proc/cpuinfo")) |text| f.cpu = cpuVendor(text);
     f.gpus = try r.gpus();
-    if (try r.file("etc/passwd")) |passwd| {
-        f.users = try users(a, passwd, try r.file("etc/group") orelse "");
-    }
+    const passwd = try r.file("etc/passwd");
+    const group = try r.file("etc/group") orelse "";
+    if (passwd) |text| f.users = try users(a, text, group);
+    const history = try accounts.parseHistory(a, try r.file(accounts.history_path) orelse "");
+    f.id_changes = try accounts.changes(a, history, try accounts.systemIds(a, passwd orelse "", group));
     f.pacman_changes = try drift.since(a, io, opts.root);
-    if (std.mem.eql(u8, opts.root, "/")) f.staged_changes = try stagedChanges(a, io, f.boot.root_subvol, f.pacman_changes);
-    f.id_changes = try accounts.changes(a, try accounts.parseHistory(a, try r.file(accounts.history_path) orelse ""), try accounts.systemIds(a, try r.file("etc/passwd") orelse "", try r.file("etc/group") orelse ""));
     f.files = try files(a, io, opts.root, opts.wanted.files);
     f.pacman = try pacmanSetup(a, io, r, opts.wanted.keys);
     f.initramfs_modules = try r.mkinitcpio("MODULES");
     const dbpath = try pacmanDb(a, io, opts.root);
     f.boot = try r.boot(dbpath);
+    // after boot: it compares the note against the running root.
+    if (std.mem.eql(u8, opts.root, "/")) f.staged_changes = try stagedChanges(a, io, f.boot.root_subvol, f.pacman_changes);
     f.pacnew = try r.pacnew();
     if (opts.packages) {
         const pkgs = alpm.localPackages(a, opts.root, dbpath, diags) catch |e| switch (e) {
@@ -488,7 +490,6 @@ fn shellVar(text: []const u8, key: []const u8) ?[]const u8 {
     return null;
 }
 
-/// users from /etc/passwd with their groups from /etc/group.
 /// what changed on the running system since a staged generation waiting
 /// for the reboot was built: files in /etc, less the machine state carried
 /// into it anyway, and packages pacman touched. the note staging leaves
@@ -540,6 +541,7 @@ test "files in /etc a new root gets anyway" {
     try testing.expect(!carriedEtc("shadowsocks.json"));
 }
 
+/// users from /etc/passwd with their groups from /etc/group.
 pub fn users(a: Allocator, passwd: []const u8, group: []const u8) ![]facts.User {
     var out: std.ArrayList(facts.User) = .empty;
     var lines = std.mem.splitScalar(u8, passwd, '\n');
