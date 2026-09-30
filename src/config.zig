@@ -269,9 +269,9 @@ pub fn decode(a: Allocator, file: []const u8, root: *const toml.Table, diags: *d
 
     for (root.entries.items) |*e| {
         if (std.mem.eql(u8, e.key, "include")) {
-            try d.stringList(e, &part.include);
+            try d.stringList(e, "", &part.include);
         } else if (std.mem.eql(u8, e.key, "unset")) {
-            try d.stringList(e, &part.unset);
+            try d.stringList(e, "", &part.unset);
         } else if (std.mem.eql(u8, e.key, "remove")) {
             try d.value(Remove, &part.remove, e, "");
         } else if (!try d.field(Config, &part.config, e, "")) {
@@ -401,32 +401,22 @@ const Decoder = struct {
         return null;
     }
 
-    /// calls `f` for each string in a list, with its own position.
-    fn eachString(d: *Decoder, e: *const toml.Entry, prefix: []const u8, ctx: anytype, comptime f: anytype) !void {
+    /// appends each string in a list, with its own position.
+    fn stringList(d: *Decoder, e: *const toml.Entry, prefix: []const u8, out: *std.ArrayList(Str)) !void {
         if (e.value.data != .array) return d.wrongType(e, prefix, "a list of strings", e.value);
         for (e.value.data.array.items.items) |item| {
             if (item.data != .string) {
                 try d.diags.add(.wrong_type, d.src(item.span), "{s}{s} should only hold strings, not {s}", .{ prefix, e.key, item.typeName() }, null);
                 continue;
             }
-            try f(ctx, d.a, try d.a.dupe(u8, item.data.string), d.src(item.span));
+            try out.append(d.a, .{ .v = try d.a.dupe(u8, item.data.string), .src = d.src(item.span) });
         }
     }
 
     fn set(d: *Decoder, e: *const toml.Entry, prefix: []const u8, out: *Set) !void {
-        try d.eachString(e, prefix, out, struct {
-            fn f(s: *Set, a: Allocator, name: []const u8, at: Src) !void {
-                try s.add(a, .{ .name = name, .src = at });
-            }
-        }.f);
-    }
-
-    fn stringList(d: *Decoder, e: *const toml.Entry, out: *std.ArrayList(Str)) !void {
-        try d.eachString(e, "", out, struct {
-            fn f(l: *std.ArrayList(Str), a: Allocator, v: []const u8, at: Src) !void {
-                try l.append(a, .{ .v = v, .src = at });
-            }
-        }.f);
+        var list: std.ArrayList(Str) = .empty;
+        try d.stringList(e, prefix, &list);
+        for (list.items) |s| try out.add(d.a, .{ .name = s.v, .src = s.src });
     }
 };
 
@@ -441,32 +431,52 @@ fn quotedList(comptime E: type) []const u8 {
 /// checks a merged config for problems that need the whole picture, like a
 /// service no file explains.
 pub fn validate(c: *const Config, diags: *diag.List) !void {
+    try validatePackages(c, diags);
+    try validateServices(c, diags);
+    try validateSystem(c, diags);
+    try validateRepos(c, diags);
+    try validateModules(c, diags);
+    if (c.desktop.session_config) |sc| {
+        if (c.desktop.session == null) try diags.add(.bad_value, sc.src, "session_config needs a session", .{}, "set `session = \"hyprland\"` in [desktop] too");
+    }
+    try validateFiles(c, diags);
+    try validateSysctl(c, diags);
+    try validateUsers(c, diags);
+}
+
+fn validatePackages(c: *const Config, diags: *diag.List) !void {
     for ([_]*const Set{ &c.packages, &c.aur }) |set| {
         for (set.items.items) |it| {
             if (!validPackageName(it.name)) try badPackageName(diags, it.name, it.src);
         }
     }
+}
+
+fn validateServices(c: *const Config, diags: *diag.List) !void {
     for (c.services.entries.items) |e| {
         if (!knownService(c, e.name)) try unknownService(diags, e.name, e.value.src);
-        if (e.value.unit) |u| {
-            if (!validUnitName(u.v)) try diags.add(.bad_value, u.src, "\"{s}\" isn't a unit name", .{u.v}, "a unit name ends in its type, like tailscaled.service, and uses letters, digits, and :-_.@\\");
-        }
+        const u = e.value.unit orelse continue;
+        if (!validUnitName(u.v)) try diags.add(.bad_value, u.src, "\"{s}\" isn't a unit name", .{u.v}, "a unit name ends in its type, like tailscaled.service, and uses letters, digits, and :-_.@\\");
     }
+}
+
+fn validateSystem(c: *const Config, diags: *diag.List) !void {
     inline for (comptime keysOf(System)) |key| {
         if (@field(c.system, key)) |v| {
             if (systemProblem(key, v.v)) |hint| try diags.add(.bad_value, v.src, "\"{s}\" isn't a valid {s}", .{ v.v, key }, hint);
         }
     }
+}
+
+fn validateRepos(c: *const Config, diags: *diag.List) !void {
+    const arch_repos = [_][]const u8{ "options", "core", "extra", "multilib", "core-testing", "extra-testing", "multilib-testing" };
     for (c.repos.entries.items) |e| {
         const r = &e.value;
-        const name_ok = e.name.len > 0 and for (e.name) |ch| {
-            if (!std.ascii.isAlphanumeric(ch) and ch != '-' and ch != '_' and ch != '.') break false;
-        } else true;
-        if (!name_ok or lists.contains(&.{ "options", "core", "extra", "multilib", "core-testing", "extra-testing", "multilib-testing" }, e.name)) {
+        if (e.name.len == 0 or !onlyAlnumOr(e.name, "-_.") or lists.contains(&arch_repos, e.name)) {
             try diags.add(.bad_value, r.src, "\"{s}\" can't be a repository's name here", .{e.name}, "use letters, digits, dashes, dots, and underscores, and not one of arch's own repositories");
         }
         if (r.server) |sv| {
-            if (!std.mem.startsWith(u8, sv.v, "https://") and !std.mem.startsWith(u8, sv.v, "http://") and !std.mem.startsWith(u8, sv.v, "file://") or hasControl(sv.v) or std.mem.indexOfScalar(u8, sv.v, ' ') != null) {
+            if (!lists.startsWithAny(sv.v, &.{ "https://", "http://", "file://" }) or hasControl(sv.v) or std.mem.indexOfScalar(u8, sv.v, ' ') != null) {
                 try diags.add(.bad_value, sv.src, "\"{s}\" isn't a server url", .{sv.v}, "servers start with https://, http://, or file://, like pacman.conf's");
             } else if (std.mem.startsWith(u8, sv.v, "http://") and r.key == null) {
                 // unsigned packages over plain http: anyone on the way
@@ -475,21 +485,18 @@ pub fn validate(c: *const Config, diags: *diag.List) !void {
             }
         } else try diags.add(.bad_value, r.src, "repos.{s} needs a server", .{e.name}, "like `server = \"https://example.org/$repo/$arch\"`");
         if (r.key) |k| {
-            const hex = k.v.len == 40 and for (k.v) |ch| {
-                if (!std.ascii.isHex(ch)) break false;
-            } else true;
-            if (!hex) try diags.add(.bad_value, k.src, "\"{s}\" isn't a key fingerprint", .{k.v}, "use the full 40-character fingerprint, like pacman-key --list-keys shows");
+            if (!isFingerprint(k.v)) try diags.add(.bad_value, k.src, "\"{s}\" isn't a key fingerprint", .{k.v}, "use the full 40-character fingerprint, like pacman-key --list-keys shows");
         }
     }
+}
+
+fn validateModules(c: *const Config, diags: *diag.List) !void {
     for (c.boot.modules.items.items) |m| {
-        const ok = m.name.len > 0 and for (m.name) |ch| {
-            if (!std.ascii.isAlphanumeric(ch) and ch != '_' and ch != '-') break false;
-        } else true;
-        if (!ok) try diags.add(.bad_value, m.src, "\"{s}\" isn't a kernel module name", .{m.name}, "module names are letters, digits, dashes, and underscores, like i2c-dev");
+        if (m.name.len == 0 or !onlyAlnumOr(m.name, "_-")) try diags.add(.bad_value, m.src, "\"{s}\" isn't a kernel module name", .{m.name}, "module names are letters, digits, dashes, and underscores, like i2c-dev");
     }
-    if (c.desktop.session_config) |sc| {
-        if (c.desktop.session == null) try diags.add(.bad_value, sc.src, "session_config needs a session", .{}, "set `session = \"hyprland\"` in [desktop] too");
-    }
+}
+
+fn validateFiles(c: *const Config, diags: *diag.List) !void {
     // files os makes from other keys. a [files] entry for one of them
     // would fight it on every apply.
     const made = try planner.desiredFiles(diags.arena.allocator(), c, &.{});
@@ -508,12 +515,18 @@ pub fn validate(c: *const Config, diags: *diag.List) !void {
             if (!validMode(m.v)) try diags.add(.bad_value, m.src, "\"{s}\" isn't a file mode", .{m.v}, "write it in octal, like \"0644\" or \"0600\"");
         }
     }
+}
+
+fn validateSysctl(c: *const Config, diags: *diag.List) !void {
     for (c.sysctl.entries.items) |e| {
         if (e.name.len == 0 or std.mem.indexOfAny(u8, e.name, " =") != null or hasControl(e.name)) {
             try diags.add(.bad_value, e.value.src, "\"{s}\" isn't a sysctl key", .{e.name}, "keys look like \"vm.swappiness\"");
         }
         if (hasControl(e.value.v.text)) try diags.add(.bad_value, e.value.src, "sysctl.{s} has a line break or control character in it", .{e.name}, "a sysctl value is one line");
     }
+}
+
+fn validateUsers(c: *const Config, diags: *diag.List) !void {
     for (c.users.entries.items) |u| {
         if (!validUserName(u.name)) {
             try diags.add(.bad_value, u.value.src, "\"{s}\" isn't a valid user name", .{u.name}, name_rule);
@@ -548,14 +561,20 @@ pub fn unknownService(diags: *diag.List, name: []const u8, at: ?diag.Span) !void
 /// absolute path, outside os's own state.
 fn filePathProblem(p: []const u8) ?[]const u8 {
     if (p.len < 2 or p[0] != '/' or p[p.len - 1] == '/') return "files are keyed by their full path, like \"/etc/motd\"";
-    var parts = std.mem.splitScalar(u8, p[1..], '/');
-    while (parts.next()) |part| {
-        if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return "write the path without //, . or .. in it";
-    }
+    if (hasOddSegment(p[1..])) return "write the path without //, . or .. in it";
     for ([_][]const u8{ "/etc/yoq", "/var/lib/yoq" }) |own| {
         if (std.mem.startsWith(u8, p, own) and (p.len == own.len or p[own.len] == '/')) return "os keeps its own state there";
     }
     return null;
+}
+
+/// whether a /-separated path has an empty, "." or ".." part.
+fn hasOddSegment(p: []const u8) bool {
+    var parts = std.mem.splitScalar(u8, p, '/');
+    while (parts.next()) |part| {
+        if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return true;
+    }
+    return false;
 }
 
 /// three or four octal digits, like "644" or "0600".
@@ -567,23 +586,37 @@ fn validMode(m: []const u8) bool {
     return true;
 }
 
+/// a full pgp key fingerprint: 40 hex digits.
+fn isFingerprint(k: []const u8) bool {
+    if (k.len != 40) return false;
+    for (k) |ch| {
+        if (!std.ascii.isHex(ch)) return false;
+    }
+    return true;
+}
+
 /// a newline, tab, or other control character, which would start a new
 /// line or field in the files os writes from config values.
 fn hasControl(s: []const u8) bool {
     for (s) |ch| {
-        if (ch < 0x20 or ch == 0x7f) return true;
+        if (std.ascii.isControl(ch)) return true;
     }
     return false;
+}
+
+/// whether every byte of `s` is a letter, a digit, or one of `extra`.
+fn onlyAlnumOr(s: []const u8, extra: []const u8) bool {
+    for (s) |ch| {
+        if (!std.ascii.isAlphanumeric(ch) and std.mem.indexOfScalar(u8, extra, ch) == null) return false;
+    }
+    return true;
 }
 
 /// systemd's unit names: a name and a type suffix, from letters, digits,
 /// and :-_.@\, and never starting with a dash, which tools would take for
 /// an option.
 fn validUnitName(n: []const u8) bool {
-    if (n.len == 0 or n[0] == '-') return false;
-    for (n) |ch| {
-        if (!std.ascii.isAlphanumeric(ch) and std.mem.indexOfScalar(u8, ":-_.@\\", ch) == null) return false;
-    }
+    if (n.len == 0 or n[0] == '-' or !onlyAlnumOr(n, ":-_.@\\")) return false;
     const dot = std.mem.lastIndexOfScalar(u8, n, '.') orelse return false;
     return dot > 0 and lists.contains(&.{ "service", "socket", "timer", "path", "target", "mount", "automount", "swap", "slice", "scope", "device" }, n[dot + 1 ..]);
 }
@@ -591,10 +624,7 @@ fn validUnitName(n: []const u8) bool {
 /// pacman's rule: letters, digits, and @._+-, not starting with - or .
 pub fn validPackageName(n: []const u8) bool {
     if (n.len == 0 or n[0] == '-' or n[0] == '.') return false;
-    for (n) |ch| {
-        if (!std.ascii.isAlphanumeric(ch) and std.mem.indexOfScalar(u8, "@._+-", ch) == null) return false;
-    }
-    return true;
+    return onlyAlnumOr(n, "@._+-");
 }
 
 pub fn badPackageName(diags: *diag.List, name: []const u8, at: ?diag.Span) !void {
@@ -608,15 +638,8 @@ pub fn systemProblem(key: []const u8, v: []const u8) ?[]const u8 {
         return if (validHostname(v)) null else "use dot-separated labels of letters, digits, and dashes, up to 63 characters each";
     }
     if (v.len == 0) return "leave it out instead";
-    for (v) |ch| {
-        if (std.ascii.isControl(ch)) return "control characters like newlines can't be in it";
-    }
-    if (std.mem.eql(u8, key, "timezone")) {
-        var parts = std.mem.splitScalar(u8, v, '/');
-        while (parts.next()) |part| {
-            if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return "zone names look like America/New_York";
-        }
-    }
+    if (hasControl(v)) return "control characters like newlines can't be in it";
+    if (std.mem.eql(u8, key, "timezone") and hasOddSegment(v)) return "zone names look like America/New_York";
     return null;
 }
 
@@ -627,9 +650,7 @@ fn validHostname(h: []const u8) bool {
     var labels = std.mem.splitScalar(u8, h, '.');
     while (labels.next()) |l| {
         if (l.len == 0 or l.len > 63 or l[0] == '-' or l[l.len - 1] == '-') return false;
-        for (l) |ch| {
-            if (!std.ascii.isAlphanumeric(ch) and ch != '-') return false;
-        }
+        if (!onlyAlnumOr(l, "-")) return false;
     }
     return true;
 }
