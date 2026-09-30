@@ -70,9 +70,34 @@ const Loader = struct {
 
     fn loadFile(l: *Loader, path: []const u8, from: ?Src) error{OutOfMemory}!?Config {
         for (l.stack.items, 0..) |p, i| {
-            if (std.mem.eql(u8, p, path)) return l.cycle(i, path, from.?);
+            if (!std.mem.eql(u8, p, path)) continue;
+            try l.cycle(i, path, from.?);
+            return null;
         }
+        const part = try l.readPart(path, from) orelse return null;
 
+        try l.stack.append(l.a, path);
+        defer _ = l.stack.pop();
+
+        var merged: Config = .{};
+        const dir = std.fs.path.dirnamePosix(path) orelse ".";
+        for (part.include.items) |inc| {
+            const child = try std.fs.path.resolvePosix(l.a, &.{ dir, inc.v });
+            const c = try l.loadFile(child, inc.src) orelse continue;
+            try mergeInto(l.a, &merged, &c);
+            for (c.removed.items.items) |it| try merged.removed.add(l.a, it);
+        }
+        for (part.unset.items) |u| try l.unset(&merged, u);
+        for (part.remove.packages.items.items) |it| _ = merged.packages.remove(it.name);
+        for (part.remove.aur.items.items) |it| _ = merged.aur.remove(it.name);
+        try mergeInto(l.a, &merged, &part.config);
+        for (part.remove.packages.items.items) |it| try merged.removed.add(l.a, it);
+        return merged;
+    }
+
+    /// reads, parses, and decodes one file. null after saying why it
+    /// couldn't.
+    fn readPart(l: *Loader, path: []const u8, from: ?Src) error{OutOfMemory}!?config.Part {
         const bytes = l.files.read(l.gpa, path) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             else => {
@@ -97,25 +122,7 @@ const Loader = struct {
             },
         };
         defer doc.deinit();
-        const part = try config.decode(l.a, path, doc.root, l.diags);
-
-        try l.stack.append(l.a, path);
-        defer _ = l.stack.pop();
-
-        var merged: Config = .{};
-        const dir = std.fs.path.dirnamePosix(path) orelse ".";
-        for (part.include.items) |inc| {
-            const child = try std.fs.path.resolvePosix(l.a, &.{ dir, inc.v });
-            const c = try l.loadFile(child, inc.src) orelse continue;
-            try mergeInto(l.a, &merged, &c);
-            for (c.removed.items.items) |it| try merged.removed.add(l.a, it);
-        }
-        for (part.unset.items) |u| try l.unset(&merged, u);
-        for (part.remove.packages.items.items) |it| _ = merged.packages.remove(it.name);
-        for (part.remove.aur.items.items) |it| _ = merged.aur.remove(it.name);
-        try mergeInto(l.a, &merged, &part.config);
-        for (part.remove.packages.items.items) |it| try merged.removed.add(l.a, it);
-        return merged;
+        return try config.decode(l.a, path, doc.root, l.diags);
     }
 
     /// reads what each `[files]` entry and the desktop's `session_config`
@@ -144,33 +151,36 @@ const Loader = struct {
         };
     }
 
-    fn cycle(l: *Loader, start: usize, path: []const u8, from: Src) error{OutOfMemory}!?Config {
+    fn cycle(l: *Loader, start: usize, path: []const u8, from: Src) error{OutOfMemory}!void {
         var chain: std.Io.Writer.Allocating = .init(l.a);
         for (l.stack.items[start..]) |p| chain.writer.print("{s} -> ", .{p}) catch return error.OutOfMemory;
         chain.writer.writeAll(path) catch return error.OutOfMemory;
         try l.diags.add(.include_cycle, from, "include cycle: {s}", .{chain.written()}, null);
-        return null;
     }
 
     /// clears a key that an include set. the path names a key the way the
-    /// config file would, like "desktop.audio" or "users.guest". a quoted
-    /// part, like sysctl."vm.swappiness", keeps its dots.
+    /// config file would, like "desktop.audio" or "users.guest".
     fn unset(l: *Loader, c: *Config, u: config.Str) !void {
-        var segs: std.ArrayList([]const u8) = .empty;
-        var start: usize = 0;
-        var in_quotes = false;
-        for (u.v, 0..) |ch, i| {
-            if (ch == '"') in_quotes = !in_quotes;
-            if (ch != '.' or in_quotes) continue;
-            try segs.append(l.a, unquote(u.v[start..i]));
-            start = i + 1;
-        }
-        try segs.append(l.a, unquote(u.v[start..]));
-        if (!clear(Config, c, segs.items)) {
-            try l.diags.add(.bad_value, u.src, "\"{s}\" isn't a key that unset can clear", .{u.v}, "name a key like \"desktop.audio\" or \"users.guest\"");
-        }
+        if (clear(Config, c, try splitKeyPath(l.a, u.v))) return;
+        try l.diags.add(.bad_value, u.src, "\"{s}\" isn't a key that unset can clear", .{u.v}, "name a key like \"desktop.audio\" or \"users.guest\"");
     }
 };
+
+/// splits a dotted key path into its parts. a quoted part, like
+/// sysctl."vm.swappiness", keeps its dots and loses its quotes.
+fn splitKeyPath(a: Allocator, path: []const u8) ![]const []const u8 {
+    var segs: std.ArrayList([]const u8) = .empty;
+    var start: usize = 0;
+    var in_quotes = false;
+    for (path, 0..) |ch, i| {
+        if (ch == '"') in_quotes = !in_quotes;
+        if (ch != '.' or in_quotes) continue;
+        try segs.append(a, unquote(path[start..i]));
+        start = i + 1;
+    }
+    try segs.append(a, unquote(path[start..]));
+    return segs.items;
+}
 
 /// clears the key at `segs` below `target`, if it's set. returns false if
 /// the path doesn't name a key at all. `target` is null when the path runs
