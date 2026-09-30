@@ -57,12 +57,43 @@ pub const Change = struct {
     reboot: ?[]const u8 = null,
 };
 
+pub const Summary = struct {
+    add: usize,
+    change: usize,
+    remove: usize,
+
+    pub fn total(n: Summary) usize {
+        return n.add + n.change + n.remove;
+    }
+
+    pub fn of(n: Summary, op: Op) usize {
+        return switch (op) {
+            .add => n.add,
+            .change => n.change,
+            .remove => n.remove,
+        };
+    }
+};
+
 pub const Plan = struct {
     changes: []const Change,
 
-    pub fn count(p: *const Plan, op: Op) usize {
-        var n: usize = 0;
-        for (p.changes) |c| n += @intFromBool(c.op == op);
+    /// how many changes of each op the whole plan has.
+    pub fn summary(p: *const Plan) Summary {
+        return p.tally(std.enums.values(Kind));
+    }
+
+    /// like `summary`, counting only changes of `kinds`.
+    fn tally(p: *const Plan, kinds: []const Kind) Summary {
+        var n: Summary = .{ .add = 0, .change = 0, .remove = 0 };
+        for (p.changes) |c| {
+            if (std.mem.indexOfScalar(Kind, kinds, c.kind) == null) continue;
+            switch (c.op) {
+                .add => n.add += 1,
+                .change => n.change += 1,
+                .remove => n.remove += 1,
+            }
+        }
         return n;
     }
 
@@ -639,13 +670,9 @@ pub fn writeText(w: *std.Io.Writer, a: Allocator, p: *const Plan, opts: RenderOp
         try packageSummary(w, p);
     } else if (has(p, .package) or has(p, .dependency) or has(p, .reason)) {
         try w.writeAll("packages\n");
-        for (p.changes) |c| {
-            if (c.kind == .package) try line(w, c);
-        }
+        try lines(w, p, &.{.package});
         if (opts.verbose) {
-            for (p.changes) |c| {
-                if (c.kind == .dependency or c.kind == .reason) try line(w, c);
-            }
+            try lines(w, p, &.{ .dependency, .reason });
         } else {
             try depSummary(w, p);
         }
@@ -653,23 +680,17 @@ pub fn writeText(w: *std.Io.Writer, a: Allocator, p: *const Plan, opts: RenderOp
     inline for (.{ .{ "system", Kind.setting }, .{ "users", Kind.user }, .{ "services", Kind.unit }, .{ "files", Kind.file }, .{ "repositories", Kind.pacman_conf }, .{ "keys", Kind.key } }) |section| {
         if (has(p, section[1])) {
             try w.writeAll(section[0] ++ "\n");
-            for (p.changes) |c| {
-                if (c.kind == section[1]) try line(w, c);
-            }
+            try lines(w, p, &.{section[1]});
         }
     }
 
-    try w.print("\nplan: {d} to add, {d} to change, {d} to remove", .{ p.count(.add), p.count(.change), p.count(.remove) });
+    const n = p.summary();
+    try w.print("\nplan: {d} to add, {d} to change, {d} to remove", .{ n.add, n.change, n.remove });
     const reasons = try p.rebootReasons(a);
     if (reasons.len == 0) {
         try w.writeAll(" · no reboot\n");
     } else {
-        try w.writeAll(" · reboot needed: ");
-        for (reasons, 0..) |r, i| {
-            if (i > 0) try w.writeAll(", ");
-            try w.writeAll(r);
-        }
-        try w.writeByte('\n');
+        try w.print(" · reboot needed: {s}\n", .{try std.mem.join(a, ", ", reasons)});
     }
 }
 
@@ -686,6 +707,13 @@ fn mark(op: Op) u8 {
         .change => '~',
         .remove => '-',
     };
+}
+
+/// a line for each change of one of `kinds`, in plan order.
+fn lines(w: *std.Io.Writer, p: *const Plan, kinds: []const Kind) !void {
+    for (p.changes) |c| {
+        if (std.mem.indexOfScalar(Kind, kinds, c.kind) != null) try line(w, c);
+    }
 }
 
 fn line(w: *std.Io.Writer, c: Change) !void {
@@ -728,12 +756,9 @@ fn line(w: *std.Io.Writer, c: Change) !void {
 /// the update screen's packages: how many move, and the ones worth a look
 /// before saying yes.
 fn packageSummary(w: *std.Io.Writer, p: *const Plan) !void {
-    var n = [_]usize{ 0, 0, 0 };
-    for (p.changes) |c| {
-        if (c.kind == .package or c.kind == .dependency) n[@intFromEnum(c.op)] += 1;
-    }
-    if (n[0] + n[1] + n[2] == 0) return;
-    try w.print("packages\n  upgrades {d}    new {d}    removed {d}   (-v lists them)\n", .{ n[1], n[0], n[2] });
+    const n = p.tally(&.{ .package, .dependency });
+    if (n.total() == 0) return;
+    try w.print("packages\n  upgrades {d}    new {d}    removed {d}   (-v lists them)\n", .{ n.change, n.add, n.remove });
     var shown: usize = 0;
     for (p.changes) |c| {
         if ((c.kind != .package and c.kind != .dependency) or c.op != .change or !notable(c)) continue;
@@ -762,19 +787,18 @@ fn majorOf(version: []const u8) []const u8 {
     return v[0 .. std.mem.indexOfAny(u8, v, ".-+_") orelse v.len];
 }
 
+/// "+2, -1 dependencies": the counts that aren't zero.
 fn depSummary(w: *std.Io.Writer, p: *const Plan) !void {
-    var n = [_]usize{ 0, 0, 0 };
-    for (p.changes) |c| {
-        if (c.kind == .dependency or c.kind == .reason) n[@intFromEnum(c.op)] += 1;
-    }
-    if (n[0] + n[1] + n[2] == 0) return;
+    const n = p.tally(&.{ .dependency, .reason });
+    if (n.total() == 0) return;
     try w.writeAll("  ");
     var first = true;
-    for (n, 0..) |count, i| {
+    for (std.enums.values(Op)) |op| {
+        const count = n.of(op);
         if (count == 0) continue;
         if (!first) try w.writeAll(", ");
         first = false;
-        try w.print("{c}{d}", .{ mark(@enumFromInt(i)), count });
+        try w.print("{c}{d}", .{ mark(op), count });
     }
     try w.writeAll(" dependencies (-v to list)\n");
 }
@@ -782,7 +806,7 @@ fn depSummary(w: *std.Io.Writer, p: *const Plan) !void {
 /// a plan as json: what `os plan --json` prints, and `os plan -o` saves.
 pub const Doc = struct {
     hash: []const u8,
-    summary: struct { add: usize, change: usize, remove: usize },
+    summary: Summary,
     reboot: struct { needed: bool, because: []const []const u8 },
     changes: []const Change,
 };
@@ -792,7 +816,7 @@ pub fn writeJson(w: *std.Io.Writer, a: Allocator, p: *const Plan) !void {
     const reasons = try p.rebootReasons(a);
     const doc: Doc = .{
         .hash = &h,
-        .summary = .{ .add = p.count(.add), .change = p.count(.change), .remove = p.count(.remove) },
+        .summary = p.summary(),
         .reboot = .{ .needed = reasons.len > 0, .because = reasons },
         .changes = p.changes,
     };
