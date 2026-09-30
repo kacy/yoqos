@@ -10,6 +10,8 @@ const config = @import("config.zig");
 const planner = @import("planner.zig");
 const diag = @import("diag.zig");
 const edit = @import("edit.zig");
+const observe = @import("observe.zig");
+const why = @import("why.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Op = enum { add, remove, enable, disable };
@@ -31,6 +33,8 @@ pub const Note = struct {
         disabled,
         /// a provider picked for a virtual package; `detail` is the pick.
         chosen,
+        /// a file taken into `[files]`; `detail` is its source.
+        adopted,
         unchanged,
     };
 };
@@ -134,11 +138,35 @@ fn service(a: Allocator, c: *const config.Config, text: *[]const u8, name: []con
     return .{ .name = name, .what = what };
 }
 
+/// why `os adopt` can't take the file at `path` into the config, or null
+/// if it can. what's on disk is checked by the caller.
+pub fn adoptProblem(a: Allocator, c: *const config.Config, path: []const u8) !?[]const u8 {
+    if (config.filePathProblem(path)) |hint| return hint;
+    if (!std.mem.startsWith(u8, path, "/etc/")) return "os adopts files under /etc; the rest belong to packages";
+    // the config is meant to be safe to publish, and these are the
+    // machine's own, carried into every root anyway.
+    if (observe.carriedEtc(path["/etc/".len..])) return "it's machine state, like accounts, passwords, or host keys, and stays out of the config";
+    if ((try why.explainFile(a, c, path)).cause) |cause| return try std.fmt.allocPrint(a, "os writes it already, for {s}", .{cause.key});
+    return null;
+}
+
+/// where an adopted file's copy goes, relative to the config: files/ and
+/// then its path, like files/etc/ssh/sshd_config.
+pub fn adoptedSource(a: Allocator, path: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(a, "files{s}", .{path});
+}
+
+/// the mode to write for an adopted file: null for the default.
+pub fn adoptedMode(a: Allocator, bits: u32) !?[]const u8 {
+    const mode = try std.fmt.allocPrint(a, "{o:0>4}", .{bits & 0o7777});
+    return if (std.mem.eql(u8, mode, config.File.default_mode)) null else mode;
+}
+
 /// loads the whole config as if `path` held `text`. returns false, with
 /// the problems in `diags`, if the edit would leave the config broken or
 /// didn't take effect.
-pub fn check(gpa: Allocator, files: compose.Files, path: []const u8, text: []const u8, notes: []const Note, diags: *diag.List) !bool {
-    var overlay: Overlay = .{ .base = files, .path = path, .text = text };
+pub fn check(gpa: Allocator, files: compose.Files, path: []const u8, text: []const u8, extra: ?Extra, notes: []const Note, diags: *diag.List) !bool {
+    var overlay: Overlay = .{ .base = files, .path = path, .text = text, .extra = extra };
     var loaded = try compose.load(gpa, overlay.files(), path, diags);
     defer loaded.deinit();
     if (diags.items.items.len > 0) return false;
@@ -148,6 +176,7 @@ pub fn check(gpa: Allocator, files: compose.Files, path: []const u8, text: []con
             .added => listOf(c, n.aur).contains(n.name),
             .removed, .excluded => !listOf(c, n.aur).contains(n.name),
             .enabled, .disabled => if (c.services.get(n.name)) |s| s.enabled != null and s.enabled.?.v == (n.what == .enabled) else false,
+            .adopted => c.files.get(n.name) != null,
             .chosen => if (c.providers.get(n.name)) |p| std.mem.eql(u8, p.v, n.detail.?) else false,
             .unchanged => true,
         };
@@ -159,11 +188,16 @@ pub fn check(gpa: Allocator, files: compose.Files, path: []const u8, text: []con
     return true;
 }
 
-/// reads `path` from `text`, and everything else from `base`.
+/// a file a change writes beside the config, read as if it were there.
+pub const Extra = struct { path: []const u8, text: []const u8 };
+
+/// reads `path` from `text`, `extra` from its text, and everything else
+/// from `base`.
 const Overlay = struct {
     base: compose.Files,
     path: []const u8,
     text: []const u8,
+    extra: ?Extra = null,
 
     fn files(o: *Overlay) compose.Files {
         return .{ .ctx = o, .readFn = read, .writeFn = write };
@@ -172,6 +206,9 @@ const Overlay = struct {
     fn read(ctx: *anyopaque, gpa: Allocator, path: []const u8) compose.Files.ReadError![]u8 {
         const o: *Overlay = @ptrCast(@alignCast(ctx));
         if (std.mem.eql(u8, path, o.path)) return gpa.dupe(u8, o.text);
+        if (o.extra) |e| {
+            if (std.mem.eql(u8, path, e.path)) return gpa.dupe(u8, e.text);
+        }
         return o.base.read(gpa, path);
     }
 
@@ -179,3 +216,36 @@ const Overlay = struct {
         return error.WriteFailed;
     }
 };
+
+// -- tests --
+
+const testing = std.testing;
+
+test "which files os can adopt" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const c = try @import("test_helpers.zig").configFrom(a, "[files.\"/etc/motd\"]\ntext = \"hi\"\n[sysctl]\n\"vm.swappiness\" = 10\n");
+    try testing.expectEqual(null, try adoptProblem(a, &c, "/etc/ssh/sshd_config"));
+    try testing.expectEqual(null, try adoptProblem(a, &c, "/etc/pacman.conf"));
+    for ([_][]const u8{ "/etc/shadow", "/etc/gshadow-", "/etc/passwd", "/etc/ssh/ssh_host_ed25519_key", "/etc/machine-id", "/etc/pacman.d/gnupg/pubring.gpg" }) |p| {
+        try testing.expectStringStartsWith((try adoptProblem(a, &c, p)).?, "it's machine state");
+    }
+    try testing.expectEqualStrings("os writes it already, for files.\"/etc/motd\"", (try adoptProblem(a, &c, "/etc/motd")).?);
+    try testing.expectEqualStrings("os writes it already, for sysctl", (try adoptProblem(a, &c, "/etc/sysctl.d/99-yoq.conf")).?);
+    try testing.expectStringStartsWith((try adoptProblem(a, &c, "/usr/lib/os-release")).?, "os adopts files under /etc");
+    try testing.expectStringStartsWith((try adoptProblem(a, &c, "/etc")).?, "os adopts files under /etc");
+    try testing.expectEqualStrings("os keeps its own state there", (try adoptProblem(a, &c, "/etc/yoq/machine.toml")).?);
+    try testing.expect(try adoptProblem(a, &c, "/etc/../etc/hosts") != null);
+    try testing.expect(try adoptProblem(a, &c, "etc/hosts") != null);
+}
+
+test "an adopted file's source and mode" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqualStrings("files/etc/ssh/sshd_config", try adoptedSource(a, "/etc/ssh/sshd_config"));
+    try testing.expectEqual(null, try adoptedMode(a, 0o100644));
+    try testing.expectEqualStrings("0600", (try adoptedMode(a, 0o100600)).?);
+    try testing.expectEqualStrings("0755", (try adoptedMode(a, 0o755)).?);
+}

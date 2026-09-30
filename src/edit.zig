@@ -282,6 +282,14 @@ pub fn setProvider(a: Allocator, text: []const u8, name: []const u8, chosen: []c
     return setKey(a, text, &.{"providers"}, name, try quoted(a, chosen));
 }
 
+/// adds `[files."<path>"]` with its source, and its mode when there is one.
+pub fn addFile(a: Allocator, text: []const u8, path: []const u8, source: []const u8, mode: ?[]const u8) Error![]const u8 {
+    const table = [_][]const u8{ "files", path };
+    var out: []const u8 = (try setKey(a, text, &table, "source", try quoted(a, source))) orelse text;
+    if (mode) |m| out = (try setKey(a, out, &table, "mode", try quoted(a, m))) orelse out;
+    return out;
+}
+
 /// adds `[path]` with `key = value` at the end of the file.
 fn appendSection(a: Allocator, text: []const u8, path: []const []const u8, key: []const u8, value: []const u8) ![]u8 {
     const section = try std.fmt.allocPrint(a, "{s}[{s}]\n{s} = {s}\n", .{ if (text.len > 0) "\n" else "", try pathText(a, path), try keyText(a, key), value });
@@ -424,6 +432,40 @@ test "set keys in every kind of table" {
     // dotted keys
     try expectEdit(setProvider(a, "providers.initramfs = \"mkinitcpio\"\n[system]\n", "sh", "bash"), "providers.initramfs = \"mkinitcpio\"\nproviders.sh = \"bash\"\n[system]\n");
     try expectEdit(setKey(a, "[services]\nssh.enabled = true\n", &.{ "services", "ssh" }, "unit", "\"x.service\""), "[services]\nssh.enabled = true\nssh.unit = \"x.service\"\n");
+}
+
+test "add a file" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFile(addFile(a, "# laptop\npackages = [\"git\"]  # tools\n", "/etc/ssh/sshd_config", "files/etc/ssh/sshd_config", "0600"),
+        \\# laptop
+        \\packages = ["git"]  # tools
+        \\
+        \\[files."/etc/ssh/sshd_config"]
+        \\source = "files/etc/ssh/sshd_config"
+        \\mode = "0600"
+        \\
+    );
+    try expectFile(addFile(a, "[files.\"/etc/motd\"]\ntext = \"hi\"  # greeting\n\n[services]\nssh = true\n", "/etc/hosts", "files/etc/hosts", null),
+        \\[files."/etc/motd"]
+        \\text = "hi"  # greeting
+        \\
+        \\[services]
+        \\ssh = true
+        \\
+        \\[files."/etc/hosts"]
+        \\source = "files/etc/hosts"
+        \\
+    );
+}
+
+fn expectFile(got: Error![]const u8, want: []const u8) !void {
+    const out = try got;
+    try testing.expectEqualStrings(want, out);
+    var info: toml.ErrorInfo = .{};
+    var doc = try toml.parse(testing.allocator, out, &info);
+    doc.deinit();
 }
 
 test "odd names are quoted" {

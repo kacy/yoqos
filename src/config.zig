@@ -559,7 +559,7 @@ pub fn unknownService(diags: *diag.List, name: []const u8, at: ?diag.Span) !void
 
 /// why os can't write a file at `p`, or null if it can: it wants a plain
 /// absolute path, outside os's own state.
-fn filePathProblem(p: []const u8) ?[]const u8 {
+pub fn filePathProblem(p: []const u8) ?[]const u8 {
     if (p.len < 2 or p[0] != '/' or p[p.len - 1] == '/') return "files are keyed by their full path, like \"/etc/motd\"";
     if (hasOddSegment(p[1..])) return "write the path without //, . or .. in it";
     for ([_][]const u8{ "/etc/yoq", "/var/lib/yoq" }) |own| {
