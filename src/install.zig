@@ -87,12 +87,6 @@ pub fn plan(a: Allocator, f: Found) !Plan {
         .fix = "name a whole disk of 16 GiB or more that nothing has mounted, like /dev/nvme0n1. everything on it is erased.",
     });
     try checks.append(a, .{
-        .what = "lock",
-        .ok = f.update or std.mem.eql(u8, f.lock_date, f.today),
-        .found = try std.fmt.allocPrint(a, "from {s}", .{f.lock_date}),
-        .fix = "mirrors only serve today's packages. --update resolves the config against them first, and commits the new lock to the config.",
-    });
-    try checks.append(a, .{
         .what = "kernel and bootloader",
         .ok = f.has_kernel and f.has_grub,
         .found = if (f.has_kernel and f.has_grub) "in the lock" else if (f.has_kernel) "no grub in the lock" else "no kernel in the lock",
@@ -110,7 +104,8 @@ pub fn plan(a: Allocator, f: Found) !Plan {
     try summary.append(a, try std.fmt.allocPrint(a, "disk      an esp of {d} MiB at /boot, and btrfs for the rest:", .{esp_mib}));
     try summary.append(a, "          @roots/1, @var, @home, @root, @srv, @usrlocal");
     try summary.append(a, "boot      grub, with generation 1 as its first entry");
-    try summary.append(a, try std.fmt.allocPrint(a, "packages  {d} from the lock ({s})", .{ f.packages, if (f.update) f.today else f.lock_date }));
+    const from_archive = !f.update and !std.mem.eql(u8, f.lock_date, f.today);
+    try summary.append(a, try std.fmt.allocPrint(a, "packages  {d} from the lock ({s}){s}", .{ f.packages, if (f.update) f.today else f.lock_date, if (from_archive) ", from the arch linux archive" else "" }));
     if (f.users.len > 0) {
         const names = try std.mem.join(a, ", ", f.users);
         try summary.append(a, try std.fmt.allocPrint(a, "users     {s}", .{names}));
@@ -193,8 +188,11 @@ test "what stops an install" {
         .has_grub = true,
     };
     try testing.expect((try plan(a, f)).ready());
+    // a lock from an earlier day installs from the archive.
     f.update = false;
-    try testing.expect(!(try plan(a, f)).ready());
+    const old = try plan(a, f);
+    try testing.expect(old.ready());
+    try testing.expect(std.mem.endsWith(u8, old.summary[5], "from the arch linux archive"));
     f.update = true;
     f.mounted = true;
     const p = try plan(a, f);

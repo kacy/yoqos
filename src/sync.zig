@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const rootfs = @import("rootfs.zig");
+const lists = @import("lists.zig");
 const builtin = @import("builtin");
 const alpm = @import("alpm.zig");
 const diag = @import("diag.zig");
@@ -185,6 +186,26 @@ pub const HttpFetcher = struct {
     }
 };
 
+/// arch's own repositories, which the arch linux archive keeps a copy of
+/// for every day.
+const archived_repos = [_][]const u8{ "core", "extra", "multilib", "core-testing", "extra-testing", "multilib-testing" };
+
+/// `rs`, with arch's own repositories served from the arch linux archive
+/// as they were on `date`: the databases, and the packages at the versions
+/// in them. a lock from an earlier day builds from there, since mirrors
+/// keep only today's. other repositories keep their own servers: they
+/// have no history. so does a repository on this machine's own disk.
+pub fn archived(a: Allocator, rs: []const Repo, date: []const u8) ![]const Repo {
+    if (date.len != 10) return rs;
+    const out = try a.dupe(Repo, rs);
+    for (out) |*r| {
+        if (!lists.contains(&archived_repos, r.name) or local(r.*)) continue;
+        const server = try std.fmt.allocPrint(a, "https://archive.archlinux.org/repos/{s}/{s}/{s}/$repo/os/$arch", .{ date[0..4], date[5..7], date[8..10] });
+        r.servers = try a.dupe([]const u8, &.{server});
+    }
+    return out;
+}
+
 /// the databases for `date`, from the cache if they're there, else
 /// downloaded into it. returns null, with reasons in `diags`, if a
 /// repository can't be fetched from any of its servers.
@@ -214,6 +235,18 @@ pub fn databases(a: Allocator, io: std.Io, fetcher: Fetcher, rs: []const Repo, c
     return out;
 }
 
+test "arch's own repositories from the archive, as they were that day" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const rs = [_]Repo{ .{ .name = "core", .servers = &.{"https://m/$repo/os/$arch"} }, .{ .name = "chaotic-aur", .servers = &.{"https://c/$repo"} }, .{ .name = "extra", .servers = &.{"file:///srv/extra"} } };
+    const got = try archived(a, &rs, "2026-09-20");
+    try std.testing.expectEqualStrings("https://archive.archlinux.org/repos/2026/09/20/$repo/os/$arch", got[0].servers[0]);
+    try std.testing.expectEqualStrings("https://c/$repo", got[1].servers[0]);
+    try std.testing.expectEqualStrings("file:///srv/extra", got[2].servers[0]);
+    try std.testing.expectEqualStrings("https://m/$repo/os/$arch", rs[0].servers[0]);
+}
+
 /// `dbs` with each repository's servers from `rs` filled in, as the
 /// repository directories packages download from.
 pub fn withServers(a: Allocator, dbs: []const alpm.SyncDb, rs: []const Repo) ![]const alpm.SyncDb {
@@ -240,6 +273,14 @@ pub fn cached(a: Allocator, io: std.Io, rs: []const Repo, cache: []const u8, dat
         if (!rootfs.pathExists(io, db.path)) return null;
     }
     return out;
+}
+
+/// whether every server `r` has is a directory on this machine.
+fn local(r: Repo) bool {
+    for (r.servers) |sv| {
+        if (!std.mem.startsWith(u8, sv, "file://")) return false;
+    }
+    return r.servers.len > 0;
 }
 
 /// a local repository's database, where it is.

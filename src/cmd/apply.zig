@@ -358,14 +358,13 @@ fn verify(ctx: *Context, in: pipeline.Inputs, applied: usize, skipped: []const p
 fn targetFor(ctx: *Context, w: *cli.Work, c: *const config.Config, l: *const lock.Lock) !?apply.Target {
     const a = w.allocator();
     const pc = try locking.pacman(ctx, a, c);
-    const rs = pc.repos;
     const cache = try locking.cacheDir(ctx, a);
+    // mirrors keep only today's packages. a lock from an earlier day gets
+    // what the cache doesn't have from the arch linux archive.
+    const old = !cli.eql(l.sync_date, try locking.today(ctx.io, a));
+    const rs = if (old) try sync.archived(a, pc.repos, l.sync_date) else pc.repos;
     const dbs = try sync.cached(a, ctx.io, rs, cache, l.sync_date) orelse blk: {
-        // mirrors only serve today's databases.
-        if (!cli.eql(l.sync_date, try locking.today(ctx.io, a))) {
-            try w.diags.add(.lock_stale, null, "no package databases for {s} are cached here", .{l.sync_date}, "run `os update` to move the lock to today");
-            return null;
-        }
+        if (old and !ctx.json) try ctx.out.print("the lock is from {s}, so its packages come from the arch linux archive, which is slower than a mirror.\n", .{l.sync_date});
         break :blk try sync.databases(a, ctx.io, ctx.fetcher, rs, cache, l.sync_date, &w.diags) orelse return null;
     };
     return .{

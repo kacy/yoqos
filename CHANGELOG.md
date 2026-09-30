@@ -9,6 +9,10 @@
 - the install plan notes what a new machine usually needs and its config
   lacks: firmware on real hardware, a network, and a user who can use sudo.
 - the usage docs walk through installing from a thumb drive, step by step.
+- a lock from an earlier day builds, installs, and rolls back from the arch
+  linux archive, for packages the cache doesn't have: mirrors keep only
+  today's. `os update --date` resolves against the archive for that day,
+  and `os install` no longer needs `--update` for an older lock.
 - `os status` lists what changed on the running system after a staged
   generation was built, since those changes stay behind at the reboot.
 

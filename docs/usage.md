@@ -529,11 +529,13 @@ it stopped.
    `machine.toml`. for a private repository, git asks for your name and a
    token, as it would anywhere else.
 
-   `--update` resolves the config against today's packages first, since
-   mirrors only keep today's. you'll nearly always want it: a lock from
-   any earlier day can't be installed as it is. the new lock is committed
-   to the repository `os` fetched, and ends up in `/etc/yoq` on the new
-   machine, so you can push it back from there.
+   `--update` resolves the config against today's packages first, and
+   commits the new lock to the repository `os` fetched; it ends up in
+   `/etc/yoq` on the new machine, so you can push it back from there.
+   without it, `os` installs the lock as it is. mirrors only keep today's
+   packages, so for a lock from an earlier day they come from the arch
+   linux archive, which is slower, but gives you exactly what the lock
+   says.
 
 7. read what it's going to do, and say yes:
 

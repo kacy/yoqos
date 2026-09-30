@@ -17,4 +17,12 @@ check "cmp /etc/locale.conf /var/tmp/clean/etc/locale.conf && echo same" same
 check "findmnt -rn -o TARGET | grep -c /var/tmp/clean || true" 0
 check "/usr/local/bin/os build --clean /var/tmp/clean 2>&1 | grep -c 'can.t make /var/tmp/clean'" 1
 "$vm" ssh "rm -rf /var/tmp/clean"
+
+# a lock from an earlier day, resolved against the arch linux archive as it
+# was then, since mirrors only have today's packages.
+then=$(date -u -d '3 days ago' +%F)
+"$vm" ssh "/usr/local/bin/os update --no-apply --date $then" | tail -n 2
+check "grep -c '^sync_date = \"$then\"' /etc/yoq/machine.lock" 1
+check "test -e /var/cache/yoq/sync/$then/core.db && echo archived" archived
+"$vm" ssh "/usr/local/bin/os update --no-apply" | tail -n 1
 echo "build ok"

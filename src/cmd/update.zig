@@ -60,7 +60,7 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const dbs = if (dbs_dir) |dir|
         try syncDbs(ctx, a, dir) orelse return 1
     else
-        try sync.databases(a, ctx.io, ctx.fetcher, try locking.repos(ctx, a, &loaded.config), try locking.cacheDir(ctx, a), sync_date, &w.diags) orelse return w.fail();
+        try sync.databases(a, ctx.io, ctx.fetcher, try pastRepos(ctx, a, try locking.repos(ctx, a, &loaded.config), sync_date), try locking.cacheDir(ctx, a), sync_date, &w.diags) orelse return w.fail();
 
     var l = try locking.resolveLock(ctx, &w, &loaded.config, top, dbs, sync_date, &.{}) orelse return w.fail();
     try locking.pinRecipes(a, &l, recipes, old);
@@ -160,6 +160,13 @@ fn approve(ctx: *Context, a: Allocator, b: aur.Builder, name: []const u8, was: ?
     if (try cli.confirm(ctx, try std.fmt.allocPrint(a, "build {s}?", .{name}))) return true;
     try ctx.out.writeAll("the machine is as it was.\n");
     return false;
+}
+
+/// `rs`, or for a --date before today, arch's own repositories as the arch
+/// linux archive has them for that day: mirrors only have today's.
+fn pastRepos(ctx: *Context, a: Allocator, rs: []const sync.Repo, date: []const u8) ![]const sync.Repo {
+    if (eql(date, try locking.today(ctx.io, a))) return rs;
+    return sync.archived(a, rs, date);
 }
 
 /// yyyy-mm-dd, the way sync dates are written.
