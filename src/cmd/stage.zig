@@ -34,7 +34,10 @@ pub fn build(ctx: *Context, boot: facts.Boot, in: pipeline.Inputs) anyerror!?[]c
     if (!ctx.json) try ctx.out.print("building generation {d} beside the running system, which doesn't change.\n", .{n});
     btrfs.snapshot(try m.at(&.{boot.root_subvol.?}), try m.at(&.{root}), false) catch |e|
         return fail(ctx, try std.fmt.allocPrint(a, "can't snapshot the running root: {s}", .{@errorName(e)}));
-    const code = try buildIn(ctx, a, boot, root, in);
+    const code = buildIn(ctx, a, boot, root, in) catch |e| {
+        _ = m.drop(try m.at(&.{root})) catch {};
+        return e;
+    };
     if (code != 0) {
         _ = try m.drop(try m.at(&.{root}));
         return fail(ctx, try std.fmt.allocPrint(a, "generation {d} didn't build, and is gone again", .{n}));
