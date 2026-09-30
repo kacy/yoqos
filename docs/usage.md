@@ -145,7 +145,10 @@ next `os apply`. the hook records nothing for os's own transactions.
 when an upgrade leaves a new default beside a config file you changed, as
 `<file>.pacnew`, status lists it too. for files `os` writes itself, `os`
 keeps its version and the `.pacnew` is only there to read. status also
-lists services still running files an upgrade replaced, and on a machine
+lists services still running files an upgrade replaced, services the
+config turns on whose unit has no `[Install]` section (they start, but
+`enable` does nothing for them, so they won't come back at boot unless
+another unit pulls them in), and on a machine
 with generations, a `note:` line when `os` fell back from a generation
 that didn't come up healthy.
 
@@ -203,13 +206,17 @@ apply this? [y/N] y
 applied 1 change.
 ```
 
-`apply` shows the plan, asks, and then makes the changes. services being
-turned off stop first, then one pacman transaction installs and removes
-packages, then the settings change, then new services are enabled and
-started. `apply` waits for each start and stop to finish, and a service
-that fails to start stops the apply with the unit's name. services change
-only when systemd runs the machine: not under `--root`, and not in a
-container.
+`apply` shows the plan, asks, and then makes the changes. once you say yes
+it plans again, and if the plan isn't the one it showed, because the
+config, the lock, or the machine changed in the meantime, it stops with
+E0129 and changes nothing. run it again and look over the new plan.
+
+services being turned off stop first, then one pacman transaction installs
+and removes packages, then the settings change, then new services are
+enabled and started. `apply` waits for each start and stop to finish, and a
+service that fails to start stops the apply with the unit's name. services
+change only when systemd runs the machine: not under `--root`, and not in
+a container.
 
 it installs exactly the versions in the lock, checks each package against
 the lock's checksum and arch's signatures, and marks packages as explicit or
@@ -987,7 +994,8 @@ error[E0213]: unknown service "sshd"
 `os explain E0213` prints the long explanation, and `os explain` lists every
 code. E0127 is a step of an apply that failed, like a file that couldn't be
 written or a tool that didn't work; the message has the details. E0128 is a
-saved plan that's out of date.
+saved plan that's out of date, and E0129 a plan that changed between being
+shown and the yes.
 
 ## scripting
 
@@ -1024,6 +1032,9 @@ global flags work before or after the command, as `--config path` or
 | `--config <path>` | the config file, instead of `/etc/yoq/machine.toml` |
 | `--root <dir>` | the machine's files live under `dir`, like a mounted install |
 | `--facts <file>` | read the machine from a facts file instead of looking at it |
+
+everything after `--` is a name, not a flag, even when it starts with `-`:
+`os why -- -x`. global flags after `--` don't count either.
 
 ## trying it without an arch machine
 

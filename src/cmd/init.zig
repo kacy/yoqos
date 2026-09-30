@@ -131,12 +131,14 @@ fn initNew(ctx: *Context, args: []const [:0]const u8) !u8 {
     var ssh = false;
     var it: cli.ArgIter = .{ .args = args };
     while (it.next()) |arg| {
-        if (cli.eql(arg, "--hostname")) {
-            hostname = it.next() orelse return cli.usageError(ctx, usage_text);
+        if (!it.isFlag(arg)) {
+            return cli.usageError(ctx, usage_text);
+        } else if (cli.eql(arg, "--hostname")) {
+            hostname = it.value() orelse return cli.usageError(ctx, usage_text);
         } else if (cli.eql(arg, "--user")) {
-            user = it.next() orelse return cli.usageError(ctx, usage_text);
+            user = it.value() orelse return cli.usageError(ctx, usage_text);
         } else if (cli.eql(arg, "--timezone")) {
-            timezone = it.next() orelse return cli.usageError(ctx, usage_text);
+            timezone = it.value() orelse return cli.usageError(ctx, usage_text);
         } else if (cli.eql(arg, "--ssh")) {
             ssh = true;
         } else return cli.usageError(ctx, usage_text);

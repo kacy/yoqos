@@ -212,8 +212,7 @@ fn removeOne(a: Allocator, text: []const u8, path: []const []const u8, key: []co
     // before it when it's last.
     const j = skipBlanks(text, end, text.len);
     if (j < text.len and text[j] == ',') {
-        end = j + 1;
-        while (end < text.len and text[end] == ' ') end += 1;
+        end = skipBlanks(text, j + 1, text.len);
         return try splice(a, text, start, end - start, "");
     }
     const from = if (i > 0) items[i - 1].span.end else start;
@@ -387,6 +386,7 @@ test "remove from lists" {
     try expectEdit(removeFromList(a, "packages = [\n  \"git\",\n  \"nano\",  # editor\n  \"vim\",\n]\n", &.{}, "packages", "nano"), "packages = [\n  \"git\",\n  \"vim\",\n]\n");
     try expectEdit(removeFromList(a, "packages = [\"git\"]\n", &.{}, "packages", "nano"), null);
     try expectEdit(removeFromList(a, "packages = [\"base\",\"nano\",\"nano\"]\n", &.{}, "packages", "nano"), "packages = [\"base\"]\n");
+    try expectEdit(removeFromList(a, "packages = [\"nano\",\t\"git\"]\n", &.{}, "packages", "nano"), "packages = [\"git\"]\n");
 }
 
 test "enable and disable services" {

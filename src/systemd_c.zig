@@ -220,6 +220,7 @@ fn unitFiles(a: Allocator, bus: *c.sd_bus, found: *Found, diags: *diag.List) !bo
         const u = try entry(a, found, name);
         u.enabled = api.enabledState(std.mem.span(state));
         u.fixed = api.fixedState(std.mem.span(state));
+        u.static = std.mem.eql(u8, std.mem.span(state), "static");
     }
     return true;
 }

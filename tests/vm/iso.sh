@@ -22,6 +22,7 @@ printf '\n[files."/root/.ssh/authorized_keys"]\ntext = "%s\\n"\nmode = "0600"\n'
 "$vm" ssh "cd /root/machines && cat /root/iso-access.toml >> machine.toml && git add -A && git -c user.name=t -c user.email=t@localhost commit -q -m 'a way in for the test'"
 
 "$vm" ssh "os install /root/machines --disk /dev/vda --update --yes" | tail -n 20
+serial_console /dev/vda1
 
 "$vm" start-installed
 check "cat /etc/hostname" yoq-iso

@@ -57,6 +57,9 @@ pub const Status = struct {
         ids: []const []const u8 = &.{},
         /// changes to the running system a staged generation doesn't have.
         after_staging: []const []const u8 = &.{},
+        /// configured services whose units have no [install] section, so
+        /// turning them on starts them but can't enable them for boot.
+        static: []const []const u8 = &.{},
     },
     /// configured services whose units failed.
     failing: []const []const u8,
@@ -99,10 +102,12 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
     };
 
     var failing: std.ArrayList([]const u8) = .empty;
+    var static: std.ArrayList([]const u8) = .empty;
     var services: usize = 0;
     for (c.services.entries.items) |e| {
         const unit = e.value.unitFor(e.name);
         if (f.unit(unit)) |u| {
+            if (u.static and e.value.isEnabled()) try static.append(a, unit);
             if (u.failed) {
                 try failing.append(a, unit);
                 continue;
@@ -134,6 +139,7 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
             .menu = f.boot.menu_missing,
             .ids = f.id_changes,
             .after_staging = f.staged_changes,
+            .static = static.items,
         },
         .failing = failing.items,
     };
@@ -199,6 +205,7 @@ pub fn writeText(w: *std.Io.Writer, s: *const Status) !void {
     if (ch.menu) |m| try rows.list("boot menu without os's generations", &.{m}, "os gc writes them again");
     if (ch.ids.len > 0) try rows.list("system ids changed", ch.ids, "files they own may now belong to someone else; chown them");
     if (ch.after_staging.len > 0) try rows.list("changed since the next generation was built", ch.after_staging, "they stay behind at the reboot. make them in the config, or again afterwards");
+    if (ch.static.len > 0) try rows.list("services systemd can't enable", ch.static, "no [Install] section: they start, but not at boot unless another unit pulls them in");
     if (rows.first) try w.writeAll("changed   none\n");
 
     try w.writeAll("failing   ");
@@ -302,4 +309,29 @@ test "a package differing in version and reason counts once" {
     const s = try summarize(a, &c, &l, &f, &p);
     try testing.expectEqual(1, s.changed.versions.len);
     try testing.expectEqual(0, s.ok.packages);
+}
+
+test "a service with no [install] section gets a row" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const c = try @import("test_helpers.zig").configFrom(a, "[boot]\nkernel = \"none\"\n[services.pinger]\nunit = \"pinger.service\"\npackage = \"iputils\"\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{
+        .{ .name = "iputils", .version = "1", .repo = "core", .sha256 = "a" ** 64 },
+    } };
+    var have = [_]facts.Package{.{ .name = "iputils", .version = "1" }};
+    var units = [_]facts.Unit{.{ .name = "pinger.service", .fixed = true, .static = true, .active = true }};
+    const f: facts.Facts = .{ .packages = &have, .units = &units };
+    var diags: @import("diag.zig").List = .init(testing.allocator);
+    defer diags.deinit();
+    const p = (try planner.plan(a, &c, &l, &f, &diags)).?;
+    const s = try summarize(a, &c, &l, &f, &p);
+    try testing.expectEqual(1, s.changed.static.len);
+    try testing.expectEqualStrings("pinger.service", s.changed.static[0]);
+    var out: std.Io.Writer.Allocating = .init(a);
+    try writeText(&out.writer, &s);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "changed   services systemd can't enable: pinger.service  -> no [Install] section") != null);
+
+    units[0].static = false;
+    try testing.expectEqual(0, (try summarize(a, &c, &l, &f, &p)).changed.static.len);
 }

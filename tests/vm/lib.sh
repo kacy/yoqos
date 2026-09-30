@@ -15,6 +15,13 @@ check() {
     echo "ok: $1 -> $got"
 }
 
+# puts the serial port in the boot menu an install wrote on the esp at $1,
+# so a first boot that fails shows in the console log. os install only
+# passes on the live system's consoles, and a live iso may have none.
+serial_console() {
+    "$vm" ssh "mkdir -p /run/yoq-esp && mount $1 /run/yoq-esp && sed -i '/^[[:space:]]*linux /{/console=ttyS0/!s/\$/ console=ttyS0,115200/}' /run/yoq-esp/grub/grub.cfg && grep -c 'console=ttyS0' /run/yoq-esp/grub/grub.cfg; umount /run/yoq-esp"
+}
+
 # check, with the btrfs top level mounted at /run/yoq-top for the command.
 check_top() {
     check "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && { $1; }; umount /run/yoq-top" "$2"
