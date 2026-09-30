@@ -155,7 +155,7 @@ pub const Builder = struct {
         if (rootfs.pathExists(b.io, try std.fs.path.join(b.a, &.{ dir, ".git" }))) {
             if (try b.git(&.{ "-C", dir, "fetch", "-q", "origin" })) |w| return fail(why, w);
         } else {
-            b.createDir(b.dirs.src) orelse return fail(why, try std.fmt.allocPrint(b.a, "can't create {s}", .{b.dirs.src}));
+            if (try b.createDir(b.dirs.src)) |w| return fail(why, w);
             const url = try std.fmt.allocPrint(b.a, "{s}/{s}.git", .{ b.url, name });
             if (try b.git(&.{ "clone", "-q", url, dir })) |w| return fail(why, w);
         }
@@ -216,7 +216,7 @@ pub const Builder = struct {
         // one chroot for every build, with base-devel, made once.
         const chroot_root = try std.fs.path.join(b.a, &.{ b.dirs.chroot, "root" });
         if (!rootfs.pathExists(b.io, chroot_root)) {
-            b.createDir(b.dirs.chroot) orelse return try std.fmt.allocPrint(b.a, "can't create {s}", .{b.dirs.chroot});
+            if (try b.createDir(b.dirs.chroot)) |w| return w;
             if (try b.run(&.{ "mkarchroot", chroot_root, "base-devel" })) |w| return w;
         }
         // makechrootpkg won't build as root; it builds as this user.
@@ -227,7 +227,7 @@ pub const Builder = struct {
         // recipe of its own; the clone stays root's, as git wants.
         const work = try std.fs.path.join(b.a, &.{ b.dirs.build, name });
         if (try b.run(&.{ "rm", "-rf", work })) |w| return w;
-        b.createDir(b.dirs.build) orelse return try std.fmt.allocPrint(b.a, "can't create {s}", .{b.dirs.build});
+        if (try b.createDir(b.dirs.build)) |w| return w;
         if (try b.run(&.{ "cp", "-a", dir, work })) |w| return w;
         if (try b.run(&.{ "chown", "-R", build_user, work })) |w| return w;
         var argv: std.ArrayList([]const u8) = .empty;
@@ -237,7 +237,7 @@ pub const Builder = struct {
         const log = try std.fmt.allocPrint(b.a, "{s}/{s}.log", .{ b.dirs.src, name });
         if (try exec.runLogged(b.a, b.io, argv.items, log)) |w| return w;
         // what it built lands beside the recipe; into the repository with it.
-        b.createDir(try std.fs.path.join(b.a, &.{ b.dirs.repo, ".built" })) orelse return try std.fmt.allocPrint(b.a, "can't create {s}", .{b.dirs.repo});
+        if (try b.createDir(try std.fs.path.join(b.a, &.{ b.dirs.repo, ".built" }))) |w| return w;
         const built = try b.packagesIn(work);
         if (built.len == 0) return try std.fmt.allocPrint(b.a, "building {s} made no package", .{name});
         const db = try std.fmt.allocPrint(b.a, "{s}/{s}.db.tar.gz", .{ b.dirs.repo, repo_name });
@@ -275,19 +275,26 @@ pub const Builder = struct {
         return out.items;
     }
 
-    fn createDir(b: Builder, path: []const u8) ?void {
-        std.Io.Dir.cwd().createDirPath(b.io, path) catch return null;
+    /// makes `path` and its parents. null when it worked.
+    fn createDir(b: Builder, path: []const u8) !?[]const u8 {
+        std.Io.Dir.cwd().createDirPath(b.io, path) catch return try std.fmt.allocPrint(b.a, "can't create {s}", .{path});
+        return null;
     }
 
     fn git(b: Builder, args: []const []const u8) !?[]const u8 {
-        return b.run(try std.mem.concat(b.a, []const u8, &.{ &.{"git"}, args }));
+        return b.run(try b.gitArgv(args));
     }
 
+    /// what git printed, or null if it failed.
     fn gitOutput(b: Builder, args: []const []const u8) !?[]const u8 {
-        return switch (try exec.output(b.a, b.io, try std.mem.concat(b.a, []const u8, &.{ &.{"git"}, args }))) {
+        return switch (try exec.output(b.a, b.io, try b.gitArgv(args))) {
             .ok => |t| t,
             .failed => null,
         };
+    }
+
+    fn gitArgv(b: Builder, args: []const []const u8) ![]const []const u8 {
+        return std.mem.concat(b.a, []const u8, &.{ &.{"git"}, args });
     }
 
     fn run(b: Builder, argv: []const []const u8) !?[]const u8 {

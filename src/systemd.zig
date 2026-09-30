@@ -8,6 +8,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const facts = @import("facts.zig");
 const diag = @import("diag.zig");
+const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 
 pub const available = build_options.systemd;
@@ -66,10 +67,7 @@ pub fn enabledState(state: []const u8) bool {
 /// [Install] section, one a generator makes, an alias, or one another
 /// unit turns on.
 pub fn fixedState(state: []const u8) bool {
-    for ([_][]const u8{ "static", "generated", "alias", "indirect", "transient" }) |s| {
-        if (std.mem.eql(u8, state, s)) return true;
-    }
-    return false;
+    return lists.contains(&.{ "static", "generated", "alias", "indirect", "transient" }, state);
 }
 
 test "verbs from a plan" {

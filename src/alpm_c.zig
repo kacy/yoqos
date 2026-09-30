@@ -7,6 +7,7 @@ const lock = @import("lock.zig");
 const diag = @import("diag.zig");
 const api = @import("alpm.zig");
 const sync = @import("sync.zig");
+const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 const c = @cImport({
     // see systemd_c.zig: glibc's fortify wrappers don't translate.
@@ -60,6 +61,19 @@ fn str(p: [*c]const u8) []const u8 {
     return if (p == null) "" else std.mem.span(p);
 }
 
+fn pkgName(p: ?*c.alpm_pkg_t) []const u8 {
+    return str(c.alpm_pkg_get_name(p));
+}
+
+fn pkgVersion(p: ?*c.alpm_pkg_t) []const u8 {
+    return str(c.alpm_pkg_get_version(p));
+}
+
+/// the installed package called `name`, if there is one.
+fn localPkg(a: Allocator, h: Handle, name: []const u8) Error!?*c.alpm_pkg_t {
+    return c.alpm_db_get_pkg(c.alpm_get_localdb(h.h), (try a.dupeZ(u8, name)).ptr);
+}
+
 pub fn localPackages(a: Allocator, root: []const u8, dbpath: []const u8, diags: *diag.List) Error!?[]facts.Package {
     const h = try Handle.open(a, root, dbpath, diags) orelse return null;
     defer h.close();
@@ -67,8 +81,8 @@ pub fn localPackages(a: Allocator, root: []const u8, dbpath: []const u8, diags: 
     var it = listItems(c.alpm_pkg_t, c.alpm_db_get_pkgcache(c.alpm_get_localdb(h.h)));
     while (it.next()) |p| {
         try out.append(a, .{
-            .name = try a.dupe(u8, str(c.alpm_pkg_get_name(p))),
-            .version = try a.dupe(u8, str(c.alpm_pkg_get_version(p))),
+            .name = try a.dupe(u8, pkgName(p)),
+            .version = try a.dupe(u8, pkgVersion(p)),
             .reason = if (c.alpm_pkg_get_reason(p) == c.ALPM_PKG_REASON_DEPEND) .dependency else .explicit,
         });
     }
@@ -100,7 +114,7 @@ const Questions = struct {
             },
             c.ALPM_QUESTION_CONFLICT_PKG => {
                 const conflict: *c.alpm_conflict_t = q.conflict.conflict;
-                q.conflict.remove = @intFromBool(self.removes(str(c.alpm_pkg_get_name(conflict.package2))));
+                q.conflict.remove = @intFromBool(lists.contains(self.remove, pkgName(conflict.package2)));
             },
             // pacman's default. the user approved the plan, so say which
             // key and go on.
@@ -116,24 +130,14 @@ const Questions = struct {
         }
     }
 
-    fn removes(self: *const Questions, name: []const u8) bool {
-        for (self.remove) |r| {
-            if (std.mem.eql(u8, r, name)) return true;
-        }
-        return false;
-    }
-
     fn isOpen(self: *const Questions, name: []const u8) bool {
-        for (self.open.items) |o| {
-            if (std.mem.eql(u8, o.name, name)) return true;
-        }
-        return false;
+        return lists.indexOf(self.open.items, "name", name) != null;
     }
 
     fn selectProvider(self: *Questions, sp: *c.alpm_question_select_provider_t, dep: []const u8) !void {
         var names: std.ArrayList([]const u8) = .empty;
         var it = listItems(c.alpm_pkg_t, sp.providers);
-        while (it.next()) |p| try names.append(self.a, try self.a.dupe(u8, str(c.alpm_pkg_get_name(p))));
+        while (it.next()) |p| try names.append(self.a, try self.a.dupe(u8, pkgName(p)));
         sp.use_index = 0;
         for (self.providers) |choice| {
             if (!std.mem.eql(u8, choice.name, dep)) continue;
@@ -292,14 +296,12 @@ fn lockPackages(a: Allocator, adds: ?*c.alpm_list_t) Error![]const lock.Package 
             const named = if (d.mod == c.ALPM_DEP_MOD_ANY) c.alpm_pkg_find(adds, d.name) else null;
             const sat = named orelse c.alpm_find_satisfier(adds, s) orelse continue;
             // `bash` and `sh` can both resolve to bash; list it once.
-            const name = str(c.alpm_pkg_get_name(sat));
-            for (deps.items) |seen| {
-                if (std.mem.eql(u8, seen, name)) break;
-            } else try deps.append(a, try a.dupe(u8, name));
+            const name = pkgName(sat);
+            if (!lists.contains(deps.items, name)) try deps.append(a, try a.dupe(u8, name));
         }
         try packages.append(a, .{
-            .name = try a.dupe(u8, str(c.alpm_pkg_get_name(p))),
-            .version = try a.dupe(u8, str(c.alpm_pkg_get_version(p))),
+            .name = try a.dupe(u8, pkgName(p)),
+            .version = try a.dupe(u8, pkgVersion(p)),
             .repo = try a.dupe(u8, str(c.alpm_db_get_name(c.alpm_pkg_get_db(p)))),
             .sha256 = try a.dupe(u8, str(c.alpm_pkg_get_sha256sum(p))),
             .depends = deps.items,
@@ -313,7 +315,7 @@ fn keyringVersion(a: Allocator, h: Handle) Error![]const u8 {
     var dbs = listItems(c.alpm_db_t, c.alpm_get_syncdbs(h.h));
     while (dbs.next()) |db| {
         const p = c.alpm_db_get_pkg(db, "archlinux-keyring") orelse continue;
-        return a.dupe(u8, str(c.alpm_pkg_get_version(p)));
+        return a.dupe(u8, pkgVersion(p));
     }
     return "none";
 }
@@ -331,7 +333,7 @@ fn reportPrepare(h: Handle, data: ?*c.alpm_list_t, diags: *diag.List) !void {
         c.ALPM_ERR_CONFLICTING_DEPS => {
             var it = listItems(c.alpm_conflict_t, data);
             while (it.next()) |conf| {
-                try diags.add(.unresolvable, null, "{s} and {s} conflict", .{ str(c.alpm_pkg_get_name(conf.package1)), str(c.alpm_pkg_get_name(conf.package2)) }, "remove one of them from the config");
+                try diags.add(.unresolvable, null, "{s} and {s} conflict", .{ pkgName(conf.package1), pkgName(conf.package2) }, "remove one of them from the config");
             }
         },
         else => try diags.add(.alpm_failed, null, "resolving failed: {s}", .{h.lastError()}, null),
@@ -368,7 +370,7 @@ pub fn transact(a: Allocator, io: std.Io, t: api.Transaction, diags: *diag.List)
 
     const h = try Handle.open(a, t.target.root, t.target.dbpath, diags) orelse return false;
     defer h.close();
-    if (!try configure(h, a, t, diags)) return false;
+    if (!try configure(a, h, t, diags)) return false;
     var questions: Questions = .{ .a = a, .providers = &.{}, .remove = t.remove };
     _ = c.alpm_option_set_questioncb(h.h, Questions.answer, &questions);
     var log: Log = .{ .a = a, .diags = diags };
@@ -378,16 +380,15 @@ pub fn transact(a: Allocator, io: std.Io, t: api.Transaction, diags: *diag.List)
     // install first: removing can take away what downloading needs, like
     // the tls certificates. an install replaces a conflicting package the
     // plan removes anyway, as pacman -S does.
-    if (t.install.len > 0 and !try run(h, a, t, .install, &log)) return false;
-    if (t.remove.len > 0 and !try run(h, a, t, .remove, &log)) return false;
+    if (t.install.len > 0 and !try run(a, h, t, .install, &log)) return false;
+    if (t.remove.len > 0 and !try run(a, h, t, .remove, &log)) return false;
 
-    const local = c.alpm_get_localdb(h.h);
     for ([_]struct { []const []const u8, c.alpm_pkgreason_t }{
         .{ t.explicit, c.ALPM_PKG_REASON_EXPLICIT },
         .{ t.dependency, c.ALPM_PKG_REASON_DEPEND },
     }) |group| {
         for (group[0]) |name| {
-            const p = c.alpm_db_get_pkg(local, (try a.dupeZ(u8, name)).ptr) orelse continue;
+            const p = try localPkg(a, h, name) orelse continue;
             if (c.alpm_pkg_set_reason(p, group[1]) != 0) return fail(diags, "can't mark {s}: {s}", .{ name, h.lastError() });
         }
     }
@@ -443,7 +444,7 @@ const Log = struct {
             c.ALPM_EVENT_PACKAGE_OPERATION_START => {
                 const op = &e.package_operation;
                 const p = op.newpkg orelse op.oldpkg;
-                try self.run(try std.fmt.allocPrint(self.a, "the {s} package's script", .{str(c.alpm_pkg_get_name(p))}));
+                try self.run(try std.fmt.allocPrint(self.a, "the {s} package's script", .{pkgName(p)}));
             },
             c.ALPM_EVENT_SCRIPTLET_INFO => {
                 try self.output.appendSlice(self.a, str(e.scriptlet_info.line));
@@ -496,9 +497,11 @@ fn dirZ(a: Allocator, parts: []const []const u8) ![*:0]const u8 {
     return (try std.fmt.allocPrintSentinel(a, "{s}/", .{joined}, 0)).ptr;
 }
 
-const Step = enum { remove, install };
+/// pacman's `Optional TrustAll`, for a repository that isn't signed.
+const trust_all = c.ALPM_SIG_PACKAGE_OPTIONAL | c.ALPM_SIG_PACKAGE_MARGINAL_OK | c.ALPM_SIG_PACKAGE_UNKNOWN_OK |
+    c.ALPM_SIG_DATABASE_OPTIONAL | c.ALPM_SIG_DATABASE_MARGINAL_OK | c.ALPM_SIG_DATABASE_UNKNOWN_OK;
 
-fn configure(h: Handle, a: Allocator, t: api.Transaction, diags: *diag.List) Error!bool {
+fn configure(a: Allocator, h: Handle, t: api.Transaction, diags: *diag.List) Error!bool {
     if (c.alpm_option_add_cachedir(h.h, try dirZ(a, &.{t.target.cachedir})) != 0 or
         c.alpm_option_add_hookdir(h.h, try dirZ(a, &.{ t.target.root, "usr/share/libalpm/hooks" })) != 0 or
         c.alpm_option_add_hookdir(h.h, try dirZ(a, &.{ t.target.root, "etc/pacman.d/hooks" })) != 0 or
@@ -518,8 +521,7 @@ fn configure(h: Handle, a: Allocator, t: api.Transaction, diags: *diag.List) Err
         level = c.ALPM_SIG_PACKAGE | c.ALPM_SIG_DATABASE | c.ALPM_SIG_DATABASE_OPTIONAL;
     }
     for (t.target.dbs) |db| {
-        const optional = c.ALPM_SIG_PACKAGE_OPTIONAL | c.ALPM_SIG_PACKAGE_MARGINAL_OK | c.ALPM_SIG_PACKAGE_UNKNOWN_OK | c.ALPM_SIG_DATABASE_OPTIONAL | c.ALPM_SIG_DATABASE_MARGINAL_OK | c.ALPM_SIG_DATABASE_UNKNOWN_OK;
-        const d = c.alpm_register_syncdb(h.h, (try a.dupeZ(u8, db.name)).ptr, if (db.signed or level == 0) level else optional) orelse return fail(diags, "can't load the {s} database: {s}", .{ db.name, h.lastError() });
+        const d = c.alpm_register_syncdb(h.h, (try a.dupeZ(u8, db.name)).ptr, if (db.signed or level == 0) level else trust_all) orelse return fail(diags, "can't load the {s} database: {s}", .{ db.name, h.lastError() });
         for (db.servers) |server| {
             if (c.alpm_db_add_server(d, (try a.dupeZ(u8, server)).ptr) != 0) return fail(diags, "bad server {s}", .{server});
         }
@@ -527,18 +529,19 @@ fn configure(h: Handle, a: Allocator, t: api.Transaction, diags: *diag.List) Err
     return true;
 }
 
+const Step = enum { remove, install };
+
 /// one transaction: all the removals, or all the installs.
-fn run(h: Handle, a: Allocator, t: api.Transaction, step: Step, log: *Log) Error!bool {
+fn run(a: Allocator, h: Handle, t: api.Transaction, step: Step, log: *Log) Error!bool {
     const diags = log.diags;
     log.begin();
     if (c.alpm_trans_init(h.h, 0) != 0) return fail(diags, "can't start the transaction: {s}", .{h.lastError()});
     defer _ = c.alpm_trans_release(h.h);
     switch (step) {
         .remove => {
-            const local = c.alpm_get_localdb(h.h);
             var any = false;
             for (t.remove) |name| {
-                const p = c.alpm_db_get_pkg(local, (try a.dupeZ(u8, name)).ptr) orelse continue;
+                const p = try localPkg(a, h, name) orelse continue;
                 if (c.alpm_remove_pkg(h.h, p) != 0) return fail(diags, "can't remove {s}: {s}", .{ name, h.lastError() });
                 any = true;
             }
@@ -546,7 +549,7 @@ fn run(h: Handle, a: Allocator, t: api.Transaction, step: Step, log: *Log) Error
             if (!any) return true;
         },
         .install => for (t.install) |want| {
-            const p = try syncPackage(h, a, want, diags) orelse return false;
+            const p = try syncPackage(a, h, want, diags) orelse return false;
             if (c.alpm_add_pkg(h.h, p) != 0) return fail(diags, "can't add {s}: {s}", .{ want.name, h.lastError() });
         },
     }
@@ -568,12 +571,12 @@ fn run(h: Handle, a: Allocator, t: api.Transaction, step: Step, log: *Log) Error
 }
 
 /// the sync package for a locked one, checked against the lock.
-fn syncPackage(h: Handle, a: Allocator, want: lock.Package, diags: *diag.List) Error!?*c.alpm_pkg_t {
+fn syncPackage(a: Allocator, h: Handle, want: lock.Package, diags: *diag.List) Error!?*c.alpm_pkg_t {
     var dbs = listItems(c.alpm_db_t, c.alpm_get_syncdbs(h.h));
     while (dbs.next()) |db| {
         if (!std.mem.eql(u8, str(c.alpm_db_get_name(db)), want.repo)) continue;
         const p = c.alpm_db_get_pkg(db, (try a.dupeZ(u8, want.name)).ptr) orelse break;
-        const version = str(c.alpm_pkg_get_version(p));
+        const version = pkgVersion(p);
         const sha = str(c.alpm_pkg_get_sha256sum(p));
         if (!std.mem.eql(u8, version, want.version) or !std.mem.eql(u8, sha, want.sha256)) {
             _ = try fail(diags, "the {s} database has {s} {s}, but the lock says {s}", .{ want.repo, want.name, version, want.version });

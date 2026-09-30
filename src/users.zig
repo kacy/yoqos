@@ -62,16 +62,14 @@ const Users = struct {
         if (!try u.run(argv.items)) return false;
         if (known != null) return true;
 
-        for (try observe.users(a, try u.fs.read("etc/passwd"), "")) |made| {
-            if (!std.mem.eql(u8, made.name, name)) continue;
-            u.fs.append(ids_path, try std.fmt.allocPrint(a, "{s} {d}\n", .{ name, made.uid })) catch |e| switch (e) {
-                error.OutOfMemory => return e,
-                error.WriteFailed => {
-                    try u.diags.add(.apply_failed, null, "created {s}, but can't record its uid in {s}", .{ name, try u.fs.path(ids_path) }, null);
-                    return false;
-                },
-            };
-        }
+        const made = lists.find(try observe.users(a, try u.fs.read("etc/passwd"), ""), "name", name) orelse return true;
+        u.fs.append(ids_path, try std.fmt.allocPrint(a, "{s} {d}\n", .{ name, made.uid })) catch |e| switch (e) {
+            error.OutOfMemory => return e,
+            error.WriteFailed => {
+                try u.diags.add(.apply_failed, null, "created {s}, but can't record its uid in {s}", .{ name, try u.fs.path(ids_path) }, null);
+                return false;
+            },
+        };
         return true;
     }
 

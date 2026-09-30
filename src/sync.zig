@@ -89,7 +89,7 @@ const ConfReader = struct {
                 r.section = line[1 .. line.len - 1];
                 continue;
             }
-            const key, const value = setting(raw) orelse continue;
+            const key, const value = setting(line) orelse continue;
             if (std.mem.eql(u8, key, "Include")) {
                 // deep enough for any real pacman.conf, and no loops.
                 if (depth < 4) try r.feed(try readUnder(r.a, r.files, r.root, value) orelse continue, depth + 1);
@@ -125,10 +125,9 @@ fn readUnder(a: Allocator, files: compose.Files, root: []const u8, path: []const
     };
 }
 
-/// a pacman.conf line as key and value: `Key = value`, or a bare `Key`
-/// with an empty value. null for blank lines and comments.
-fn setting(raw: []const u8) ?struct { []const u8, []const u8 } {
-    const line = std.mem.trim(u8, raw, " \t\r");
+/// a trimmed pacman.conf line as key and value: `Key = value`, or a bare
+/// `Key` with an empty value. null for blank lines and comments.
+fn setting(line: []const u8) ?struct { []const u8, []const u8 } {
     if (line.len == 0 or line[0] == '#') return null;
     const eq = std.mem.indexOfScalar(u8, line, '=') orelse return .{ line, "" };
     return .{ std.mem.trim(u8, line[0..eq], " \t"), std.mem.trim(u8, line[eq + 1 ..], " \t") };
@@ -199,7 +198,7 @@ pub fn archived(a: Allocator, rs: []const Repo, date: []const u8) ![]const Repo 
     if (date.len != 10) return rs;
     const out = try a.dupe(Repo, rs);
     for (out) |*r| {
-        if (!lists.contains(&archived_repos, r.name) or local(r.*)) continue;
+        if (!lists.contains(&archived_repos, r.name) or servedFromDisk(r.*)) continue;
         const server = try std.fmt.allocPrint(a, "https://archive.archlinux.org/repos/{s}/{s}/{s}/$repo/os/$arch", .{ date[0..4], date[5..7], date[8..10] });
         r.servers = try a.dupe([]const u8, &.{server});
     }
@@ -230,21 +229,12 @@ pub fn databases(a: Allocator, io: std.Io, fetcher: Fetcher, rs: []const Repo, c
             try diags.add(.alpm_failed, null, "can't download the {s} database from any server", .{r.name}, "check the network and the servers in pacman.conf and its mirrorlist");
             return null;
         };
-        rootfs.writeAtomic(io, db.path, bytes, null) catch return writeFailed(diags, db.path);
+        rootfs.writeAtomic(io, db.path, bytes, null) catch {
+            try diags.add(.alpm_failed, null, "can't write {s}", .{db.path}, null);
+            return null;
+        };
     }
     return out;
-}
-
-test "arch's own repositories from the archive, as they were that day" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const rs = [_]Repo{ .{ .name = "core", .servers = &.{"https://m/$repo/os/$arch"} }, .{ .name = "chaotic-aur", .servers = &.{"https://c/$repo"} }, .{ .name = "extra", .servers = &.{"file:///srv/extra"} } };
-    const got = try archived(a, &rs, "2026-09-20");
-    try std.testing.expectEqualStrings("https://archive.archlinux.org/repos/2026/09/20/$repo/os/$arch", got[0].servers[0]);
-    try std.testing.expectEqualStrings("https://c/$repo", got[1].servers[0]);
-    try std.testing.expectEqualStrings("file:///srv/extra", got[2].servers[0]);
-    try std.testing.expectEqualStrings("https://m/$repo/os/$arch", rs[0].servers[0]);
 }
 
 /// `dbs` with each repository's servers from `rs` filled in, as the
@@ -276,7 +266,7 @@ pub fn cached(a: Allocator, io: std.Io, rs: []const Repo, cache: []const u8, dat
 }
 
 /// whether every server `r` has is a directory on this machine.
-fn local(r: Repo) bool {
+fn servedFromDisk(r: Repo) bool {
     for (r.servers) |sv| {
         if (!std.mem.startsWith(u8, sv, "file://")) return false;
     }
@@ -303,11 +293,6 @@ fn fetchRepo(a: Allocator, fetcher: Fetcher, r: Repo) !?[]const u8 {
     for (serversOf(r)) |s| {
         if (try fetcher.fetch(a, try dbUrl(a, s, r.name))) |bytes| return bytes;
     }
-    return null;
-}
-
-fn writeFailed(diags: *diag.List, path: []const u8) !?[]const alpm.SyncDb {
-    try diags.add(.alpm_failed, null, "can't write {s}", .{path}, null);
     return null;
 }
 
@@ -371,6 +356,18 @@ test "repositories and servers from pacman.conf" {
     const bare = (try pacmanConf(a, fs.files(), "/elsewhere")).repos;
     try testing.expectEqualStrings("extra", bare[1].name);
     try testing.expectEqual(0, bare[1].servers.len);
+}
+
+test "arch's own repositories from the archive, as they were that day" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const rs = [_]Repo{ .{ .name = "core", .servers = &.{"https://m/$repo/os/$arch"} }, .{ .name = "chaotic-aur", .servers = &.{"https://c/$repo"} }, .{ .name = "extra", .servers = &.{"file:///srv/extra"} } };
+    const got = try archived(a, &rs, "2026-09-20");
+    try testing.expectEqualStrings("https://archive.archlinux.org/repos/2026/09/20/$repo/os/$arch", got[0].servers[0]);
+    try testing.expectEqualStrings("https://c/$repo", got[1].servers[0]);
+    try testing.expectEqualStrings("file:///srv/extra", got[2].servers[0]);
+    try testing.expectEqualStrings("https://m/$repo/os/$arch", rs[0].servers[0]);
 }
 
 const FakeFetcher = struct {
