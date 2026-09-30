@@ -34,6 +34,7 @@ check "findmnt -no FSROOT /etc/yoq" /@var/lib/yoq/config
 check "readlink /var/lib/pacman" /usr/lib/sysimage/pacman
 check "ls /var/lib/yoq/generations" 1.json
 check "git -C /etc/yoq log --format=%s | grep -c 'a way in for tests'" 1
+check "/usr/local/bin/os events | grep -c '\"kind\":\"install\",\"generation\":1,'" 1
 settled
 "$vm" ssh "/usr/local/bin/os status" || true
 check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."

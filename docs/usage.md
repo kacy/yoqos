@@ -1021,10 +1021,19 @@ the documents, so they can't fall out of date.
 `os events` prints what `os` has done on this machine, oldest first, as one
 `yoq.event/1` json document a line. that covers applies with their plan's
 hash, config commits, new generations, rollbacks, trial boots, and pacman
-runs outside `os` that the drift hook caught. `--follow` keeps watching and
-prints new events as they land, like `tail -f`. every event has a `time` in
-unix milliseconds and a `kind`, and the other fields depend on the kind;
-`os schema events` has them all.
+runs outside `os` that the drift hook caught. it also has `gc` with the
+`generations` removed (by `os gc` or after an apply), `pin` with a `step`
+of `pinned` or `unpinned`, `enable-rollback` when generation 1 is set up,
+and `install` on a machine `os install` put on its disk. `os uninstall`
+removes `/var/lib/yoq`, events included, so it leaves none. `--follow` keeps
+watching and prints new events as they land, like `tail -f`. every event has
+a `time` in unix milliseconds and a `kind`, and the other fields depend on
+the kind; `os schema events` has them all.
+
+`--since <when>` leaves out events from before a time, with or without
+`--follow`. it takes unix milliseconds, a date (`2026-09-30`), or a date and
+time (`2026-09-30T14:00` or `2026-09-30T14:00:05`), all in utc, with an
+optional trailing `Z`.
 
 ```
 $ os events --follow

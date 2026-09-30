@@ -461,6 +461,10 @@ test "events fit their schema" {
         .{ .time = 1, .kind = .apply, .step = .begin, .plan = "abc" },
         .{ .time = 2, .kind = .pacman, .packages = &.{"htop"} },
         .{ .time = 3, .kind = .generation, .generation = 4, .message = "add fd" },
+        .{ .time = 4, .kind = .gc, .generations = &.{ 2, 3 } },
+        .{ .time = 5, .kind = .pin, .step = .unpinned, .generation = 2 },
+        .{ .time = 6, .kind = .@"enable-rollback", .step = .done, .generation = 1 },
+        .{ .time = 7, .kind = .install, .generation = 1, .message = "atlas" },
     };
     for (samples) |e| {
         var out: std.Io.Writer.Allocating = .init(a);

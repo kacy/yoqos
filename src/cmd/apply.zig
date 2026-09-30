@@ -321,7 +321,9 @@ pub fn collectOld(ctx: *Context, m: *const gens.Machine, keep: usize) !void {
         try ctx.err.print("os: couldn't remove old generations: {s}\n", .{problem});
         return;
     }
-    if (removed.items.len == 0 or ctx.json) return;
+    if (removed.items.len == 0) return;
+    try cli.note(ctx, m.a, .{ .time = journal.now(ctx.io), .kind = .gc, .generations = removed.items });
+    if (ctx.json) return;
     try ctx.out.writeAll("removed old generations:");
     for (removed.items) |n| try ctx.out.print(" {d}", .{n});
     try ctx.out.writeAll(". `os pin <n>` keeps one.\n");

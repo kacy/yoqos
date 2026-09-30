@@ -155,6 +155,8 @@ grep '"kind":"pacman"' "$dir/events" | grep -q '"htop"' || { echo "smoke: no pac
 grep '"kind":"apply"' "$dir/events" | tail -n 1 | grep -q "\"step\":\"done\",\"plan\":\"$hash\"" || { echo "smoke: the last apply event isn't plan $hash"; cat "$dir/events"; exit 1; }
 grep -q '"kind":"commit"' "$dir/events" || { echo "smoke: no commit events"; exit 1; }
 if grep -v '^{"schema":"yoq.event/1",' "$dir/events"; then echo "smoke: a line of os events isn't an event"; exit 1; fi
+[ "$("$os" events --since 2000-01-01T00:00Z | wc -l)" = "$(wc -l < "$dir/events")" ] || { echo "smoke: --since 2000 left events out"; exit 1; }
+[ "$("$os" events --since 99999999999999 | wc -l)" = 0 ] || { echo "smoke: --since the far future printed events"; exit 1; }
 rm /usr/share/libalpm/hooks/yoq-drift.hook
 
 # a config that leaves out base doesn't get to remove it.

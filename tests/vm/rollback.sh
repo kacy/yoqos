@@ -57,6 +57,9 @@ check_top "btrfs property get -ts /run/yoq-top/@gens/1 ro" "ro=true"
 "$vm" ssh "cat /var/lib/yoq/generations/1.json"
 # a second run finds generations already there.
 check "/usr/local/bin/os enable-rollback" "generations are on: this machine runs /@roots/1."
+# the run that failed and was taken back left no event; this one did, in
+# the /var this boot mounted.
+check "/usr/local/bin/os events | grep -c '\"kind\":\"enable-rollback\",\"step\":\"done\",\"generation\":1}'" 1
 
 # an apply makes generation 2, and the menu keeps generation 1.
 "$vm" ssh "/usr/local/bin/os add --yes tree" | tail -n 3
@@ -123,7 +126,9 @@ check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 # garbage collection: pinned, first, and newest stay; 3 goes, with its
 # snapshot and the root nothing else uses.
 "$vm" ssh "/usr/local/bin/os pin 2"
+check "/usr/local/bin/os events | grep '\"kind\":\"pin\"' | tail -n 1 | grep -c '\"step\":\"pinned\",\"generation\":2}'" 1
 check "/usr/local/bin/os gc --keep 1" "removed generations: 3."
+check "/usr/local/bin/os events | grep '\"kind\":\"gc\"' | tail -n 1 | grep -c '\"generations\":\[3\]}'" 1
 check "ls /var/lib/yoq/generations | tr '\\n' ' '" "1.json 2.json 4.json "
 check_top "ls /run/yoq-top/@gens /run/yoq-top/@roots | tr '\\n' ' '" "/run/yoq-top/@gens: 1 2 4  /run/yoq-top/@roots: 1 4 boot-1 boot-2 "
 "$vm" ssh "/usr/local/bin/os history"
