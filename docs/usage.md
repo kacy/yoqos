@@ -270,7 +270,10 @@ long one also gets a line at each quarter, so a big update stays short.
 the same when they apply.
 
 `apply` keeps a journal in `/var/lib/yoq/journal`. if an apply is cut off
-halfway, the next one says so and starts from the machine as it is.
+halfway, the next one says so and starts from the machine as it is. if it
+was cut off after it made its changes, the next one has nothing to do, so
+it records the old apply as done, and on a machine with generations,
+records the generation it missed.
 
 ### add, remove, enable, disable
 

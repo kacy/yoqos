@@ -31,6 +31,10 @@
   changed in between.
 - a pacman lock left by a power cut no longer blocks every later apply:
   `os apply` clears one from before this boot.
+- an apply cut off after pacman's transaction but before it wrote "done"
+  no longer leaves every later apply saying it didn't finish. the next
+  apply finds the machine already matches, so it records the old one as
+  done, along with the generation it never got to.
 - a staged change that can't be recorded fails the command instead of
   exiting 0.
 - boot files that don't fit on the esp are refused before anything is
