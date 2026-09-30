@@ -55,6 +55,17 @@ const Doc = struct {
         return .{ .table = t, .value = value, .dotted = path[header..] };
     }
 
+    /// whether some key on `path` holds something other than a table.
+    fn taken(d: *const Doc, path: []const []const u8) bool {
+        var t: *const toml.Table = d.doc.root;
+        for (path) |p| {
+            const v = t.get(p) orelse return false;
+            if (v.data != .table) return true;
+            t = v.data.table;
+        }
+        return false;
+    }
+
     /// the offset just past the end of the line holding `off`.
     fn lineEnd(d: *const Doc, off: usize) usize {
         const nl = std.mem.indexOfScalarPos(u8, d.text, off, '\n') orelse return d.text.len;
@@ -243,7 +254,11 @@ fn setKey(a: Allocator, text_in: []const u8, path: []const []const u8, key: []co
 fn addKey(a: Allocator, d: *const Doc, path: []const []const u8, key: []const u8, value: []const u8) Error![]u8 {
     const text = d.text;
     const k = try keyText(a, key);
-    const found = d.find(path) orelse return try appendSection(a, text, path, key, value);
+    const found = d.find(path) orelse {
+        // a new section would define the key a second time.
+        if (d.taken(path)) return error.BadToml;
+        return try appendSection(a, text, path, key, value);
+    };
     const t = found.table;
     switch (t.origin) {
         .inline_table, .inline_dotted => {
@@ -466,6 +481,17 @@ fn expectFile(got: Error![]const u8, want: []const u8) !void {
     var info: toml.ErrorInfo = .{};
     var doc = try toml.parse(testing.allocator, out, &info);
     doc.deinit();
+}
+
+test "a key that isn't a table isn't given a section" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectError(error.BadToml, addToList(a, "packages = [\"git\"]\nremove = +inf\n", &.{"remove"}, "packages", "git"));
+    try testing.expectError(error.BadToml, setProvider(a, "providers = 5\n", "sh", "bash"));
+    try testing.expectError(error.BadToml, setService(a, "[[services]]\n", "ssh", true));
+    try testing.expectError(error.BadToml, addFile(a, "files = 5\n", "/etc/motd", "files/etc/motd", null));
+    try testing.expectError(error.BadToml, addFile(a, "[files]\n\"/etc/motd\" = \"hi\"\n", "/etc/motd", "files/etc/motd", "0600"));
 }
 
 test "odd names are quoted" {
