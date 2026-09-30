@@ -118,9 +118,6 @@ pub const Git = struct {
     }
 };
 
-/// remembers commits instead of making them, for tests. with `fs` set,
-/// each commit also keeps a copy of the files under its directory, so the
-/// log and old files read back the way git's would.
 fn sameFiles(x: []const File, y: []const File) bool {
     if (x.len != y.len) return false;
     for (x) |f| {
@@ -132,6 +129,16 @@ fn sameFiles(x: []const File, y: []const File) bool {
     return true;
 }
 
+fn freeFiles(gpa: Allocator, fs: []const File) void {
+    for (fs) |f| {
+        gpa.free(f.path);
+        gpa.free(f.bytes);
+    }
+}
+
+/// remembers commits instead of making them, for tests. with `fs` set,
+/// each commit also keeps a copy of the files under its directory, so the
+/// log and old files read back the way git's would.
 pub const Recorder = struct {
     messages: std.ArrayList([]const u8) = .empty,
     snapshots: std.ArrayList([]const File) = .empty,
@@ -146,10 +153,7 @@ pub const Recorder = struct {
         for (r.messages.items) |m| r.gpa.free(m);
         r.messages.deinit(r.gpa);
         for (r.snapshots.items) |snap| {
-            for (snap) |f| {
-                r.gpa.free(f.path);
-                r.gpa.free(f.bytes);
-            }
+            freeFiles(r.gpa, snap);
             r.gpa.free(snap);
         }
         r.snapshots.deinit(r.gpa);
@@ -167,10 +171,7 @@ pub const Recorder = struct {
         }
         // like git: nothing changed, nothing to commit.
         if (r.snapshots.items.len > 0 and sameFiles(r.snapshots.items[r.snapshots.items.len - 1], snap.items)) {
-            for (snap.items) |f| {
-                r.gpa.free(f.path);
-                r.gpa.free(f.bytes);
-            }
+            freeFiles(r.gpa, snap.items);
             snap.deinit(r.gpa);
             return true;
         }

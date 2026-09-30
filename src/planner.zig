@@ -57,12 +57,43 @@ pub const Change = struct {
     reboot: ?[]const u8 = null,
 };
 
+pub const Summary = struct {
+    add: usize,
+    change: usize,
+    remove: usize,
+
+    pub fn total(n: Summary) usize {
+        return n.add + n.change + n.remove;
+    }
+
+    pub fn of(n: Summary, op: Op) usize {
+        return switch (op) {
+            .add => n.add,
+            .change => n.change,
+            .remove => n.remove,
+        };
+    }
+};
+
 pub const Plan = struct {
     changes: []const Change,
 
-    pub fn count(p: *const Plan, op: Op) usize {
-        var n: usize = 0;
-        for (p.changes) |c| n += @intFromBool(c.op == op);
+    /// how many changes of each op the whole plan has.
+    pub fn summary(p: *const Plan) Summary {
+        return p.tally(std.enums.values(Kind));
+    }
+
+    /// like `summary`, counting only changes of `kinds`.
+    fn tally(p: *const Plan, kinds: []const Kind) Summary {
+        var n: Summary = .{ .add = 0, .change = 0, .remove = 0 };
+        for (p.changes) |c| {
+            if (std.mem.indexOfScalar(Kind, kinds, c.kind) == null) continue;
+            switch (c.op) {
+                .add => n.add += 1,
+                .change => n.change += 1,
+                .remove => n.remove += 1,
+            }
+        }
         return n;
     }
 
@@ -110,19 +141,37 @@ pub fn wants(a: Allocator, c: *const config.Config) ![]const Want {
     for (c.aur.items.items) |it| try addWant(a, &out, it.name, "aur", it.src);
     // building aur packages needs devtools' makechrootpkg.
     if (c.aur.items.items.len > 0) try addWant(a, &out, "devtools", "aur", c.aur.items.items[0].src);
-    const kernel = if (c.boot.kernel) |k| k.v else catalog.default_kernel;
-    if (!std.mem.eql(u8, kernel, catalog.no_kernel)) try addWant(a, &out, kernel, "boot.kernel", if (c.boot.kernel) |k| k.src else null);
-    if (c.hardware.cpu) |v| for (catalog.cpuPackages(v.v)) |n| try addWant(a, &out, n, "hardware.cpu", v.src);
-    if (c.hardware.gpu) |v| for (catalog.gpuPackages(v.v)) |n| try addWant(a, &out, n, "hardware.gpu", v.src);
-    if (c.desktop.session) |v| for (catalog.sessionPackages(v.v)) |n| try addWant(a, &out, n, "desktop.session", v.src);
-    if (c.desktop.audio) |v| for (catalog.audioPackages(v.v)) |n| try addWant(a, &out, n, "desktop.audio", v.src);
-    // a tty login without a session is a plain console: nothing to start.
-    if (c.desktop.login) |v| if (v.v != .tty or c.desktop.session != null) for (catalog.loginPackages(v.v)) |n| try addWant(a, &out, n, "desktop.login", v.src);
+    if (c.boot.kernel) |k| {
+        if (!std.mem.eql(u8, k.v, catalog.no_kernel)) try addWant(a, &out, k.v, "boot.kernel", k.src);
+    } else try addWant(a, &out, catalog.default_kernel, "boot.kernel", null);
+    if (c.hardware.cpu) |v| try addWants(a, &out, catalog.cpuPackages(v.v), "hardware.cpu", v.src);
+    if (c.hardware.gpu) |v| try addWants(a, &out, catalog.gpuPackages(v.v), "hardware.gpu", v.src);
+    if (c.desktop.session) |v| try addWants(a, &out, catalog.sessionPackages(v.v), "desktop.session", v.src);
+    if (c.desktop.audio) |v| try addWants(a, &out, catalog.audioPackages(v.v), "desktop.audio", v.src);
+    if (c.desktop.login) |v| {
+        // a tty login without a session is a plain console: nothing to start.
+        if (v.v != .tty or c.desktop.session != null) try addWants(a, &out, catalog.loginPackages(v.v), "desktop.login", v.src);
+    }
     for (c.services.entries.items) |e| {
         if (!e.value.isEnabled()) continue;
         try addWant(a, &out, e.value.packageFor(e.name), try std.fmt.allocPrint(a, "services.{s}", .{e.name}), e.value.src);
     }
     return out.items;
+}
+
+/// adds a want unless one by that name is there already, which keeps the
+/// first cause.
+fn addWant(a: Allocator, list: *std.ArrayList(Want), name: []const u8, cause: ?[]const u8, src: ?config.Src) !void {
+    if (findWant(list.items, name) != null) return;
+    try list.append(a, .{ .name = name, .cause = cause, .src = src });
+}
+
+fn addWants(a: Allocator, list: *std.ArrayList(Want), names: []const []const u8, cause: []const u8, src: config.Src) !void {
+    for (names) |n| try addWant(a, list, n, cause, src);
+}
+
+pub fn findWant(list: []const Want, name: []const u8) ?*const Want {
+    return lists.find(list, "name", name);
 }
 
 /// the wanted packages plus everything they depend on in the lock. wanted
@@ -140,30 +189,57 @@ pub fn closure(a: Allocator, l: *const lock.Lock, ws: []const Want) !std.StringA
     return needed;
 }
 
+/// explicitly installed packages that nothing in the config asks for or
+/// needs, in facts order.
+pub fn extraPackages(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *const facts.Facts) ![]const []const u8 {
+    const ws = try wants(a, c);
+    const needed = try closure(a, l, ws);
+    var out: std.ArrayList([]const u8) = .empty;
+    for (f.packages) |p| {
+        if (p.reason != .explicit or needed.contains(p.name) or findWant(ws, p.name) != null) continue;
+        try out.append(a, p.name);
+    }
+    return out.items;
+}
+
 /// builds the plan. returns null, with diagnostics, if the lock doesn't
 /// cover what the config asks for. everything is allocated in `a`, which
 /// should be an arena.
 pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *const facts.Facts, diags: *diag.List) !?Plan {
     var changes: std.ArrayList(Change) = .empty;
+    if (!try planPackages(a, c, l, f, &changes, diags)) return null;
+    try planSettings(a, c, f, &changes);
+    try planUnits(a, c, f, &changes);
+    try planUsers(a, c, f, &changes);
+    try planFiles(a, c, f, &changes);
+    if (!try planRepos(a, c, f, &changes, diags)) return null;
+    return .{ .changes = changes.items };
+}
 
+/// packages: the lock's closure of the wanted packages is what should be
+/// installed, and everything else goes. returns false, with diagnostics,
+/// if the lock is missing a wanted package or applying would remove a
+/// core one.
+fn planPackages(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *const facts.Facts, changes: *std.ArrayList(Change), diags: *diag.List) !bool {
     const ws = try wants(a, c);
-
-    // every wanted package has to be in the lock.
     var stale = false;
     for (ws) |w| {
         if (l.package(w.name) != null) continue;
         stale = true;
         try diags.add(.lock_stale, w.src, "{s} isn't in machine.lock yet", .{w.name}, "run `os update` to resolve it into the lock");
     }
-    if (stale) return null;
+    if (stale) return false;
 
-    // the lock's closure of the wanted packages is what should be installed.
     const needed = try closure(a, l, ws);
+    try planInstalls(a, l, f, ws, needed.keys(), changes);
+    return planRemovals(a, c, f, needed, changes, diags);
+}
 
-    // packages: install, upgrade, or re-mark what's needed.
-    const need_names = try a.dupe([]const u8, needed.keys());
-    lists.sortStrings(need_names);
-    for (need_names) |name| {
+/// installs, upgrades, or re-marks each needed package, by name.
+fn planInstalls(a: Allocator, l: *const lock.Lock, f: *const facts.Facts, ws: []const Want, needed: []const []const u8, changes: *std.ArrayList(Change)) !void {
+    const names = try a.dupe([]const u8, needed);
+    lists.sortStrings(names);
+    for (names) |name| {
         const lp = l.package(name).?;
         const want = findWant(ws, name);
         const kind: Kind = if (want != null) .package else .dependency;
@@ -184,9 +260,12 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
             try changes.append(a, .{ .op = .change, .kind = .reason, .subject = name, .from = @tagName(have.reason), .to = @tagName(want_reason) });
         }
     }
+}
 
-    // packages: remove what nothing needs, except core packages the config
-    // doesn't remove on purpose. facts are sorted by name.
+/// removes what nothing needs, in facts order (by name), except core
+/// packages the config doesn't remove on purpose. returns false, with a
+/// diagnostic, if it would remove one of those.
+fn planRemovals(a: Allocator, c: *const config.Config, f: *const facts.Facts, needed: std.StringArrayHashMapUnmanaged(void), changes: *std.ArrayList(Change), diags: *diag.List) !bool {
     var blocked: std.ArrayList([]const u8) = .empty;
     for (f.packages) |have| {
         if (needed.contains(have.name)) continue;
@@ -202,52 +281,32 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
             .reboot = catalog.rebootReason(have.name),
         });
     }
-    if (blocked.items.len > 0) {
-        const names = try std.mem.join(a, ", ", blocked.items);
-        try diags.add(.protected_package, null, "applying would remove {s}, which the machine needs", .{names}, "add them to packages, or name them in [remove] to remove them anyway");
-        return null;
-    }
+    if (blocked.items.len == 0) return true;
+    const names = try std.mem.join(a, ", ", blocked.items);
+    try diags.add(.protected_package, null, "applying would remove {s}, which the machine needs", .{names}, "add them to packages, or name them in [remove] to remove them anyway");
+    return false;
+}
 
-    // system settings. facts carry a field for every one of them.
+/// `[system]` values. facts carry a field for every one of them.
+fn planSettings(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
     inline for (comptime config.keysOf(config.System)) |field| {
         if (@field(c.system, field)) |want| {
             const have = @field(f, field);
             if (have == null or !std.mem.eql(u8, have.?, want.v)) {
-                try changes.append(a, .{
-                    .op = .change,
-                    .kind = .setting,
-                    .subject = "system." ++ field,
-                    .from = have,
-                    .to = want.v,
-                });
+                try changes.append(a, .{ .op = .change, .kind = .setting, .subject = "system." ++ field, .from = have, .to = want.v });
             }
         }
     }
+}
 
-    // services: enabled ones get their unit enabled and started. services
-    // the config doesn't mention are left alone.
+/// services: enabled ones get their unit enabled and started, disabled
+/// ones stopped. services the config doesn't mention are left alone.
+fn planUnits(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
     var units: std.ArrayList(Change) = .empty;
     for (c.services.entries.items) |e| {
-        const enabled = e.value.isEnabled();
         const unit = e.value.unitFor(e.name);
-        const cause = try std.fmt.allocPrint(a, "services.{s}", .{e.name});
-        const have = f.unit(unit);
-        if (enabled) {
-            const is_enabled = if (have) |u| u.enabled or u.fixed else false;
-            // a oneshot that ran and finished well counts as running.
-            const is_active = if (have) |u| u.active or u.ran else false;
-            if (!is_enabled) {
-                try units.append(a, .{ .op = .add, .kind = .unit, .subject = unit, .to = if (is_active) "enable" else "enable, start", .cause = cause });
-            } else if (!is_active) {
-                try units.append(a, .{ .op = .change, .kind = .unit, .subject = unit, .to = "start", .cause = cause });
-            }
-        } else if (have) |u| {
-            if (u.fixed) {
-                if (u.active) try units.append(a, .{ .op = .remove, .kind = .unit, .subject = unit, .to = "stop", .cause = cause });
-            } else if (u.enabled or u.active) {
-                try units.append(a, .{ .op = .remove, .kind = .unit, .subject = unit, .to = if (u.active) "disable, stop" else "disable", .cause = cause });
-            }
-        }
+        const step = unitStep(e.value.isEnabled(), f.unit(unit)) orelse continue;
+        try units.append(a, .{ .op = step.op, .kind = .unit, .subject = unit, .to = step.to, .cause = try std.fmt.allocPrint(a, "services.{s}", .{e.name}) });
     }
     // a login choice owns the display manager: its own is enabled, the
     // others disabled. neither starts nor stops now, since that would end
@@ -263,205 +322,71 @@ pub fn plan(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
     }
     lists.sortByField(Change, "subject", units.items);
     try changes.appendSlice(a, units.items);
-    try planUsers(a, c, f, &changes);
-    try planFiles(a, c, f, &changes);
-    const before = diags.items.items.len;
-    try planRepos(a, c, f, &changes, diags);
-    if (diags.items.items.len > before) return null;
-
-    return .{ .changes = changes.items };
 }
 
-/// whether the config has repositories of its own for pacman: declared
-/// ones, or the local one aur packages are built into.
-fn ownRepos(c: *const config.Config) bool {
-    return c.repos.entries.items.len > 0 or c.aur.items.items.len > 0;
+const UnitStep = struct { op: Op, to: []const u8 };
+
+/// what it takes to get a unit enabled and running (`on`) or off, or
+/// null if it's there already.
+fn unitStep(on: bool, have: ?*const facts.Unit) ?UnitStep {
+    const u = have orelse return if (on) .{ .op = .add, .to = "enable, start" } else null;
+    if (on) {
+        // a oneshot that ran and finished well counts as running.
+        const running = u.active or u.ran;
+        if (!u.enabled and !u.fixed) return .{ .op = .add, .to = if (running) "enable" else "enable, start" };
+        if (!running) return .{ .op = .change, .to = "start" };
+        return null;
+    }
+    // a unit that can't be enabled only stops.
+    if (u.fixed) return if (u.active) .{ .op = .remove, .to = "stop" } else null;
+    if (u.enabled or u.active) return .{ .op = .remove, .to = if (u.active) "disable, stop" else "disable" };
+    return null;
 }
 
-/// pacman reads the config's repositories through one include line, and
-/// trusts each one's key. one pacman.conf declares too would be there
-/// twice, which pacman refuses.
-fn planRepos(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change), diags: *diag.List) !void {
-    if (!ownRepos(c)) return;
-    for (c.repos.entries.items) |e| {
-        if (lists.contains(f.pacman.repos, e.name)) try diags.add(.bad_value, e.value.src, "repos.{s} is in /etc/pacman.conf too", .{e.name}, "take it out of pacman.conf; os writes it to /etc/pacman.d/yoq-repos.conf");
-    }
-    if (!f.pacman.includes_repos) try changes.append(a, .{ .op = .change, .kind = .pacman_conf, .subject = "/etc/pacman.conf", .to = "add " ++ facts.repos_include, .cause = "repos" });
-    for (c.repos.entries.items) |e| {
-        const k = e.value.key orelse continue;
-        if (lists.contains(f.pacman.keys, k.v)) continue;
-        try changes.append(a, .{ .op = .add, .kind = .key, .subject = k.v, .to = "import and trust", .cause = try std.fmt.allocPrint(a, "repos.{s}", .{e.name}) });
-    }
-}
-
-/// a file os writes, from `[files]` or made from another key.
-pub const DesiredFile = struct {
-    path: []const u8,
-    content: []const u8,
-    mode: []const u8,
-    /// the key that makes the file, for ones `[files]` doesn't name.
-    cause: ?[]const u8 = null,
-    /// why a change to it needs a reboot, if one does.
-    reboot: ?[]const u8 = null,
-};
-
-/// mkinitcpio's drop-in that loads nvidia's modules early.
-const nvidia_initramfs_path = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf";
-
-/// where `[sysctl]` goes.
-pub const sysctl_path = "/etc/sysctl.d/99-yoq.conf";
-
-/// where `[boot] modules` goes.
-pub const modules_path = "/etc/modules-load.d/99-yoq.conf";
-
-/// the modules nvidia's driver wants early.
-const nvidia_modules = [_][]const u8{ "nvidia", "nvidia_modeset", "nvidia_uvm", "nvidia_drm" };
-
-const nvidia_initramfs_content = blk: {
-    var s: []const u8 = "# written by os for [hardware] gpu = \"nvidia\".\nMODULES+=(" ++ nvidia_modules[0];
-    for (nvidia_modules[1..]) |m| s = s ++ " " ++ m;
-    break :blk s ++ ")\n";
-};
-
-const greetd_config_path = "/etc/greetd/config.toml";
-
-/// tuigreet on tty1, offering every installed wayland session.
-const greetd_config =
-    \\# written by os for [desktop] login = "greetd". edits here are overwritten.
-    \\[terminal]
-    \\vt = 1
-    \\
-    \\[default_session]
-    \\command = "tuigreet --time --remember --remember-session --sessions /usr/share/wayland-sessions"
-    \\user = "greeter"
-    \\
-;
-
-const tty_session_path = "/etc/profile.d/yoq-session.sh";
-
-/// logging in on tty1 starts the session through uwsm.
-const tty_session =
-    \\# written by os for [desktop] login = "tty". edits here are overwritten.
-    \\if [ -z "$WAYLAND_DISPLAY" ] && [ "$(tty)" = /dev/tty1 ] && uwsm check may-start; then
-    \\    exec uwsm start {s}
-    \\fi
-    \\
-;
-
-/// every file the config wants: `[files]`, the one `[sysctl]` makes, the
-/// login files `[desktop] login` makes, and
-/// nvidia's initramfs drop-in unless the machine loads those modules
-/// already, as `f` shows.
-pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts) ![]const DesiredFile {
-    var out: std.ArrayList(DesiredFile) = .empty;
-    for (c.files.entries.items) |e| {
-        // a source that couldn't be read was reported when loading.
-        const content = e.value.content orelse continue;
-        try out.append(a, .{ .path = e.name, .content = content, .mode = e.value.modeOf() });
-    }
-    if (c.sysctl.entries.items.len > 0) {
-        const keys = try a.alloc([]const u8, c.sysctl.entries.items.len);
-        for (c.sysctl.entries.items, keys) |e, *k| k.* = e.name;
-        lists.sortStrings(keys);
-        var text: std.ArrayList(u8) = .empty;
-        try text.appendSlice(a, "# written by os from [sysctl] in the config. edits here are overwritten.\n");
-        for (keys) |k| try text.print(a, "{s} = {s}\n", .{ k, c.sysctl.get(k).?.v.text });
-        try out.append(a, .{ .path = sysctl_path, .content = text.items, .mode = config.File.default_mode, .cause = "sysctl" });
-    }
-    if (c.desktop.login) |login| switch (login.v) {
-        .greetd => try out.append(a, .{ .path = greetd_config_path, .content = greetd_config, .mode = config.File.default_mode, .cause = "desktop.login" }),
-        .tty => if (c.desktop.session) |s| try out.append(a, .{
-            .path = tty_session_path,
-            .content = try std.fmt.allocPrint(a, tty_session, .{catalog.sessionDesktop(s.v)}),
-            .mode = config.File.default_mode,
-            .cause = "desktop.login",
-        }),
-        .sddm => {},
-    };
-    // once pacman.conf reads the repositories' file, it stays, empty if
-    // need be: pacman fails on an include that's gone.
-    if (ownRepos(c) or f.pacman.includes_repos) {
-        var text: std.ArrayList(u8) = .empty;
-        try text.appendSlice(a, "# written by os from [repos] in the config. edits here are overwritten.\n");
-        for (c.repos.entries.items) |e| {
-            // one without a server was reported when the config loaded.
-            const server = e.value.server orelse continue;
-            // with a key, packages must be signed by it; without one,
-            // they aren't checked.
-            const siglevel = if (e.value.key != null) "Required DatabaseOptional" else "Optional TrustAll";
-            try text.print(a, "\n[{s}]\nSigLevel = {s}\nServer = {s}\n", .{ e.name, siglevel, server.v });
+/// users the config declares get created, or brought to its shell and
+/// groups. the groups listed are all of them: others are left. users the
+/// config doesn't mention are left alone, since removing an account by
+/// accident costs too much.
+fn planUsers(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
+    for (c.users.entries.items) |e| {
+        const name = e.name;
+        const want_groups = e.value.groups.items.items;
+        const cause = try std.fmt.allocPrint(a, "users.{s}", .{name});
+        // each change is one step `apply` can take: a new user is created,
+        // then gets its shell and groups like any other.
+        const found = lists.find(f.users, "name", name);
+        if (found == null) try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = "new user", .cause = cause });
+        if (e.value.shell) |sh| {
+            const current = if (found) |u| u.shell orelse "" else "";
+            if (!sameShell(current, sh.v)) try changes.append(a, .{
+                .op = .change,
+                .kind = .user,
+                .subject = name,
+                .from = if (found != null) try std.fmt.allocPrint(a, "shell {s}", .{std.fs.path.basename(current)}) else null,
+                .to = try std.fmt.allocPrint(a, "shell {s}", .{sh.v}),
+                .cause = cause,
+            });
         }
-        // the aur packages os builds, unsigned, in a local repository.
-        if (c.aur.items.items.len > 0) try text.print(a, "\n[{s}]\nSigLevel = Optional TrustAll\nServer = file://{s}\n", .{ aur.repo_name, aur.repo_dir });
-        try out.append(a, .{ .path = facts.repos_conf, .content = text.items, .mode = config.File.default_mode, .cause = "repos" });
+        const have_groups: []const []const u8 = if (found) |u| u.groups else &.{};
+        for (want_groups) |g| {
+            if (!lists.contains(have_groups, g.name)) try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = try std.fmt.allocPrint(a, "join {s}", .{g.name}), .cause = cause });
+        }
+        if (want_groups.len == 0) continue;
+        for (have_groups) |g| {
+            if (!e.value.groups.contains(g)) try changes.append(a, .{ .op = .remove, .kind = .user, .subject = name, .from = try std.fmt.allocPrint(a, "leave {s}", .{g}), .cause = cause });
+        }
     }
-    // hyprland reads /etc/xdg/hypr when a user has no config of their
-    // own. the file keeps its extension: .conf, or .lua for newer ones.
-    if (c.desktop.session_content) |content| {
-        const ext = std.fs.path.extension(c.desktop.session_config.?.v);
-        try out.append(a, .{
-            .path = try std.fmt.allocPrint(a, "/etc/xdg/hypr/hyprland{s}", .{if (ext.len > 0) ext else ".conf"}),
-            .content = content,
-            .mode = config.File.default_mode,
-            .cause = "desktop.session_config",
-        });
-    }
-    if (c.boot.modules.items.items.len > 0) {
-        const names = try a.alloc([]const u8, c.boot.modules.items.items.len);
-        for (c.boot.modules.items.items, names) |it, *n| n.* = it.name;
-        lists.sortStrings(names);
-        var text: std.ArrayList(u8) = .empty;
-        try text.appendSlice(a, "# written by os from [boot] modules in the config. edits here are overwritten.\n");
-        for (names) |n| try text.print(a, "{s}\n", .{n});
-        try out.append(a, .{ .path = modules_path, .content = text.items, .mode = config.File.default_mode, .cause = "boot.modules" });
-    }
-    // nvidia's driver wants its modules in the initramfs. amd and intel
-    // come with mkinitcpio's kms hook already.
-    const gpu = if (c.hardware.gpu) |g| g.v else .none;
-    const initramfs = if (c.providers.get("initramfs")) |p| p.v else "mkinitcpio";
-    const loaded = for (nvidia_modules) |m| {
-        if (!lists.contains(f.initramfs_modules, m)) break false;
-    } else true;
-    if (gpu == .nvidia and std.mem.eql(u8, initramfs, "mkinitcpio") and !loaded) {
-        try out.append(a, .{
-            .path = nvidia_initramfs_path,
-            .content = nvidia_initramfs_content,
-            .mode = config.File.default_mode,
-            .cause = "hardware.gpu",
-            .reboot = "initramfs",
-        });
-    }
-    return out.items;
 }
 
-/// files os writes from other keys, each starting with a "written by os"
-/// line. one still there that nothing asks for any more is removed. the
-/// session's own config isn't here: it's the user's file.
-const generated_paths = [_][]const u8{ sysctl_path, modules_path, greetd_config_path, tty_session_path, nvidia_initramfs_path };
-
-/// what the observer should look at for this config: every file it might
-/// want or os may have generated, and the repositories' signing keys.
-pub fn wanted(a: Allocator, c: *const config.Config) !facts.Wanted {
-    var keys: std.ArrayList([]const u8) = .empty;
-    for (c.repos.entries.items) |e| {
-        if (e.value.key) |k| try keys.append(a, k.v);
-    }
-    return .{ .files = try filePaths(a, c), .keys = keys.items };
-}
-
-fn filePaths(a: Allocator, c: *const config.Config) ![]const []const u8 {
-    const want = try desiredFiles(a, c, &.{});
-    var out: std.ArrayList([]const u8) = .empty;
-    for (want) |d| try out.append(a, d.path);
-    for (generated_paths) |p| {
-        if (!lists.contains(out.items, p)) try out.append(a, p);
-    }
-    return out.items;
+/// a shell given by name, like "zsh", matches any path ending in it.
+fn sameShell(current: []const u8, want: []const u8) bool {
+    if (std.mem.eql(u8, current, want)) return true;
+    return std.mem.indexOfScalar(u8, want, '/') == null and std.mem.eql(u8, std.fs.path.basename(current), want);
 }
 
 /// files: written when missing or when their content differs, and their
-/// mode set when only that differs. files the config doesn't name are
-/// left alone.
+/// mode set when only that differs. generated files nothing asks for any
+/// more are removed; other files the config doesn't name are left alone.
 fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
     const want = try desiredFiles(a, c, f);
     var files: std.ArrayList(Change) = .empty;
@@ -490,7 +415,7 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
         try files.append(a, ch);
     }
     for (generated_paths) |p| {
-        if (lists.find(want, "path", p) != null) continue;
+        if (lists.indexOf(want, "path", p) != null) continue;
         const have = f.file(p) orelse continue;
         if (!have.ours) continue;
         try files.append(a, .{
@@ -510,63 +435,222 @@ fn normalMode(a: Allocator, mode: []const u8) ![]const u8 {
     return if (mode.len == 3) std.fmt.allocPrint(a, "0{s}", .{mode}) else mode;
 }
 
-/// users the config declares get created, or brought to its shell and
-/// groups. the groups listed are all of them: others are left. users the
-/// config doesn't mention are left alone, since removing an account by
-/// accident costs too much.
-fn planUsers(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change)) !void {
-    for (c.users.entries.items) |e| {
-        const name = e.name;
-        const want_groups = e.value.groups.items.items;
-        const cause = try std.fmt.allocPrint(a, "users.{s}", .{name});
-        // each change is one step `apply` can take: a new user is created,
-        // then gets its shell and groups like any other.
-        const found = lists.find(f.users, "name", name);
-        if (found == null) try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = "new user", .cause = cause });
-        if (e.value.shell) |sh| {
-            const current = if (found) |u| u.shell orelse "" else "";
-            const same = std.mem.eql(u8, current, sh.v) or
-                (std.mem.indexOfScalar(u8, sh.v, '/') == null and std.mem.eql(u8, std.fs.path.basename(current), sh.v));
-            if (!same) try changes.append(a, .{
-                .op = .change,
-                .kind = .user,
-                .subject = name,
-                .from = if (found != null) try std.fmt.allocPrint(a, "shell {s}", .{std.fs.path.basename(current)}) else null,
-                .to = try std.fmt.allocPrint(a, "shell {s}", .{sh.v}),
-                .cause = cause,
-            });
-        }
-        const have_groups: []const []const u8 = if (found) |u| u.groups else &.{};
-        for (want_groups) |g| {
-            if (!lists.contains(have_groups, g.name)) try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = try std.fmt.allocPrint(a, "join {s}", .{g.name}), .cause = cause });
-        }
-        if (e.value.groups.items.items.len == 0) continue;
-        for (have_groups) |g| {
-            if (!e.value.groups.contains(g)) try changes.append(a, .{ .op = .remove, .kind = .user, .subject = name, .from = try std.fmt.allocPrint(a, "leave {s}", .{g}), .cause = cause });
-        }
+/// whether the config has repositories of its own for pacman: declared
+/// ones, or the local one aur packages are built into.
+fn ownRepos(c: *const config.Config) bool {
+    return c.repos.entries.items.len > 0 or c.aur.items.items.len > 0;
+}
+
+/// pacman reads the config's repositories through one include line, and
+/// trusts each one's key. a repository pacman.conf declares too would be
+/// there twice, which pacman refuses, so each is reported and the result
+/// is false.
+fn planRepos(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change), diags: *diag.List) !bool {
+    if (!ownRepos(c)) return true;
+    var twice = false;
+    for (c.repos.entries.items) |e| {
+        if (!lists.contains(f.pacman.repos, e.name)) continue;
+        twice = true;
+        try diags.add(.bad_value, e.value.src, "repos.{s} is in /etc/pacman.conf too", .{e.name}, "take it out of pacman.conf; os writes it to /etc/pacman.d/yoq-repos.conf");
     }
+    if (twice) return false;
+    if (!f.pacman.includes_repos) try changes.append(a, .{ .op = .change, .kind = .pacman_conf, .subject = "/etc/pacman.conf", .to = "add " ++ facts.repos_include, .cause = "repos" });
+    for (c.repos.entries.items) |e| {
+        const k = e.value.key orelse continue;
+        if (lists.contains(f.pacman.keys, k.v)) continue;
+        try changes.append(a, .{ .op = .add, .kind = .key, .subject = k.v, .to = "import and trust", .cause = try std.fmt.allocPrint(a, "repos.{s}", .{e.name}) });
+    }
+    return true;
 }
 
-fn addWant(a: Allocator, list: *std.ArrayList(Want), name: []const u8, cause: ?[]const u8, src: ?config.Src) !void {
-    if (findWant(list.items, name) != null) return;
-    try list.append(a, .{ .name = name, .cause = cause, .src = src });
+/// a file os writes, from `[files]` or made from another key.
+pub const DesiredFile = struct {
+    path: []const u8,
+    content: []const u8,
+    mode: []const u8 = config.File.default_mode,
+    /// the key that makes the file, for ones `[files]` doesn't name.
+    cause: ?[]const u8 = null,
+    /// why a change to it needs a reboot, if one does.
+    reboot: ?[]const u8 = null,
+};
+
+/// where `[sysctl]` goes.
+pub const sysctl_path = "/etc/sysctl.d/99-yoq.conf";
+
+/// where `[boot] modules` goes.
+pub const modules_path = "/etc/modules-load.d/99-yoq.conf";
+
+const greetd_config_path = "/etc/greetd/config.toml";
+const tty_session_path = "/etc/profile.d/yoq-session.sh";
+
+/// mkinitcpio's drop-in that loads nvidia's modules early.
+const nvidia_initramfs_path = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf";
+
+/// files os writes from other keys, each starting with a "written by os"
+/// line. one still there that nothing asks for any more is removed. the
+/// session's own config isn't here: it's the user's file.
+const generated_paths = [_][]const u8{ sysctl_path, modules_path, greetd_config_path, tty_session_path, nvidia_initramfs_path };
+
+/// the first line of a file os makes from `key`.
+fn header(comptime key: []const u8) []const u8 {
+    return "# written by os from " ++ key ++ " in the config. edits here are overwritten.\n";
 }
 
-/// explicitly installed packages that nothing in the config asks for or
-/// needs, in facts order.
-pub fn extraPackages(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *const facts.Facts) ![]const []const u8 {
-    const ws = try wants(a, c);
-    const needed = try closure(a, l, ws);
-    var out: std.ArrayList([]const u8) = .empty;
-    for (f.packages) |p| {
-        if (p.reason != .explicit or needed.contains(p.name) or findWant(ws, p.name) != null) continue;
-        try out.append(a, p.name);
+/// tuigreet on tty1, offering every installed wayland session.
+const greetd_config =
+    \\# written by os for [desktop] login = "greetd". edits here are overwritten.
+    \\[terminal]
+    \\vt = 1
+    \\
+    \\[default_session]
+    \\command = "tuigreet --time --remember --remember-session --sessions /usr/share/wayland-sessions"
+    \\user = "greeter"
+    \\
+;
+
+/// logging in on tty1 starts the session through uwsm.
+const tty_session =
+    \\# written by os for [desktop] login = "tty". edits here are overwritten.
+    \\if [ -z "$WAYLAND_DISPLAY" ] && [ "$(tty)" = /dev/tty1 ] && uwsm check may-start; then
+    \\    exec uwsm start {s}
+    \\fi
+    \\
+;
+
+/// the modules nvidia's driver wants early.
+const nvidia_modules = [_][]const u8{ "nvidia", "nvidia_modeset", "nvidia_uvm", "nvidia_drm" };
+
+const nvidia_initramfs_content = blk: {
+    var s: []const u8 = "# written by os for [hardware] gpu = \"nvidia\".\nMODULES+=(" ++ nvidia_modules[0];
+    for (nvidia_modules[1..]) |m| s = s ++ " " ++ m;
+    break :blk s ++ ")\n";
+};
+
+/// every file the config wants: `[files]`, then the ones other keys make.
+/// nvidia's initramfs drop-in is left out when the machine loads those
+/// modules already, as `f` shows.
+pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts) ![]const DesiredFile {
+    var out: std.ArrayList(DesiredFile) = .empty;
+    for (c.files.entries.items) |e| {
+        // a source that couldn't be read was reported when loading.
+        const content = e.value.content orelse continue;
+        try out.append(a, .{ .path = e.name, .content = content, .mode = e.value.modeOf() });
+    }
+    const made = [_]?DesiredFile{
+        try sysctlFile(a, c),
+        try loginFile(a, c),
+        try reposFile(a, c, f),
+        try sessionFile(a, c),
+        try modulesFile(a, c),
+        nvidiaFile(c, f),
+    };
+    for (made) |m| {
+        if (m) |d| try out.append(a, d);
     }
     return out.items;
 }
 
-pub fn findWant(list: []const Want, name: []const u8) ?*const Want {
-    return lists.find(list, "name", name);
+fn sysctlFile(a: Allocator, c: *const config.Config) !?DesiredFile {
+    if (c.sysctl.entries.items.len == 0) return null;
+    var text: std.ArrayList(u8) = .empty;
+    try text.appendSlice(a, header("[sysctl]"));
+    for (try sortedNames(a, c.sysctl.entries.items)) |k| try text.print(a, "{s} = {s}\n", .{ k, c.sysctl.get(k).?.v.text });
+    return .{ .path = sysctl_path, .content = text.items, .cause = "sysctl" };
+}
+
+fn modulesFile(a: Allocator, c: *const config.Config) !?DesiredFile {
+    if (c.boot.modules.items.items.len == 0) return null;
+    var text: std.ArrayList(u8) = .empty;
+    try text.appendSlice(a, header("[boot] modules"));
+    for (try sortedNames(a, c.boot.modules.items.items)) |n| try text.print(a, "{s}\n", .{n});
+    return .{ .path = modules_path, .content = text.items, .cause = "boot.modules" };
+}
+
+/// the `name` of each item, sorted, so a file doesn't depend on the
+/// config's order.
+fn sortedNames(a: Allocator, items: anytype) ![]const []const u8 {
+    const names = try a.alloc([]const u8, items.len);
+    for (items, names) |it, *n| n.* = it.name;
+    lists.sortStrings(names);
+    return names;
+}
+
+fn loginFile(a: Allocator, c: *const config.Config) !?DesiredFile {
+    const login = c.desktop.login orelse return null;
+    return switch (login.v) {
+        .greetd => .{ .path = greetd_config_path, .content = greetd_config, .cause = "desktop.login" },
+        .tty => .{
+            .path = tty_session_path,
+            .content = try std.fmt.allocPrint(a, tty_session, .{catalog.sessionDesktop((c.desktop.session orelse return null).v)}),
+            .cause = "desktop.login",
+        },
+        .sddm => null,
+    };
+}
+
+/// the file pacman.conf includes for the config's repositories. once
+/// pacman.conf reads it, it stays, empty if need be: pacman fails on an
+/// include that's gone.
+fn reposFile(a: Allocator, c: *const config.Config, f: *const facts.Facts) !?DesiredFile {
+    if (!ownRepos(c) and !f.pacman.includes_repos) return null;
+    var text: std.ArrayList(u8) = .empty;
+    try text.appendSlice(a, header("[repos]"));
+    for (c.repos.entries.items) |e| {
+        // one without a server was reported when the config loaded.
+        const server = e.value.server orelse continue;
+        // with a key, packages must be signed by it; without one, they
+        // aren't checked.
+        const siglevel = if (e.value.key != null) "Required DatabaseOptional" else "Optional TrustAll";
+        try text.print(a, "\n[{s}]\nSigLevel = {s}\nServer = {s}\n", .{ e.name, siglevel, server.v });
+    }
+    // the aur packages os builds, unsigned, in a local repository.
+    if (c.aur.items.items.len > 0) try text.print(a, "\n[{s}]\nSigLevel = Optional TrustAll\nServer = file://{s}\n", .{ aur.repo_name, aur.repo_dir });
+    return .{ .path = facts.repos_conf, .content = text.items, .cause = "repos" };
+}
+
+/// hyprland reads /etc/xdg/hypr when a user has no config of their own.
+/// the file keeps its extension: .conf, or .lua for newer ones.
+fn sessionFile(a: Allocator, c: *const config.Config) !?DesiredFile {
+    const content = c.desktop.session_content orelse return null;
+    const ext = std.fs.path.extension(c.desktop.session_config.?.v);
+    return .{
+        .path = try std.fmt.allocPrint(a, "/etc/xdg/hypr/hyprland{s}", .{if (ext.len > 0) ext else ".conf"}),
+        .content = content,
+        .cause = "desktop.session_config",
+    };
+}
+
+/// nvidia's driver wants its modules in the initramfs. amd and intel come
+/// with mkinitcpio's kms hook already.
+fn nvidiaFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
+    const gpu = c.hardware.gpu orelse return null;
+    if (gpu.v != .nvidia) return null;
+    if (c.providers.get("initramfs")) |p| {
+        if (!std.mem.eql(u8, p.v, "mkinitcpio")) return null;
+    }
+    for (nvidia_modules) |m| {
+        if (!lists.contains(f.initramfs_modules, m)) break;
+    } else return null;
+    return .{ .path = nvidia_initramfs_path, .content = nvidia_initramfs_content, .cause = "hardware.gpu", .reboot = "initramfs" };
+}
+
+/// what the observer should look at for this config: every file it might
+/// want or os may have generated, and the repositories' signing keys.
+pub fn wanted(a: Allocator, c: *const config.Config) !facts.Wanted {
+    var keys: std.ArrayList([]const u8) = .empty;
+    for (c.repos.entries.items) |e| {
+        if (e.value.key) |k| try keys.append(a, k.v);
+    }
+    return .{ .files = try filePaths(a, c), .keys = keys.items };
+}
+
+fn filePaths(a: Allocator, c: *const config.Config) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    for (try desiredFiles(a, c, &.{})) |d| try out.append(a, d.path);
+    for (generated_paths) |p| {
+        if (!lists.contains(out.items, p)) try out.append(a, p);
+    }
+    return out.items;
 }
 
 // -- output --
@@ -590,13 +674,9 @@ pub fn writeText(w: *std.Io.Writer, a: Allocator, p: *const Plan, opts: RenderOp
         try packageSummary(w, p);
     } else if (has(p, .package) or has(p, .dependency) or has(p, .reason)) {
         try w.writeAll("packages\n");
-        for (p.changes) |c| {
-            if (c.kind == .package) try line(w, c);
-        }
+        try lines(w, p, &.{.package});
         if (opts.verbose) {
-            for (p.changes) |c| {
-                if (c.kind == .dependency or c.kind == .reason) try line(w, c);
-            }
+            try lines(w, p, &.{ .dependency, .reason });
         } else {
             try depSummary(w, p);
         }
@@ -604,23 +684,17 @@ pub fn writeText(w: *std.Io.Writer, a: Allocator, p: *const Plan, opts: RenderOp
     inline for (.{ .{ "system", Kind.setting }, .{ "users", Kind.user }, .{ "services", Kind.unit }, .{ "files", Kind.file }, .{ "repositories", Kind.pacman_conf }, .{ "keys", Kind.key } }) |section| {
         if (has(p, section[1])) {
             try w.writeAll(section[0] ++ "\n");
-            for (p.changes) |c| {
-                if (c.kind == section[1]) try line(w, c);
-            }
+            try lines(w, p, &.{section[1]});
         }
     }
 
-    try w.print("\nplan: {d} to add, {d} to change, {d} to remove", .{ p.count(.add), p.count(.change), p.count(.remove) });
+    const n = p.summary();
+    try w.print("\nplan: {d} to add, {d} to change, {d} to remove", .{ n.add, n.change, n.remove });
     const reasons = try p.rebootReasons(a);
     if (reasons.len == 0) {
         try w.writeAll(" · no reboot\n");
     } else {
-        try w.writeAll(" · reboot needed: ");
-        for (reasons, 0..) |r, i| {
-            if (i > 0) try w.writeAll(", ");
-            try w.writeAll(r);
-        }
-        try w.writeByte('\n');
+        try w.print(" · reboot needed: {s}\n", .{try std.mem.join(a, ", ", reasons)});
     }
 }
 
@@ -637,6 +711,13 @@ fn mark(op: Op) u8 {
         .change => '~',
         .remove => '-',
     };
+}
+
+/// a line for each change of one of `kinds`, in plan order.
+fn lines(w: *std.Io.Writer, p: *const Plan, kinds: []const Kind) !void {
+    for (p.changes) |c| {
+        if (std.mem.indexOfScalar(Kind, kinds, c.kind) != null) try line(w, c);
+    }
 }
 
 fn line(w: *std.Io.Writer, c: Change) !void {
@@ -679,12 +760,9 @@ fn line(w: *std.Io.Writer, c: Change) !void {
 /// the update screen's packages: how many move, and the ones worth a look
 /// before saying yes.
 fn packageSummary(w: *std.Io.Writer, p: *const Plan) !void {
-    var n = [_]usize{ 0, 0, 0 };
-    for (p.changes) |c| {
-        if (c.kind == .package or c.kind == .dependency) n[@intFromEnum(c.op)] += 1;
-    }
-    if (n[0] + n[1] + n[2] == 0) return;
-    try w.print("packages\n  upgrades {d}    new {d}    removed {d}   (-v lists them)\n", .{ n[1], n[0], n[2] });
+    const n = p.tally(&.{ .package, .dependency });
+    if (n.total() == 0) return;
+    try w.print("packages\n  upgrades {d}    new {d}    removed {d}   (-v lists them)\n", .{ n.change, n.add, n.remove });
     var shown: usize = 0;
     for (p.changes) |c| {
         if ((c.kind != .package and c.kind != .dependency) or c.op != .change or !notable(c)) continue;
@@ -713,19 +791,18 @@ fn majorOf(version: []const u8) []const u8 {
     return v[0 .. std.mem.indexOfAny(u8, v, ".-+_") orelse v.len];
 }
 
+/// "+2, -1 dependencies": the counts that aren't zero.
 fn depSummary(w: *std.Io.Writer, p: *const Plan) !void {
-    var n = [_]usize{ 0, 0, 0 };
-    for (p.changes) |c| {
-        if (c.kind == .dependency or c.kind == .reason) n[@intFromEnum(c.op)] += 1;
-    }
-    if (n[0] + n[1] + n[2] == 0) return;
+    const n = p.tally(&.{ .dependency, .reason });
+    if (n.total() == 0) return;
     try w.writeAll("  ");
     var first = true;
-    for (n, 0..) |count, i| {
+    for (std.enums.values(Op)) |op| {
+        const count = n.of(op);
         if (count == 0) continue;
         if (!first) try w.writeAll(", ");
         first = false;
-        try w.print("{c}{d}", .{ mark(@enumFromInt(i)), count });
+        try w.print("{c}{d}", .{ mark(op), count });
     }
     try w.writeAll(" dependencies (-v to list)\n");
 }
@@ -733,7 +810,7 @@ fn depSummary(w: *std.Io.Writer, p: *const Plan) !void {
 /// a plan as json: what `os plan --json` prints, and `os plan -o` saves.
 pub const Doc = struct {
     hash: []const u8,
-    summary: struct { add: usize, change: usize, remove: usize },
+    summary: Summary,
     reboot: struct { needed: bool, because: []const []const u8 },
     changes: []const Change,
 };
@@ -743,7 +820,7 @@ pub fn writeJson(w: *std.Io.Writer, a: Allocator, p: *const Plan) !void {
     const reasons = try p.rebootReasons(a);
     const doc: Doc = .{
         .hash = &h,
-        .summary = .{ .add = p.count(.add), .change = p.count(.change), .remove = p.count(.remove) },
+        .summary = p.summary(),
         .reboot = .{ .needed = reasons.len > 0, .because = reasons },
         .changes = p.changes,
     };

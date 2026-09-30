@@ -133,10 +133,11 @@ pub fn addToList(a: Allocator, text_in: []const u8, path: []const []const u8, ke
         return try splice(a, text, last.span.end, 0, try std.fmt.allocPrint(a, ", {s}", .{q}));
     }
 
+    const indent = text[d.lineStart(last.span.start.offset)..last.span.start.offset];
+
     // the last item shares the closing bracket's line: the new item goes
     // right after it, on its own line if the last item is on its own line.
     if (std.mem.indexOfScalar(u8, text[last.span.end..close], '\n') == null) {
-        const indent = text[d.lineStart(last.span.start.offset)..last.span.start.offset];
         const sep = if (std.mem.trim(u8, indent, " \t").len == 0)
             try std.fmt.allocPrint(a, "\n{s}", .{indent})
         else
@@ -149,7 +150,6 @@ pub fn addToList(a: Allocator, text_in: []const u8, path: []const []const u8, ke
     // a list over several lines: a new line before the closing bracket,
     // indented like the last item, with a comma after the last item if it
     // had none.
-    const indent = text[d.lineStart(last.span.start.offset)..last.span.start.offset];
     const new_line = try std.fmt.allocPrint(a, "{s}{s},\n", .{ indent, q });
     var out = try splice(a, text, d.lineStart(close), 0, new_line);
     if (!hasCommaAfter(text, last.span.end, close)) out = try splice(a, out, last.span.end, 0, ",");
@@ -216,11 +216,8 @@ fn removeOne(a: Allocator, text: []const u8, path: []const []const u8, key: []co
         while (end < text.len and text[end] == ' ') end += 1;
         return try splice(a, text, start, end - start, "");
     }
-    if (i > 0) {
-        const prev_end = items[i - 1].span.end;
-        return try splice(a, text, prev_end, end - prev_end, "");
-    }
-    return try splice(a, text, start, end - start, "");
+    const from = if (i > 0) items[i - 1].span.end else start;
+    return try splice(a, text, from, end - from, "");
 }
 
 /// sets `key = value` in the table at `path`, where `value` is toml text
@@ -273,8 +270,7 @@ pub fn setService(a: Allocator, text: []const u8, name: []const u8, enabled: boo
     const value: []const u8 = if (enabled) "true" else "false";
     var d = try Doc.init(a, text);
     defer d.deinit();
-    const services = d.table(&.{"services"});
-    if (services) |s| {
+    if (d.table(&.{"services"})) |s| {
         if (s.get(name)) |v| {
             if (v.data == .table) return setKey(a, text, &.{ "services", name }, "enabled", value);
         }
