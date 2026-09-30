@@ -1,0 +1,2 @@
+error[E0131]: the esp at /boot has 80 MiB free of 1024 MiB, and this plan's new boot files need about 95 MiB
+   | `os gc --keep 1` removes generation 3, with the boot files only it uses  (os explain E0131)

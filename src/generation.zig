@@ -212,15 +212,27 @@ pub fn title(a: Allocator, r: Record) ![]const u8 {
 /// it's renamed there.
 pub const esp_slack = 1 << 20;
 
+/// whether new boot files of `need` bytes fit in the `free` bytes of an
+/// esp.
+pub fn fits(need: u64, free: u64) bool {
+    return need +| esp_slack <= free;
+}
+
 /// null if new boot files of `need` bytes fit in the `free` bytes of the
 /// esp at `esp`, or else what to say: how far short it is, and which of
-/// `records` `os gc --keep 1` would remove to make room. that's all but
-/// the first, the pinned ones, the newest, and the one whose root is
-/// `running_root`, the root this machine runs.
-pub fn espRoom(a: Allocator, esp: []const u8, need: u64, free: u64, records: []const Record, running_root: []const u8) !?[]const u8 {
-    if (need +| esp_slack <= free) return null;
+/// `records` `os gc --keep 1` would remove to make room (see `gcHint`).
+pub fn espRoom(a: Allocator, esp: []const u8, need: u64, free: u64, records: anytype, running_root: []const u8) !?[]const u8 {
+    if (fits(need, free)) return null;
     const mib = 1 << 20;
-    const short = try std.fmt.allocPrint(a, "the esp at {s} has {d} MiB free, and the new boot files need {d} MiB", .{ esp, free / mib, (need + mib - 1) / mib });
+    return try std.fmt.allocPrint(a, "the esp at {s} has {d} MiB free, and the new boot files need {d} MiB. {s}", .{ esp, free / mib, (need + mib - 1) / mib, try gcHint(a, records, running_root) });
+}
+
+/// which of `records` `os gc --keep 1` would remove, with the boot files
+/// on the esp only they use: all but the first, the pinned ones, the
+/// newest, and the one whose root is `running_root`, the root this
+/// machine runs. `records` are sorted by number and have `n`, `root`, and
+/// `pinned`, like a `Record`.
+pub fn gcHint(a: Allocator, records: anytype, running_root: []const u8) ![]const u8 {
     var runs: u32 = 0;
     for (records) |r| {
         if (std.mem.eql(u8, r.root, std.mem.trimStart(u8, running_root, "/"))) runs = r.n;
@@ -231,19 +243,40 @@ pub fn espRoom(a: Allocator, esp: []const u8, need: u64, free: u64, records: []c
         try old.append(a, r.n);
     }
     const n = old.items.len;
-    if (n == 0) return try std.fmt.allocPrint(a, "{s}. no generation is left to remove, so make room there by hand", .{short});
+    if (n == 0) return "no generation is left to remove, so make room there by hand";
     // "2", "2 and 4", "2, 4, and 5".
     var list: std.ArrayList(u8) = .empty;
     for (old.items, 0..) |g, i| {
         const sep = if (i == 0) "" else if (n == 2) " and " else if (i == n - 1) ", and " else ", ";
         try list.print(a, "{s}{d}", .{ sep, g });
     }
-    return try std.fmt.allocPrint(a, "{s}. `os gc --keep 1` removes generation{s} {s}, with the boot files only {s}", .{
-        short,
+    return std.fmt.allocPrint(a, "`os gc --keep 1` removes generation{s} {s}, with the boot files only {s}", .{
         if (n == 1) "" else "s",
         list.items,
         if (n == 1) "it uses" else "they use",
     });
+}
+
+/// what to do about a full esp that holds only the running root's boot
+/// files, as with grub or refind and the esp at /boot: older generations
+/// boot theirs from their own roots, so removing them frees nothing there.
+pub const manual_hint = "only the running system's boot files are there, so removing generations won't help. make room by hand, like removing the fallback initramfs images, which no entry in os's menu boots";
+
+/// a boot file to copy: its size, and the size of the file it replaces,
+/// 0 if none.
+pub const Copy = struct { size: u64, replaces: u64 = 0 };
+
+/// the most room `copies`, made in order, take at once. each goes in
+/// beside the file it replaces, which is freed only once the copy is
+/// renamed over it.
+pub fn copyPeak(copies: []const Copy) u64 {
+    var grown: i128 = 0;
+    var peak: i128 = 0;
+    for (copies) |c| {
+        peak = @max(peak, grown + c.size);
+        grown += @as(i128, c.size) - c.replaces;
+    }
+    return @intCast(peak);
 }
 
 /// under this much free space, a new root that didn't build likely ran
@@ -322,6 +355,17 @@ test "boot files that don't fit on the esp name what gc would remove" {
         "the esp at /efi has 0 MiB free, and the new boot files need 1 MiB. no generation is left to remove, so make room there by hand",
         (try espRoom(a, "/efi", 10, 0, recs[0..2], "/@roots/1")).?,
     );
+}
+
+test "copies take the most room partway" {
+    try testing.expectEqual(0, copyPeak(&.{}));
+    // new files add up.
+    try testing.expectEqual(30, copyPeak(&.{ .{ .size = 10 }, .{ .size = 20 } }));
+    // a replaced file is freed once its copy is in place, not before.
+    try testing.expectEqual(22, copyPeak(&.{ .{ .size = 12, .replaces = 10 }, .{ .size = 20, .replaces = 20 } }));
+    try testing.expectEqual(20, copyPeak(&.{ .{ .size = 20, .replaces = 20 }, .{ .size = 12, .replaces = 10 } }));
+    // a smaller file makes room for the next.
+    try testing.expectEqual(10, copyPeak(&.{ .{ .size = 5, .replaces = 15 }, .{ .size = 20 } }));
 }
 
 test "a build that failed on a nearly full filesystem says so" {

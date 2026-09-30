@@ -17,6 +17,8 @@ const aur = @import("aur.zig");
 const diag = @import("diag.zig");
 const output = @import("output.zig");
 const lists = @import("lists.zig");
+const generation = @import("generation.zig");
+const menu = @import("menu.zig");
 const Allocator = std.mem.Allocator;
 
 pub const schema = "yoq.plan/1";
@@ -686,6 +688,118 @@ fn filePaths(a: Allocator, c: *const config.Config) ![]const []const u8 {
 }
 
 // -- output --
+
+/// the room on the esp a plan's new boot files take.
+pub const EspNeed = struct {
+    /// bytes, estimated.
+    need: u64,
+    /// older generations keep copies of their boot files there, which
+    /// `os gc` frees.
+    collectable: bool,
+};
+
+/// an estimate of the room on the esp the next generation's new boot
+/// files take, or null if the plan puts none there or there's nothing to
+/// go by. installed file sizes aren't in the lock, so it goes by the boot
+/// files the running root has now, a sixteenth bigger: a kernel the plan
+/// changes gets a new kernel and initramfs, one it adds gets a pair like
+/// the largest there, an initramfs change gets every initramfs new, and a
+/// microcode change the microcode images too. limine and systemd-boot keep
+/// every generation's copies side by side, so those add up. with the esp
+/// at /boot, the first good boot also puts them over the running ones
+/// there, one at a time.
+pub fn espNeed(p: *const Plan, b: *const facts.Boot) ?EspNeed {
+    if (!generation.running(b.root_subvol)) return null;
+    const esp = b.esp orelse return null;
+    const loader = menu.Loader.of(b.*) orelse return null;
+    const hashed = loader == .limine or loader == .@"systemd-boot";
+    const in_place = std.mem.eql(u8, esp, "/boot");
+    if (!hashed and !in_place) return null;
+
+    var initramfs = false;
+    var microcode = false;
+    for (p.changes) |c| {
+        const r = c.reboot orelse continue;
+        if (std.mem.eql(u8, r, "initramfs") or std.mem.eql(u8, r, "microcode")) initramfs = true;
+        if (std.mem.eql(u8, r, "microcode")) microcode = true;
+    }
+    var est: Estimate = .{};
+    var largest: [2]u64 = .{ 0, 0 };
+    for (b.boot_files) |f| {
+        if (kernelOf(f.name)) |k| {
+            const i: usize = if (std.mem.startsWith(u8, f.name, "vmlinuz-")) 0 else 1;
+            largest[i] = @max(largest[i], f.size);
+            if ((i == 1 and initramfs) or kernelChanges(p, k)) est.add(f.size, f.size);
+        } else if (microcode) est.add(f.size, f.size);
+    }
+    for (p.changes) |c| {
+        if (c.op != .add or !std.mem.eql(u8, c.reboot orelse "", "kernel")) continue;
+        if (hasKernel(b, c.subject)) continue;
+        est.add(largest[0], 0);
+        est.add(largest[1], 0);
+    }
+    const need = (if (hashed) est.total else 0) + (if (in_place) est.growth + est.lead else 0);
+    if (need == 0) return null;
+    return .{ .need = need, .collectable = hashed };
+}
+
+/// new boot files, as `espNeed` adds them up.
+const Estimate = struct {
+    /// all of them.
+    total: u64 = 0,
+    /// what each adds over the file it replaces.
+    growth: u64 = 0,
+    /// the most any one takes beyond that while it's copied in beside
+    /// the file it replaces.
+    lead: u64 = 0,
+
+    fn add(e: *Estimate, now: u64, replaces: u64) void {
+        const size = now +| now / 16;
+        const grows = size -| replaces;
+        e.total +|= size;
+        e.growth +|= grows;
+        e.lead = @max(e.lead, size - grows);
+    }
+};
+
+/// the kernel a boot file belongs to: "linux" for vmlinuz-linux and
+/// initramfs-linux.img. null for microcode.
+fn kernelOf(name: []const u8) ?[]const u8 {
+    if (std.mem.startsWith(u8, name, "vmlinuz-")) return name["vmlinuz-".len..];
+    if (std.mem.startsWith(u8, name, "initramfs-") and std.mem.endsWith(u8, name, ".img")) return name["initramfs-".len .. name.len - ".img".len];
+    return null;
+}
+
+fn hasKernel(b: *const facts.Boot, kernel: []const u8) bool {
+    for (b.boot_files) |f| {
+        if (std.mem.startsWith(u8, f.name, "vmlinuz-") and std.mem.eql(u8, f.name["vmlinuz-".len..], kernel)) return true;
+    }
+    return false;
+}
+
+/// whether the plan installs or upgrades the kernel package `kernel`.
+fn kernelChanges(p: *const Plan, kernel: []const u8) bool {
+    for (p.changes) |c| {
+        if (c.op != .remove and std.mem.eql(u8, c.reboot orelse "", "kernel") and std.mem.eql(u8, c.subject, kernel)) return true;
+    }
+    return false;
+}
+
+/// refuses, with a diagnostic, a plan whose new boot files won't fit on
+/// the esp, so nothing gets built only to be thrown away. returns whether
+/// the plan can go ahead. the record step checks again with the real
+/// files.
+pub fn checkEsp(a: Allocator, p: *const Plan, f: *const facts.Facts, diags: *diag.List) !bool {
+    const b = &f.boot;
+    const e = espNeed(p, b) orelse return true;
+    const free = b.esp_free orelse return true;
+    if (generation.fits(e.need, free)) return true;
+    const mib = 1 << 20;
+    const of = if (b.esp_size) |s| try std.fmt.allocPrint(a, " of {d} MiB", .{s / mib}) else "";
+    const hint = if (e.collectable) try generation.gcHint(a, b.generations, b.root_subvol orelse "") else generation.manual_hint;
+    try diags.add(.esp_full, null, "the esp at {s} has {d} MiB free{s}, and this plan's new boot files need about {d} MiB", .{ b.esp.?, free / mib, of, (e.need + mib - 1) / mib }, hint);
+    return false;
+}
 
 pub const RenderOptions = struct {
     /// list each dependency instead of counting them.
@@ -1370,4 +1484,85 @@ test "a repository pacman.conf declares too is reported, not written twice" {
     const f: facts.Facts = .{ .pacman = .{ .repos = &.{ "core", "extra", "omarchy" } } };
     try testing.expectEqual(null, try plan(t.a(), &c, &l, &f, &t.diags));
     try testing.expectEqualStrings("repos.omarchy is in /etc/pacman.conf too", t.diags.items.items[0].message);
+}
+
+test "how much room a plan's new boot files take on the esp" {
+    const mib = 1 << 20;
+    const files = [_]facts.BootFile{
+        .{ .name = "amd-ucode.img", .size = 4 * mib },
+        .{ .name = "initramfs-linux.img", .size = 32 * mib },
+        .{ .name = "vmlinuz-linux", .size = 16 * mib },
+    };
+    var b: facts.Boot = .{ .esp = "/efi", .loader = "systemd-boot", .root_subvol = "/@roots/3", .boot_files = &files };
+    const upgrade: Plan = .{ .changes = &.{.{ .op = .change, .kind = .package, .subject = "linux", .from = "6.16.8", .to = "6.17.1", .reboot = "kernel" }} };
+    // limine and systemd-boot keep the new pair beside the old one.
+    try testing.expectEqual(EspNeed{ .need = 51 * mib, .collectable = true }, espNeed(&upgrade, &b).?);
+    const lts: Plan = .{ .changes = &.{.{ .op = .add, .kind = .package, .subject = "linux-lts", .to = "6.12.48", .reboot = "kernel" }} };
+    try testing.expectEqual(51 * mib, espNeed(&lts, &b).?.need);
+    const ucode: Plan = .{ .changes = &.{.{ .op = .change, .kind = .package, .subject = "amd-ucode", .from = "1", .to = "2", .reboot = "microcode" }} };
+    try testing.expectEqual(38 * mib + mib / 4, espNeed(&ucode, &b).?.need);
+    const drop_in: Plan = .{ .changes = &.{.{ .op = .add, .kind = .file, .subject = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf", .reboot = "initramfs" }} };
+    try testing.expectEqual(34 * mib, espNeed(&drop_in, &b).?.need);
+    // nothing new to boot, or a kernel that goes.
+    const tool: Plan = .{ .changes = &.{.{ .op = .add, .kind = .package, .subject = "ripgrep", .to = "14" }} };
+    try testing.expectEqual(null, espNeed(&tool, &b));
+    const gone: Plan = .{ .changes = &.{.{ .op = .remove, .kind = .package, .subject = "linux", .from = "6.16.8", .reboot = "kernel" }} };
+    try testing.expectEqual(null, espNeed(&gone, &b));
+
+    // with the esp at /boot, a good boot also puts them over the running
+    // ones, one at a time: the growth, and the largest while it's copied.
+    b.esp = "/boot";
+    try testing.expectEqual(EspNeed{ .need = (51 + 35) * mib, .collectable = true }, espNeed(&upgrade, &b).?);
+    b.loader = "grub";
+    try testing.expectEqual(EspNeed{ .need = 35 * mib, .collectable = false }, espNeed(&upgrade, &b).?);
+    // grub and refind read each root's kernel over btrfs.
+    b.esp = "/efi";
+    try testing.expectEqual(null, espNeed(&upgrade, &b));
+    b.loader = "refind";
+    try testing.expectEqual(null, espNeed(&upgrade, &b));
+    // without generations, pacman changes the files in place, as always.
+    b = .{ .esp = "/boot", .loader = "systemd-boot", .root_subvol = "/@", .boot_files = &files };
+    try testing.expectEqual(null, espNeed(&upgrade, &b));
+    // no boot files to go by.
+    b = .{ .esp = "/efi", .loader = "limine", .root_subvol = "/@roots/3" };
+    try testing.expectEqual(null, espNeed(&upgrade, &b));
+}
+
+test "a plan whose boot files don't fit on the esp stops before anything is built" {
+    var t: T = .{};
+    defer t.deinit();
+    const a = t.a();
+    const mib = 1 << 20;
+    const files = [_]facts.BootFile{
+        .{ .name = "initramfs-linux.img", .size = 32 * mib },
+        .{ .name = "vmlinuz-linux", .size = 16 * mib },
+    };
+    const gens = [_]facts.Generation{
+        .{ .n = 1, .root = "@roots/1" },
+        .{ .n = 2, .root = "@roots/1" },
+        .{ .n = 3, .root = "@roots/3" },
+    };
+    var f: facts.Facts = .{ .boot = .{ .esp = "/efi", .loader = "limine", .root_subvol = "/@roots/3", .esp_free = 40 * mib, .esp_size = 512 * mib, .boot_files = &files, .generations = &gens } };
+    const upgrade: Plan = .{ .changes = &.{.{ .op = .change, .kind = .package, .subject = "linux", .from = "6.16.8", .to = "6.17.1", .reboot = "kernel" }} };
+    try testing.expect(!try checkEsp(a, &upgrade, &f, &t.diags));
+    const d = t.diags.items.items[0];
+    try testing.expectEqual(diag.Code.esp_full, d.code);
+    try testing.expectEqualStrings("the esp at /efi has 40 MiB free of 512 MiB, and this plan's new boot files need about 51 MiB", d.message);
+    try testing.expectEqualStrings("`os gc --keep 1` removes generation 2, with the boot files only it uses", d.hint.?);
+
+    // grub with the esp at /boot: removing generations frees nothing there.
+    f.boot.esp = "/boot";
+    f.boot.loader = "grub";
+    f.boot.esp_free = 20 * mib;
+    f.boot.esp_size = null;
+    try testing.expect(!try checkEsp(a, &upgrade, &f, &t.diags));
+    try testing.expectEqualStrings("the esp at /boot has 20 MiB free, and this plan's new boot files need about 35 MiB", t.diags.items.items[1].message);
+    try testing.expectEqualStrings(generation.manual_hint, t.diags.items.items[1].hint.?);
+
+    // room enough, with a mebibyte to spare; or no telling how much.
+    f.boot.esp_free = 36 * mib;
+    try testing.expect(try checkEsp(a, &upgrade, &f, &t.diags));
+    f.boot.esp_free = null;
+    try testing.expect(try checkEsp(a, &upgrade, &f, &t.diags));
+    try testing.expectEqual(2, t.diags.items.items.len);
 }
