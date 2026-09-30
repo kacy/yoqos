@@ -344,15 +344,12 @@ fn planRepos(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
 pub const DesiredFile = struct {
     path: []const u8,
     content: []const u8,
-    mode: []const u8,
+    mode: []const u8 = config.File.default_mode,
     /// the key that makes the file, for ones `[files]` doesn't name.
     cause: ?[]const u8 = null,
     /// why a change to it needs a reboot, if one does.
     reboot: ?[]const u8 = null,
 };
-
-/// mkinitcpio's drop-in that loads nvidia's modules early.
-const nvidia_initramfs_path = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf";
 
 /// where `[sysctl]` goes.
 pub const sysctl_path = "/etc/sysctl.d/99-yoq.conf";
@@ -360,16 +357,21 @@ pub const sysctl_path = "/etc/sysctl.d/99-yoq.conf";
 /// where `[boot] modules` goes.
 pub const modules_path = "/etc/modules-load.d/99-yoq.conf";
 
-/// the modules nvidia's driver wants early.
-const nvidia_modules = [_][]const u8{ "nvidia", "nvidia_modeset", "nvidia_uvm", "nvidia_drm" };
-
-const nvidia_initramfs_content = blk: {
-    var s: []const u8 = "# written by os for [hardware] gpu = \"nvidia\".\nMODULES+=(" ++ nvidia_modules[0];
-    for (nvidia_modules[1..]) |m| s = s ++ " " ++ m;
-    break :blk s ++ ")\n";
-};
-
 const greetd_config_path = "/etc/greetd/config.toml";
+const tty_session_path = "/etc/profile.d/yoq-session.sh";
+
+/// mkinitcpio's drop-in that loads nvidia's modules early.
+const nvidia_initramfs_path = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf";
+
+/// files os writes from other keys, each starting with a "written by os"
+/// line. one still there that nothing asks for any more is removed. the
+/// session's own config isn't here: it's the user's file.
+const generated_paths = [_][]const u8{ sysctl_path, modules_path, greetd_config_path, tty_session_path, nvidia_initramfs_path };
+
+/// the first line of a file os makes from `key`.
+fn header(comptime key: []const u8) []const u8 {
+    return "# written by os from " ++ key ++ " in the config. edits here are overwritten.\n";
+}
 
 /// tuigreet on tty1, offering every installed wayland session.
 const greetd_config =
@@ -383,8 +385,6 @@ const greetd_config =
     \\
 ;
 
-const tty_session_path = "/etc/profile.d/yoq-session.sh";
-
 /// logging in on tty1 starts the session through uwsm.
 const tty_session =
     \\# written by os for [desktop] login = "tty". edits here are overwritten.
@@ -394,10 +394,18 @@ const tty_session =
     \\
 ;
 
-/// every file the config wants: `[files]`, the one `[sysctl]` makes, the
-/// login files `[desktop] login` makes, and
-/// nvidia's initramfs drop-in unless the machine loads those modules
-/// already, as `f` shows.
+/// the modules nvidia's driver wants early.
+const nvidia_modules = [_][]const u8{ "nvidia", "nvidia_modeset", "nvidia_uvm", "nvidia_drm" };
+
+const nvidia_initramfs_content = blk: {
+    var s: []const u8 = "# written by os for [hardware] gpu = \"nvidia\".\nMODULES+=(" ++ nvidia_modules[0];
+    for (nvidia_modules[1..]) |m| s = s ++ " " ++ m;
+    break :blk s ++ ")\n";
+};
+
+/// every file the config wants: `[files]`, then the ones other keys make.
+/// nvidia's initramfs drop-in is left out when the machine loads those
+/// modules already, as `f` shows.
 pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts) ![]const DesiredFile {
     var out: std.ArrayList(DesiredFile) = .empty;
     for (c.files.entries.items) |e| {
@@ -405,85 +413,103 @@ pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts
         const content = e.value.content orelse continue;
         try out.append(a, .{ .path = e.name, .content = content, .mode = e.value.modeOf() });
     }
-    if (c.sysctl.entries.items.len > 0) {
-        const keys = try a.alloc([]const u8, c.sysctl.entries.items.len);
-        for (c.sysctl.entries.items, keys) |e, *k| k.* = e.name;
-        lists.sortStrings(keys);
-        var text: std.ArrayList(u8) = .empty;
-        try text.appendSlice(a, "# written by os from [sysctl] in the config. edits here are overwritten.\n");
-        for (keys) |k| try text.print(a, "{s} = {s}\n", .{ k, c.sysctl.get(k).?.v.text });
-        try out.append(a, .{ .path = sysctl_path, .content = text.items, .mode = config.File.default_mode, .cause = "sysctl" });
-    }
-    if (c.desktop.login) |login| switch (login.v) {
-        .greetd => try out.append(a, .{ .path = greetd_config_path, .content = greetd_config, .mode = config.File.default_mode, .cause = "desktop.login" }),
-        .tty => if (c.desktop.session) |s| try out.append(a, .{
-            .path = tty_session_path,
-            .content = try std.fmt.allocPrint(a, tty_session, .{catalog.sessionDesktop(s.v)}),
-            .mode = config.File.default_mode,
-            .cause = "desktop.login",
-        }),
-        .sddm => {},
+    const made = [_]?DesiredFile{
+        try sysctlFile(a, c),
+        try loginFile(a, c),
+        try reposFile(a, c, f),
+        try sessionFile(a, c),
+        try modulesFile(a, c),
+        nvidiaFile(c, f),
     };
-    // once pacman.conf reads the repositories' file, it stays, empty if
-    // need be: pacman fails on an include that's gone.
-    if (ownRepos(c) or f.pacman.includes_repos) {
-        var text: std.ArrayList(u8) = .empty;
-        try text.appendSlice(a, "# written by os from [repos] in the config. edits here are overwritten.\n");
-        for (c.repos.entries.items) |e| {
-            // one without a server was reported when the config loaded.
-            const server = e.value.server orelse continue;
-            // with a key, packages must be signed by it; without one,
-            // they aren't checked.
-            const siglevel = if (e.value.key != null) "Required DatabaseOptional" else "Optional TrustAll";
-            try text.print(a, "\n[{s}]\nSigLevel = {s}\nServer = {s}\n", .{ e.name, siglevel, server.v });
-        }
-        // the aur packages os builds, unsigned, in a local repository.
-        if (c.aur.items.items.len > 0) try text.print(a, "\n[{s}]\nSigLevel = Optional TrustAll\nServer = file://{s}\n", .{ aur.repo_name, aur.repo_dir });
-        try out.append(a, .{ .path = facts.repos_conf, .content = text.items, .mode = config.File.default_mode, .cause = "repos" });
-    }
-    // hyprland reads /etc/xdg/hypr when a user has no config of their
-    // own. the file keeps its extension: .conf, or .lua for newer ones.
-    if (c.desktop.session_content) |content| {
-        const ext = std.fs.path.extension(c.desktop.session_config.?.v);
-        try out.append(a, .{
-            .path = try std.fmt.allocPrint(a, "/etc/xdg/hypr/hyprland{s}", .{if (ext.len > 0) ext else ".conf"}),
-            .content = content,
-            .mode = config.File.default_mode,
-            .cause = "desktop.session_config",
-        });
-    }
-    if (c.boot.modules.items.items.len > 0) {
-        const names = try a.alloc([]const u8, c.boot.modules.items.items.len);
-        for (c.boot.modules.items.items, names) |it, *n| n.* = it.name;
-        lists.sortStrings(names);
-        var text: std.ArrayList(u8) = .empty;
-        try text.appendSlice(a, "# written by os from [boot] modules in the config. edits here are overwritten.\n");
-        for (names) |n| try text.print(a, "{s}\n", .{n});
-        try out.append(a, .{ .path = modules_path, .content = text.items, .mode = config.File.default_mode, .cause = "boot.modules" });
-    }
-    // nvidia's driver wants its modules in the initramfs. amd and intel
-    // come with mkinitcpio's kms hook already.
-    const gpu = if (c.hardware.gpu) |g| g.v else .none;
-    const initramfs = if (c.providers.get("initramfs")) |p| p.v else "mkinitcpio";
-    const loaded = for (nvidia_modules) |m| {
-        if (!lists.contains(f.initramfs_modules, m)) break false;
-    } else true;
-    if (gpu == .nvidia and std.mem.eql(u8, initramfs, "mkinitcpio") and !loaded) {
-        try out.append(a, .{
-            .path = nvidia_initramfs_path,
-            .content = nvidia_initramfs_content,
-            .mode = config.File.default_mode,
-            .cause = "hardware.gpu",
-            .reboot = "initramfs",
-        });
+    for (made) |m| {
+        if (m) |d| try out.append(a, d);
     }
     return out.items;
 }
 
-/// files os writes from other keys, each starting with a "written by os"
-/// line. one still there that nothing asks for any more is removed. the
-/// session's own config isn't here: it's the user's file.
-const generated_paths = [_][]const u8{ sysctl_path, modules_path, greetd_config_path, tty_session_path, nvidia_initramfs_path };
+fn sysctlFile(a: Allocator, c: *const config.Config) !?DesiredFile {
+    if (c.sysctl.entries.items.len == 0) return null;
+    var text: std.ArrayList(u8) = .empty;
+    try text.appendSlice(a, header("[sysctl]"));
+    for (try sortedNames(a, c.sysctl.entries.items)) |k| try text.print(a, "{s} = {s}\n", .{ k, c.sysctl.get(k).?.v.text });
+    return .{ .path = sysctl_path, .content = text.items, .cause = "sysctl" };
+}
+
+fn modulesFile(a: Allocator, c: *const config.Config) !?DesiredFile {
+    if (c.boot.modules.items.items.len == 0) return null;
+    var text: std.ArrayList(u8) = .empty;
+    try text.appendSlice(a, header("[boot] modules"));
+    for (try sortedNames(a, c.boot.modules.items.items)) |n| try text.print(a, "{s}\n", .{n});
+    return .{ .path = modules_path, .content = text.items, .cause = "boot.modules" };
+}
+
+/// the `name` of each item, sorted, so a file doesn't depend on the
+/// config's order.
+fn sortedNames(a: Allocator, items: anytype) ![]const []const u8 {
+    const names = try a.alloc([]const u8, items.len);
+    for (items, names) |it, *n| n.* = it.name;
+    lists.sortStrings(names);
+    return names;
+}
+
+fn loginFile(a: Allocator, c: *const config.Config) !?DesiredFile {
+    const login = c.desktop.login orelse return null;
+    return switch (login.v) {
+        .greetd => .{ .path = greetd_config_path, .content = greetd_config, .cause = "desktop.login" },
+        .tty => .{
+            .path = tty_session_path,
+            .content = try std.fmt.allocPrint(a, tty_session, .{catalog.sessionDesktop((c.desktop.session orelse return null).v)}),
+            .cause = "desktop.login",
+        },
+        .sddm => null,
+    };
+}
+
+/// the file pacman.conf includes for the config's repositories. once
+/// pacman.conf reads it, it stays, empty if need be: pacman fails on an
+/// include that's gone.
+fn reposFile(a: Allocator, c: *const config.Config, f: *const facts.Facts) !?DesiredFile {
+    if (!ownRepos(c) and !f.pacman.includes_repos) return null;
+    var text: std.ArrayList(u8) = .empty;
+    try text.appendSlice(a, header("[repos]"));
+    for (c.repos.entries.items) |e| {
+        // one without a server was reported when the config loaded.
+        const server = e.value.server orelse continue;
+        // with a key, packages must be signed by it; without one, they
+        // aren't checked.
+        const siglevel = if (e.value.key != null) "Required DatabaseOptional" else "Optional TrustAll";
+        try text.print(a, "\n[{s}]\nSigLevel = {s}\nServer = {s}\n", .{ e.name, siglevel, server.v });
+    }
+    // the aur packages os builds, unsigned, in a local repository.
+    if (c.aur.items.items.len > 0) try text.print(a, "\n[{s}]\nSigLevel = Optional TrustAll\nServer = file://{s}\n", .{ aur.repo_name, aur.repo_dir });
+    return .{ .path = facts.repos_conf, .content = text.items, .cause = "repos" };
+}
+
+/// hyprland reads /etc/xdg/hypr when a user has no config of their own.
+/// the file keeps its extension: .conf, or .lua for newer ones.
+fn sessionFile(a: Allocator, c: *const config.Config) !?DesiredFile {
+    const content = c.desktop.session_content orelse return null;
+    const ext = std.fs.path.extension(c.desktop.session_config.?.v);
+    return .{
+        .path = try std.fmt.allocPrint(a, "/etc/xdg/hypr/hyprland{s}", .{if (ext.len > 0) ext else ".conf"}),
+        .content = content,
+        .cause = "desktop.session_config",
+    };
+}
+
+/// nvidia's driver wants its modules in the initramfs. amd and intel come
+/// with mkinitcpio's kms hook already.
+fn nvidiaFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
+    const gpu = c.hardware.gpu orelse return null;
+    if (gpu.v != .nvidia) return null;
+    if (c.providers.get("initramfs")) |p| {
+        if (!std.mem.eql(u8, p.v, "mkinitcpio")) return null;
+    }
+    for (nvidia_modules) |m| {
+        if (!lists.contains(f.initramfs_modules, m)) break;
+    } else return null;
+    return .{ .path = nvidia_initramfs_path, .content = nvidia_initramfs_content, .cause = "hardware.gpu", .reboot = "initramfs" };
+}
 
 /// what the observer should look at for this config: every file it might
 /// want or os may have generated, and the repositories' signing keys.
@@ -496,9 +522,8 @@ pub fn wanted(a: Allocator, c: *const config.Config) !facts.Wanted {
 }
 
 fn filePaths(a: Allocator, c: *const config.Config) ![]const []const u8 {
-    const want = try desiredFiles(a, c, &.{});
     var out: std.ArrayList([]const u8) = .empty;
-    for (want) |d| try out.append(a, d.path);
+    for (try desiredFiles(a, c, &.{})) |d| try out.append(a, d.path);
     for (generated_paths) |p| {
         if (!lists.contains(out.items, p)) try out.append(a, p);
     }
