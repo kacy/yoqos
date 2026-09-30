@@ -76,12 +76,14 @@ pub fn gpuChoice(gpus: []const []const u8) ?[]const u8 {
     return null;
 }
 
+const test_helpers = @import("test_helpers.zig");
+
 test "a new machine's config loads, with what a new machine needs" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const text = try machineToml(a, .{ .hostname = "atlas", .user = "kacy", .timezone = "America/New_York", .cpu = "amd", .gpu = "nvidia", .ssh = true });
-    const c = try @import("test_helpers.zig").configFrom(a, text);
+    const c = try test_helpers.configFrom(a, text);
     try std.testing.expect(c.packages.contains("linux-firmware"));
     try std.testing.expect(c.packages.contains("grub"));
     try std.testing.expectEqualStrings("atlas", c.system.hostname.?.v);
@@ -89,7 +91,7 @@ test "a new machine's config loads, with what a new machine needs" {
     const vm = try machineToml(a, .{ .hostname = "box", .user = "me", .firmware = false });
     try std.testing.expect(std.mem.indexOf(u8, vm, "linux-firmware") == null);
     try std.testing.expect(std.mem.indexOf(u8, vm, "[hardware]") == null);
-    _ = try @import("test_helpers.zig").configFrom(a, vm);
+    _ = try test_helpers.configFrom(a, vm);
     try std.testing.expectEqualStrings("nvidia", gpuChoice(&.{ "intel", "nvidia" }).?);
     try std.testing.expectEqual(null, gpuChoice(&.{"vmware"}));
 }

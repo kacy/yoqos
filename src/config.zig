@@ -298,7 +298,7 @@ const Decoder = struct {
         return .{ .file = d.file, .line = span.start.line, .column = span.start.column };
     }
 
-    fn path(d: *Decoder, prefix: []const u8, key: []const u8) ![]const u8 {
+    fn path(d: *const Decoder, prefix: []const u8, key: []const u8) ![]const u8 {
         return std.fmt.allocPrint(d.a, "{s}{s}.", .{ prefix, key });
     }
 
@@ -839,7 +839,7 @@ test "validate catches unknown services and bad names" {
 }
 
 test "repositories name a server, and a key by its fingerprint" {
-    var f = try Fixture.init(
+    const f = try Fixture.init(
         \\[repos.chaotic-aur]
         \\server = "https://cdn-mirror.chaotic.cx/$repo/$arch"
         \\key = "3056513887B78AEB"
@@ -863,7 +863,7 @@ test "repositories name a server, and a key by its fingerprint" {
 }
 
 test "kernel module names" {
-    var f = try Fixture.init("[boot]\nmodules = [\"i2c-dev\", \"nct6775\", \"bad name\"]\n");
+    const f = try Fixture.init("[boot]\nmodules = [\"i2c-dev\", \"nct6775\", \"bad name\"]\n");
     defer f.deinit();
     try validate(&f.part.config, &f.diags);
     try testing.expectEqual(1, f.diags.items.items.len);
@@ -871,7 +871,7 @@ test "kernel module names" {
 }
 
 test "a session's config needs a session" {
-    var f = try Fixture.init("[desktop]\nsession_config = \"files/hyprland.conf\"\n");
+    const f = try Fixture.init("[desktop]\nsession_config = \"files/hyprland.conf\"\n");
     defer f.deinit();
     try validate(&f.part.config, &f.diags);
     try testing.expectEqual(1, f.diags.items.items.len);
@@ -879,7 +879,7 @@ test "a session's config needs a session" {
 }
 
 test "[files] can't name a file os writes itself" {
-    var f = try Fixture.init(
+    const f = try Fixture.init(
         \\[sysctl]
         \\"vm.swappiness" = 10
         \\[files."/etc/sysctl.d/99-yoq.conf"]
@@ -902,7 +902,7 @@ test "[files] paths are plain and stay out of os's own state" {
     for ([_][]const u8{ "/etc/motd", "/etc/yoqx", "/var/lib/yoq-other/x", "/etc/..hidden" }) |p| {
         try testing.expectEqual(null, filePathProblem(p));
     }
-    var f = try Fixture.init("[files.\"/etc/../../tmp/x\"]\ntext = \"x\"\n");
+    const f = try Fixture.init("[files.\"/etc/../../tmp/x\"]\ntext = \"x\"\n");
     defer f.deinit();
     try validate(&f.part.config, &f.diags);
     try testing.expectEqual(1, f.diags.items.items.len);
@@ -910,14 +910,14 @@ test "[files] paths are plain and stay out of os's own state" {
 }
 
 test "a console login needs no session" {
-    var f = try Fixture.init("[desktop]\nlogin = \"tty\"\n");
+    const f = try Fixture.init("[desktop]\nlogin = \"tty\"\n");
     defer f.deinit();
     try validate(&f.part.config, &f.diags);
     try testing.expectEqual(0, f.diags.items.items.len);
 }
 
 test "group names follow the user name rules" {
-    var f = try Fixture.init("[users.kacy]\ngroups = [\"wheel\", \"-r\"]\n");
+    const f = try Fixture.init("[users.kacy]\ngroups = [\"wheel\", \"-r\"]\n");
     defer f.deinit();
     try validate(&f.part.config, &f.diags);
     try testing.expectEqual(1, f.diags.items.items.len);
@@ -937,7 +937,7 @@ test "[system] values" {
     try testing.expect(systemProblem("locale", "C\nLD_PRELOAD=/x") != null);
     try testing.expect(systemProblem("keymap", "us\r") != null);
 
-    var f = try Fixture.init("[system]\nhostname = \"atlas.lan\"\nlocale = \"C\\nX=1\"\n");
+    const f = try Fixture.init("[system]\nhostname = \"atlas.lan\"\nlocale = \"C\\nX=1\"\n");
     defer f.deinit();
     try validate(&f.part.config, &f.diags);
     try testing.expectEqual(1, f.diags.items.items.len);
@@ -945,7 +945,7 @@ test "[system] values" {
 }
 
 test "system accounts can't be declared" {
-    var f = try Fixture.init("[users.root]\nshell = \"zsh\"\n[users.kacy]\n");
+    const f = try Fixture.init("[users.root]\nshell = \"zsh\"\n[users.kacy]\n");
     defer f.deinit();
     try validate(&f.part.config, &f.diags);
     try testing.expectEqual(1, f.diags.items.items.len);
