@@ -9,6 +9,10 @@
 - the install plan notes what a new machine usually needs and its config
   lacks: firmware on real hardware, a network, and a user who can use sudo.
 - the usage docs walk through installing from a thumb drive, step by step.
+- `os plan -o <file>` saves a plan, and `os apply <file>` applies exactly
+  that plan, or refuses with E0128 if it's out of date.
+- `os schema` prints json schemas for the plan, facts, status, and errors
+  documents, and for `machine.toml`.
 - enable-rollback converts a root that `snapper rollback` made, like
   `@/.snapshots/2/snapshot`, and makes the btrfs top level the default
   subvolume again for grub and refind.

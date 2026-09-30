@@ -28,6 +28,7 @@ pub const Code = enum {
     systemd_failed,
     protected_package,
     apply_failed,
+    plan_changed,
     unknown_service,
 };
 
@@ -176,6 +177,14 @@ pub const table = [_]Entry{
             "it are done; fix the cause and run `os apply` again to finish.",
     },
     .{
+        .code = .plan_changed,
+        .id = "E0128",
+        .title = "the saved plan is out of date",
+        .explanation = "`os apply <file>` applies a plan `os plan -o <file>` saved, and only that plan. the " ++
+            "config, the lock, or the machine changed since it was saved, so os would now do something else. " ++
+            "run `os plan -o <file>` again, look it over, and apply the new one.",
+    },
+    .{
         .code = .unknown_service,
         .id = "E0213",
         .title = "unknown service",
@@ -320,9 +329,12 @@ pub const List = struct {
         const errors = try a.alloc(Diagnostic.Json, l.items.items.len);
         defer a.free(errors);
         for (l.items.items, errors) |d, *j| j.* = d.toJson();
-        try output.writeDoc(w, "yoq.errors/1", .{ .errors = errors });
+        try output.writeDoc(w, "yoq.errors/1", JsonDoc{ .errors = errors });
     }
 };
+
+/// errors as json: what every command prints with --json when it fails.
+pub const JsonDoc = struct { errors: []const Diagnostic.Json };
 
 /// the candidate closest to `name` by edit distance, if it's close enough to
 /// be a likely typo.

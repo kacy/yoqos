@@ -218,7 +218,7 @@ pub const Builder = struct {
         defer ctx.root = host;
         var from = b.inputs orelse cli.inputs(ctx);
         from.root = b.dir;
-        const done = try applying.run(ctx, true, from, .{ .quiet = b.staged });
+        const done = try applying.run(ctx, true, from, .{ .render = .{ .quiet = b.staged } });
         if (!b.staged) std.Io.Dir.cwd().deleteFile(ctx.io, try b.in(no_autodetect)) catch {};
         if (done.code != 0) return done.code;
         var w: cli.Work = .init(ctx);

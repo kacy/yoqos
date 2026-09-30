@@ -81,7 +81,7 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         var in = cli.inputs(ctx);
         in.lock_path = pending;
         try ctx.out.writeByte('\n');
-        outcome = try applying.run(ctx, then.yes, in, .{ .summary = true, .verbose = verbose });
+        outcome = try applying.run(ctx, then.yes, in, .{ .render = .{ .summary = true, .verbose = verbose } });
         if (!outcome.matches) return outcome.code;
     }
 

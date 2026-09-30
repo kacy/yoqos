@@ -98,6 +98,7 @@ test {
     _ = @import("golden.zig");
     _ = @import("lists.zig");
     _ = @import("why.zig");
+    _ = @import("schema.zig");
     _ = @import("edit.zig");
     _ = @import("change.zig");
     _ = @import("alpm.zig");

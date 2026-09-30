@@ -178,6 +178,12 @@ key that asked for a change, when it isn't the `packages` list itself. `-v`
 whether the change needs a reboot, and why. `--lock <file>` plans against
 another lock file.
 
+`-o <file>` also saves the plan, as the same json `--json` prints. `os apply
+<file>` then applies that plan and nothing else: if the config, the lock,
+or the machine changed since, so that the plan would be different, it
+refuses with E0128 and changes nothing. that's useful when one person or
+script writes the plan and another looks it over before it runs.
+
 ### apply
 
 ```
@@ -965,7 +971,8 @@ error[E0213]: unknown service "sshd"
 
 `os explain E0213` prints the long explanation, and `os explain` lists every
 code. E0127 is a step of an apply that failed, like a file that couldn't be
-written or a tool that didn't work; the message has the details.
+written or a tool that didn't work; the message has the details. E0128 is a
+saved plan that's out of date.
 
 ## scripting
 
@@ -974,6 +981,12 @@ starts with a `schema` field, like `"schema": "yoq.plan/1"`, that names its
 shape and version. errors with a code come out as a `yoq.errors/1`
 document on stdout under `--json`; other problems, like a file that can't
 be written, are an `os: ...` line on stderr either way.
+
+`os schema <name>` prints the json schema for a document: `plan`, `facts`,
+`status`, or `errors`. `os schema config` is one for `machine.toml`, which
+editors that check toml against a json schema, like taplo, can use.
+`os schema` alone lists them. the schemas come from the same code that
+writes and reads the documents, so they can't fall out of date.
 
 exit codes:
 

@@ -58,13 +58,16 @@ pub fn factsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 pub fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os plan [--lock <file>] [-v]";
+    const usage_text = "os plan [--lock <file>] [-o <file>] [-v]";
     var in = cli.inputs(ctx);
     var verbose = false;
+    var save: ?[]const u8 = null;
     var it: cli.ArgIter = .{ .args = args };
     while (it.next()) |a| {
         if (eql(a, "-v") or eql(a, "--verbose")) {
             verbose = true;
+        } else if (eql(a, "-o") or eql(a, "--output")) {
+            save = it.next() orelse return cli.usageError(ctx, usage_text);
         } else if (eql(a, "--lock")) {
             in.lock_path = it.next() orelse return cli.usageError(ctx, usage_text);
         } else return cli.usageError(ctx, usage_text);
@@ -78,6 +81,16 @@ pub fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try planner.writeJson(ctx.out, result.allocator(), &result.plan);
     } else {
         try planner.writeText(ctx.out, result.allocator(), &result.plan, .{ .verbose = verbose });
+    }
+    if (save) |path| {
+        // the same document --json prints: `os apply <file>` checks its hash.
+        var doc: std.Io.Writer.Allocating = .init(result.allocator());
+        try planner.writeJson(&doc.writer, result.allocator(), &result.plan);
+        std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = path, .data = doc.written() }) catch |e| {
+            try ctx.err.print("os: can't write {s}: {s}\n", .{ path, @errorName(e) });
+            return 1;
+        };
+        if (!ctx.json) try ctx.out.print("\nsaved to {s}. `os apply {s}` applies this plan, and refuses if it changed.\n", .{ path, path });
     }
     return 0;
 }

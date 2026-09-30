@@ -27,6 +27,7 @@ const diff_cmd = @import("cmd/diff.zig");
 const doctor = @import("cmd/doctor.zig");
 const docs = @import("cmd/docs.zig");
 const update = @import("cmd/update.zig");
+const schemas = @import("schema.zig");
 
 pub const default_config = "/etc/yoq/machine.toml";
 
@@ -111,6 +112,7 @@ const commands = [_]Command{
     .{ .name = "health", .summary = "check a generation on trial, at boot (yoq-health.service runs this)", .handler = health.healthCmd, .hidden = true },
     .{ .name = "record-pacman", .summary = "record a pacman transaction (the drift hook runs this)", .handler = hook.recordPacmanCmd, .hidden = true },
     .{ .name = "explain", .summary = "explain an error code, like E0213", .handler = explain },
+    .{ .name = "schema", .summary = "print the json schema for the config or a json document", .handler = schemaCmd, .hidden = true },
 };
 
 /// walks a command's own arguments.
@@ -493,6 +495,25 @@ fn reportDiags(ctx: *Context, diags: *const diag.List) !u8 {
         try diags.render(ctx.err);
     }
     return 1;
+}
+
+fn schemaCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    if (args.len > 1) return usageError(ctx, "os schema [<name>]");
+    if (args.len == 0) {
+        const Entry = struct { name: []const u8, what: []const u8 };
+        var list: [schemas.docs.len]Entry = undefined;
+        for (schemas.docs, &list) |d, *e| e.* = .{ .name = d.name, .what = d.what };
+        if (ctx.json) {
+            try output.writeDoc(ctx.out, "yoq.schemas/1", .{ .schemas = &list });
+        } else for (list) |e| try ctx.out.print("{s: <8}{s}\n", .{ e.name, e.what });
+        return 0;
+    }
+    const d = schemas.find(args[0]) orelse {
+        try ctx.err.print("os: there's no schema called {s}. `os schema` lists them.\n", .{args[0]});
+        return 1;
+    };
+    try d.write(ctx.out);
+    return 0;
 }
 
 fn explain(ctx: *Context, args: []const [:0]const u8) !u8 {

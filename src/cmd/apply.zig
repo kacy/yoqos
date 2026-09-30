@@ -28,14 +28,38 @@ const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
 pub fn applyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
+    const usage_text = "os apply [<saved plan>] [--yes]";
     var yes = false;
+    var saved: ?[]const u8 = null;
     for (args) |arg| {
-        if (isYes(arg)) yes = true else return cli.usageError(ctx, "os apply [--yes]");
+        if (isYes(arg)) {
+            yes = true;
+        } else if (saved == null and arg.len > 0 and arg[0] != '-') {
+            saved = arg;
+        } else return cli.usageError(ctx, usage_text);
     }
+    var arena: std.heap.ArenaAllocator = .init(ctx.gpa);
+    defer arena.deinit();
+    const expect = if (saved) |path| try savedHash(ctx, arena.allocator(), path) orelse return 1 else null;
     if (try refused(ctx, applyBlocker(ctx))) return 1;
-    const done = try run(ctx, yes, cli.inputs(ctx), .{});
+    const done = try run(ctx, yes, cli.inputs(ctx), .{ .expect = expect });
     try recordGeneration(ctx, done, "apply");
     return done.code;
+}
+
+/// the hash in a plan `os plan -o` saved, or null after saying why
+/// there isn't one.
+fn savedHash(ctx: *Context, a: Allocator, path: []const u8) !?[]const u8 {
+    const text = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, a, .limited(64 << 20)) catch |e| {
+        try ctx.err.print("os: can't read {s}: {s}\n", .{ path, @errorName(e) });
+        return null;
+    };
+    const doc = std.json.parseFromSliceLeaky(struct { schema: []const u8, hash: []const u8 }, a, text, .{ .ignore_unknown_fields = true }) catch null;
+    if (doc == null or !cli.eql(doc.?.schema, planner.schema)) {
+        try ctx.err.print("os: {s} isn't a plan. `os plan -o <file>` saves one.\n", .{path});
+        return null;
+    }
+    return doc.?.hash;
 }
 
 pub fn isYes(arg: []const u8) bool {
@@ -138,12 +162,26 @@ pub const Outcome = struct {
 /// plans from `in`, shows the plan, asks unless `yes`, applies it, and
 /// checks the result. the caller has checked `blocker`, and records a
 /// generation afterwards with `recordGeneration`.
-pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, render: planner.RenderOptions) !Outcome {
+pub const RunOptions = struct {
+    render: planner.RenderOptions = .{},
+    /// the hash of a saved plan: the run applies that plan or nothing.
+    expect: ?[]const u8 = null,
+};
+
+pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Outcome {
+    const render = opts.render;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
     const result = try w.plan(in) orelse return Outcome.failed(&w);
     const p = &result.plan;
+    if (opts.expect) |want| {
+        const got = try p.hash();
+        if (!cli.eql(want, &got)) {
+            try w.diags.add(.plan_changed, null, "this machine's plan isn't the saved one any more (saved {s}, now {s})", .{ want[0..@min(12, want.len)], got[0..12] }, "`os plan -o <file>` saves the plan as it is now");
+            return Outcome.failed(&w);
+        }
+    }
     if (try journal.unfinished(a, ctx.io, ctx.root)) |hash| {
         try ctx.err.print("os: the last apply (plan {s}) didn't finish. this one starts from the machine as it is now.\n", .{hash[0..@min(12, hash.len)]});
     }

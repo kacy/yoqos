@@ -730,15 +730,24 @@ fn depSummary(w: *std.Io.Writer, p: *const Plan) !void {
     try w.writeAll(" dependencies (-v to list)\n");
 }
 
+/// a plan as json: what `os plan --json` prints, and `os plan -o` saves.
+pub const Doc = struct {
+    hash: []const u8,
+    summary: struct { add: usize, change: usize, remove: usize },
+    reboot: struct { needed: bool, because: []const []const u8 },
+    changes: []const Change,
+};
+
 pub fn writeJson(w: *std.Io.Writer, a: Allocator, p: *const Plan) !void {
     const h = try p.hash();
     const reasons = try p.rebootReasons(a);
-    try output.writeDoc(w, schema, .{
+    const doc: Doc = .{
         .hash = &h,
         .summary = .{ .add = p.count(.add), .change = p.count(.change), .remove = p.count(.remove) },
         .reboot = .{ .needed = reasons.len > 0, .because = reasons },
         .changes = p.changes,
-    });
+    };
+    try output.writeDoc(w, schema, doc);
 }
 
 // -- tests --

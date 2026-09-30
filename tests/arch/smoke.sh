@@ -66,6 +66,18 @@ pacman -Q tree
 if pacman -Q tree 2>/dev/null; then echo "tree is still installed"; exit 1; fi
 says "nothing to do" plan
 
+# a saved plan applies as it was saved, and not once it's out of date.
+"$os" --config "$cfg" add --no-apply tree
+"$os" --config "$cfg" plan -o "$dir/saved.json" > /dev/null
+"$os" --config "$cfg" remove --no-apply tree
+rc=0
+"$os" --config "$cfg" apply --yes "$dir/saved.json" 2> "$dir/err" || rc=$?
+[ "$rc" = 1 ] && grep -q E0128 "$dir/err" || { echo "smoke: a stale saved plan applied (exit $rc)"; cat "$dir/err"; exit 1; }
+"$os" --config "$cfg" add --no-apply tree
+"$os" --config "$cfg" apply --yes "$dir/saved.json"
+pacman -Q tree
+"$os" --config "$cfg" remove --yes tree
+
 # a user: created with its shell and groups, then moved between groups.
 printf '\n[users.yoqtest]\nshell = "bash"\ngroups = ["wheel"]\n' >> "$cfg"
 "$os" --config "$cfg" apply --yes
