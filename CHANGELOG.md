@@ -25,6 +25,24 @@
 - `os status` lists what changed on the running system after a staged
   generation was built, since those changes stay behind at the reboot.
 
+- `os edit` applies the config after saving it. it had been stopping after
+  the commit.
+- security fixes for what runs as root: a lock's date is checked before it
+  names a cache directory, toml nesting has a depth limit, a relative file
+  source can't go through a symlink, and `os install` keeps a url's
+  credentials out of the new machine's config repository.
+- a saved plan's hash covers the content of the files it writes, so the
+  plan goes out of date when that content changes.
+- atomic writes and esp copies are synced to disk. a staged root that fails
+  or can't be recorded is dropped. a carry stops instead of writing back an
+  account file it couldn't read. the systemd job wait has a real 90 second
+  deadline, and config edits and updates take the machine lock.
+- refind trials no longer leave a firmware boot entry behind each time, and
+  `os uninstall` can finish its pacman database step after being stopped
+  partway.
+- config history ignores GIT_DIR and GIT_WORK_TREE from the environment, so
+  `os` run from a git hook commits to its own config.
+
 ## 0.1.1
 
 generations work with every bootloader arch users run, and each one falls
