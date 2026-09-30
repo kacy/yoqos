@@ -96,6 +96,7 @@ test {
     _ = @import("fuzz.zig");
     _ = @import("props.zig");
     _ = @import("lists.zig");
+    _ = @import("progress.zig");
     _ = @import("why.zig");
     _ = @import("schema.zig");
     _ = @import("edit.zig");
