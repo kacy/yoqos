@@ -210,6 +210,12 @@ packages
 plan: 1 to add, 0 to change, 0 to remove · no reboot
 
 apply this? [y/N] y
+downloading 1 package, 58 KiB  1/1
+checking keys
+checking packages
+loading packages
+checking file conflicts
+installing 1 package  1/1
 
 applied 1 change.
 ```
@@ -255,6 +261,13 @@ doesn't ask for. the exception is a few core packages (`base`,
 `filesystem`, `glibc`, `pacman`, and `systemd`). if the config leaves one
 out, `plan` and `apply` stop with E0126, since that's almost always a
 mistake. to remove one on purpose, name it in `[remove]`.
+
+while pacman's transaction runs, its progress goes to stderr. on a
+terminal each phase is one line that updates in place, like `installing 168
+packages  80/168 linux`. in a log or a pipe each phase gets one line, and a
+long one also gets a line at each quarter, so a big update stays short.
+`--json` shows none of it. `update`, `rollback`, `add`, and `install` do
+the same when they apply.
 
 `apply` keeps a journal in `/var/lib/yoq/journal`. if an apply is cut off
 halfway, the next one says so and starts from the machine as it is.

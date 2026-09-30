@@ -8,6 +8,7 @@ const diag = @import("diag.zig");
 const api = @import("alpm.zig");
 const sync = @import("sync.zig");
 const lists = @import("lists.zig");
+const progress = @import("progress.zig");
 const Allocator = std.mem.Allocator;
 const c = @cImport({
     // see systemd_c.zig: glibc's fortify wrappers don't translate.
@@ -392,9 +393,15 @@ pub fn transact(a: Allocator, io: std.Io, t: api.Transaction, diags: *diag.List)
     if (!try configure(a, h, t, diags)) return false;
     var questions: Questions = .{ .a = a, .providers = &.{}, .remove = t.remove };
     _ = c.alpm_option_set_questioncb(h.h, Questions.answer, &questions);
-    var log: Log = .{ .a = a, .diags = diags };
+    var log: Log = .{ .a = a, .diags = diags, .progress = t.target.progress };
     _ = c.alpm_option_set_logcb(h.h, Log.message, &log);
     _ = c.alpm_option_set_eventcb(h.h, Log.event, &log);
+    if (t.target.progress) |p| {
+        _ = c.alpm_option_set_dlcb(h.h, Shown.download, p);
+        _ = c.alpm_option_set_progresscb(h.h, Shown.step, p);
+    }
+    // a transaction that fails partway leaves its line open.
+    defer if (t.target.progress) |p| p.feed(.end);
 
     // install first: removing can take away what downloading needs, like
     // the tls certificates. an install replaces a conflicting package the
@@ -429,6 +436,7 @@ const Log = struct {
     /// the hook or package script running now, and its output so far.
     running: []const u8 = "",
     output: std.ArrayList(u8) = .empty,
+    progress: ?*progress.Progress = null,
 
     fn message(ctx: ?*anyopaque, level: c.alpm_loglevel_t, fmt: [*c]const u8, args: VaList) callconv(.c) void {
         if (level != c.ALPM_LOG_ERROR) return;
@@ -452,6 +460,7 @@ const Log = struct {
     }
 
     fn onEvent(self: *Log, e: *c.alpm_event_t) !void {
+        if (self.progress) |p| Shown.event(p, e);
         switch (e.type) {
             // downloads are done by now. errors before this, like a mirror
             // that failed before the next one worked, don't count if the
@@ -492,6 +501,44 @@ const Log = struct {
         const later = d.items.len - end;
         std.mem.copyForwards(diag.Diagnostic, d.items[self.start..], d.items[end..]);
         d.shrinkRetainingCapacity(self.start + later);
+    }
+};
+
+/// libalpm's callbacks, as progress events.
+const Shown = struct {
+    fn event(p: *progress.Progress, e: *c.alpm_event_t) void {
+        switch (e.type) {
+            c.ALPM_EVENT_PKG_RETRIEVE_START => p.feed(.{ .download = .{ .count = e.pkg_retrieve.num, .bytes = e.pkg_retrieve.total_size } }),
+            c.ALPM_EVENT_HOOK_RUN_START => p.feed(.{ .hook = .{ .name = str(e.hook_run.name), .current = e.hook_run.position, .total = e.hook_run.total } }),
+            c.ALPM_EVENT_PKG_RETRIEVE_DONE, c.ALPM_EVENT_PKG_RETRIEVE_FAILED, c.ALPM_EVENT_TRANSACTION_DONE, c.ALPM_EVENT_HOOK_DONE => p.feed(.end),
+            else => {},
+        }
+    }
+
+    fn download(ctx: ?*anyopaque, file: [*c]const u8, kind: c.alpm_download_event_type_t, data: ?*anyopaque) callconv(.c) void {
+        if (kind != c.ALPM_DOWNLOAD_COMPLETED or data == null) return;
+        const done: *c.alpm_download_event_completed_t = @ptrCast(@alignCast(data));
+        // a signature downloads as a file of its own; the package is what
+        // counts. -1 is a file no server had, which fails the transaction.
+        if (done.result < 0 or std.mem.endsWith(u8, str(file), ".sig")) return;
+        const p: *progress.Progress = @ptrCast(@alignCast(ctx));
+        p.feed(.downloaded);
+    }
+
+    fn step(ctx: ?*anyopaque, kind: c.alpm_progress_t, pkg: [*c]const u8, percent: c_int, howmany: usize, current: usize) callconv(.c) void {
+        _ = percent;
+        const p: *progress.Progress = @ptrCast(@alignCast(ctx));
+        const phase: progress.Phase = switch (kind) {
+            c.ALPM_PROGRESS_ADD_START, c.ALPM_PROGRESS_UPGRADE_START, c.ALPM_PROGRESS_DOWNGRADE_START, c.ALPM_PROGRESS_REINSTALL_START => .install,
+            c.ALPM_PROGRESS_REMOVE_START => .remove,
+            c.ALPM_PROGRESS_KEYRING_START => return p.feed(.{ .check = .keys }),
+            c.ALPM_PROGRESS_INTEGRITY_START => return p.feed(.{ .check = .integrity }),
+            c.ALPM_PROGRESS_LOAD_START => return p.feed(.{ .check = .load }),
+            c.ALPM_PROGRESS_CONFLICTS_START => return p.feed(.{ .check = .conflicts }),
+            c.ALPM_PROGRESS_DISKSPACE_START => return p.feed(.{ .check = .diskspace }),
+            else => return,
+        };
+        p.feed(.{ .step = .{ .phase = phase, .name = str(pkg), .current = current, .total = howmany } });
     }
 };
 

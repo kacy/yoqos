@@ -24,6 +24,7 @@ const trial = @import("../trial.zig");
 const stage = @import("stage.zig");
 const locking = @import("lock.zig");
 const diag = @import("../diag.zig");
+const progress = @import("../progress.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
@@ -199,7 +200,13 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
         return .{ .code = 0, .matches = true, .changed_generation = true, .needs_reboot = true, .staged_root = root };
     }
 
-    const target = try targetFor(ctx, &w, result.state.config(), &result.state.lock) orelse return Outcome.failed(&w);
+    var target = try targetFor(ctx, &w, result.state.config(), &result.state.lock) orelse return Outcome.failed(&w);
+    var shown: progress.Progress = .{ .w = ctx.err, .tty = ctx.progress == .terminal };
+    if (ctx.progress != .off and !ctx.json) {
+        // progress goes to stderr; what's on stdout comes first.
+        try ctx.out.flush();
+        target.progress = &shown;
+    }
     if (try alpm.clearStaleLock(a, ctx.io, target.dbpath)) |path| {
         try ctx.err.print("os: removed {s}, left from before this boot by a transaction that never finished.\n", .{path});
     }
