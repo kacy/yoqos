@@ -14,6 +14,8 @@ const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
 const menu = @import("../menu.zig");
 const output = @import("../output.zig");
+const events = @import("../events.zig");
+const journal = @import("../journal.zig");
 const applying = @import("apply.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
@@ -97,6 +99,8 @@ const Enabler = struct {
                 return false;
             }
         }
+        // into the /var the next boot mounts, while it's still reachable.
+        try events.recordIn(e.a, e.ctx.io, e.var_dir, .{ .time = journal.now(e.ctx.io), .kind = .@"enable-rollback", .step = .done, .generation = 1 });
         return true;
     }
 

@@ -15,6 +15,8 @@ const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
 const install = @import("../install.zig");
 const lock = @import("../lock.zig");
+const events = @import("../events.zig");
+const journal = @import("../journal.zig");
 const applying = @import("apply.zig");
 const building = @import("build.zig");
 const locking = @import("lock.zig");
@@ -86,6 +88,8 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     }
     if (!yes and ctx.interactive) try in.passwords() else try ctx.out.writeAll("\naccounts have no passwords yet. set them with `passwd -R " ++ install.target ++ " <user>` before rebooting, or from a console later.\n");
     if (try in.recordFirst()) |why| return fail(ctx, why);
+    // on the new machine's own /var, beside the build's apply events.
+    try events.record(a, ctx.io, install.target, .{ .time = journal.now(ctx.io), .kind = .install, .generation = 1, .message = found.host });
     try ctx.out.print("\n{s} is installed as generation 1. remove the live medium and reboot.\n", .{found.host});
     return 0;
 }
