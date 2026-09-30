@@ -644,10 +644,21 @@ const offline: sync.Fetcher = .{ .ctx = undefined, .fetchFn = struct {
 test {
     _ = init_cmd;
     _ = apply_cmd;
+    _ = rollback;
+    _ = hook;
+    _ = health;
+    _ = uninstall;
+    _ = build_cmd;
+    _ = install_cmd;
+    _ = enable_rollback;
     _ = inspect;
     _ = edit;
+    _ = diff_cmd;
+    _ = doctor;
+    _ = docs;
     _ = update;
     _ = @import("cmd/lock.zig");
+    _ = @import("cmd/stage.zig");
 }
 
 test "no args prints usage" {
