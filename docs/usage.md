@@ -194,6 +194,12 @@ key that asked for a change, when it isn't the `packages` list itself. `-v`
 whether the change needs a reboot, and why. `--lock <file>` plans against
 another lock file.
 
+on a machine with generations, a plan that changes a kernel, its
+initramfs, or microcode also checks that the new boot files fit on the
+esp, and stops with E0131 if they don't (see
+[generations](generations.md)). `os apply` checks the same before it
+builds anything.
+
 `-o <file>` also saves the plan, as the same json `--json` prints. `os apply
 <file>` then applies that plan and nothing else: if the config, the lock,
 or the machine changed since, so that the plan would be different, it
@@ -1061,7 +1067,8 @@ error[E0213]: unknown service "sshd"
 code. E0127 is a step of an apply that failed, like a file that couldn't be
 written or a tool that didn't work; the message has the details. E0128 is a
 saved plan that's out of date, and E0129 a plan that changed between being
-shown and the yes.
+shown and the yes. E0131 is a change whose new boot files won't fit on the
+esp.
 
 ## scripting
 

@@ -62,9 +62,12 @@ fn runCase(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8
     };
 
     var outputs: std.ArrayList(struct { []const u8, []const u8 }) = .empty;
-    if (try pipeline.buildPlan(gpa, io, files.files(), in, &diags)) |r| {
-        var result = r;
-        defer result.deinit();
+    var built = try pipeline.buildPlan(gpa, io, files.files(), in, &diags);
+    defer if (built) |*r| r.deinit();
+    // the esp check runs where os plan and os apply run it.
+    const planned = if (built) |*r| try planner.checkEsp(a, &r.plan, &r.facts, &diags) else false;
+    if (planned) {
+        const result = &built.?;
         var text: std.Io.Writer.Allocating = .init(a);
         try planner.writeText(&text.writer, a, &result.plan, .{ .verbose = true });
         var json: std.Io.Writer.Allocating = .init(a);

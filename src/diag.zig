@@ -32,6 +32,7 @@ pub const Code = enum {
     unknown_service,
     plan_moved,
     aur_missing,
+    esp_full,
 };
 
 pub const Entry = struct {
@@ -211,6 +212,20 @@ pub const table = [_]Entry{
             "config names, so add it: `os add --aur <package>`, then `os update` again. os builds them in " ++
             "order. when the missing name is a package a recipe splits off, os can't build it yet: from a " ++
             "split recipe it installs only the package named after the recipe.",
+    },
+    .{
+        .code = .esp_full,
+        .id = "E0131",
+        .title = "the new boot files won't fit on the esp",
+        .explanation = "the plan changes a kernel, its initramfs, or microcode, so the next generation " ++
+            "puts new boot files on the esp: limine and systemd-boot boot copies of every generation's " ++
+            "files from there, and with the esp at /boot the running kernel lives there too. the esp " ++
+            "hasn't the room, so os stops before it builds anything. the size is an estimate from the " ++
+            "boot files the running system has now. with limine or systemd-boot, `os gc --keep <n>` " ++
+            "removes older generations and the copies only they use; the message names the ones " ++
+            "`os gc --keep 1` would remove. with grub or refind, the esp holds only the running " ++
+            "system's files, so make room by hand, for example by removing the fallback initramfs " ++
+            "images, which os's menu doesn't boot. then plan again.",
     },
 };
 

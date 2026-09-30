@@ -148,7 +148,8 @@ initramfs live on the esp, outside every root. each generation therefore
 keeps copies of its own in its root's `/boot` directory, underneath the
 esp's mount point, where grub can read them. the top entry boots from the
 esp itself, so a kernel that `pacman` installs directly is the one it
-boots. rolling back puts that generation's kernel back on the esp.
+boots. rolling back puts that generation's kernel back on the esp, when it
+fits (see below).
 
 ## going back
 
@@ -268,10 +269,22 @@ generation booted from the menu, since that generation's record is what
 next boot.
 
 limine and systemd-boot need copies of each generation's boot files on the
-esp. when a new generation's files don't fit, `os` doesn't record it, and
-says which generations `os gc --keep 1` would remove to make room. the
+esp, and with the esp at `/boot` the running kernel lives there too. `os
+plan` and `os apply` check the esp's free space before anything is built:
+a change to a kernel, its initramfs, or microcode that won't fit stops with
+E0131. the size is guessed from the running system's boot files, with a
+little to spare. the error says which generations `os gc --keep 1`
+would remove to make room, or, with grub or refind, that the esp only
+holds the running system's files and has to be cleared by hand. when a new
+generation's real files still don't fit, `os` doesn't record it, and the
 running system stays as it was. a staged change that fails to build on a
 nearly full disk also says the disk is the likely reason.
+
+with the esp at `/boot`, a generation that has booted well, or one `os
+rollback` starts, gets its kernel put on the esp. if it doesn't fit there,
+nothing is copied: the generation boots the kernel in its own root, `os
+rollback` or the health check says why, `os status` shows a note, and the
+next boot tries again once there's room.
 
 ## what this doesn't do yet
 

@@ -94,25 +94,46 @@ pub const Machine = struct {
     /// copy of one: a writable root of its own, recorded and at the top of
     /// the menu, so the next boot runs it. its number goes in `made`. if a
     /// step fails, the new generation goes, and the menu is as it was.
-    pub fn start(m: *const Machine, source: []const u8, reason: []const u8, time: i64, config: ?generation.Config, made: *u32) !?[]const u8 {
+    /// if its boot files don't fit on the esp, it's started all the same,
+    /// booting the kernel in its own root, and `later` says why.
+    pub fn start(m: *const Machine, source: []const u8, reason: []const u8, time: i64, config: ?generation.Config, made: *u32, later: *?[]const u8) !?[]const u8 {
         const records = try readRecords(m.a, m.io, "/var");
         const n = try m.free(records);
         const root = try std.fmt.allocPrint(m.a, "/{s}/{d}", .{ generation.roots_dir, n });
         btrfs.snapshot(try m.at(&.{source}), try m.at(&.{root}), false) catch |e| return try std.fmt.allocPrint(m.a, "can't copy {s}: {s}", .{ source, @errorName(e) });
         // the esp's boot files change last, once the new root is recorded.
-        const why = try m.carry(root) orelse try m.add(records, n, root, reason, time, config) orelse try m.restoreBoot(root) orelse {
+        const why = try m.carry(root) orelse try m.add(records, n, root, reason, time, config) orelse try m.startBoot(root, later) orelse {
             made.* = n;
             return null;
         };
         // what cleaning up couldn't do matters too: a menu left as it was
         // written for the new root points at one that's gone.
         const left = try m.forget(n) orelse try m.drop(try m.at(&.{root}));
-        const menu_left = try m.writeMenu(m.boot.root_subvol.?, records);
+        const running = m.boot.root_subvol.?;
+        const menu_left = try m.writeMenu(running, records);
         // the running root's kernel goes back on the esp, if it left.
-        const boot_left = try m.restoreBoot(m.boot.root_subvol.?);
+        const boot_left = if (m.unsettled(running)) null else (try m.restoreBoot(running)).problem();
         if (menu_left orelse boot_left) |w| return try std.fmt.allocPrint(m.a, "{s}. putting the boot menu back failed too, so it may still name the root that was removed: {s}", .{ why, w });
         if (left) |w| return try std.fmt.allocPrint(m.a, "{s}. generation {d} couldn't be removed either: {s}", .{ why, n, w });
         return why;
+    }
+
+    /// puts a new generation's boot files, in the root at `root`, on the
+    /// esp. if they don't fit, it boots the ones in its root until a good
+    /// boot finds room, and `later` says why.
+    fn startBoot(m: *const Machine, root: []const u8, later: *?[]const u8) !?[]const u8 {
+        switch (try m.restoreBoot(root)) {
+            .done => return null,
+            .failed => |w| return w,
+            .full => |w| {
+                // the note keeps its kernel off the esp's entry, and keeps
+                // the esp's older kernel out of its /boot.
+                rootfs.writeAtomic(m.io, generation.unsettled_path, root, null) catch
+                    return try std.fmt.allocPrint(m.a, "{s}. can't write {s} either", .{ w, generation.unsettled_path });
+                later.* = w;
+                return null;
+            },
+        }
     }
 
     /// the next generation, from the root at `root`: its read-only record,
@@ -279,7 +300,7 @@ pub const Machine = struct {
         for (missing.items) |c| need += c.size;
         if (need > 0) {
             if (rootfs.freeBytes(dir)) |room| {
-                if (try generation.espRoom(m.a, m.boot.esp.?, need, room, records, m.boot.root_subvol orelse "")) |w| return w;
+                if (try generation.espRoom(m.a, m.boot.esp.?, need, room, records, m.boot.root_subvol orelse "", true)) |w| return w;
             }
         }
         for (missing.items) |c| {
@@ -464,7 +485,7 @@ pub const Machine = struct {
     /// a root not booted yet, like a staged one, keeps its own until a
     /// good boot puts it on the esp, so the running kernel stays there.
     fn headOnEsp(m: *const Machine, head: []const u8) bool {
-        return m.bootOnEsp() and std.mem.eql(u8, head, m.boot.root_subvol orelse "");
+        return m.bootOnEsp() and std.mem.eql(u8, head, m.boot.root_subvol orelse "") and !m.unsettled(head);
     }
 
     /// whether /boot is the esp, as archinstall sets it up. kernels then
@@ -476,36 +497,91 @@ pub const Machine = struct {
     }
 
     /// copies the esp's boot files into the root at `subvol`, so its
-    /// snapshots boot the kernel that matches their modules.
+    /// snapshots boot the kernel that matches their modules. a root whose
+    /// own files aren't on the esp yet keeps them.
     pub fn keepBoot(m: *const Machine, subvol: []const u8) !?[]const u8 {
-        if (!m.bootOnEsp()) return null;
-        return m.copyBoot(m.boot.esp.?, try m.at(&.{ subvol, "boot" }));
+        if (!m.bootOnEsp() or m.unsettled(subvol)) return null;
+        var why: []const u8 = "";
+        const from = m.boot.esp.?;
+        const to = try m.at(&.{ subvol, "boot" });
+        return m.syncBoot(from, to, try m.bootSync(from, to, &why) orelse return why);
     }
 
     /// puts the boot files kept in the root at `subvol` back on the esp,
-    /// for a root that's about to be the newest.
-    pub fn restoreBoot(m: *const Machine, subvol: []const u8) !?[]const u8 {
-        if (!m.bootOnEsp()) return null;
-        return m.copyBoot(try m.at(&.{ subvol, "boot" }), m.boot.esp.?);
+    /// for a root that's about to be the newest. when they don't all fit,
+    /// none are copied.
+    pub fn restoreBoot(m: *const Machine, subvol: []const u8) !Put {
+        if (!m.bootOnEsp()) return .done;
+        var why: []const u8 = "";
+        const from = try m.at(&.{ subvol, "boot" });
+        const esp = m.boot.esp.?;
+        const s = try m.bootSync(from, esp, &why) orelse return .{ .failed = why };
+        if (rootfs.freeBytes(esp)) |room| {
+            // limine and systemd-boot keep older generations' copies there
+            // too, which `os gc` frees.
+            const collectable = m.loader == .limine or m.loader == .@"systemd-boot";
+            const records = try readRecords(m.a, m.io, "/var");
+            if (try generation.espRoom(m.a, esp, generation.copyPeak(s.sizes.items), room, records, m.boot.root_subvol orelse "", collectable)) |w| return .{ .full = w };
+        }
+        if (try m.syncBoot(from, esp, s)) |w| return .{ .failed = w };
+        return .done;
     }
 
-    /// makes the boot files in `to` match the ones in `from`. files that
-    /// already match stay, so snapshots keep sharing them. each new one is
-    /// copied beside its place and renamed in, and stale ones go last, so
-    /// a failure halfway never leaves a file cut short.
-    fn copyBoot(m: *const Machine, from: []const u8, to: []const u8) !?[]const u8 {
-        const old = try m.bootFiles(to) orelse return try std.fmt.allocPrint(m.a, "can't read {s}", .{to});
-        const new = try m.bootFiles(from) orelse return try std.fmt.allocPrint(m.a, "can't read {s}", .{from});
+    /// whether the root at `subvol` boots the kernel in its own /boot,
+    /// since its boot files aren't on the esp yet: it was staged, or they
+    /// didn't fit there, and no good boot has put them there since.
+    pub fn unsettled(m: *const Machine, subvol: []const u8) bool {
+        const note = std.Io.Dir.cwd().readFileAlloc(m.io, generation.unsettled_path, m.a, .limited(256)) catch return false;
+        return std.mem.eql(u8, std.mem.trim(u8, note, " \n"), subvol);
+    }
+
+    /// what making the boot files in `to` match the ones in `from` takes:
+    /// the files to copy, with the room each takes, and the stale ones to
+    /// remove. files that already match stay, so snapshots keep sharing
+    /// them. null after saying why in `why`.
+    fn bootSync(m: *const Machine, from: []const u8, to: []const u8, why: *[]const u8) !?BootSync {
+        const old = try m.bootFiles(to) orelse return try m.syncFailed(why, "can't read {s}", .{to});
+        const new = try m.bootFiles(from) orelse return try m.syncFailed(why, "can't read {s}", .{from});
+        var s: BootSync = .{};
         for (new) |f| {
             const src = try std.fs.path.join(m.a, &.{ from, f });
             const dest = try std.fs.path.join(m.a, &.{ to, f });
-            if (rootfs.pathExists(m.io, dest) and try m.run(&.{ "cmp", "-s", src, dest }) == null) continue;
-            if (try m.replaceFile(src, dest)) |w| return w;
+            var replaces: u64 = 0;
+            if (std.Io.Dir.cwd().statFile(m.io, dest, .{})) |st| {
+                if (try m.run(&.{ "cmp", "-s", src, dest }) == null) continue;
+                replaces = st.size;
+            } else |_| {}
+            const st = std.Io.Dir.cwd().statFile(m.io, src, .{}) catch return try m.syncFailed(why, "can't read {s}", .{src});
+            try s.copy.append(m.a, f);
+            try s.sizes.append(m.a, .{ .size = st.size, .replaces = replaces });
         }
         for (old) |f| {
-            if (lists.contains(new, f)) continue;
+            if (!lists.contains(new, f)) try s.stale.append(m.a, f);
+        }
+        return s;
+    }
+
+    /// makes the boot files in `to` match the ones in `from`, as `s` says.
+    /// each new one is copied beside its place and renamed in, and stale
+    /// ones go last, so a failure halfway never leaves a file cut short.
+    fn syncBoot(m: *const Machine, from: []const u8, to: []const u8, s: BootSync) !?[]const u8 {
+        for (s.copy.items) |f| {
+            if (try m.replaceFile(try std.fs.path.join(m.a, &.{ from, f }), try std.fs.path.join(m.a, &.{ to, f }))) |w| return w;
+        }
+        for (s.stale.items) |f| {
             if (try m.run(&.{ "rm", "-f", try std.fs.path.join(m.a, &.{ to, f }) })) |w| return w;
         }
+        return null;
+    }
+
+    const BootSync = struct {
+        copy: std.ArrayList([]const u8) = .empty,
+        sizes: std.ArrayList(generation.Copy) = .empty,
+        stale: std.ArrayList([]const u8) = .empty,
+    };
+
+    fn syncFailed(m: *const Machine, why: *[]const u8, comptime fmt: []const u8, args: anytype) !?BootSync {
+        why.* = try std.fmt.allocPrint(m.a, fmt, args);
         return null;
     }
 
@@ -548,6 +624,21 @@ pub const Machine = struct {
             .kernel = kernel,
             .initrds = initrds.items,
             .args = try generation.kernelArgs(m.a, cmdline, m.root_uuid, subvol),
+        };
+    }
+};
+
+/// how putting a root's boot files on the esp went.
+pub const Put = union(enum) {
+    done,
+    /// they don't fit, so none were copied: what to say.
+    full: []const u8,
+    failed: []const u8,
+
+    pub fn problem(p: Put) ?[]const u8 {
+        return switch (p) {
+            .done => null,
+            .full, .failed => |w| w,
         };
     }
 };

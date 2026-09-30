@@ -97,6 +97,24 @@ pub const Boot = struct {
     /// on a machine with generations: the file the bootloader reads that
     /// has lost os's entries, like a limine.conf another tool rewrote.
     menu_missing: ?[]const u8 = null,
+    /// bytes free on the esp, and its size, when it's mounted.
+    esp_free: ?u64 = null,
+    esp_size: ?u64 = null,
+    /// the kernels, initramfs images, and microcode in /boot, by name: the
+    /// running root's boot files, which new ones are sized by.
+    boot_files: []const BootFile = &.{},
+    /// on a machine with generations: the ones recorded, by number.
+    generations: []const Generation = &.{},
+};
+
+pub const BootFile = struct { name: []const u8, size: u64 };
+
+/// a recorded generation, as far as `os gc` is concerned.
+pub const Generation = struct {
+    n: u32,
+    /// its writable root, under the btrfs top level.
+    root: []const u8,
+    pinned: bool = false,
 };
 
 /// the file os writes the config's repositories to, and the line in
