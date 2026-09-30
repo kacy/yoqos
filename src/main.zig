@@ -94,6 +94,7 @@ test {
     _ = @import("pipeline.zig");
     _ = @import("golden.zig");
     _ = @import("fuzz.zig");
+    _ = @import("props.zig");
     _ = @import("lists.zig");
     _ = @import("why.zig");
     _ = @import("schema.zig");
