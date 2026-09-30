@@ -20,6 +20,9 @@
 - `os update` stops before any review with E0130 when a recipe needs an aur
   package the config doesn't list.
 - a split aur recipe only installs the package named after it.
+- `os plan` and `os apply` stop with E0131 before building anything when a
+  new kernel, initramfs, or microcode won't fit on the esp. facts carry the
+  esp's free space, the running boot files' sizes, and the generations.
 
 ### fixes
 
@@ -42,6 +45,10 @@
   fails on a nearly full disk says so.
 - config edits no longer write invalid toml under a key that isn't a table
   or into an inline table, or leave a stray comma behind.
+- with the esp at `/boot`, a kernel that doesn't fit there after a good
+  boot or a rollback is no longer copied halfway. the generation keeps
+  booting the kernel in its own root, os says why, and the next boot tries
+  again.
 - `os diff` with no generations says so. arch news titles lose control
   characters, and news dates out of range are skipped.
 
