@@ -107,7 +107,7 @@ pub fn bootBlocker(io: std.Io) ?[]const u8 {
     return switch (bootState(io)) {
         .normal => null,
         .copy => "this boot runs a copy of an older generation from the boot menu, and os remakes that copy from its record. `os rollback --to-booted` keeps it as a generation of its own; reboot into that first",
-        .pending => "a new generation, from a rollback or enable-rollback, is waiting for the next boot, and a change now would land on the root being left. reboot first, or `os rollback` to go back to the generation before it",
+        .pending => "a new generation is waiting for the next boot, and a change now would land on the root being left. reboot first, or `os rollback` to go back to the generation before it",
     };
 }
 

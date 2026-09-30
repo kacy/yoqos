@@ -36,13 +36,14 @@ generation 1, and the boot menu still offers the system as it was before.
 changes you make between running `enable-rollback` and rebooting stay in
 the old root, because generation 1 comes from the snapshot. `os apply` and
 `os uninstall` know that and refuse until the reboot, but anything else you
-change, like files in `/home`, is left behind too, so reboot right away. the old root is still in the menu
-as "the system before generations" if you need something from it.
+change, like files in `/home`, is left behind too, so reboot right away.
+the old root is still in the menu as "the system before generations" if
+you need something from it.
 
 if a step fails, `enable-rollback` undoes the steps before it and says
 whether the machine is back as it was. the step that changes what the
-machine boots comes last: reinstalling grub, or adding entries to limine's
-or refind's config. until then, the machine boots the way it always did.
+machine boots comes last: reinstalling grub, or adding entries to limine,
+refind, or systemd-boot. until then, the machine boots the way it always did.
 
 ## bootloaders
 
@@ -116,8 +117,8 @@ everything lives in the btrfs top level:
 | `@roots/boot-<n>` | a fresh writable copy of generation n, for its menu entry |
 | `@var`, `@home`, `@root`, `@srv`, `@usrlocal` | data, which no generation holds |
 
-every `os apply`, `add`, `remove`, `enable`, `disable`, or `update` that
-changes the machine records the result as the next generation, labeled
+every `os apply`, `add`, `remove`, `enable`, `disable`, `edit`, or `update`
+that changes the machine records the result as the next generation, labeled
 with what made it:
 
 ```
@@ -138,8 +139,8 @@ generation, with one exception: system accounts that packages make, like
 an older generation then has accounts for packages it doesn't have, but an
 id given out once is never given to anyone else, and a package installed
 again gets its old id back, along with the files in `/var` it owns. `os
-status` says if a system account's id ever changes anyway. a generation waiting for the next boot gets them once more as the
-machine shuts down, from `yoq-carry.service`, so a password you change
+status` says if a system account's id ever changes anyway. a generation
+waiting for the next boot gets them once more as the machine shuts down, from `yoq-carry.service`, so a password you change
 between `os rollback` and the reboot comes along too.
 
 when the esp is `/boot`, as archinstall sets it up, the kernel and
@@ -206,6 +207,11 @@ the kernel the running system booted stays where it was. changes that
 don't need a reboot, like a new command-line tool, still apply to the
 running system right away.
 
+until that reboot, `os apply` refuses to run, as it does after a rollback,
+since a second change would start from the running root and leave the
+first one behind. `os add` and the like still edit the config and the
+lock, and `os apply` after the reboot makes the change.
+
 the next boot runs the new generation, while the menu's default stays on
 the one before. once the machine is up, `yoq-health.service` checks it:
 systemd isn't in maintenance or shutting down, the display manager is
@@ -221,10 +227,10 @@ a trial boot that hangs without panicking, for example on a service that
 never finishes starting, gets five minutes. then `yoq-watchdog.timer`
 reboots it, and the bootloader picks the generation before.
 
-if the new generation can't boot at all, grub falls back to the default by
-itself, and on either bootloader a kernel panic reboots into it after 10
-seconds. either way,
-`os` notices on that boot, makes it the newest generation with its config,
+if the new generation can't boot at all, the next boot lands on the default
+by itself, since the trial entry was only for one boot. a kernel panic
+reboots after 10 seconds, on every bootloader. either way, `os` notices on
+that boot, makes it the newest generation with its config,
 and `os status` explains what happened:
 
 ```
@@ -236,9 +242,7 @@ bootloader, which would start the new generation's kernel with the memory
 of the one running now, so `os` turns hibernation off in `/run`, which the
 next boot clears. suspending to memory still works.
 
-two changes that need a reboot, applied before rebooting, make one trial:
-the next boot tries the newest, and falls back to the generation that last
-booted. on grub, if you pick an older entry from the menu before the trial
+on grub, if you pick an older entry from the menu before the trial
 has run, that doesn't count as a failure; the next boot tries the new
 generation again. limine, systemd-boot, and the firmware for refind forget
 the trial as soon as they read it, so there, picking an older entry counts
@@ -260,7 +264,8 @@ os gc --keep 2       # clean up now, keeping the newest two
 `--keep` is at least 1, since the newest generation always stays. `os
 history` marks pinned generations. `os gc` doesn't run from an older
 generation booted from the menu, since that generation's record is what
-`os rollback --to-booted` needs.
+`os rollback --to-booted` needs, or while a new generation waits for the
+next boot.
 
 ## what this doesn't do yet
 

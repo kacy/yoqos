@@ -23,7 +23,7 @@ ssh = true
 os init       # write a config that describes this machine
 os status     # what matches the config, what changed, what's failing
 os add fd     # edit the config (and the lock) for you, then apply
-os update     # resolve against today's arch packages
+os update     # move to today's arch packages, then apply
 os plan       # what applying would change
 os apply      # show the plan, ask, apply it
 os rollback   # go back to the previous generation
@@ -36,11 +36,15 @@ btrfs root with grub, limine, refind, or systemd-boot, `os enable-rollback`
 turns on whole-system generations: every change is a snapshot in the boot
 menu, and an update that needs a reboot is built beside the running system
 and boots once on trial, then falls back by itself if it doesn't come up
-healthy. the vm
-tests run that on arch's cloud image and on archinstall's layouts. `os
-install` puts a machine straight from its config repository on a blank
-disk, and `os uninstall` takes it all back off, leaving plain arch running
-the system you have.
+healthy. the vm tests run that on arch's cloud image and on archinstall's
+layouts. `os install` puts a machine straight from its config repository
+on a blank disk, from the live iso each release comes with, and `os
+uninstall` takes it all back off, leaving plain arch running the system
+you have.
+
+every command also takes `--json`, for scripts. `os schema` prints the
+schemas for those documents, and errors have stable codes that `os
+explain` describes.
 
 - [docs/usage.md](docs/usage.md): installing, every command, and the config
   format
@@ -71,13 +75,13 @@ zig build test -Dalpm -Dsystemd
 
 `tests/vm/test.sh zig-out/bin/os` boots an arch vm under kvm and runs the
 whole loop in it: the manage rung, enable-rollback, rollback, trial boots,
-a clean build, installing on a blank disk, and uninstalling. `VM_IMAGE` picks the machine: arch's cloud
-image (the default), or one archinstall installs, with its default btrfs
+a clean build, installing on a blank disk, and uninstalling. `VM_IMAGE`
+picks the machine: arch's cloud image (the default), or one archinstall installs, with its default btrfs
 layout (`archinstall`), an ext4 root (`ext4`), limine and snapper, like
 omarchy's boot setup (`limine`), refind (`refind`), systemd-boot
 (`sdboot`), or grub and snapper, booted into a root snapper rolled back to
-(`snapper`). the ext4 one stays on the manage rung. ci runs all seven on every
-push.
+(`snapper`). the ext4 one stays on the manage rung. ci runs all seven on
+every push, and also builds the live iso and installs a machine from it.
 
 ## what's next
 

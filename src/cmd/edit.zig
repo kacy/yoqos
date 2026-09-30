@@ -146,7 +146,7 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
 /// doesn't load can be edited again, or put back as it was.
 pub fn editCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const usage_text = "os edit [--no-apply]";
-    var then: Then = .{};
+    var then: Then = .{ .apply = true };
     for (args) |arg| {
         if (!then.flag(arg)) return cli.usageError(ctx, usage_text);
     }

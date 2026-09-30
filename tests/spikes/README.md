@@ -23,7 +23,7 @@ root and `/boot` on btrfs, the esp at `/efi`.
 
 what shipped goes one step further: grub's files are reinstalled onto the
 esp and `os` writes the whole `grub.cfg` there, with the env file beside
-it, so no `/etc/grub.d` script is needed (`src/generation.zig`).
+it, so no `/etc/grub.d` script is needed (`src/menu.zig`).
 
 ## packages into an alternate root (2026-09-26)
 
@@ -39,8 +39,11 @@ dependencies, 4.4 gb, into an empty root, in about 40 seconds.
 - in both, one package's install script trips over an arithmetic error,
   and systemd skips its "running in chroot" steps as designed.
 
-so when staged apply comes, a staged root gets the api filesystems
-mounted, and its initramfs is built for the target: without autodetect, or
-with the root named. sysusers hands out uids in every new root, so new
-roots should be seeded from the id map before any package installs. none
-of this is built yet: changes apply live for now.
+what shipped: every root `os` builds into gets the api filesystems mounted
+the way pacstrap mounts them, for a staged generation, a clean build, and
+an install alike (`src/cmd/build.zig`). a clean build or an install leaves
+autodetect out of its first initramfs. a staged root is a snapshot of the
+running one, mounted as itself, so autodetect finds the right root there.
+a clean build is seeded with the id map before any package installs, and
+the system accounts packages make are carried into every new root
+(`src/accounts.zig`).
