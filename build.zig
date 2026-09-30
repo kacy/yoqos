@@ -41,11 +41,33 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run.addArgs(args);
     b.step("run", "run os").dependOn(&run.step);
 
-    const tests = b.addTest(.{ .root_module = root });
+    // `zig build test -Dfuzz --fuzz=<n> -Dtest-filter="fuzz toml"` runs one
+    // fuzz test from src/fuzz.zig for n inputs; plain `--fuzz` runs until
+    // stopped.
+    const filters: []const []const u8 = if (b.option([]const u8, "test-filter", "only run tests whose name has this in it")) |f| &.{f} else &.{};
+    const fuzz = b.option(bool, "fuzz", "build tests with a test runner that works under --fuzz") orelse false;
+    const tests = b.addTest(.{
+        .root_module = root,
+        .filters = filters,
+        .test_runner = if (fuzz) .{ .path = fuzzRunner(b), .mode = .server } else null,
+        // coverage for the fuzzer comes from llvm.
+        .use_llvm = if (fuzz) true else null,
+    });
     const run_tests = b.addRunArtifact(tests);
     run_tests.setCwd(b.path("."));
     b.step("test", "run unit and golden tests").dependOn(&run_tests.step);
 
     const fmt = b.addFmt(.{ .paths = &.{ "build.zig", "build.zig.zon", "src" }, .check = true });
     b.step("fmt", "check formatting").dependOn(&fmt.step);
+}
+
+/// zig 0.16.0's own test runner doesn't compile with -ffuzz: it hands an
+/// error return trace to `writeStackTrace`. this is a copy with that call
+/// fixed.
+fn fuzzRunner(b: *std.Build) std.Build.LazyPath {
+    const lib = b.graph.zig_lib_directory;
+    const stock = lib.handle.readFileAlloc(b.graph.io, "compiler/test_runner.zig", b.allocator, .unlimited) catch |e|
+        std.debug.panic("can't read zig's test runner: {t}", .{e});
+    const fixed = std.mem.replaceOwned(u8, b.allocator, stock, "std.debug.writeStackTrace(trace,", "std.debug.writeErrorReturnTrace(trace,") catch @panic("OOM");
+    return b.addWriteFiles().add("test_runner.zig", fixed);
 }
