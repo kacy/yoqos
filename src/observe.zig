@@ -91,18 +91,33 @@ const Reader = struct {
         return std.fs.path.join(r.a, &.{ r.root, rel });
     }
 
-    /// a file's contents, or null if it doesn't exist or can't be read. it
-    /// reads to the end instead of trusting the file's size, since files
-    /// under /proc and /sys say they're empty.
+    /// a file's contents, or null if it doesn't exist or can't be read.
+    /// streamed, so /proc and /sys files read whole.
     fn file(r: Reader, rel: []const u8) !?[]const u8 {
-        const f = std.Io.Dir.cwd().openFile(r.io, try r.path(rel), .{}) catch return null;
-        defer f.close(r.io);
-        var buf: [4096]u8 = undefined;
-        var fr = f.readerStreaming(r.io, &buf);
-        return fr.interface.allocRemaining(r.a, .limited(4 << 20)) catch |e| switch (e) {
-            error.OutOfMemory => error.OutOfMemory,
-            else => null,
-        };
+        return rootfs.readStreaming(r.a, r.io, try r.path(rel));
+    }
+
+    /// the names in a directory, sorted, or none if it can't be read.
+    /// with `kind`, only entries of that kind.
+    fn names(r: Reader, rel: []const u8, kind: ?std.Io.File.Kind) ![]const []const u8 {
+        var out: std.ArrayList([]const u8) = .empty;
+        var dir = std.Io.Dir.cwd().openDir(r.io, try r.path(rel), .{ .iterate = true }) catch return out.items;
+        defer dir.close(r.io);
+        var it = dir.iterate();
+        while (it.next(r.io) catch null) |e| {
+            if (kind == null or e.kind == kind.?) try out.append(r.a, try r.a.dupe(u8, e.name));
+        }
+        lists.sortStrings(out.items);
+        return out.items;
+    }
+
+    /// `name` in the first directory under `rel` that has it, by name.
+    fn inSubdir(r: Reader, rel: []const u8, name: []const u8) !?[]const u8 {
+        for (try r.names(rel, .directory)) |d| {
+            const found = try std.fs.path.join(r.a, &.{ rel, d, name });
+            if (r.exists(found)) return found;
+        }
+        return null;
     }
 
     /// the files under /etc that have a .pacnew beside them. a directory
@@ -126,12 +141,9 @@ const Reader = struct {
     fn mkinitcpio(r: Reader, comptime key: []const u8) ![]const []const u8 {
         var out: std.ArrayList([]const u8) = .empty;
         if (try r.file("etc/mkinitcpio.conf")) |text| try mkinitcpioList(r.a, text, key, &out);
-        var dir = std.Io.Dir.cwd().openDir(r.io, try r.path("etc/mkinitcpio.conf.d"), .{ .iterate = true }) catch return out.items;
-        defer dir.close(r.io);
-        var it = dir.iterate();
-        while (it.next(r.io) catch null) |e| {
-            if (std.mem.startsWith(u8, e.name, "10-yoq-") or !std.mem.endsWith(u8, e.name, ".conf")) continue;
-            const text = try r.file(try std.fmt.allocPrint(r.a, "etc/mkinitcpio.conf.d/{s}", .{e.name})) orelse continue;
+        for (try r.names("etc/mkinitcpio.conf.d", null)) |name| {
+            if (std.mem.startsWith(u8, name, "10-yoq-") or !std.mem.endsWith(u8, name, ".conf")) continue;
+            const text = try r.file(try std.fmt.allocPrint(r.a, "etc/mkinitcpio.conf.d/{s}", .{name})) orelse continue;
             try mkinitcpioList(r.a, text, key, &out);
         }
         return out.items;
@@ -212,20 +224,7 @@ const Reader = struct {
         }
         const name = if (std.mem.eql(u8, name_of, "limine")) "limine.conf" else if (std.mem.eql(u8, name_of, "refind")) "refind.conf" else return null;
         const efi = try std.fs.path.join(r.a, &.{ esp[1..], "EFI" });
-        var dir = std.Io.Dir.cwd().openDir(r.io, try r.path(efi), .{ .iterate = true }) catch null;
-        if (dir) |*d| {
-            defer d.close(r.io);
-            var names: std.ArrayList([]const u8) = .empty;
-            var it = d.iterate();
-            while (it.next(r.io) catch null) |e| {
-                if (e.kind == .directory) try names.append(r.a, try r.a.dupe(u8, e.name));
-            }
-            lists.sortStrings(names.items);
-            for (names.items) |n| {
-                const rel = try std.fs.path.join(r.a, &.{ efi, n, name });
-                if (r.exists(rel)) return try std.fmt.allocPrint(r.a, "/{s}", .{rel});
-            }
-        }
+        if (try r.inSubdir(efi, name)) |rel| return try std.fmt.allocPrint(r.a, "/{s}", .{rel});
         if (std.mem.eql(u8, name_of, "refind")) return null;
         for ([_][]const u8{ "boot/limine/limine.conf", "boot/limine.conf", "limine/limine.conf", "limine.conf" }) |p| {
             const rel = try std.fs.path.join(r.a, &.{ esp[1..], p });
@@ -246,23 +245,12 @@ const Reader = struct {
             for (in_esp) |c| {
                 if (r.exists(try std.fs.path.join(r.a, &.{ e[1..], c[0] }))) return c[1];
             }
-            if (try r.limineIn(try std.fs.path.join(r.a, &.{ e[1..], "EFI" }))) return "limine";
+            // archinstall keeps it in EFI/arch-limine.
+            if (try r.inSubdir(try std.fs.path.join(r.a, &.{ e[1..], "EFI" }), "limine.conf") != null) return "limine";
         }
         if (r.exists("boot/limine.conf")) return "limine";
         if (r.exists("boot/grub/grub.cfg")) return "grub";
         return null;
-    }
-
-    /// whether a directory under `efi` has a limine.conf, as archinstall's
-    /// EFI/arch-limine does.
-    fn limineIn(r: Reader, efi: []const u8) !bool {
-        var dir = std.Io.Dir.cwd().openDir(r.io, try r.path(efi), .{ .iterate = true }) catch return false;
-        defer dir.close(r.io);
-        var it = dir.iterate();
-        while (it.next(r.io) catch null) |d| {
-            if (d.kind == .directory and r.exists(try std.fs.path.join(r.a, &.{ efi, d.name, "limine.conf" }))) return true;
-        }
-        return false;
     }
 
     fn exists(r: Reader, rel: []const u8) bool {
@@ -288,13 +276,7 @@ const Reader = struct {
     /// 0x03, by vendor.
     fn gpus(r: Reader) ![]const []const u8 {
         var out: std.ArrayList([]const u8) = .empty;
-        var dir = std.Io.Dir.cwd().openDir(r.io, try r.path("sys/bus/pci/devices"), .{ .iterate = true }) catch return out.items;
-        defer dir.close(r.io);
-        var names: std.ArrayList([]const u8) = .empty;
-        var it = dir.iterate();
-        while (it.next(r.io) catch null) |e| try names.append(r.a, try r.a.dupe(u8, e.name));
-        lists.sortStrings(names.items);
-        for (names.items) |n| {
+        for (try r.names("sys/bus/pci/devices", null)) |n| {
             const class = try r.file(try std.fmt.allocPrint(r.a, "sys/bus/pci/devices/{s}/class", .{n})) orelse continue;
             if (!std.mem.startsWith(u8, std.mem.trim(u8, class, " \n"), "0x03")) continue;
             const vendor = try r.file(try std.fmt.allocPrint(r.a, "sys/bus/pci/devices/{s}/vendor", .{n})) orelse continue;
@@ -307,11 +289,11 @@ const Reader = struct {
 /// a mkinitcpio array, like MODULES or HOOKS: `KEY=(...)` sets it and
 /// `KEY+=(...)` adds to it, in the order the lines come.
 fn mkinitcpioList(a: Allocator, text: []const u8, comptime key: []const u8, out: *std.ArrayList([]const u8)) !void {
+    const set = key ++ "=(";
+    const add = key ++ "+=(";
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
-        const set = key ++ "=(";
-        const add = key ++ "+=(";
         const start = if (std.mem.startsWith(u8, line, set)) set.len else if (std.mem.startsWith(u8, line, add)) add.len else continue;
         if (start == set.len) out.clearRetainingCapacity();
         const end = std.mem.indexOfScalarPos(u8, line, start, ')') orelse continue;
@@ -532,15 +514,6 @@ fn carriedEtc(path: []const u8) bool {
     return lists.startsWithAny(path, &.{ "ssh/ssh_host_", "pacman.d/gnupg/", "yoq/" });
 }
 
-test "files in /etc a new root gets anyway" {
-    try testing.expect(carriedEtc("shadow"));
-    try testing.expect(carriedEtc("shadow-"));
-    try testing.expect(carriedEtc("ssh/ssh_host_ed25519_key"));
-    try testing.expect(carriedEtc("yoq/machine.toml"));
-    try testing.expect(!carriedEtc("hosts"));
-    try testing.expect(!carriedEtc("shadowsocks.json"));
-}
-
 /// users from /etc/passwd with their groups from /etc/group.
 pub fn users(a: Allocator, passwd: []const u8, group: []const u8) ![]facts.User {
     var out: std.ArrayList(facts.User) = .empty;
@@ -636,6 +609,32 @@ test "mkinitcpio's modules" {
     , "MODULES", &out);
     try testing.expectEqual(4, out.items.len);
     try testing.expectEqualStrings("nvidia_modeset", out.items[1]);
+}
+
+test "mkinitcpio drop-ins read in name order, past os's own" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const io = testing.io;
+    try tmp.dir.createDirPath(io, "etc/mkinitcpio.conf.d");
+    try tmp.dir.writeFile(io, .{ .sub_path = "etc/mkinitcpio.conf", .data = "MODULES=(a)\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "etc/mkinitcpio.conf.d/30-c.conf", .data = "MODULES+=(c)\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "etc/mkinitcpio.conf.d/20-b.conf", .data = "MODULES+=(b)\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "etc/mkinitcpio.conf.d/10-yoq-nvidia.conf", .data = "MODULES+=(nvidia)\n" });
+    const r: Reader = .{ .a = arena.allocator(), .io = io, .root = try std.fmt.allocPrint(arena.allocator(), ".zig-cache/tmp/{s}", .{tmp.sub_path}) };
+    const got = try r.mkinitcpio("MODULES");
+    try testing.expectEqual(3, got.len);
+    for ([_][]const u8{ "a", "b", "c" }, got) |want, have| try testing.expectEqualStrings(want, have);
+}
+
+test "files in /etc a new root gets anyway" {
+    try testing.expect(carriedEtc("shadow"));
+    try testing.expect(carriedEtc("shadow-"));
+    try testing.expect(carriedEtc("ssh/ssh_host_ed25519_key"));
+    try testing.expect(carriedEtc("yoq/machine.toml"));
+    try testing.expect(!carriedEtc("hosts"));
+    try testing.expect(!carriedEtc("shadowsocks.json"));
 }
 
 test "a process running replaced package files" {

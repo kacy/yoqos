@@ -56,18 +56,23 @@ pub const Root = struct {
     }
 };
 
-/// a file under /proc, like /proc/cmdline. those report a size of 0, so
-/// they're read to the end rather than by their size. empty if it can't
-/// be read.
-pub fn readProc(a: std.mem.Allocator, io: std.Io, path: []const u8) error{OutOfMemory}![]const u8 {
-    const f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return "";
+/// a file read to the end rather than by its size, since files under
+/// /proc and /sys report a size of 0. null if it's missing or can't be
+/// read.
+pub fn readStreaming(a: Allocator, io: std.Io, path: []const u8) error{OutOfMemory}!?[]const u8 {
+    const f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
     defer f.close(io);
     var buf: [4096]u8 = undefined;
     var fr = f.readerStreaming(io, &buf);
     return fr.interface.allocRemaining(a, .limited(4 << 20)) catch |e| switch (e) {
         error.OutOfMemory => error.OutOfMemory,
-        else => "",
+        else => null,
     };
+}
+
+/// a file under /proc, like /proc/cmdline, or "" if it can't be read.
+pub fn readProc(a: Allocator, io: std.Io, path: []const u8) error{OutOfMemory}![]const u8 {
+    return try readStreaming(a, io, path) orelse "";
 }
 
 pub fn pathExists(io: std.Io, path: []const u8) bool {
