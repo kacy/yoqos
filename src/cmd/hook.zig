@@ -5,21 +5,22 @@
 const std = @import("std");
 const cli = @import("../cli.zig");
 const drift = @import("../drift.zig");
+const journal = @import("../journal.zig");
 const Context = cli.Context;
 
 pub fn recordPacmanCmd(ctx: *Context, _: []const [:0]const u8) !u8 {
     // os's own transactions run the hook too; those aren't drift.
     if (ctx.in_own_transaction) return 0;
     const in = ctx.in orelse return 0;
-    var arena: std.heap.ArenaAllocator = .init(ctx.gpa);
-    defer arena.deinit();
-    const a = arena.allocator();
+    var w: cli.Work = .init(ctx);
+    defer w.deinit();
+    const a = w.allocator();
     var names: std.ArrayList([]const u8) = .empty;
     while (in.takeDelimiter('\n') catch null) |line| {
         const name = std.mem.trim(u8, line, " \t\r");
         if (name.len > 0) try names.append(a, try a.dupe(u8, name));
     }
-    try drift.record(a, ctx.io, ctx.root, @import("../journal.zig").now(ctx.io), names.items);
+    try drift.record(a, ctx.io, ctx.root, journal.now(ctx.io), names.items);
     return 0;
 }
 

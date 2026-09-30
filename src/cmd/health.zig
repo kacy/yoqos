@@ -53,10 +53,7 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
     const problems = try check(ctx, a);
     if (problems.len == 0) {
-        if (try store.end()) |why| {
-            try ctx.err.print("os: generation {d} is healthy, but couldn't make it the default: {s}\n", .{ t.n, why });
-            return 1;
-        }
+        if (try store.end()) |why| return cli.fail(ctx, "generation {d} is healthy, but couldn't make it the default: {s}", .{ t.n, why });
         try ctx.out.print("generation {d} came up healthy. it's the default now.\n", .{t.n});
         if (try settleBoot(ctx, a, boot)) |why| try ctx.err.print("os: {s}\n", .{why});
         return 0;
@@ -112,10 +109,9 @@ fn check(ctx: *Context, a: Allocator) ![]const []const u8 {
     // it is, so waiting would wait for itself. it runs after
     // multi-user.target, so "starting" means only jobs like this one are
     // left.
+    // it exits non-zero for anything but "running", like "degraded".
     const state = switch (try exec.output(a, ctx.io, &.{ "systemctl", "is-system-running" })) {
-        .ok => |t| std.mem.trim(u8, t, " \n"),
-        // it exits non-zero for anything but "running", like "degraded".
-        .failed => |t| std.mem.trim(u8, t, " \n"),
+        .ok, .failed => |t| std.mem.trim(u8, t, " \n"),
     };
     for ([_][]const u8{ "maintenance", "offline", "stopping", "unknown" }) |bad| {
         if (std.mem.eql(u8, state, bad)) try out.append(a, try std.fmt.allocPrint(a, "systemd is in {s}", .{state}));

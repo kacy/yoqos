@@ -26,25 +26,22 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var verbose = false;
     var trust_aur = false;
     var it: cli.ArgIter = .{ .args = args };
-    while (it.next()) |a| {
-        if (then.flag(a)) {
+    while (it.next()) |arg| {
+        if (then.flag(arg)) {
             continue;
-        } else if (eql(a, "--trust-aur")) {
+        } else if (eql(arg, "--trust-aur")) {
             trust_aur = true;
-        } else if (eql(a, "-v") or eql(a, "--verbose")) {
+        } else if (eql(arg, "-v") or eql(arg, "--verbose")) {
             verbose = true;
-        } else if (eql(a, "--dbs")) {
+        } else if (eql(arg, "--dbs")) {
             dbs_dir = it.next() orelse return cli.usageError(ctx, usage_text);
-        } else if (eql(a, "--date")) {
+        } else if (eql(arg, "--date")) {
             const d = it.next() orelse return cli.usageError(ctx, usage_text);
             if (!validDate(d)) return cli.usageError(ctx, usage_text);
             date = d;
         } else return cli.usageError(ctx, usage_text);
     }
-    if (!alpm.available) {
-        try ctx.err.writeAll("os: this build can't resolve packages. build with -Dalpm.\n");
-        return 1;
-    }
+    if (!alpm.available) return cli.fail(ctx, "this build can't resolve packages. build with -Dalpm.", .{});
 
     var w: cli.Work = .init(ctx);
     defer w.deinit();
@@ -105,26 +102,26 @@ fn buildAur(ctx: *Context, w: *cli.Work, c: *const config.Config, old: ?*const l
     if (try cli.refused(ctx, applying.blocker(ctx))) return null;
     const b: aur.Builder = .{ .a = a, .io = ctx.io, .dirs = try aur.Dirs.under(a, ctx.root), .url = ctx.aur_url };
     var infos: std.ArrayList(aur.SrcInfo) = .empty;
-    for (c.aur.items.items) |it| {
+    for (c.aur.items.items) |pkg| {
         var why: []const u8 = "";
-        const commit = try b.fetch(it.name, &why) orelse {
-            try ctx.err.print("os: can't fetch {s}'s recipe: {s}\n", .{ it.name, why });
+        const commit = try b.fetch(pkg.name, &why) orelse {
+            try ctx.err.print("os: can't fetch {s}'s recipe: {s}\n", .{ pkg.name, why });
             return null;
         };
-        const info = try b.srcInfo(it.name, commit) orelse {
-            try ctx.err.print("os: {s}'s recipe has no .SRCINFO at {s}\n", .{ it.name, commit[0..@min(12, commit.len)] });
+        const info = try b.srcInfo(pkg.name, commit) orelse {
+            try ctx.err.print("os: {s}'s recipe has no .SRCINFO at {s}\n", .{ pkg.name, commit[0..@min(12, commit.len)] });
             return null;
         };
         // the build's paths come from pkgbase, so it has to be the recipe
         // that was fetched and reviewed.
-        if (!eql(info.pkgbase, it.name)) {
-            try ctx.err.print("os: {s}'s recipe says its pkgbase is {s}. os builds a recipe only under its own name.\n", .{ it.name, info.pkgbase });
+        if (!eql(info.pkgbase, pkg.name)) {
+            try ctx.err.print("os: {s}'s recipe says its pkgbase is {s}. os builds a recipe only under its own name.\n", .{ pkg.name, info.pkgbase });
             return null;
         }
         // a recipe is reviewed when it's new, or changed since the lock.
-        const was = if (old) |o| if (o.package(it.name)) |p| p.recipe else null else null;
+        const was = if (old) |o| if (o.package(pkg.name)) |p| p.recipe else null else null;
         if (was == null or !eql(was.?, commit)) {
-            if (!try approve(ctx, a, b, it.name, was, commit, trust)) return null;
+            if (!try reviewRecipe(ctx, a, b, pkg.name, was, commit, trust)) return null;
         }
         try infos.append(a, info);
     }
@@ -146,7 +143,7 @@ fn buildAur(ctx: *Context, w: *cli.Work, c: *const config.Config, old: ?*const l
 
 /// shows what to review in `name`'s recipe and asks. a script passes
 /// --trust-aur instead: --yes alone doesn't build an unreviewed recipe.
-fn approve(ctx: *Context, a: Allocator, b: aur.Builder, name: []const u8, was: ?[]const u8, commit: []const u8, trust: bool) !bool {
+fn reviewRecipe(ctx: *Context, a: Allocator, b: aur.Builder, name: []const u8, was: ?[]const u8, commit: []const u8, trust: bool) !bool {
     const what = if (was == null) "new" else "changed";
     if (trust) {
         if (!ctx.json) try ctx.out.print("{s}'s recipe is {s}; building it, as --trust-aur says.\n", .{ name, what });

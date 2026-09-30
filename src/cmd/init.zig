@@ -23,11 +23,7 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer w.deinit();
     const a = w.allocator();
     const top = ctx.config_path;
-    if (ctx.files.read(a, top)) |_| {
-        try ctx.err.print("os: {s} already exists. edit it, or move it away to start over.\n", .{top});
-        return 1;
-    } else |e| if (e == error.OutOfMemory) return error.OutOfMemory;
-
+    if (try exists(ctx, a, top)) return 1;
     const f = try w.facts() orelse return w.fail();
 
     const date = try locking.today(ctx.io, a);
@@ -77,6 +73,17 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     return 0;
 }
 
+/// whether there's a config at `top` already, after saying so: init never
+/// writes over one.
+fn exists(ctx: *Context, a: std.mem.Allocator, top: []const u8) !bool {
+    _ = ctx.files.read(a, top) catch |e| switch (e) {
+        error.OutOfMemory => return e,
+        else => return false,
+    };
+    _ = try cli.fail(ctx, "{s} already exists. edit it, or move it away to start over.", .{top});
+    return true;
+}
+
 /// resolves a first lock against today's databases when this build can.
 /// returns the lock's path, or null after saying why there isn't one.
 fn lockNew(ctx: *Context, w: *cli.Work, loaded: *const compose.Loaded, date: []const u8, installed: []const facts.Package) !?[]const u8 {
@@ -111,6 +118,92 @@ fn explicitCount(f: *const facts.Facts) usize {
     var n: usize = 0;
     for (f.packages) |p| n += @intFromBool(p.reason == .explicit);
     return n;
+}
+
+/// `os init --new`: a config for a machine with nothing on it yet, like one
+/// booted from the live iso, from a few answers and the hardware the live
+/// system sees. `os install` builds the machine from it.
+fn initNew(ctx: *Context, args: []const [:0]const u8) !u8 {
+    const usage_text = "os init --new [--hostname <name>] [--user <name>] [--timezone <zone>] [--ssh]";
+    var hostname: ?[]const u8 = null;
+    var user: ?[]const u8 = null;
+    var timezone: ?[]const u8 = null;
+    var ssh = false;
+    var it: cli.ArgIter = .{ .args = args };
+    while (it.next()) |arg| {
+        if (cli.eql(arg, "--hostname")) {
+            hostname = it.next() orelse return cli.usageError(ctx, usage_text);
+        } else if (cli.eql(arg, "--user")) {
+            user = it.next() orelse return cli.usageError(ctx, usage_text);
+        } else if (cli.eql(arg, "--timezone")) {
+            timezone = it.next() orelse return cli.usageError(ctx, usage_text);
+        } else if (cli.eql(arg, "--ssh")) {
+            ssh = true;
+        } else return cli.usageError(ctx, usage_text);
+    }
+    var w: cli.Work = .init(ctx);
+    defer w.deinit();
+    const a = w.allocator();
+    const top = ctx.config_path;
+    if (try exists(ctx, a, top)) return 1;
+    const f = try w.facts() orelse return w.fail();
+    const name = try answer(ctx, a, hostname, "a name for the machine:", null, hostnameProblem) orelse return 2;
+    const person = try answer(ctx, a, user, "your user name:", null, userProblem) orelse return 2;
+    const zone = try answer(ctx, a, timezone, "time zone:", f.timezone orelse "UTC", zoneProblem) orelse return 2;
+    const virtual = try exec.run(a, ctx.io, &.{ "systemd-detect-virt", "-q" }) == null;
+    const text = try newconfig.machineToml(a, .{
+        .hostname = name,
+        .user = person,
+        .timezone = zone,
+        .cpu = if (f.cpu) |c| (if (std.mem.eql(u8, c, "amd") or std.mem.eql(u8, c, "intel")) c else null) else null,
+        .gpu = newconfig.gpuChoice(f.gpus),
+        .firmware = !virtual,
+        .ssh = ssh,
+    });
+    if (!try cli.writeFile(ctx, top, text)) return 1;
+    // it has to load, or it's a bug here.
+    _ = try w.config() orelse return w.fail();
+    try cli.record(ctx, a, top, try std.fmt.allocPrint(a, "init: {s}, new", .{name}));
+    if (ctx.json) {
+        try output.writeDoc(ctx.out, "yoq.init/1", .{ .config = top, .new = true });
+        return 0;
+    }
+    try ctx.out.print("\nwrote {s}, for {s}. it has no lock yet: `os install {s} --disk <disk> --update` makes one and installs it.\n", .{ top, name, std.fs.path.dirnamePosix(top) orelse "." });
+    return 0;
+}
+
+/// a flag's value, or the answer to `question` at a terminal, asked again
+/// until `problem` finds none. null after saying why when there's no
+/// terminal to ask at.
+fn answer(ctx: *Context, a: std.mem.Allocator, given: ?[]const u8, question: []const u8, default: ?[]const u8, comptime problem: fn ([]const u8) ?[]const u8) !?[]const u8 {
+    if (given) |g| {
+        if (problem(g)) |why| {
+            try ctx.err.print("os: \"{s}\": {s}\n", .{ g, why });
+            return null;
+        }
+        return g;
+    }
+    if (!ctx.interactive) {
+        try ctx.err.writeAll("os: without a terminal to ask at, `os init --new` needs --hostname, --user, and --timezone.\n");
+        return null;
+    }
+    while (true) {
+        const got = try cli.ask(ctx, a, question, default) orelse return null;
+        const why = problem(got) orelse return got;
+        try ctx.out.print("  {s}\n", .{why});
+    }
+}
+
+fn hostnameProblem(v: []const u8) ?[]const u8 {
+    return config.systemProblem("hostname", v);
+}
+
+fn userProblem(v: []const u8) ?[]const u8 {
+    return if (config.validUserName(v)) null else "a user name is lowercase letters, digits, - and _, starting with a letter";
+}
+
+fn zoneProblem(v: []const u8) ?[]const u8 {
+    return config.systemProblem("timezone", v);
 }
 
 // -- tests --
@@ -165,93 +258,4 @@ test "init locks against today's databases" {
     try std.testing.expectEqualStrings("", t.err.buffered());
     try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "wrote /etc/yoq/machine.lock\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.perl-error]") != null);
-}
-
-/// `os init --new`: a config for a machine with nothing on it yet, like one
-/// booted from the live iso, from a few answers and the hardware the live
-/// system sees. `os install` builds the machine from it.
-fn initNew(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os init --new [--hostname <name>] [--user <name>] [--timezone <zone>] [--ssh]";
-    var hostname: ?[]const u8 = null;
-    var user: ?[]const u8 = null;
-    var timezone: ?[]const u8 = null;
-    var ssh = false;
-    var it: cli.ArgIter = .{ .args = args };
-    while (it.next()) |arg| {
-        if (cli.eql(arg, "--hostname")) {
-            hostname = it.next() orelse return cli.usageError(ctx, usage_text);
-        } else if (cli.eql(arg, "--user")) {
-            user = it.next() orelse return cli.usageError(ctx, usage_text);
-        } else if (cli.eql(arg, "--timezone")) {
-            timezone = it.next() orelse return cli.usageError(ctx, usage_text);
-        } else if (cli.eql(arg, "--ssh")) {
-            ssh = true;
-        } else return cli.usageError(ctx, usage_text);
-    }
-    var w: cli.Work = .init(ctx);
-    defer w.deinit();
-    const a = w.allocator();
-    const top = ctx.config_path;
-    if (ctx.files.read(a, top)) |_| {
-        try ctx.err.print("os: {s} already exists. edit it, or move it away to start over.\n", .{top});
-        return 1;
-    } else |e| if (e == error.OutOfMemory) return error.OutOfMemory;
-    const f = try w.facts() orelse return w.fail();
-    const name = try answer(ctx, a, hostname, "a name for the machine:", null, hostnameProblem) orelse return 2;
-    const person = try answer(ctx, a, user, "your user name:", null, userProblem) orelse return 2;
-    const zone = try answer(ctx, a, timezone, "time zone:", f.timezone orelse "UTC", zoneProblem) orelse return 2;
-    const virtual = try exec.run(a, ctx.io, &.{ "systemd-detect-virt", "-q" }) == null;
-    const text = try newconfig.machineToml(a, .{
-        .hostname = name,
-        .user = person,
-        .timezone = zone,
-        .cpu = if (f.cpu) |c| (if (std.mem.eql(u8, c, "amd") or std.mem.eql(u8, c, "intel")) c else null) else null,
-        .gpu = newconfig.gpuChoice(f.gpus),
-        .firmware = !virtual,
-        .ssh = ssh,
-    });
-    if (!try cli.writeFile(ctx, top, text)) return 1;
-    // it has to load, or it's a bug here.
-    _ = try w.config() orelse return w.fail();
-    try cli.record(ctx, a, top, try std.fmt.allocPrint(a, "init: {s}, new", .{name}));
-    if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.init/1", .{ .config = top, .new = true });
-        return 0;
-    }
-    try ctx.out.print("\nwrote {s}, for {s}. it has no lock yet: `os install {s} --disk <disk> --update` makes one and installs it.\n", .{ top, name, std.fs.path.dirnamePosix(top) orelse "." });
-    return 0;
-}
-
-/// a flag's value, or the answer to `question` at a terminal, asked again
-/// until `problem` finds none. null after saying why when there's no
-/// terminal to ask at.
-fn answer(ctx: *Context, a: std.mem.Allocator, given: ?[]const u8, question: []const u8, default: ?[]const u8, comptime problem: fn ([]const u8) ?[]const u8) !?[]const u8 {
-    if (given) |g| {
-        if (problem(g)) |why| {
-            try ctx.err.print("os: \"{s}\": {s}\n", .{ g, why });
-            return null;
-        }
-        return g;
-    }
-    if (!ctx.interactive) {
-        try ctx.err.print("os: without a terminal to ask at, `os init --new` needs --hostname, --user, and --timezone.\n", .{});
-        return null;
-    }
-    while (true) {
-        const got = try cli.ask(ctx, a, question, default) orelse return null;
-        const why = problem(got) orelse return got;
-        try ctx.out.print("  {s}\n", .{why});
-    }
-}
-
-fn hostnameProblem(v: []const u8) ?[]const u8 {
-    return config.systemProblem("hostname", v);
-}
-
-fn userProblem(v: []const u8) ?[]const u8 {
-    return if (config.validUserName(v)) null else "a user name is lowercase letters, digits, - and _, starting with a letter";
-}
-
-fn zoneProblem(v: []const u8) ?[]const u8 {
-    return config.systemProblem("timezone", v);
 }

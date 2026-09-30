@@ -48,10 +48,11 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             .fix = if (l == null) "there's no machine.lock beside the config. `os update` makes one." else "it's over two weeks old, so it's missing security fixes. `os update` moves it to today.",
         });
     }
+    const hook = hookInstalled(ctx);
     try checks.append(a, .{
         .what = "pacman hook",
-        .ok = hookInstalled(ctx),
-        .found = if (hookInstalled(ctx)) "installed" else "missing",
+        .ok = hook,
+        .found = if (hook) "installed" else "missing",
         .fix = "without yoq-drift.hook, changes made with pacman directly go unnoticed. installing the yoq-os package puts it in place.",
     });
     const unfinished = try journal.unfinished(a, ctx.io, ctx.root);
@@ -111,9 +112,8 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
 /// how many days old the lock's date is.
 fn lockAge(ctx: *Context, a: Allocator, date: []const u8) !?i64 {
-    const today = try locking.today(ctx.io, a);
     const then = status.epochDay(date) orelse return null;
-    const now = status.epochDay(today) orelse return null;
+    const now = status.epochDay(try locking.today(ctx.io, a)) orelse return null;
     return now - then;
 }
 
@@ -140,12 +140,11 @@ fn freeBytes(ctx: *Context, a: Allocator, path: []const u8) !?u64 {
 fn passwordlessSudo(ctx: *Context, a: Allocator) !?[]const u8 {
     var files: std.ArrayList([]const u8) = .empty;
     try files.append(a, "/etc/sudoers");
-    var d = std.Io.Dir.cwd().openDir(ctx.io, "/etc/sudoers.d", .{ .iterate = true }) catch null;
-    if (d) |*dir| {
+    if (std.Io.Dir.cwd().openDir(ctx.io, "/etc/sudoers.d", .{ .iterate = true })) |dir| {
         defer dir.close(ctx.io);
         var it = dir.iterate();
         while (it.next(ctx.io) catch null) |e| try files.append(a, try std.fmt.allocPrint(a, "/etc/sudoers.d/{s}", .{e.name}));
-    }
+    } else |_| {}
     for (files.items) |path| {
         const text = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, a, .limited(1 << 20)) catch continue;
         if (hasNoPasswd(text)) return path;
