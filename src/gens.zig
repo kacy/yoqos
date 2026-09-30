@@ -398,11 +398,23 @@ pub const Machine = struct {
         const fs: rootfs.Root = .{ .a = m.a, .io = m.io, .dir = root };
         const here: rootfs.Root = .{ .a = m.a, .io = m.io, .dir = "/" };
         // system accounts it lacks, so an id given out once stays taken,
-        // and a package installed again there gets its old one.
-        const users = try accounts.merge(m.a, try here.read("etc/passwd"), try fs.read("etc/passwd"));
-        const groups = try accounts.merge(m.a, try here.read("etc/group"), try fs.read("etc/group"));
-        const shadow = try accounts.addLines(m.a, try generation.mergeShadow(m.a, try here.read("etc/shadow"), try fs.read("etc/shadow")), try here.read("etc/shadow"), users.added, 7);
-        const gshadow = try accounts.addLines(m.a, try fs.read("etc/gshadow"), try here.read("etc/gshadow"), groups.added, 2);
+        // and a package installed again there gets its old one. a file
+        // that's there but can't be read stops the carry: taken as empty,
+        // it would be written back without its accounts.
+        var text: [2][4][]const u8 = undefined;
+        for ([_]rootfs.Root{ here, fs }, &text) |r, *out| {
+            for ([_][]const u8{ "etc/passwd", "etc/group", "etc/shadow", "etc/gshadow" }, out) |rel, *t| {
+                t.* = std.Io.Dir.cwd().readFileAlloc(m.io, try r.path(rel), m.a, .limited(64 << 20)) catch |e| switch (e) {
+                    error.OutOfMemory => return e,
+                    error.FileNotFound => "",
+                    else => return try std.fmt.allocPrint(m.a, "can't read {s}: {s}", .{ try r.path(rel), @errorName(e) }),
+                };
+            }
+        }
+        const users = try accounts.merge(m.a, text[0][0], text[1][0]);
+        const groups = try accounts.merge(m.a, text[0][1], text[1][1]);
+        const shadow = try accounts.addLines(m.a, try generation.mergeShadow(m.a, text[0][2], text[1][2]), text[0][2], users.added, 7);
+        const gshadow = try accounts.addLines(m.a, text[1][3], text[0][3], groups.added, 2);
         const files = [_]struct { []const u8, []const u8, u32 }{
             .{ "etc/passwd", users.text, 0o644 },
             .{ "etc/group", groups.text, 0o644 },
