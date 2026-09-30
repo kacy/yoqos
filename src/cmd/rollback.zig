@@ -146,10 +146,12 @@ pub fn startFrom(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, target: 
     defer m.close();
     const config: ?generation.Config = if (target.config_dir != null and target.config_rev != null) .{ .dir = target.config_dir.?, .rev = target.config_rev.? } else null;
     var made: u32 = 0;
-    if (try m.start(source, reason, std.Io.Timestamp.now(ctx.io, .real).toSeconds(), config, &made)) |w| {
+    var later: ?[]const u8 = null;
+    if (try m.start(source, reason, std.Io.Timestamp.now(ctx.io, .real).toSeconds(), config, &made, &later)) |w| {
         try ctx.err.print("os: {s}\n", .{w});
         return null;
     }
+    if (later) |w| try ctx.err.print("os: generation {d}'s boot files don't fit on the esp, so nothing was copied there, and it boots the kernel in its own root until they do. {s}. the first good boot once there's room puts them there.\n", .{ made, w });
     try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .generation, .generation = made, .message = reason });
     // a trial still waiting is overtaken: the next boot runs this.
     if (trial.Store.of(a, ctx.io, boot)) |store| if (try store.end()) |w| try ctx.err.print("os: couldn't end the pending trial: {s}\n", .{w});

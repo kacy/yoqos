@@ -104,11 +104,21 @@ fn settleBoot(ctx: *Context, a: Allocator, boot: facts.Boot) !?[]const u8 {
     const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse return why;
     defer m.close();
     const running = boot.root_subvol.?;
+    if (m.bootOnEsp()) switch (try m.restoreBoot(running)) {
+        .done => {},
+        .failed => |w| return w,
+        .full => |w| {
+            const text = try std.fmt.allocPrint(a, "the running generation's boot files don't fit on the esp, so it boots the kernel in its own root until they do. {s}. the next boot tries again.", .{w});
+            if (try gens.writeNotice(a, ctx.io, try std.fmt.allocPrint(a, "{s}\n", .{text}))) |problem| return problem;
+            return text;
+        },
+    };
+    // gone before the menu is written: while it's there, the menu's first
+    // entry boots the kernel in the root.
+    std.Io.Dir.cwd().deleteFile(ctx.io, generation.unsettled_path) catch {};
     if (m.bootOnEsp()) {
-        if (try m.restoreBoot(running)) |w| return w;
         if (try m.writeMenu(running, try gens.readRecords(a, ctx.io, "/var"))) |w| return w;
     }
-    std.Io.Dir.cwd().deleteFile(ctx.io, generation.unsettled_path) catch {};
     return null;
 }
 

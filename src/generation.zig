@@ -43,6 +43,7 @@ pub const grubenv = "yoq/grubenv";
 
 /// where a staged root is noted until it has booted well: with /boot as
 /// the esp, it boots its own kernel till then, and moves it onto the esp.
+/// a rollback whose boot files didn't fit on the esp notes its root too.
 pub const unsettled_path = "/var/lib/yoq/unsettled";
 
 /// where enable-rollback notes the root the next boot runs, in the /var
@@ -219,12 +220,14 @@ pub fn fits(need: u64, free: u64) bool {
 }
 
 /// null if new boot files of `need` bytes fit in the `free` bytes of the
-/// esp at `esp`, or else what to say: how far short it is, and which of
-/// `records` `os gc --keep 1` would remove to make room (see `gcHint`).
-pub fn espRoom(a: Allocator, esp: []const u8, need: u64, free: u64, records: anytype, running_root: []const u8) !?[]const u8 {
+/// esp at `esp`, or else what to say: how far short it is, and how to
+/// make room. when older generations keep boot files there, that's which
+/// of `records` `os gc --keep 1` would remove (see `gcHint`).
+pub fn espRoom(a: Allocator, esp: []const u8, need: u64, free: u64, records: anytype, running_root: []const u8, collectable: bool) !?[]const u8 {
     if (fits(need, free)) return null;
     const mib = 1 << 20;
-    return try std.fmt.allocPrint(a, "the esp at {s} has {d} MiB free, and the new boot files need {d} MiB. {s}", .{ esp, free / mib, (need + mib - 1) / mib, try gcHint(a, records, running_root) });
+    const hint = if (collectable) try gcHint(a, records, running_root) else manual_hint;
+    return try std.fmt.allocPrint(a, "the esp at {s} has {d} MiB free, and the new boot files need {d} MiB. {s}", .{ esp, free / mib, (need + mib - 1) / mib, hint });
 }
 
 /// which of `records` `os gc --keep 1` would remove, with the boot files
@@ -330,30 +333,35 @@ test "boot files that don't fit on the esp name what gc would remove" {
         .{ .n = 5, .time = 0, .root = "@roots/5", .reason = "d" },
         .{ .n = 6, .time = 0, .root = "@roots/6", .reason = "e" },
     };
-    try testing.expectEqual(null, try espRoom(a, "/boot", 30 * mib, 64 * mib, &recs, "/@roots/5"));
+    try testing.expectEqual(null, try espRoom(a, "/boot", 30 * mib, 64 * mib, &recs, "/@roots/5", true));
     // the room to spare counts too.
-    try testing.expect(try espRoom(a, "/boot", 30 * mib, 30 * mib, &recs, "/@roots/5") != null);
+    try testing.expect(try espRoom(a, "/boot", 30 * mib, 30 * mib, &recs, "/@roots/5", true) != null);
     try testing.expectEqualStrings(
         "the esp at /boot has 2 MiB free, and the new boot files need 31 MiB. `os gc --keep 1` removes generations 2 and 4, with the boot files only they use",
-        (try espRoom(a, "/boot", 30 * mib + 1, 2 * mib + 5, &recs, "/@roots/5")).?,
+        (try espRoom(a, "/boot", 30 * mib + 1, 2 * mib + 5, &recs, "/@roots/5", true)).?,
     );
     // several generations share a root; the newest of them is the one running.
     try testing.expectEqualStrings(
         "the esp at /boot has 0 MiB free, and the new boot files need 1 MiB. `os gc --keep 1` removes generations 2 and 5, with the boot files only they use",
-        (try espRoom(a, "/boot", 10, 0, &recs, "/@roots/1")).?,
+        (try espRoom(a, "/boot", 10, 0, &recs, "/@roots/1", true)).?,
     );
     try testing.expectEqualStrings(
         "the esp at /boot has 0 MiB free, and the new boot files need 1 MiB. `os gc --keep 1` removes generations 2, 4, and 5, with the boot files only they use",
-        (try espRoom(a, "/boot", 10, 0, &recs, "/@roots/6")).?,
+        (try espRoom(a, "/boot", 10, 0, &recs, "/@roots/6", true)).?,
     );
     recs[1].pinned = true;
     try testing.expectEqualStrings(
         "the esp at /boot has 0 MiB free, and the new boot files need 1 MiB. `os gc --keep 1` removes generation 4, with the boot files only it uses",
-        (try espRoom(a, "/boot", 10, 0, &recs, "/@roots/5")).?,
+        (try espRoom(a, "/boot", 10, 0, &recs, "/@roots/5", true)).?,
     );
     try testing.expectEqualStrings(
         "the esp at /efi has 0 MiB free, and the new boot files need 1 MiB. no generation is left to remove, so make room there by hand",
-        (try espRoom(a, "/efi", 10, 0, recs[0..2], "/@roots/1")).?,
+        (try espRoom(a, "/efi", 10, 0, recs[0..2], "/@roots/1", true)).?,
+    );
+    // with only the running system's files there, collecting frees nothing.
+    try testing.expectEqualStrings(
+        "the esp at /boot has 0 MiB free, and the new boot files need 1 MiB. " ++ manual_hint,
+        (try espRoom(a, "/boot", 10, 0, &recs, "/@roots/5", false)).?,
     );
 }
 

@@ -157,6 +157,12 @@ const Uninstaller = struct {
     fn bootMenu(u: *Uninstaller) !?[]const u8 {
         const m = &u.m.?;
         const esp = u.boot.esp.?;
+        // plain arch boots the kernel on the esp, so a root still booting
+        // its own puts it there first.
+        const running = u.boot.root_subvol.?;
+        if (m.unsettled(running)) {
+            if ((try m.restoreBoot(running)).problem()) |w| return w;
+        }
         switch (m.loader) {
             // grub reads its menu from /boot again, the way arch sets it up,
             // and grub-mkconfig names this root's subvolume.
