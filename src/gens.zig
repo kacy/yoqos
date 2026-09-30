@@ -80,7 +80,14 @@ pub const Machine = struct {
         const not_staged = try std.fmt.allocPrint(m.a, "{s} isn't a root os staged", .{root});
         if (!std.mem.startsWith(u8, root, prefix)) return not_staged;
         const n = std.fmt.parseInt(u32, root[prefix.len..], 10) catch return not_staged;
-        return m.add(records, n, root, reason, time, config);
+        const why = try m.add(records, n, root, reason, time, config) orelse return null;
+        // unrecorded, nothing boots the staged root: it goes, and so does
+        // its note, rather than wait forever.
+        _ = try m.forget(n);
+        _ = try m.drop(try m.at(&.{root}));
+        std.Io.Dir.cwd().deleteFile(m.io, generation.unsettled_path) catch {};
+        _ = try m.writeMenu(m.boot.root_subvol.?, records);
+        return why;
     }
 
     /// starts a new generation from `source`, a generation's record or a

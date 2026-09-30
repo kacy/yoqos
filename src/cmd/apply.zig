@@ -260,7 +260,9 @@ pub fn recordGeneration(ctx: *Context, done: Outcome, reason: []const u8) !void 
     const commit = try configNow(ctx, a);
     const recorded = if (done.staged_root) |root| try m.recordStaged(root, reason, now, commit) else try m.record(reason, now, commit);
     if (recorded) |problem| {
-        try ctx.err.print("os: applied, but not recorded as a generation: {s}\n", .{problem});
+        if (done.staged_root != null) {
+            try ctx.err.print("os: the change was built, but couldn't be recorded, so it's gone again: {s}. the running system is as it was; `os apply` tries again.\n", .{problem});
+        } else try ctx.err.print("os: applied, but not recorded as a generation: {s}\n", .{problem});
         return;
     }
     if (!ctx.json) try ctx.out.writeAll("recorded as a new generation; the boot menu has it.\n");
