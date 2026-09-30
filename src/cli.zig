@@ -31,6 +31,7 @@ const diff_cmd = @import("cmd/diff.zig");
 const doctor = @import("cmd/doctor.zig");
 const docs = @import("cmd/docs.zig");
 const update = @import("cmd/update.zig");
+const events_cmd = @import("cmd/events.zig");
 const schemas = @import("schema.zig");
 
 pub const default_config = "/etc/yoq/machine.toml";
@@ -117,6 +118,7 @@ const commands = [_]Command{
     .{ .name = "record-pacman", .summary = "record a pacman transaction (the drift hook runs this)", .handler = hook.recordPacmanCmd, .hidden = true },
     .{ .name = "explain", .summary = "explain an error code, like E0213", .handler = explain },
     .{ .name = "schema", .summary = "print the json schema for the config or a json document", .handler = schemaCmd, .hidden = true },
+    .{ .name = "events", .summary = "print what os did here, and pacman outside it, as json lines (--follow for new ones)", .handler = events_cmd.eventsCmd, .hidden = true },
 };
 
 /// walks a command's own arguments.
@@ -673,6 +675,7 @@ test {
     _ = doctor;
     _ = docs;
     _ = update;
+    _ = events_cmd;
     _ = @import("cmd/lock.zig");
     _ = @import("cmd/stage.zig");
 }

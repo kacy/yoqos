@@ -5,6 +5,7 @@
 const std = @import("std");
 const config = @import("config.zig");
 const diag = @import("diag.zig");
+const events = @import("events.zig");
 const facts = @import("facts.zig");
 const lists = @import("lists.zig");
 const lock = @import("lock.zig");
@@ -22,6 +23,7 @@ pub const Doc = struct {
 pub const docs = [_]Doc{
     .{ .name = "config", .what = "machine.toml and the files it includes", .write = configSchema },
     .{ .name = "errors", .what = "errors, as --json prints them", .write = docSchema(diag.JsonDoc, "yoq.errors/1") },
+    .{ .name = "events", .what = "a line of os events, as os events prints them", .write = docSchema(events.Event, events.schema) },
     .{ .name = "facts", .what = "what os reads from a machine: os facts, and --facts", .write = docSchema(facts.Facts, facts.schema) },
     .{ .name = "lock", .what = "machine.lock", .write = lockSchema },
     .{ .name = "plan", .what = "os plan --json, and the file os plan -o saves", .write = docSchema(planner.Doc, planner.schema) },
@@ -447,6 +449,26 @@ test "the lock's schema fits what the lock writer writes, and every golden lock"
         checked += 1;
     }
     try testing.expect(checked > 5);
+}
+
+test "events fit their schema" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const schema = (try render(a, "events")).value;
+    const samples = [_]events.Event{
+        .{ .time = 1, .kind = .apply, .step = .begin, .plan = "abc" },
+        .{ .time = 2, .kind = .pacman, .packages = &.{"htop"} },
+        .{ .time = 3, .kind = .generation, .generation = 4, .message = "add fd" },
+    };
+    for (samples) |e| {
+        var out: std.Io.Writer.Allocating = .init(a);
+        try events.encode(&out.writer, e);
+        const v = try std.json.parseFromSliceLeaky(std.json.Value, a, out.written(), .{});
+        try testing.expect(conforms(schema, v));
+    }
+    const odd = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"schema\":\"yoq.event/1\",\"time\":1,\"kind\":\"reboot\"}", .{});
+    try testing.expect(!conforms(schema, odd));
 }
 
 test "the lock's schema has the keys the lock reader takes" {
