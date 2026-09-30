@@ -10,6 +10,7 @@ const build_options = @import("build_options");
 const facts = @import("facts.zig");
 const lock = @import("lock.zig");
 const diag = @import("diag.zig");
+const rootfs = @import("rootfs.zig");
 const Allocator = std.mem.Allocator;
 
 pub const available = build_options.alpm;
@@ -120,6 +121,29 @@ pub fn transact(a: Allocator, io: std.Io, t: Transaction, diags: *diag.List) Err
     return if (comptime available) impl.transact(a, io, t, diags) else error.AlpmUnavailable;
 }
 
+/// libalpm's lock in a database directory, there while a transaction runs.
+const lock_name = "db.lck";
+
+/// whether a lock last changed at `changed`, in unix nanoseconds, is left
+/// from before the boot that started at `boot`, in unix seconds. nothing
+/// that held it then runs now: power lost in the middle of a transaction
+/// leaves one like that.
+pub fn staleLock(changed: i96, boot: i64) bool {
+    return changed < @as(i96, boot) * std.time.ns_per_s;
+}
+
+/// removes libalpm's lock in `dbpath` if it's from before this boot, so a
+/// transaction cut off by a crash doesn't block every one after it.
+/// returns its path if it did.
+pub fn clearStaleLock(a: Allocator, io: std.Io, dbpath: []const u8) error{OutOfMemory}!?[]const u8 {
+    const path = try std.fs.path.join(a, &.{ dbpath, lock_name });
+    const st = std.Io.Dir.cwd().statFile(io, path, .{}) catch return null;
+    const boot = try rootfs.bootTime(a, io) orelse return null;
+    if (!staleLock(st.mtime.nanoseconds, boot)) return null;
+    std.Io.Dir.cwd().deleteFile(io, path) catch return null;
+    return path;
+}
+
 /// reports choices nobody made, for when there's no one to ask.
 pub fn reportChoices(a: Allocator, choices: []const Choice, diags: *diag.List) !void {
     for (choices) |ch| {
@@ -181,6 +205,27 @@ const Fixture = struct {
 };
 
 const alpm = @This();
+
+test "a lock from before this boot is stale, and goes" {
+    try testing.expect(staleLock(99 * std.time.ns_per_s, 100));
+    try testing.expect(!staleLock(100 * std.time.ns_per_s, 100));
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+    const dir = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try testing.expectEqual(null, try clearStaleLock(a, io, dir));
+    // one made in this boot belongs to something running now.
+    const f = try tmp.dir.createFile(io, lock_name, .{});
+    defer f.close(io);
+    try testing.expectEqual(null, try clearStaleLock(a, io, dir));
+    try tmp.dir.access(io, lock_name, .{});
+    try f.setTimestamps(io, .{ .modify_timestamp = .{ .new = .{ .nanoseconds = 0 } } });
+    try testing.expectEqualStrings(try std.fs.path.join(a, &.{ dir, lock_name }), (try clearStaleLock(a, io, dir)).?);
+    try testing.expectError(error.FileNotFound, tmp.dir.access(io, lock_name, .{}));
+}
 
 test "resolve pulls in the whole closure with resolved dependencies" {
     if (!available) return error.SkipZigTest;

@@ -75,6 +75,21 @@ pub fn readProc(a: Allocator, io: std.Io, path: []const u8) error{OutOfMemory}![
     return try readStreaming(a, io, path) orelse "";
 }
 
+/// when this boot started, in unix seconds: /proc/stat's btime. null if
+/// it can't be read.
+pub fn bootTime(a: Allocator, io: std.Io) error{OutOfMemory}!?i64 {
+    return parseBootTime(try readProc(a, io, "/proc/stat"));
+}
+
+fn parseBootTime(stat: []const u8) ?i64 {
+    var lines = std.mem.tokenizeScalar(u8, stat, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "btime ")) continue;
+        return std.fmt.parseInt(i64, std.mem.trim(u8, line["btime ".len..], " "), 10) catch null;
+    }
+    return null;
+}
+
 pub fn pathExists(io: std.Io, path: []const u8) bool {
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
@@ -141,6 +156,14 @@ test "an atomic write keeps its mode, and a symlink in the way stays untouched" 
     try std.testing.expectEqualStrings("hash", try tmp.dir.readFileAlloc(io, "secret", a, .limited(16)));
     const st = try tmp.dir.statFile(io, "secret", .{});
     try std.testing.expectEqual(0o600, @intFromEnum(st.permissions) & 0o777);
+}
+
+test "the boot time from /proc/stat" {
+    try std.testing.expectEqual(1759200000, parseBootTime("cpu  1 2 3\nintr 5\nbtime 1759200000\nprocesses 9\n").?);
+    try std.testing.expectEqual(null, parseBootTime("cpu  1 2 3\n"));
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expect((try bootTime(arena.allocator(), std.testing.io)).? > 0);
 }
 
 test "a /proc file reads whole" {

@@ -201,6 +201,9 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     }
 
     const target = try targetFor(ctx, &w, result.state.config(), &result.state.lock) orelse return Outcome.failed(&w);
+    if (try alpm.clearStaleLock(a, ctx.io, target.dbpath)) |path| {
+        try ctx.err.print("os: removed {s}, left from before this boot by a transaction that never finished.\n", .{path});
+    }
     const units = liveUnits(ctx);
     const hash = try p.hash();
     try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "begin", &hash);
