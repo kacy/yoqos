@@ -202,16 +202,9 @@ pub const Builder = struct {
     }
 
     /// unmounts everything under the new root, deepest first, including
-    /// what package scripts mounted there. a mount something still holds
-    /// is detached lazily, so it goes once that lets go.
+    /// what package scripts mounted there.
     pub fn unmount(b: *Builder) void {
-        const text = rootfs.readProc(b.a, b.ctx.io, "/proc/self/mountinfo") catch return;
-        const points = mountsUnder(b.a, text, b.dir) catch return;
-        for (points) |p| {
-            if (lists.contains(b.keep, p)) continue;
-            const failed = exec.run(b.a, b.ctx.io, &.{ "umount", p }) catch return;
-            if (failed != null) _ = exec.run(b.a, b.ctx.io, &.{ "umount", "-l", p }) catch return;
-        }
+        _ = unmountTree(b.a, b.ctx.io, b.dir, b.keep, false) catch {};
     }
 
     /// the config applied to the new root, then its units turned on
@@ -296,17 +289,80 @@ pub const Builder = struct {
     }
 };
 
-/// the mount points under `dir` in mountinfo's `text`, deepest first.
-/// mountinfo escapes spaces and the like as octal, which build paths
-/// don't have.
-fn mountsUnder(a: Allocator, text: []const u8, dir: []const u8) ![]const []const u8 {
+/// unmounts the mounts under `dir`, and `dir` itself `with_dir`, deepest
+/// first, past the ones in `keep`. processes running inside it are
+/// stopped first: a gpg-agent that pacman-key started in a build keeps
+/// every mount it's on busy. a mount still busy after a few tries is
+/// detached lazily, which leaves its device in use until the last user
+/// lets go; those are the result.
+pub fn unmountTree(a: Allocator, io: std.Io, dir: []const u8, keep: []const []const u8, with_dir: bool) ![]const []const u8 {
+    stopProcessesIn(a, io, dir);
+    const text = try rootfs.readProc(a, io, "/proc/self/mountinfo");
+    var lazy: std.ArrayList([]const u8) = .empty;
+    for (try mountsUnder(a, text, dir, with_dir)) |p| {
+        if (lists.contains(keep, p)) continue;
+        for (0..umount_tries) |i| {
+            if (try exec.run(a, io, &.{ "umount", p }) == null) break;
+            if (i + 1 < umount_tries) {
+                io.sleep(.fromMilliseconds(500), .awake) catch {};
+                continue;
+            }
+            if (try exec.run(a, io, &.{ "umount", "-l", p }) == null) try lazy.append(a, p);
+        }
+    }
+    return lazy.items;
+}
+
+const umount_tries = 3;
+
+/// stops the processes whose root or working directory is inside `dir`:
+/// a term first, then a kill for any still there.
+fn stopProcessesIn(a: Allocator, io: std.Io, dir: []const u8) void {
+    for ([_]std.posix.SIG{ .TERM, .KILL }) |sig| {
+        const pids = processesIn(a, io, dir) catch return;
+        if (pids.len == 0) return;
+        for (pids) |pid| std.posix.kill(pid, sig) catch {};
+        io.sleep(.fromMilliseconds(500), .awake) catch {};
+    }
+}
+
+fn processesIn(a: Allocator, io: std.Io, dir: []const u8) ![]const std.posix.pid_t {
+    var out: std.ArrayList(std.posix.pid_t) = .empty;
+    var proc = std.Io.Dir.cwd().openDir(io, "/proc", .{ .iterate = true }) catch return out.items;
+    defer proc.close(io);
+    const self = std.os.linux.getpid();
+    var it = proc.iterate();
+    while (it.next(io) catch null) |e| {
+        const pid = std.fmt.parseInt(std.posix.pid_t, e.name, 10) catch continue;
+        if (pid == self) continue;
+        for ([_][]const u8{ "root", "cwd" }) |link| {
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            const n = proc.readLink(io, try std.fmt.allocPrint(a, "{s}/{s}", .{ e.name, link }), &buf) catch continue;
+            if (inside(buf[0..n], dir)) {
+                try out.append(a, pid);
+                break;
+            }
+        }
+    }
+    return out.items;
+}
+
+/// whether `path` is `dir` or under it.
+fn inside(path: []const u8, dir: []const u8) bool {
+    return std.mem.startsWith(u8, path, dir) and (path.len == dir.len or path[dir.len] == '/');
+}
+
+/// the mount points under `dir` in mountinfo's `text`, and `dir` too
+/// `with_dir`, deepest first. mountinfo escapes spaces and the like as
+/// octal, which build paths don't have.
+fn mountsUnder(a: Allocator, text: []const u8, dir: []const u8, with_dir: bool) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     var lines = std.mem.tokenizeScalar(u8, text, '\n');
     while (lines.next()) |line| {
         var fields = std.mem.tokenizeScalar(u8, line, ' ');
         for (0..4) |_| _ = fields.next();
         const point = fields.next() orelse continue;
-        if (point.len > dir.len and std.mem.startsWith(u8, point, dir) and point[dir.len] == '/') try out.append(a, point);
+        if (inside(point, dir) and (with_dir or point.len > dir.len)) try out.append(a, point);
     }
     // a mount under another sorts after it, so reversed, it comes first.
     lists.sortStrings(out.items);
@@ -362,11 +418,34 @@ test "mounts under a build, deepest first" {
         \\92 1 0:30 / /var/tmp/clean/proc rw - proc proc rw
         \\93 1 0:31 / /var/tmp/cleaner rw - tmpfs t rw
     ;
-    const got = try mountsUnder(arena.allocator(), info, "/var/tmp/clean");
+    const got = try mountsUnder(arena.allocator(), info, "/var/tmp/clean", false);
     try std.testing.expectEqual(3, got.len);
     try std.testing.expectEqualStrings("/var/tmp/clean/proc", got[0]);
     try std.testing.expectEqualStrings("/var/tmp/clean/dev/pts", got[1]);
     try std.testing.expectEqualStrings("/var/tmp/clean/dev", got[2]);
+
+    // an install's target goes too, after everything on it, and a mount
+    // over a mount comes off first.
+    const target =
+        \\40 1 0:40 /@roots/1 /mnt/yoq rw - btrfs /dev/mapper/yoq-install rw
+        \\41 40 0:40 /@var /mnt/yoq/var rw - btrfs /dev/mapper/yoq-install rw
+        \\42 41 0:5 / /mnt/yoq/var/lib/x rw - tmpfs t rw
+        \\43 40 254:1 / /mnt/yoq/boot rw - vfat /dev/vdc1 rw
+        \\44 1 0:41 / /mnt/yoqother rw - tmpfs t rw
+    ;
+    const all = try mountsUnder(arena.allocator(), target, "/mnt/yoq", true);
+    try std.testing.expectEqual(4, all.len);
+    try std.testing.expectEqualStrings("/mnt/yoq/var/lib/x", all[0]);
+    try std.testing.expectEqualStrings("/mnt/yoq/var", all[1]);
+    try std.testing.expectEqualStrings("/mnt/yoq/boot", all[2]);
+    try std.testing.expectEqualStrings("/mnt/yoq", all[3]);
+}
+
+test "a process inside a build, by its root or working directory" {
+    try std.testing.expect(inside("/mnt/yoq", "/mnt/yoq"));
+    try std.testing.expect(inside("/mnt/yoq/etc/pacman.d/gnupg", "/mnt/yoq"));
+    try std.testing.expect(!inside("/mnt/yoqother", "/mnt/yoq"));
+    try std.testing.expect(!inside("/", "/mnt/yoq"));
 }
 
 test "a build's pacman.conf leaves out os's repositories" {
