@@ -133,6 +133,14 @@
   written. fat kept the rename in memory, so a power cut right after a
   menu write could leave the newest entry pointing at a file that wasn't
   there.
+- with `/boot` as the esp, a rollback or fallback notes the new root as
+  unsettled while it copies that root's kernel and initramfs onto the
+  esp, and a staged generation's note is written as it's recorded, after
+  what the note said before is kept. a copy a power cut stopped halfway
+  used to leave a kernel and initramfs that didn't match on the esp, which
+  the next menu write booted and copied into the root's own `/boot`. a
+  staged generation that couldn't be recorded no longer takes the running
+  root's note with it.
 
 ## 0.1.3
 

@@ -42,6 +42,9 @@ pub const Machine = struct {
     /// menu can't sign goes on the esp unsigned, or stays as it is there,
     /// and its path goes here, instead of the menu write stopping.
     left_unsigned: ?*std.ArrayList([]const u8) = null,
+    /// the note naming the root whose boot files aren't on the esp yet
+    /// (see `unsettled`), or a test's stand-in.
+    unsettled_note: []const u8 = generation.unsettled_path,
 
     /// mounts the top level of the root's filesystem. `close` unmounts it.
     pub fn open(a: Allocator, io: std.Io, boot: facts.Boot, why: *[]const u8) !?Machine {
@@ -91,12 +94,18 @@ pub const Machine = struct {
         const not_staged = try std.fmt.allocPrint(m.a, "{s} isn't a root os staged", .{root});
         if (!std.mem.startsWith(u8, root, prefix)) return not_staged;
         const n = std.fmt.parseInt(u32, root[prefix.len..], 10) catch return not_staged;
+        // it boots the kernel in its own root until a good boot puts it on
+        // the esp, and the note that says so is on disk before the menu
+        // boots it: without it, the next menu write would boot the esp's
+        // older kernel for it, and copy that into its /boot.
+        const before = try m.note();
+        if (try m.setNote(root)) |w| return w;
         const why = try m.add(records, n, root, reason, time, config) orelse return null;
-        // unrecorded, nothing boots the staged root: it goes, and so does
-        // its note, rather than wait forever.
+        // unrecorded, nothing boots the staged root: it goes, and the note
+        // says what it said before, rather than wait forever.
         _ = try m.forget(n);
         _ = try m.drop(try m.at(&.{root}));
-        std.Io.Dir.cwd().deleteFile(m.io, generation.unsettled_path) catch {};
+        _ = try m.setNote(before);
         _ = try m.writeMenu(m.boot.root_subvol.?, records);
         return why;
     }
@@ -112,8 +121,9 @@ pub const Machine = struct {
         const n = try m.free(records);
         const root = try std.fmt.allocPrint(m.a, "/{s}/{d}", .{ generation.roots_dir, n });
         btrfs.snapshot(try m.at(&.{source}), try m.at(&.{root}), false) catch |e| return try std.fmt.allocPrint(m.a, "can't copy {s}: {s}", .{ source, @errorName(e) });
+        const before = try m.note();
         // the esp's boot files change last, once the new root is recorded.
-        const why = try m.carry(root) orelse try m.add(records, n, root, reason, time, config) orelse try m.startBoot(root, later) orelse {
+        const why = try m.carry(root) orelse try m.add(records, n, root, reason, time, config) orelse try m.startBoot(root, before, later) orelse {
             made.* = n;
             return null;
         };
@@ -121,30 +131,59 @@ pub const Machine = struct {
         // written for the new root points at one that's gone.
         const left = try m.forget(n) orelse try m.drop(try m.at(&.{root}));
         const running = m.boot.root_subvol.?;
-        const menu_left = try m.writeMenu(running, records);
-        // the running root's kernel goes back on the esp, if it left.
+        const note_left = try m.setNote(before);
+        // the running root's kernel goes back on the esp, if it left,
+        // before the menu boots it from there again.
         const boot_left = if (m.unsettled(running)) null else (try m.restoreBoot(running)).problem();
-        if (menu_left orelse boot_left) |w| return try std.fmt.allocPrint(m.a, "{s}. putting the boot menu back failed too, so it may still name the root that was removed: {s}", .{ why, w });
+        const menu_left = try m.writeMenu(running, records);
+        if (menu_left orelse boot_left orelse note_left) |w| return try std.fmt.allocPrint(m.a, "{s}. putting the boot menu back failed too, so it may still name the root that was removed: {s}", .{ why, w });
         if (left) |w| return try std.fmt.allocPrint(m.a, "{s}. generation {d} couldn't be removed either: {s}", .{ why, n, w });
         return why;
     }
 
     /// puts a new generation's boot files, in the root at `root`, on the
     /// esp. if they don't fit, it boots the ones in its root until a good
-    /// boot finds room, and `later` says why.
-    fn startBoot(m: *const Machine, root: []const u8, later: *?[]const u8) !?[]const u8 {
+    /// boot finds room, and `later` says why. while they're copied, the
+    /// note names `root`, so a copy a power cut stops halfway is neither
+    /// booted from the esp nor kept in its /boot, and the boot that runs
+    /// it finishes the copy (see `unsettled`). once they're all there, the
+    /// note says what it said `before`.
+    fn startBoot(m: *const Machine, root: []const u8, before: ?[]const u8, later: *?[]const u8) !?[]const u8 {
+        if (!m.bootOnEsp()) return null;
+        if (try m.setNote(root)) |w| return w;
         switch (try m.restoreBoot(root)) {
-            .done => return null,
+            .done => return m.setNote(before),
             .failed => |w| return w,
             .full => |w| {
                 // the note keeps its kernel off the esp's entry, and keeps
                 // the esp's older kernel out of its /boot.
-                rootfs.writeAtomic(m.io, generation.unsettled_path, root, null) catch
-                    return try std.fmt.allocPrint(m.a, "{s}. can't write {s} either", .{ w, generation.unsettled_path });
                 later.* = w;
                 return null;
             },
         }
+    }
+
+    /// the root the unsettled note names, if there is one.
+    fn note(m: *const Machine) !?[]const u8 {
+        const text = std.Io.Dir.cwd().readFileAlloc(m.io, m.unsettled_note, m.a, .limited(256)) catch |e| switch (e) {
+            error.OutOfMemory => return e,
+            else => return null,
+        };
+        const root = std.mem.trim(u8, text, " \n");
+        return if (root.len == 0) null else root;
+    }
+
+    /// makes the unsettled note name `root`, or with null, removes it.
+    fn setNote(m: *const Machine, root: ?[]const u8) !?[]const u8 {
+        const r = root orelse {
+            std.Io.Dir.cwd().deleteFile(m.io, m.unsettled_note) catch |e| switch (e) {
+                error.FileNotFound => {},
+                else => return try std.fmt.allocPrint(m.a, "can't remove {s}", .{m.unsettled_note}),
+            };
+            return null;
+        };
+        rootfs.writeAtomic(m.io, m.unsettled_note, r, null) catch return try std.fmt.allocPrint(m.a, "can't write {s}", .{m.unsettled_note});
+        return null;
     }
 
     /// the next generation, from the root at `root`: its read-only record,
@@ -827,8 +866,8 @@ pub const Machine = struct {
     /// since its boot files aren't on the esp yet: it was staged, or they
     /// didn't fit there, and no good boot has put them there since.
     pub fn unsettled(m: *const Machine, subvol: []const u8) bool {
-        const note = std.Io.Dir.cwd().readFileAlloc(m.io, generation.unsettled_path, m.a, .limited(256)) catch return false;
-        return std.mem.eql(u8, std.mem.trim(u8, note, " \n"), subvol);
+        const named = (m.note() catch return false) orelse return false;
+        return std.mem.eql(u8, named, subvol);
     }
 
     /// what making the boot files in `to` match the ones in `from` takes:
@@ -1134,6 +1173,55 @@ fn blkid(a: Allocator, io: std.Io, device: []const u8, tag: []const u8, why: *[]
 fn fail(why: *[]const u8, message: []const u8) ?Machine {
     why.* = message;
     return null;
+}
+
+test "a rollback's kernel copied onto a /boot esp is noted until it's all there" {
+    // root reads the file anyway, so the copy can't be made to fail.
+    if (std.os.linux.geteuid() == 0) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "esp");
+    try tmp.dir.createDirPath(io, "top/@roots/2/boot");
+    try tmp.dir.writeFile(io, .{ .sub_path = "esp/vmlinuz-linux", .data = "old kernel" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "esp/initramfs-linux.img", .data = "old initramfs" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/vmlinuz-linux", .data = "new kernel" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/initramfs-linux.img", .data = "new initramfs" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "note", .data = "/@roots/1" });
+    const m: Machine = .{
+        .a = a,
+        .io = io,
+        .boot = .{ .esp = try std.fmt.allocPrint(a, "{s}/esp", .{base}), .loader = "grub", .root_subvol = "/@roots/1" },
+        .loader = .grub,
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
+        .esp_is_boot = true,
+        .unsettled_note = try std.fmt.allocPrint(a, "{s}/note", .{base}),
+    };
+    // a copy that stops halfway, as a power cut would leave it: the note
+    // names the new root, so nothing boots its files from the esp or keeps
+    // the esp's in its /boot, and the boot that runs it copies them again.
+    const initramfs = try std.fmt.allocPrint(a, "{s}/top/@roots/2/boot/initramfs-linux.img", .{base});
+    try std.testing.expectEqual(null, try exec.run(a, io, &.{ "chmod", "000", initramfs }));
+    var later: ?[]const u8 = null;
+    try std.testing.expect(try m.startBoot("/@roots/2", "/@roots/1", &later) != null);
+    try std.testing.expect(m.unsettled("/@roots/2"));
+    try std.testing.expect(!m.unsettled("/@roots/1"));
+    // once it's all there, the note says what it said before.
+    try std.testing.expectEqual(null, try exec.run(a, io, &.{ "chmod", "644", initramfs }));
+    try std.testing.expectEqual(null, try m.startBoot("/@roots/2", "/@roots/1", &later));
+    try std.testing.expectEqual(null, later);
+    try std.testing.expect(m.unsettled("/@roots/1"));
+    try std.testing.expectEqualStrings("new initramfs", try tmp.dir.readFileAlloc(io, "esp/initramfs-linux.img", a, .limited(64)));
+    try std.testing.expectEqualStrings("new kernel", try tmp.dir.readFileAlloc(io, "esp/vmlinuz-linux", a, .limited(64)));
+    // with no note before, there's none after.
+    try std.testing.expectEqual(null, try m.startBoot("/@roots/2", null, &later));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "note", .{}));
 }
 
 test "records by number, and dates" {
