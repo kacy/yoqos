@@ -632,6 +632,11 @@ test "entries that start unified kernel images" {
         \\options root=UUID=r rootflags=subvol=/@roots/3 rw yoq.trial
         \\
     , sd[2].text);
+    try testing.expectEqualStrings(sdboot_trial, sd[2].name);
+    // one options line, since systemd-boot joins several, and the trial's
+    // argument once.
+    try testing.expectEqual(1, std.mem.count(u8, sd[2].text, "\noptions "));
+    try testing.expectEqual(1, std.mem.count(u8, sd[2].text, "yoq.trial"));
 
     const r = try refind(a, .{ .esp_part = "esp-guid", .root_part = "", .entries = &uki_entries });
     try testing.expectEqualStrings(
