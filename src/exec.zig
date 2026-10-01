@@ -67,6 +67,60 @@ pub fn runFrom(a: Allocator, io: std.Io, argv: []const []const u8, input: []cons
     return wait(a, io, &child, argv);
 }
 
+/// runs `argv` with `input` on its standard input, through a pipe, so
+/// the bytes never touch the disk. null when it succeeds, or what it said
+/// went wrong.
+pub fn feed(a: Allocator, io: std.Io, argv: []const []const u8, input: []const u8) error{OutOfMemory}!?[]const u8 {
+    var child = std.process.spawn(io, .{ .argv = argv, .stdin = .pipe, .stdout = .ignore, .stderr = .pipe }) catch |e| return try spawnFailed(a, argv, e);
+    // a program that quits early closes its end; what it said explains why.
+    child.stdin.?.writeStreamingAll(io, input) catch {};
+    child.stdin.?.close(io);
+    child.stdin = null;
+    return finish(a, io, &child, argv);
+}
+
+/// what a program printed into a buffer of the caller's, or what went
+/// wrong.
+pub const Captured = union(enum) {
+    ok: []u8,
+    failed: []const u8,
+};
+
+/// runs `argv` and reads what it prints into `out`, which is never grown
+/// or copied, so the caller can wipe the only copy. more than fits is a
+/// failure.
+pub fn capture(a: Allocator, io: std.Io, argv: []const []const u8, out: []u8) error{OutOfMemory}!Captured {
+    var child = std.process.spawn(io, .{ .argv = argv, .stdin = .ignore, .stdout = .pipe, .stderr = .pipe }) catch |e| return .{ .failed = try spawnFailed(a, argv, e) };
+    var n: usize = 0;
+    while (n < out.len) {
+        const got = child.stdout.?.readStreaming(io, &.{out[n..]}) catch break;
+        if (got == 0) break;
+        n += got;
+    }
+    if (n == out.len) {
+        child.kill(io);
+        return .{ .failed = try std.fmt.allocPrint(a, "{s} printed more than {d} bytes", .{ argv[0], out.len - 1 }) };
+    }
+    if (try finish(a, io, &child, argv)) |why| return .{ .failed = why };
+    return .{ .ok = out[0..n] };
+}
+
+/// reads what a spawned `argv` says on its standard error, then waits for
+/// it. null when it succeeds.
+fn finish(a: Allocator, io: std.Io, child: *Child, argv: []const []const u8) error{OutOfMemory}!?[]const u8 {
+    var buf: [1024]u8 = undefined;
+    var r = child.stderr.?.readerStreaming(io, &buf);
+    const said = r.interface.allocRemaining(a, .limited(64 << 10)) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => "",
+    };
+    if (try wait(a, io, child, argv)) |why| {
+        const trimmed = std.mem.trim(u8, said, " \n");
+        return if (trimmed.len > 0) trimmed else why;
+    }
+    return null;
+}
+
 /// waits for a spawned `argv` to exit. null when it succeeds.
 fn wait(a: Allocator, io: std.Io, child: *Child, argv: []const []const u8) error{OutOfMemory}!?[]const u8 {
     const term = child.wait(io) catch |e| return try std.fmt.allocPrint(a, "{s} didn't finish: {s}", .{ argv[0], @errorName(e) });
@@ -113,6 +167,19 @@ test "a missing program and a failing one" {
     try std.testing.expectEqualStrings("false failed", (try run(a, std.testing.io, &.{"false"})).?);
     try std.testing.expectEqualStrings("hi\n", (try output(a, std.testing.io, &.{ "echo", "hi" })).ok);
     try std.testing.expectEqualStrings("false failed", (try runAll(a, std.testing.io, &.{ &.{"true"}, &.{"false"}, &.{"os-no-such-tool"} })).?);
+}
+
+test "input through a pipe, and output into a buffer" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    try std.testing.expectEqual(null, try feed(a, io, &.{ "sh", "-c", "test \"$(cat)\" = hunter2" }, "hunter2"));
+    try std.testing.expectEqualStrings("no", (try feed(a, io, &.{ "sh", "-c", "cat >/dev/null; echo no >&2; exit 1" }, "x")).?);
+    var buf: [8]u8 = undefined;
+    try std.testing.expectEqualStrings("abc", (try capture(a, io, &.{ "printf", "abc" }, &buf)).ok);
+    try std.testing.expectEqualStrings("printf printed more than 7 bytes", (try capture(a, io, &.{ "printf", "abcdefghij" }, &buf)).failed);
+    try std.testing.expectEqualStrings("bad", (try capture(a, io, &.{ "sh", "-c", "echo bad >&2; exit 3" }, &buf)).failed);
 }
 
 test "a log's last lines" {
