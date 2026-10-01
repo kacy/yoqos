@@ -40,6 +40,7 @@ ext4)
     # the manage rung's failures: power lost during an apply or right
     # after its transaction, and no network.
     tests/vm/failures.sh crash committed download
+    tests/vm/secrets.sh
     # generations need btrfs: enable-rollback says so, and changes nothing.
     tests/vm/manage.sh "root filesystem: ext4"
     tests/vm/aur.sh
