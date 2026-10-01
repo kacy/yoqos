@@ -46,6 +46,10 @@
 
 ### fixes
 
+- while the firmware enforces secure boot and sbctl has keys, `os` signs
+  every image it puts on the esp, even for a generation without
+  `[boot] secure_boot`. after a rollback past turning it on, the next
+  kernel's image was left unsigned, and its trial couldn't start.
 - on a luks root, grub and refind boot every generation from copies on the
   esp, since they can't read btrfs inside luks, and grub.cfg no longer
   looks for a root filesystem none of its entries use.

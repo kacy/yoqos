@@ -1159,8 +1159,10 @@ generation or the new one has `secure_boot`, every menu write signs
 whatever images the menu boots, so the generation a failed trial falls
 back to starts too. a generation from before `uki` boots a plain kernel,
 which firmware enforcing secure boot refuses; turn secure boot off in the
-firmware before you boot one. the same goes for turning `secure_boot`
-off: once it's off, images aren't signed any more.
+firmware before you boot one. turning `secure_boot` off stops the
+signing only once the firmware stops enforcing secure boot: until then,
+as long as sbctl has keys, every menu write still signs, so a generation
+without the key starts too.
 
 `os install` won't install a config with `secure_boot = true`: a new
 machine has no keys yet. install without it, then follow the steps above

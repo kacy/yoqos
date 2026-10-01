@@ -35,6 +35,14 @@ const global_guid = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
 pub const secure_boot_var = "sys/firmware/efi/efivars/SecureBoot-" ++ global_guid;
 pub const setup_mode_var = "sys/firmware/efi/efivars/SetupMode-" ++ global_guid;
 
+/// whether images get signed whatever the config says: the firmware
+/// enforces secure boot, and sbctl has keys to sign with. a generation
+/// without `[boot] secure_boot`, like one rolled back to, or a config
+/// that turned it off before the firmware did, still starts then.
+pub fn enforcedWithKeys(enforced: ?bool, keys: bool) bool {
+    return keys and (enforced orelse false);
+}
+
 /// the command that signs `file` in place with sbctl's db key. `signer`
 /// is sbctl, or a stand-in in tests.
 pub fn signArgv(a: Allocator, signer: []const u8, file: []const u8) ![]const []const u8 {
@@ -114,6 +122,13 @@ test "secure boot and setup mode from efivarfs" {
     try testing.expectEqualStrings("off", describe(false, false));
     try testing.expectEqualStrings("off", describe(false, null));
     try testing.expectEqualStrings("unknown: no efi variables for it", describe(null, null));
+}
+
+test "signing while the firmware enforces secure boot" {
+    try testing.expect(enforcedWithKeys(true, true));
+    try testing.expect(!enforcedWithKeys(true, false));
+    try testing.expect(!enforcedWithKeys(false, true));
+    try testing.expect(!enforcedWithKeys(null, true));
 }
 
 test "os's own unsigned files" {

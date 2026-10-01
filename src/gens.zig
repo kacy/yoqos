@@ -377,10 +377,12 @@ pub const Machine = struct {
     }
 
     /// whether menus written now sign what they boot: the root at the top,
-    /// `head`, or the running one has os's file from `[boot] secure_boot`.
-    /// the running one counts since its firmware may enforce secure boot
+    /// `head`, or the running one has os's file from `[boot] secure_boot`,
+    /// or the firmware enforces secure boot and sbctl has keys. the
+    /// running one counts since its firmware may enforce secure boot
     /// already, whatever generation goes on top.
     fn signs(m: *const Machine, head: []const u8) bool {
+        if (secureboot.enforcedWithKeys(m.boot.secure_boot, m.boot.sbctl_keys)) return true;
         if (rootfs.pathExists(m.io, m.at(&.{ head, secureboot.config_rel }) catch return false)) return true;
         const running = m.boot.root_subvol orelse return false;
         return rootfs.pathExists(m.io, m.at(&.{ running, secureboot.config_rel }) catch return false);
@@ -1129,6 +1131,49 @@ test "with secure boot, images are signed in the root before they replace the es
     const why = (try failing.writeOnEsp(&entries, &.{}, testPut)).?;
     try std.testing.expect(std.mem.startsWith(u8, why, "can't sign "));
     try std.testing.expectEqualStrings("image", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
+}
+
+test "firmware that enforces secure boot has images signed without the config's key" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    // a generation rolled back to from before `[boot] secure_boot`: an
+    // image, but no file that asks for signing.
+    try tmp.dir.createDirPath(io, "top/@roots/2/boot");
+    try tmp.dir.createDirPath(io, "top/@roots/2/etc/kernel");
+    try tmp.dir.createDirPath(io, "esp/yoq/boot");
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/" ++ uki.config_rel, .data = uki.config_content });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/vmlinuz-linux", .data = "kernel" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/initramfs-linux.img", .data = "initramfs" });
+    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs") });
+    const image = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{name});
+    try tmp.dir.writeFile(io, .{ .sub_path = "sign.sh", .data = "[ \"$1\" = sign ] && printf ' signed' >> \"$2\"\n" });
+    var m: Machine = .{
+        .a = a,
+        .io = io,
+        .boot = .{ .esp = try std.fmt.allocPrint(a, "{s}/esp", .{base}), .loader = "grub", .root_subvol = "/@roots/2", .secure_boot = false, .sbctl_keys = true },
+        .loader = .grub,
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
+        .signer = &.{ "sh", try std.fmt.allocPrint(a, "{s}/sign.sh", .{base}) },
+    };
+    var entries = [_]menu.Entry{
+        .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" },
+    };
+    // secure boot off in the firmware: nothing to sign for.
+    try tmp.dir.writeFile(io, .{ .sub_path = image, .data = "image" });
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqualStrings("image", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
+    // enforced, with keys: the image is signed, or it wouldn't start.
+    m.boot.secure_boot = true;
+    entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqualStrings("image signed", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
 }
 
 test "an efi binary without a certificate table isn't signed" {

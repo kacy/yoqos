@@ -195,7 +195,10 @@ with sbctl's db key. the steps that make and enroll the keys are in
 
 the key writes `/etc/kernel/yoq-secure-boot.conf` into the generation, the
 same way `uki` writes its ukify config. a menu written for a root that has
-it, or written while the running root has it, signs:
+it, or written while the running root has it, signs. so does every menu
+written while the firmware enforces secure boot and sbctl has keys,
+whatever the config says, so a generation without the key, like one
+rolled back to, still starts. signing covers:
 
 - each new image, built in `/tmp/yoq-uki` inside its root, with
   `sbctl sign <image>` run from the running system, before it's copied to
@@ -220,7 +223,8 @@ turning `secure_boot` on or off changes the file, so it waits for a
 reboot, with "secure boot" as the reason, and the next boot tries it once.
 the keys are in `/var`, which no generation holds, so a rollback keeps
 them. `os gc` signs images it finds unsigned when the running generation
-has the key, for example after the keys were made late.
+has the key, or the firmware enforces secure boot, for example after the
+keys were made late.
 
 ## how they work
 

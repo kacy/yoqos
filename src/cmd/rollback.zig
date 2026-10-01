@@ -217,7 +217,8 @@ pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     // a menu another tool dropped os's entries from gets them back, and
     // with secure boot, images left unsigned, like ones from before
     // sbctl had keys, get signed.
-    const unsigned = rootfs.pathExists(ctx.io, secureboot.config_path) and
+    const signs = rootfs.pathExists(ctx.io, secureboot.config_path) or secureboot.enforcedWithKeys(boot.secure_boot, boot.sbctl_keys);
+    const unsigned = signs and
         (try secureboot.ours(a, boot.unsigned, boot.esp orelse "/")).len > 0;
     if (removed.items.len == 0 and (boot.menu_missing != null or unsigned)) {
         const records = try gens.readRecords(a, ctx.io, "/var");
