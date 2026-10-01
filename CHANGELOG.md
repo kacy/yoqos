@@ -46,6 +46,9 @@
 
 ### fixes
 
+- an image signed with a key other than sbctl's db key, say from before
+  `sbctl create-keys` made new ones, counts as unsigned: the next menu
+  write signs it again, and `os doctor` lists it until then.
 - `os rollback`, the fallback from a failed trial, and `os gc` write the
   boot menu when sbctl can't sign, say without its keys, and warn about
   the images left unsigned, instead of stopping. `os apply` and `os

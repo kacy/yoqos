@@ -230,25 +230,28 @@ const Reader = struct {
     /// images, and everything under EFI, by path.
     fn unsigned(r: Reader, esp: []const u8) ![]const []const u8 {
         var out: std.ArrayList([]const u8) = .empty;
+        // os's images need sbctl's db key; the bootloader's files may be
+        // signed with another the firmware has, like microsoft's.
+        const key = try gens.dbKey(r.a, r.io, try r.path(secureboot.db_cert_rel));
         for (try r.names(try std.fs.path.join(r.a, &.{ esp[1..], gens.esp_boot_dir }), .file)) |name| {
-            try r.addUnsigned(&out, &.{ esp, gens.esp_boot_dir, name });
+            try r.addUnsigned(&out, &.{ esp, gens.esp_boot_dir, name }, key);
         }
         var dir = std.Io.Dir.cwd().openDir(r.io, try r.path(try std.fs.path.join(r.a, &.{ esp[1..], "EFI" })), .{ .iterate = true }) catch return out.items;
         defer dir.close(r.io);
         var walker = try dir.walk(r.a);
         defer walker.deinit();
         while (walker.next(r.io) catch null) |e| {
-            if (e.kind == .file) try r.addUnsigned(&out, &.{ esp, "EFI", e.path });
+            if (e.kind == .file) try r.addUnsigned(&out, &.{ esp, "EFI", e.path }, null);
         }
         lists.sortStrings(out.items);
         return out.items;
     }
 
     /// adds the file at the path `parts` make to `out` when it's an efi
-    /// binary without a signature.
-    fn addUnsigned(r: Reader, out: *std.ArrayList([]const u8), parts: []const []const u8) !void {
+    /// binary without a signature, from `key` when there is one.
+    fn addUnsigned(r: Reader, out: *std.ArrayList([]const u8), parts: []const []const u8, key: ?[]const u8) !void {
         const p = try std.fs.path.join(r.a, parts);
-        if (!uki.isEfi(std.fs.path.basename(p)) or gens.fileSigned(r.io, try r.path(p[1..]))) return;
+        if (!uki.isEfi(std.fs.path.basename(p)) or gens.fileSigned(r.io, try r.path(p[1..]), key)) return;
         try out.append(r.a, p);
     }
 

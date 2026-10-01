@@ -36,6 +36,8 @@ pub const Machine = struct {
     /// what signs an efi binary for secure boot, given "sign" and the
     /// file: sbctl, or a stand-in in tests.
     signer: []const []const u8 = &.{secureboot.package},
+    /// sbctl's db certificate, which images os signs must be signed with.
+    db_cert: []const u8 = "/" ++ secureboot.db_cert_rel,
     /// set on a way back, like a rollback, a fallback, or gc: a file the
     /// menu can't sign goes on the esp unsigned, or stays as it is there,
     /// and its path goes here, instead of the menu write stopping.
@@ -401,12 +403,20 @@ pub const Machine = struct {
         for (files.used.items) |name| {
             if (!std.mem.endsWith(u8, name, uki.suffix)) continue;
             const dest = try std.fs.path.join(m.a, &.{ dir, name });
-            if (lists.find(files.builds.items, "dest", dest) != null or fileSigned(m.io, dest)) continue;
+            if (lists.find(files.builds.items, "dest", dest) != null or try m.signedNow(dest)) continue;
             try out.append(m.a, dest);
             const st = std.Io.Dir.cwd().statFile(m.io, dest, .{}) catch continue;
             largest = @max(largest, st.size);
         }
         return largest;
+    }
+
+    /// whether the efi binary at `path` is signed with sbctl's db key, or
+    /// signed at all when there's no key to compare with. one signed with
+    /// another key, like one from before `sbctl create-keys` was run
+    /// again, isn't, so it gets signed again.
+    fn signedNow(m: *const Machine, path: []const u8) !bool {
+        return fileSigned(m.io, path, try dbKey(m.a, m.io, m.db_cert));
     }
 
     /// whether the root at `subvol` has `rel`, a path inside it.
@@ -494,7 +504,7 @@ pub const Machine = struct {
         if (m.loader != .refind) return null;
         const conf = m.boot.loader_conf orelse return null;
         const driver = try std.fs.path.join(m.a, &.{ std.fs.path.dirnamePosix(conf).?, refind_driver });
-        if (!rootfs.pathExists(m.io, driver) or fileSigned(m.io, driver)) return null;
+        if (!rootfs.pathExists(m.io, driver) or try m.signedNow(driver)) return null;
         if (try m.freshDir(work)) |w| return w;
         defer m.removeDir(work);
         return m.signCopy(driver, work);
@@ -1026,11 +1036,27 @@ const sign_dir = "tmp/yoq-sign";
 /// refind's btrfs driver, beside refind.conf, which os installs.
 const refind_driver = "drivers_x64/btrfs_x64.efi";
 
-/// whether the efi binary at `path` has a signature. one that can't be
-/// read, or isn't an efi binary, hasn't.
-pub fn fileSigned(io: std.Io, path: []const u8) bool {
+/// whether the efi binary at `path` has a signature: one from the key
+/// `key` names (see secureboot.signerKey), or with no key, any. one that
+/// can't be read, or isn't an efi binary, hasn't.
+pub fn fileSigned(io: std.Io, path: []const u8, key: ?[]const u8) bool {
     var head: [secureboot.header_bytes]u8 = undefined;
-    return secureboot.signed(rootfs.readHead(io, path, &head) orelse return false) orelse false;
+    const t = secureboot.certTable(rootfs.readHead(io, path, &head) orelse return false) orelse return false;
+    if (t.size == 0) return false;
+    const k = key orelse return true;
+    // a signature or two, with their certificates, takes a few KiB.
+    var table: [64 << 10]u8 = undefined;
+    const f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return false;
+    defer f.close(io);
+    const n = f.readPositionalAll(io, table[0..@min(t.size, table.len)], t.offset) catch return false;
+    return secureboot.signedBy(table[0..n], k);
+}
+
+/// what names sbctl's db key as a signer, from its certificate at
+/// `cert_path`. null without one.
+pub fn dbKey(a: Allocator, io: std.Io, cert_path: []const u8) !?[]const u8 {
+    const pem = std.Io.Dir.cwd().readFileAlloc(io, cert_path, a, .limited(64 << 10)) catch return null;
+    return secureboot.signerKey(a, pem);
 }
 
 /// grub-install's arguments for grub on `esp`, reading its menu from
@@ -1352,6 +1378,71 @@ test "a way back that can't sign writes the menu anyway" {
     try std.testing.expect(std.mem.endsWith(u8, left.items[0], name));
 }
 
+/// an efi binary signed by the key `key` names: pe headers whose
+/// certificate table, at 0x1000, names it.
+fn testSignedEfi(a: Allocator, key: []const u8) ![]const u8 {
+    const table = try std.mem.concat(a, u8, &.{ &.{ 0, 1, 0, 0, 0, 2, 2, 0 }, try secureboot.testDer(a, 0x30, key) });
+    const head = secureboot.testPe(0x20b, @intCast(table.len));
+    return std.mem.concat(a, u8, &.{ &head, &([_]u8{0} ** (0x1000 - 512)), table });
+}
+
+test "images signed with another key are signed again" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    const db = try secureboot.testCert(a, "yoq db", &.{ 0x01, 0x02 });
+    const old = try secureboot.testCert(a, "yoq db", &.{ 0x01, 0x01 });
+    try tmp.dir.writeFile(io, .{ .sub_path = "db.pem", .data = db.pem });
+    const key = (try dbKey(a, io, try std.fmt.allocPrint(a, "{s}/db.pem", .{base}))).?;
+    try std.testing.expectEqualSlices(u8, db.key, key);
+    try std.testing.expectEqual(null, try dbKey(a, io, try std.fmt.allocPrint(a, "{s}/missing.pem", .{base})));
+
+    try tmp.dir.createDirPath(io, "top/@roots/2/boot");
+    try tmp.dir.createDirPath(io, "top/@roots/2/etc/kernel");
+    try tmp.dir.createDirPath(io, "esp/yoq/boot");
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/" ++ uki.config_rel, .data = uki.config_content });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/" ++ secureboot.config_rel, .data = secureboot.config_content });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/vmlinuz-linux", .data = "kernel" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/initramfs-linux.img", .data = "initramfs" });
+    try writeTestStub(tmp.dir, io, "top/@roots/2", "stub");
+    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") });
+    const image = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{name});
+    const image_path = try std.fmt.allocPrint(a, "{s}/{s}", .{ base, image });
+    try tmp.dir.writeFile(io, .{ .sub_path = "sign.sh", .data = "[ \"$1\" = sign ] && echo \"$2\" >> \"$(dirname \"$0\")/signed.log\"\n" });
+    const m: Machine = .{
+        .a = a,
+        .io = io,
+        .boot = .{ .esp = try std.fmt.allocPrint(a, "{s}/esp", .{base}), .loader = "grub", .root_subvol = "/@roots/2" },
+        .loader = .grub,
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
+        .signer = &.{ "sh", try std.fmt.allocPrint(a, "{s}/sign.sh", .{base}) },
+        .db_cert = try std.fmt.allocPrint(a, "{s}/db.pem", .{base}),
+    };
+    var entries = [_]menu.Entry{
+        .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" },
+    };
+    // signed with the db key: it stays.
+    try tmp.dir.writeFile(io, .{ .sub_path = image, .data = try testSignedEfi(a, db.key) });
+    try std.testing.expect(fileSigned(io, image_path, key));
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "signed.log", .{}));
+    // signed with the key from before: signed, but not by this one, so it's
+    // signed again.
+    try tmp.dir.writeFile(io, .{ .sub_path = image, .data = try testSignedEfi(a, old.key) });
+    try std.testing.expect(fileSigned(io, image_path, null));
+    try std.testing.expect(!fileSigned(io, image_path, key));
+    entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    const log = try tmp.dir.readFileAlloc(io, "signed.log", a, .limited(1024));
+    try std.testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}/top/@roots/2/{s}/{s}\n", .{ base, sign_dir, name }), log);
+}
+
 test "an efi binary without a certificate table isn't signed" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1361,6 +1452,6 @@ test "an efi binary without a certificate table isn't signed" {
     const a = arena.allocator();
     const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     try tmp.dir.writeFile(io, .{ .sub_path = "plain.efi", .data = "not an efi binary" });
-    try std.testing.expect(!fileSigned(io, try std.fmt.allocPrint(a, "{s}/plain.efi", .{base})));
-    try std.testing.expect(!fileSigned(io, try std.fmt.allocPrint(a, "{s}/missing.efi", .{base})));
+    try std.testing.expect(!fileSigned(io, try std.fmt.allocPrint(a, "{s}/plain.efi", .{base}), null));
+    try std.testing.expect(!fileSigned(io, try std.fmt.allocPrint(a, "{s}/missing.efi", .{base}), null));
 }

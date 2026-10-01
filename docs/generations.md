@@ -208,8 +208,11 @@ back to, still starts then. signing covers:
   in `/var/lib/sbctl` do the signing, so it doesn't matter whether the
   root being built has sbctl yet.
 - each image the menu boots that's on the esp already without a
-  signature, like the ones from before the key: a copy goes into
-  `/tmp/yoq-sign` in the newest root, gets signed, and replaces it.
+  signature from sbctl's db key, like the ones from before the key, or
+  ones signed with keys sbctl made before: a copy goes into
+  `/tmp/yoq-sign` in the newest root, gets signed, and replaces it. `os`
+  tells whose signature an image has by the issuer and serial number of
+  `/var/lib/sbctl/keys/db/db.pem`, which every signature names.
 - refind's btrfs driver, which `os` installs beside refind.conf.
 
 a signature only adds a few KiB, so `os plan`'s esp estimate leaves it
