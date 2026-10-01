@@ -17,7 +17,6 @@ const trial = @import("../trial.zig");
 const journal = @import("../journal.zig");
 const rootfs = @import("../rootfs.zig");
 const secureboot = @import("../secureboot.zig");
-const uki = @import("../uki.zig");
 const Context = cli.Context;
 
 pub fn historyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
@@ -136,8 +135,7 @@ fn rollbackGeneration(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, wan
     try ctx.out.print("generation {d} ({s} · {s}) becomes generation {d}, and the next boot runs it.\n/var and /home stay as they are.\n", .{ n, try generation.dateOf(a, target.time), target.reason, generation.next(records) });
     const m = try cli.openMachine(ctx, a, boot) orelse return 1;
     defer m.close();
-    const boots_image = rootfs.pathExists(ctx.io, try m.at(&.{ source, uki.config_rel }));
-    if (secureBootWarning(boot.secure_boot, boots_image)) |w| try ctx.err.print("os: {s}\n", .{w});
+    if (secureBootWarning(boot.secure_boot, try m.bootsImage(source))) |w| try ctx.err.print("os: {s}\n", .{w});
     if (try cli.approve(ctx, yes, "roll back", "roll back?")) |code| return code;
     const made = try startFrom(ctx, a, &m, boot, target, source, reason) orelse return 1;
     try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .rollback, .generation = n });

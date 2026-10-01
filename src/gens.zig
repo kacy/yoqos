@@ -298,82 +298,129 @@ pub const Machine = struct {
     /// of `records` to remove to make room. `put` puts the menu in place;
     /// then copies and images no entry uses any more go.
     ///
-    /// with `[boot] secure_boot` in the root at the top of the menu, or in
-    /// the running one, every image the menu uses is signed before it
+    /// when `signs` says so, every image the menu uses is signed before it
     /// goes on the esp, and an unsigned one there already is signed again,
     /// so a fallback to an older generation boots too.
     fn writeOnEsp(m: *const Machine, entries: []menu.Entry, records: []const generation.Record, put: MenuWriter) !?[]const u8 {
         const dir = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir });
-        const copies = menu.copiesOnEsp(m.boot);
         const sign = entries.len > 0 and m.signs(entries[0].subvol);
         const work = if (entries.len > 0) try m.at(&.{ entries[0].subvol, sign_dir }) else "";
-        const images = try m.a.alloc(bool, entries.len);
-        var any_image = false;
-        for (entries, images) |e, *u| {
-            u.* = rootfs.pathExists(m.io, try m.at(&.{ e.subvol, uki.config_rel }));
-            any_image = any_image or u.*;
+        var files: EspFiles = .{};
+        if (menu.copiesOnEsp(m.boot) or try m.anyImage(entries)) {
+            if (try m.run(&.{ "mkdir", "-p", dir })) |w| return w;
+            if (try m.espFiles(entries, &files)) |w| return w;
+            if (try m.fillEsp(dir, &files, records, sign, work)) |w| return w;
         }
-        if (!copies and !any_image) {
-            if (try put(m, entries)) |w| return w;
-            // images from before `[boot] uki` went off.
-            m.removeUnused(dir, &.{}, "", "");
-            return if (sign) m.signLoader(work) else null;
+        if (try put(m, entries)) |w| return w;
+        // with no entry using it, everything goes, like images from before
+        // `[boot] uki` went off.
+        m.removeUnused(dir, files.used.items, "", "");
+        return if (sign) m.signLoader(work) else null;
+    }
+
+    /// what a menu's entries need in the esp's boot directory: the names
+    /// they use there, and the copies and images it doesn't have yet.
+    const EspFiles = struct {
+        used: std.ArrayList([]const u8) = .empty,
+        missing: std.ArrayList(EspCopy) = .empty,
+        builds: std.ArrayList(UkiBuild) = .empty,
+
+        /// the room the ones it doesn't have take.
+        fn size(f: *const EspFiles) u64 {
+            var n: u64 = 0;
+            for (f.missing.items) |c| n += c.size;
+            for (f.builds.items) |b| n += b.size;
+            return n;
         }
-        if (try m.run(&.{ "mkdir", "-p", dir })) |w| return w;
-        var used: std.ArrayList([]const u8) = .empty;
-        var missing: std.ArrayList(EspCopy) = .empty;
-        var builds: std.ArrayList(UkiBuild) = .empty;
-        for (entries, images) |*e, image| {
-            if (image) {
-                if (try m.ukiName(e, &used, &builds)) |w| return w;
+    };
+
+    /// points each entry at its files on the esp, and notes them in
+    /// `files`: an image for an entry whose root boots one, and, for a
+    /// bootloader that can't read the roots, copies of the rest.
+    fn espFiles(m: *const Machine, entries: []menu.Entry, files: *EspFiles) !?[]const u8 {
+        const copies = menu.copiesOnEsp(m.boot);
+        for (entries) |*e| {
+            if (try m.bootsImage(e.subvol)) {
+                if (try m.ukiName(e, files)) |w| return w;
                 continue;
             }
             if (!copies or e.esp_dir != null) continue;
             const from = try m.at(&.{ e.subvol, "boot" });
-            if (try m.espName(from, &e.kernel, &used, &missing)) |w| return w;
+            if (try m.espName(from, &e.kernel, files)) |w| return w;
             const initrds = try m.a.dupe([]const u8, e.initrds);
             for (initrds) |*i| {
-                if (try m.espName(from, i, &used, &missing)) |w| return w;
+                if (try m.espName(from, i, files)) |w| return w;
             }
             e.initrds = initrds;
             e.esp_dir = esp_boot_dir;
         }
-        // images on the esp that need signing, each copied in beside the
-        // one it replaces.
+        return null;
+    }
+
+    /// puts what `files` says the esp at `dir` lacks there: copies and new
+    /// images, and with `sign`, signatures on the images there without
+    /// one. if it doesn't all fit, nothing changes.
+    fn fillEsp(m: *const Machine, dir: []const u8, files: *const EspFiles, records: []const generation.Record, sign: bool, work: []const u8) !?[]const u8 {
         var unsigned: std.ArrayList([]const u8) = .empty;
-        var largest: u64 = 0;
-        if (sign) for (used.items) |name| {
-            if (!std.mem.endsWith(u8, name, uki.suffix)) continue;
-            const dest = try std.fs.path.join(m.a, &.{ dir, name });
-            if (lists.find(builds.items, "dest", dest) != null or fileSigned(m.io, dest)) continue;
-            try unsigned.append(m.a, dest);
-            const st = std.Io.Dir.cwd().statFile(m.io, dest, .{}) catch continue;
-            largest = @max(largest, st.size);
-        };
-        var need: u64 = largest;
-        for (missing.items) |c| need += c.size;
-        for (builds.items) |b| need += b.size;
-        if (need > 0) {
-            if (rootfs.freeBytes(dir)) |room| {
-                if (try generation.espRoom(m.a, m.boot.esp.?, need, room, records, m.boot.root_subvol orelse "", true)) |w| return w;
-            }
-        }
-        for (missing.items) |c| {
+        // each one is signed in a copy that goes in beside it, one at a
+        // time.
+        const largest = if (sign) try m.unsignedImages(dir, files, &unsigned) else 0;
+        if (try m.checkRoom(dir, files.size() + largest, records)) |w| return w;
+        for (files.missing.items) |c| {
             if (try m.replaceFile(c.src, c.dest)) |w| return w;
         }
-        for (builds.items) |b| {
+        for (files.builds.items) |b| {
             if (try m.buildUki(b, sign)) |w| return w;
         }
-        if (unsigned.items.len > 0) {
-            if (try exec.runAll(m.a, m.io, &.{ &.{ "rm", "-rf", work }, &.{ "mkdir", "-p", work } })) |w| return w;
-            defer _ = exec.run(m.a, m.io, &.{ "rm", "-rf", work }) catch null;
-            for (unsigned.items) |dest| {
-                if (try m.signCopy(dest, work)) |w| return w;
-            }
+        if (unsigned.items.len == 0) return null;
+        if (try m.freshDir(work)) |w| return w;
+        defer m.removeDir(work);
+        for (unsigned.items) |dest| {
+            if (try m.signCopy(dest, work)) |w| return w;
         }
-        if (try put(m, entries)) |w| return w;
-        m.removeUnused(dir, used.items, "", "");
-        return if (sign) m.signLoader(work) else null;
+        return null;
+    }
+
+    /// says which of `records` to remove when `need` more bytes don't fit
+    /// on the esp, which `dir` is on.
+    fn checkRoom(m: *const Machine, dir: []const u8, need: u64, records: []const generation.Record) !?[]const u8 {
+        if (need == 0) return null;
+        const room = rootfs.freeBytes(dir) orelse return null;
+        return generation.espRoom(m.a, m.boot.esp.?, need, room, records, m.boot.root_subvol orelse "", true);
+    }
+
+    /// adds the images `files` uses that are in `dir` without a signature
+    /// to `out`, except the ones about to be built, which are signed as
+    /// they're made. returns the size of the largest.
+    fn unsignedImages(m: *const Machine, dir: []const u8, files: *const EspFiles, out: *std.ArrayList([]const u8)) !u64 {
+        var largest: u64 = 0;
+        for (files.used.items) |name| {
+            if (!std.mem.endsWith(u8, name, uki.suffix)) continue;
+            const dest = try std.fs.path.join(m.a, &.{ dir, name });
+            if (lists.find(files.builds.items, "dest", dest) != null or fileSigned(m.io, dest)) continue;
+            try out.append(m.a, dest);
+            const st = std.Io.Dir.cwd().statFile(m.io, dest, .{}) catch continue;
+            largest = @max(largest, st.size);
+        }
+        return largest;
+    }
+
+    /// whether the root at `subvol` has `rel`, a path inside it.
+    fn has(m: *const Machine, subvol: []const u8, rel: []const u8) !bool {
+        return rootfs.pathExists(m.io, try m.at(&.{ subvol, rel }));
+    }
+
+    /// whether the root at `subvol` boots a unified kernel image: it has
+    /// os's ukify config from `[boot] uki`.
+    pub fn bootsImage(m: *const Machine, subvol: []const u8) !bool {
+        return m.has(subvol, uki.config_rel);
+    }
+
+    fn anyImage(m: *const Machine, entries: []const menu.Entry) !bool {
+        for (entries) |e| {
+            if (try m.bootsImage(e.subvol)) return true;
+        }
+        return false;
     }
 
     /// whether menus written now sign what they boot: the root at the top,
@@ -383,9 +430,9 @@ pub const Machine = struct {
     /// already, whatever generation goes on top.
     fn signs(m: *const Machine, head: []const u8) bool {
         if (secureboot.enforcedWithKeys(m.boot.secure_boot, m.boot.sbctl_keys)) return true;
-        if (rootfs.pathExists(m.io, m.at(&.{ head, secureboot.config_rel }) catch return false)) return true;
+        if (m.has(head, secureboot.config_rel) catch false) return true;
         const running = m.boot.root_subvol orelse return false;
-        return rootfs.pathExists(m.io, m.at(&.{ running, secureboot.config_rel }) catch return false);
+        return m.has(running, secureboot.config_rel) catch false;
     }
 
     /// signs the efi binary at `path` in place, with sbctl's keys.
@@ -419,9 +466,18 @@ pub const Machine = struct {
         const conf = m.boot.loader_conf orelse return null;
         const driver = try std.fs.path.join(m.a, &.{ std.fs.path.dirnamePosix(conf).?, refind_driver });
         if (!rootfs.pathExists(m.io, driver) or fileSigned(m.io, driver)) return null;
-        if (try exec.runAll(m.a, m.io, &.{ &.{ "rm", "-rf", work }, &.{ "mkdir", "-p", work } })) |w| return w;
-        defer _ = exec.run(m.a, m.io, &.{ "rm", "-rf", work }) catch null;
+        if (try m.freshDir(work)) |w| return w;
+        defer m.removeDir(work);
         return m.signCopy(driver, work);
+    }
+
+    /// empties the directory at `path`, making it if it isn't there.
+    fn freshDir(m: *const Machine, path: []const u8) !?[]const u8 {
+        return exec.runAll(m.a, m.io, &.{ &.{ "rm", "-rf", path }, &.{ "mkdir", "-p", path } });
+    }
+
+    fn removeDir(m: *const Machine, path: []const u8) void {
+        _ = exec.run(m.a, m.io, &.{ "rm", "-rf", path }) catch {};
     }
 
     /// a unified kernel image the esp doesn't have yet: the root whose
@@ -429,34 +485,27 @@ pub const Machine = struct {
     const UkiBuild = struct { root: []const u8, files: []const []const u8, dest: []const u8, size: u64 };
 
     /// makes `e` start a unified kernel image of its kernel and initrds,
-    /// named by their content, and adds the name to `used`. if the esp
-    /// doesn't have it yet, it goes in `builds`.
-    fn ukiName(m: *const Machine, e: *menu.Entry, used: *std.ArrayList([]const u8), builds: *std.ArrayList(UkiBuild)) !?[]const u8 {
+    /// named by their content, and notes the name in `files`, along with
+    /// the build if the esp doesn't have it yet.
+    fn ukiName(m: *const Machine, e: *menu.Entry, files: *EspFiles) !?[]const u8 {
         // the newest entry's files may be the esp's own, with /boot there.
         const from = if (e.esp_dir) |d| try std.fs.path.join(m.a, &.{ m.boot.esp.?, d }) else try m.at(&.{ e.subvol, "boot" });
-        var files: std.ArrayList([]const u8) = .empty;
+        var inputs: std.ArrayList([]const u8) = .empty;
         var sums: std.ArrayList([]const u8) = .empty;
         var size: u64 = uki.stub_size;
+        var why: []const u8 = "";
         for (try std.mem.concat(m.a, []const u8, &.{ &.{e.kernel}, e.initrds })) |name| {
             const src = try std.fs.path.join(m.a, &.{ from, name });
-            const sum = switch (try exec.output(m.a, m.io, &.{ "sha256sum", src })) {
-                .ok => |t| t,
-                .failed => |w| return w,
-            };
-            if (sum.len < 64) return try std.fmt.allocPrint(m.a, "can't hash {s}", .{src});
-            const st = std.Io.Dir.cwd().statFile(m.io, src, .{}) catch return try std.fmt.allocPrint(m.a, "can't read {s}", .{src});
-            try files.append(m.a, src);
-            try sums.append(m.a, sum[0..64]);
-            size += st.size;
+            const h = try m.hash(src, &why) orelse return why;
+            try inputs.append(m.a, src);
+            try sums.append(m.a, h.sum);
+            size += h.size;
         }
         const name = try uki.name(m.a, sums.items);
         e.uki = name;
         e.esp_dir = esp_boot_dir;
-        if (lists.contains(used.items, name)) return null;
-        try used.append(m.a, name);
-        const dest = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir, name });
-        if (rootfs.pathExists(m.io, dest)) return null;
-        try builds.append(m.a, .{ .root = try m.at(&.{e.subvol}), .files = files.items, .dest = dest, .size = size });
+        const dest = try m.newOnEsp(name, files) orelse return null;
+        try files.builds.append(m.a, .{ .root = try m.at(&.{e.subvol}), .files = inputs.items, .dest = dest, .size = size });
         return null;
     }
 
@@ -468,8 +517,8 @@ pub const Machine = struct {
     /// cheap for files from the root's own /boot.
     fn buildUki(m: *const Machine, b: UkiBuild, signed: bool) !?[]const u8 {
         const work = try std.fs.path.join(m.a, &.{ b.root, uki.work_dir });
-        if (try exec.runAll(m.a, m.io, &.{ &.{ "rm", "-rf", work }, &.{ "mkdir", "-p", work } })) |w| return w;
-        defer _ = exec.run(m.a, m.io, &.{ "rm", "-rf", work }) catch null;
+        if (try m.freshDir(work)) |w| return w;
+        defer m.removeDir(work);
         var inside: std.ArrayList([]const u8) = .empty;
         for (b.files) |f| {
             const base = std.fs.path.basename(f);
@@ -528,24 +577,49 @@ pub const Machine = struct {
     }
 
     /// makes `name`, a file in `from`, the name of its copy in the esp's
-    /// boot directory, "<hash>-<name>", and adds that to `used`. if the
-    /// esp doesn't have it yet, it goes in `missing`.
-    fn espName(m: *const Machine, from: []const u8, name: *[]const u8, used: *std.ArrayList([]const u8), missing: *std.ArrayList(EspCopy)) !?[]const u8 {
+    /// boot directory, "<hash>-<name>", and notes it in `files`, along
+    /// with the copy if the esp doesn't have it yet.
+    fn espName(m: *const Machine, from: []const u8, name: *[]const u8, files: *EspFiles) !?[]const u8 {
         const src = try std.fs.path.join(m.a, &.{ from, name.* });
-        const sum = switch (try exec.output(m.a, m.io, &.{ "sha256sum", src })) {
-            .ok => |t| t,
-            .failed => |w| return w,
-        };
-        if (sum.len < 16) return try std.fmt.allocPrint(m.a, "can't hash {s}", .{src});
-        const copy = try std.fmt.allocPrint(m.a, "{s}-{s}", .{ sum[0..16], name.* });
-        name.* = copy;
-        if (lists.contains(used.items, copy)) return null;
-        try used.append(m.a, copy);
-        const dest = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir, copy });
-        if (rootfs.pathExists(m.io, dest)) return null;
-        const st = std.Io.Dir.cwd().statFile(m.io, src, .{}) catch return try std.fmt.allocPrint(m.a, "can't read {s}", .{src});
-        try missing.append(m.a, .{ .src = src, .dest = dest, .size = st.size });
+        var why: []const u8 = "";
+        const h = try m.hash(src, &why) orelse return why;
+        name.* = try std.fmt.allocPrint(m.a, "{s}-{s}", .{ h.sum[0..16], name.* });
+        const dest = try m.newOnEsp(name.*, files) orelse return null;
+        try files.missing.append(m.a, .{ .src = src, .dest = dest, .size = h.size });
         return null;
+    }
+
+    /// notes `name` as used in the esp's boot directory, and returns its
+    /// path there when the esp doesn't have it and `files` didn't have
+    /// it already.
+    fn newOnEsp(m: *const Machine, name: []const u8, files: *EspFiles) !?[]const u8 {
+        if (lists.contains(files.used.items, name)) return null;
+        try files.used.append(m.a, name);
+        const dest = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir, name });
+        return if (rootfs.pathExists(m.io, dest)) null else dest;
+    }
+
+    /// a boot file's sha256 sum, in hex, and its size.
+    const Hashed = struct { sum: []const u8, size: u64 };
+
+    /// hashes the file at `path`, or says why it can't in `why`.
+    fn hash(m: *const Machine, path: []const u8, why: *[]const u8) !?Hashed {
+        const out = switch (try exec.output(m.a, m.io, &.{ "sha256sum", path })) {
+            .ok => |t| t,
+            .failed => |w| {
+                why.* = w;
+                return null;
+            },
+        };
+        const st = std.Io.Dir.cwd().statFile(m.io, path, .{}) catch {
+            why.* = try std.fmt.allocPrint(m.a, "can't read {s}", .{path});
+            return null;
+        };
+        if (out.len < 64) {
+            why.* = try std.fmt.allocPrint(m.a, "can't hash {s}", .{path});
+            return null;
+        }
+        return .{ .sum = out[0..64], .size = st.size };
     }
 
     /// copies `src` beside `dest` and renames it into place, so `dest`
