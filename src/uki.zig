@@ -81,9 +81,14 @@ pub fn presetBuildsUki(text: []const u8) bool {
 /// unified kernel images by itself, include one.
 pub fn anyImage(names: []const []const u8) bool {
     for (names) |n| {
-        if (n.len > 4 and std.ascii.eqlIgnoreCase(n[n.len - 4 ..], ".efi")) return true;
+        if (isEfi(n)) return true;
     }
     return false;
+}
+
+/// whether a file's name says it's an efi binary.
+pub fn isEfi(file: []const u8) bool {
+    return file.len > 4 and std.ascii.eqlIgnoreCase(file[file.len - 4 ..], ".efi");
 }
 
 const testing = std.testing;

@@ -231,21 +231,25 @@ const Reader = struct {
     fn unsigned(r: Reader, esp: []const u8) ![]const []const u8 {
         var out: std.ArrayList([]const u8) = .empty;
         for (try r.names(try std.fs.path.join(r.a, &.{ esp[1..], gens.esp_boot_dir }), .file)) |name| {
-            if (!isEfi(name)) continue;
-            const p = try std.fs.path.join(r.a, &.{ esp, gens.esp_boot_dir, name });
-            if (!gens.fileSigned(r.io, try r.path(p[1..]))) try out.append(r.a, p);
+            try r.addUnsigned(&out, &.{ esp, gens.esp_boot_dir, name });
         }
         var dir = std.Io.Dir.cwd().openDir(r.io, try r.path(try std.fs.path.join(r.a, &.{ esp[1..], "EFI" })), .{ .iterate = true }) catch return out.items;
         defer dir.close(r.io);
         var walker = try dir.walk(r.a);
         defer walker.deinit();
         while (walker.next(r.io) catch null) |e| {
-            if (e.kind != .file or !isEfi(e.basename)) continue;
-            const p = try std.fs.path.join(r.a, &.{ esp, "EFI", e.path });
-            if (!gens.fileSigned(r.io, try r.path(p[1..]))) try out.append(r.a, p);
+            if (e.kind == .file) try r.addUnsigned(&out, &.{ esp, "EFI", e.path });
         }
         lists.sortStrings(out.items);
         return out.items;
+    }
+
+    /// adds the file at the path `parts` make to `out` when it's an efi
+    /// binary without a signature.
+    fn addUnsigned(r: Reader, out: *std.ArrayList([]const u8), parts: []const []const u8) !void {
+        const p = try std.fs.path.join(r.a, parts);
+        if (!uki.isEfi(std.fs.path.basename(p)) or gens.fileSigned(r.io, try r.path(p[1..]))) return;
+        try out.append(r.a, p);
     }
 
     /// whether one of mkinitcpio's presets builds unified kernel images.
@@ -392,10 +396,6 @@ fn mkinitcpioList(a: Allocator, text: []const u8, comptime key: []const u8, out:
         var names = std.mem.tokenizeAny(u8, line[start..end], " \t\"'");
         while (names.next()) |n| try out.append(a, try a.dupe(u8, n));
     }
-}
-
-fn isEfi(name: []const u8) bool {
-    return name.len > 4 and std.ascii.eqlIgnoreCase(name[name.len - 4 ..], ".efi");
 }
 
 /// a dm-crypt device opened from a luks volume, from its dm uuid in
