@@ -237,12 +237,14 @@ machine was off would end up signed. instead:
   `/usr/lib/modules/<version>/vmlinuz`, picked by the package name in
   that directory's `pkgbase` (linux for `vmlinuz-linux`). with more than
   one version of it, the one matching the copy wins, or else the newest.
-- the initramfs is built for that version inside the root, through chroot
-  with `/proc`, `/sys`, `/dev`, and `/run` mounted in a mount namespace of
-  its own: `mkinitcpio -k <version> -S autodetect -g
-  /tmp/yoq-uki/initramfs.img`. autodetect stays out since it would look at
-  the running machine, not the root. the image is about three times as
-  big, and `os plan` counts it that way.
+- the initramfs is built for that version inside the root, through chroot,
+  with the root bound on itself and `/proc`, `/sys`, `/dev`, and `/run`
+  mounted in a mount namespace of its own: `mkinitcpio -k <version> -g
+  /tmp/yoq-uki/initramfs.img`. autodetect stays on. it looks at this
+  machine's `/sys`, which is right, since a signed image is only built on
+  the machine that boots it: `os install` and clean builds refuse
+  `secure_boot`. so the initramfs is about as big as the root's own, and
+  `os plan` counts it that way, with an eighth to spare.
 - there's no separate microcode image: mkinitcpio's `microcode` hook puts
   early microcode in the initramfs from the root's `/usr/lib/firmware`.
 

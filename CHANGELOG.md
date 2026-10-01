@@ -68,8 +68,8 @@
   `/usr/lib/modules`, and builds its initramfs in the root with mkinitcpio,
   since the copies in `/boot` came from the esp when the generation was
   recorded. an initramfs planted on the esp while the machine was off used
-  to be signed into the next image. the initramfs leaves out autodetect,
-  so it's bigger, and `os plan` counts it that way.
+  to be signed into the next image. autodetect stays on, since a signed
+  image is only built on the machine that boots it.
 
 - an image signed with a key other than sbctl's db key, say from before
   `sbctl create-keys` made new ones, counts as unsigned: the next menu
