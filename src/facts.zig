@@ -167,8 +167,9 @@ pub fn hasEncryptHook(hooks: []const []const u8) bool {
 /// where mkinitcpio's drop-ins are.
 pub const initramfs_dropins = "/etc/mkinitcpio.conf.d";
 
-/// os's drop-in that unlocks a luks root. it's read last, so it adds to
-/// the hooks every other drop-in leaves.
+/// os's drop-in that unlocks a luks root. mkinitcpio reads drop-ins in
+/// name order, so it comes after most and adds to the hooks they leave;
+/// one named after it that sets HOOKS again would undo it.
 pub const encrypt_dropin = "90-yoq-encrypt.conf";
 
 /// whether a mkinitcpio drop-in, by name, is one os makes from other
