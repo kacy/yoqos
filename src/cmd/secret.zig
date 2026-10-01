@@ -85,13 +85,20 @@ fn readValue(ctx: *Context, name: []const u8, buf: []u8) !?[]u8 {
 fn prompt(ctx: *Context, into: []u8) !?[]u8 {
     try ctx.err.flush();
     if (ctx.set_echo) |echo| echo(false);
-    const line = ctx.in.?.takeDelimiter('\n') catch null;
+    const line = ctx.in.?.takeDelimiter('\n');
     if (ctx.set_echo) |echo| {
         echo(true);
         // the newline typed wasn't echoed.
         try ctx.err.writeByte('\n');
     }
-    const got = std.mem.trimEnd(u8, line orelse {
+    const typed = line catch |e| {
+        try ctx.err.writeAll(switch (e) {
+            error.StreamTooLong => "os: the value is longer than a typed line can be, so nothing was kept. pipe it in on stdin instead.\n",
+            error.ReadFailed => "os: can't read the value, so nothing was kept.\n",
+        });
+        return null;
+    };
+    const got = std.mem.trimEnd(u8, typed orelse {
         try ctx.err.writeAll("os: no value was typed, so nothing was kept.\n");
         return null;
     }, "\r");
@@ -236,6 +243,24 @@ test "set at a terminal asks twice" {
     try testing.expectEqual(1, t.code);
     try testing.expectEqualStrings("value for wifi/home: again: os: the two didn't match, so nothing was kept.\n", t.err.buffered());
     try testing.expectEqualStrings("hunter4", mem.values.get("wifi/home").?);
+}
+
+test "a typed line longer than stdin's buffer says so" {
+    var mem: secrets.Memory = .init(testing.allocator);
+    defer mem.deinit();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "typed", .data = "a" ** 40 ++ "\n" });
+    const file = try tmp.dir.openFile(testing.io, "typed", .{});
+    defer file.close(testing.io);
+    var small: [16]u8 = undefined;
+    var in = file.reader(testing.io, &small);
+    var t: cli.TestRun = .{ .in = &in.interface };
+    defer t.deinit();
+    try run(&t, &mem, &.{ "secret", "set", "wifi/home" });
+    try testing.expectEqual(1, t.code);
+    try testing.expect(std.mem.endsWith(u8, t.err.buffered(), "os: the value is longer than a typed line can be, so nothing was kept. pipe it in on stdin instead.\n"));
+    try testing.expectEqual(null, mem.values.get("wifi/home"));
 }
 
 test "plan, status, why, and list never show a secret's value" {
