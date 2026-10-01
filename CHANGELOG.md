@@ -169,6 +169,11 @@
   mounted, is root's alone too. another user could reach that /tmp through
   the mount, make the directory first, and swap an image before sbctl
   signed it.
+- with secure boot, an image on the esp without sbctl's signature is built
+  again from its root's files and signed, and an unsigned refind driver is
+  replaced by a signed copy of refind's own. before, `os` signed whatever
+  file sat there, so anything that could write to the esp could get its
+  own efi binary signed with the machine's key.
 
 ## 0.1.3
 
