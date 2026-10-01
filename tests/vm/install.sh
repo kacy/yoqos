@@ -1,7 +1,9 @@
 #!/bin/sh
 # a new machine: os install puts this machine's config on the vm's blank
-# second disk, and the vm then boots that disk alone, as generation 1.
-# runs last, since it leaves the vm running the new machine.
+# second disk, and the vm then boots that disk alone, as generation 1. the
+# same config goes on the third disk too, inside luks2 that the vm's tpm
+# unlocks, and that disk boots after. runs last, since it leaves the vm
+# running the new machines.
 set -eu
 . tests/vm/lib.sh
 
@@ -29,6 +31,21 @@ check "/usr/local/bin/os install /root/machines --disk /dev/vdb --update </dev/n
 "$vm" ssh "/usr/local/bin/os install /root/machines --disk /dev/vdb --update --yes" | tail -n 20
 serial_console /dev/vdb1
 
+# the encrypted one: the config sets the key the initramfs needs to unlock
+# the root, and has tpm2-tss, which it unlocks with the tpm through. the
+# passphrase file ends in a newline, which isn't part of the passphrase.
+"$vm" ssh "pacman -S --noconfirm --needed --noprogressbar cryptsetup tpm2-tss >/dev/null"
+"$vm" ssh "rm -rf /root/sealed && cp -a /root/machines /root/sealed && cd /root/sealed && sed -i 's/^packages = \\[/&\\n  \"tpm2-tss\",/' imported.toml && printf '\\n[boot]\\nencrypt = true\\n' >> machine.toml && git add -A && git -c user.name=t -c user.email=t@localhost commit -q -m 'on luks, with the tpm'"
+"$vm" ssh "printf 'correct horse battery\\n' > /root/luks-passphrase"
+# without the key, the install stops before it changes anything.
+check "/usr/local/bin/os install /root/machines --disk /dev/vdc --tpm --passphrase-file /root/luks-passphrase --yes 2>&1 | grep -c '^  no  encryption in the config'" 1
+"$vm" ssh "/usr/local/bin/os install /root/sealed --disk /dev/vdc --update --tpm --passphrase-file /root/luks-passphrase --yes" | tail -n 20
+check "cryptsetup isLuks --type luks2 /dev/vdc2 && echo luks2" luks2
+check "cryptsetup luksDump /dev/vdc2 | grep -c 'systemd-tpm2'" 1
+check "printf 'correct horse battery' | cryptsetup open --test-passphrase /dev/vdc2 && echo opens" opens
+check "test -e /dev/mapper/yoq-install && echo open || echo closed" closed
+serial_console /dev/vdc1
+
 "$vm" start-installed
 check "findmnt -no FSROOT /" /@roots/1
 check "findmnt -no FSROOT /var" /@var
@@ -45,4 +62,43 @@ check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 # generation 2.
 "$vm" ssh "/usr/local/bin/os add --yes tree" | tail -n 2
 check "ls /var/lib/yoq/generations | tr '\\n' ' '" "1.json 2.json "
+
+# the encrypted machine boots by itself: the tpm unlocks its root, which
+# is the btrfs inside luks, opened as /dev/mapper/root.
+"$vm" start-installed disk3
+check "findmnt -no SOURCE / | sed 's/\\[.*//'" /dev/mapper/root
+check "findmnt -no FSROOT /" /@roots/1
+check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in use."
+check "grep -o 'rd.luks.options=tpm2-device=auto' /proc/cmdline" rd.luks.options=tpm2-device=auto
+check "ls /var/lib/yoq/generations" 1.json
+# sd-encrypt comes from os's drop-in, and nothing in crypttab opens the root.
+check "test -e /etc/mkinitcpio.conf.d/90-yoq-encrypt.conf && echo there" there
+check "lsinitcpio /boot/initramfs-linux.img | grep -c 'usr/lib/systemd/systemd-cryptsetup\$'" 1
+check "cat /etc/crypttab 2>/dev/null | grep -c '^[^#[:space:]]' || true" 0
+# the passphrase is nowhere on the new machine.
+check "grep -rlsF 'correct horse battery' /etc /var/lib/yoq /var/log /root /boot | wc -l" 0
+settled
+"$vm" ssh "/usr/local/bin/os status" || true
+check "/usr/local/bin/os doctor | grep -c '^  ok  luks: the root is /dev/mapper/root, from /dev/vda2'" 1
+check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
+"$vm" reboot
+check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in use."
+settled
+# a change that needs a reboot: generation 2 is built beside the running
+# one and boots once, on trial, from copies on the esp, since grub can't
+# read the root. it unlocks on its own too, and passes.
+"$vm" ssh "/usr/local/bin/os add --yes intel-ucode" | tail -n 3
+check "ls /var/lib/yoq/generations | tr '\\n' ' '" "1.json 2.json "
+check "grep -c -- '--set=root' /boot/grub/grub.cfg" 0
+"$vm" reboot
+settled
+"$vm" ssh "findmnt -no FSROOT /; cat /proc/cmdline; journalctl -b -u yoq-health --no-pager -o cat | tail -n 8" || true
+check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'the default now'" 1
+check "/usr/local/bin/os events | grep '\"kind\":\"trial\"' | tail -n 1 | grep -c '\"step\":\"passed\"'" 1
+on_trial no
+check "pacman -Q intel-ucode >/dev/null && echo installed" installed
+check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in use."
+# generation 1 stays in the menu, booting its copies on the esp.
+check "grep -c 'linux (\${yoq_esp})/yoq/boot/' /boot/grub/grub.cfg" 1
+check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 echo "install ok"
