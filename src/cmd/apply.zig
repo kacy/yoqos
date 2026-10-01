@@ -365,25 +365,31 @@ pub fn recordGeneration(ctx: *Context, done: Outcome, caller_reason: []const u8)
     const records = try gens.readRecords(a, ctx.io, "/var");
     if (records.len > 0) try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .generation, .generation = records[records.len - 1].n, .message = reason });
     if (!ctx.json) try ctx.out.writeAll("recorded as a new generation; the boot menu has it.\n");
+    // the trial goes in before old generations go, so the menu gc writes
+    // keeps its fallback as the default too.
+    if (done.needs_reboot) try armTrial(ctx, a, &m, boot);
     try collectOld(ctx, &m, generation.default_keep);
-    if (done.needs_reboot) try armTrial(ctx, a, boot);
     return done.code;
 }
 
 /// a generation that needs a reboot boots once on trial: the next boot
-/// tries it, the default stays on the one before, and `os health` makes
-/// it the default once it has come up healthy.
-fn armTrial(ctx: *Context, a: Allocator, boot: facts.Boot) !void {
+/// tries it, the default stays on the one before, as the menu that
+/// recorded it left it, and `os health` makes it the default once it has
+/// come up healthy.
+fn armTrial(ctx: *Context, a: Allocator, m: *const gens.Machine, boot: facts.Boot) !void {
     gens.blockHibernation(ctx.io);
     const records = try gens.readRecords(a, ctx.io, "/var");
-    if (records.len < 2) return;
+    if (records.len == 0) return;
     const n = records[records.len - 1].n;
     const store = trial.Store.of(a, ctx.io, boot) orelse return;
-    // with a trial already waiting for a reboot, the fallback stays the
-    // generation before that one, the last that booted, while it's there.
-    const pending = if (try store.current()) |t| t.fallback else 0;
-    const before = if (pending != 0 and generation.find(records, pending) != null) pending else records[records.len - 2].n;
+    const before = generation.trialFallback(records, if (try store.current()) |t| t.fallback else 0) orelse return;
     if (try store.arm(n, generation.find(records, before).?)) |problem| {
+        // with no trial, the new generation is the default after all.
+        const head = try std.fmt.allocPrint(a, "/{s}", .{records[records.len - 1].root});
+        if (try m.writeMenu(head, records)) |w| {
+            try ctx.err.print("os: couldn't set up the trial boot: {s}, or make generation {d} the default: {s}. the next boot runs generation {d}; `os gc` writes the menu again.\n", .{ problem, n, w, before });
+            return;
+        }
         try ctx.err.print("os: couldn't set up the trial boot: {s}. the next boot runs generation {d} without a fallback.\n", .{ problem, n });
         return;
     }

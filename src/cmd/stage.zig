@@ -43,8 +43,6 @@ pub fn build(ctx: *Context, boot: facts.Boot, in: pipeline.Inputs) anyerror!?[]c
         _ = try m.drop(try m.at(&.{root}));
         return fail(ctx, try withRoom(a, &m, try std.fmt.allocPrint(a, "generation {d} didn't build, and is gone again", .{n})));
     }
-    // its kernel moves onto the esp once it has booted well.
-    rootfs.writeAtomic(ctx.io, generation.unsettled_path, root, null) catch {};
     // the root outlives this command's memory: its caller records it.
     return try std.heap.page_allocator.dupe(u8, root);
 }

@@ -558,12 +558,20 @@ pub fn needsHost(ctx: *Context, what: []const u8) !bool {
     return true;
 }
 
-/// takes the machine lock before root edits the config or lock, so two
-/// runs can't both read the old file and each write over the other.
-/// says who has it when another os does.
+/// takes the machine lock before root edits the config or lock, or
+/// generations' records, so two runs can't both read the old file and
+/// each write over the other. says who has it when another os does.
 pub fn lockForEdit(ctx: *Context) ?[]const u8 {
     if (!eql(ctx.root, "/") or std.os.linux.geteuid() != 0) return null;
     return lockMachine();
+}
+
+/// `lockForEdit`, but waits for another os to finish instead of saying
+/// so: for the health check at boot, which has to end a trial however
+/// long a run someone started meanwhile takes.
+pub fn waitForMachine(ctx: *Context) ?[]const u8 {
+    if (!eql(ctx.root, "/") or std.os.linux.geteuid() != 0) return null;
+    return takeLock(true);
 }
 
 /// where os locks the running machine while it changes it.
@@ -575,28 +583,75 @@ var lock_message: [128]u8 = undefined;
 /// exits: the lock goes with the process, however it ends. says who has
 /// it when another os does.
 pub fn lockMachine() ?[]const u8 {
-    const linux = std.os.linux;
+    return takeLock(false);
+}
+
+/// takes the machine lock, waiting for it with `wait`.
+fn takeLock(wait: bool) ?[]const u8 {
     if (lock_held) return null;
-    _ = linux.mkdir("/run/yoq", 0o755);
-    const opened = linux.open(lock_path, .{ .ACCMODE = .RDWR, .CREAT = true, .CLOEXEC = true, .NOFOLLOW = true }, 0o644);
-    if (linux.errno(opened) != .SUCCESS) return "can't open " ++ lock_path;
+    _ = std.os.linux.mkdir("/run/yoq", 0o755);
+    switch (lockFile(lock_path, wait)) {
+        // the fd stays open for as long as this process runs.
+        .held => lock_held = true,
+        .refused => |why| return why,
+    }
+    return null;
+}
+
+/// an flock on `path`, with this process's pid in the file, or why there
+/// isn't one: another process holds it, and without `wait`, this one
+/// doesn't wait for it.
+fn lockFile(path: [:0]const u8, wait: bool) union(enum) { held: std.os.linux.fd_t, refused: []const u8 } {
+    const linux = std.os.linux;
+    const opened = linux.open(path, .{ .ACCMODE = .RDWR, .CREAT = true, .CLOEXEC = true, .NOFOLLOW = true }, 0o644);
+    if (linux.errno(opened) != .SUCCESS) return .{ .refused = "can't open the machine lock" };
     const fd: linux.fd_t = @intCast(opened);
     const exclusive = 2;
     const nonblocking = 4;
-    if (linux.errno(linux.flock(fd, exclusive | nonblocking)) != .SUCCESS) {
+    while (wait) {
+        switch (linux.errno(linux.flock(fd, exclusive))) {
+            .SUCCESS => break,
+            .INTR => {},
+            else => {
+                _ = linux.close(fd);
+                return .{ .refused = "can't take the machine lock" };
+            },
+        }
+    } else if (linux.errno(linux.flock(fd, exclusive | nonblocking)) != .SUCCESS) {
         var pid_buf: [32]u8 = undefined;
         const n = linux.read(fd, &pid_buf, pid_buf.len);
         const pid = if (linux.errno(n) == .SUCCESS) std.mem.trim(u8, pid_buf[0..n], " \n") else "";
         _ = linux.close(fd);
-        return std.fmt.bufPrint(&lock_message, "another os, process {s}, is changing this machine. wait for it to finish", .{if (pid.len > 0) pid else "?"}) catch "another os is changing this machine";
+        return .{ .refused = std.fmt.bufPrint(&lock_message, "another os, process {s}, is changing this machine. wait for it to finish", .{if (pid.len > 0) pid else "?"}) catch "another os is changing this machine" };
     }
-    // the fd stays open for as long as this process runs.
     _ = linux.ftruncate(fd, 0);
     var buf: [32]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, "{d}\n", .{linux.getpid()}) catch "";
-    _ = linux.write(fd, text.ptr, text.len);
-    lock_held = true;
-    return null;
+    _ = linux.pwrite(fd, text.ptr, text.len, 0);
+    return .{ .held = fd };
+}
+
+test "the machine lock says who has it, or waits for them" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [256]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&buf, ".zig-cache/tmp/{s}/lock", .{tmp.sub_path});
+    const first = lockFile(path, false).held;
+    const said = lockFile(path, false).refused;
+    var pid: [16]u8 = undefined;
+    try std.testing.expect(std.mem.indexOf(u8, said, try std.fmt.bufPrint(&pid, "process {d},", .{std.os.linux.getpid()})) != null);
+    // the health check at boot waits until the other one lets go.
+    const Release = struct {
+        fn run(fd: std.os.linux.fd_t) void {
+            var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 100 * std.time.ns_per_ms };
+            _ = std.os.linux.nanosleep(&ts, null);
+            _ = std.os.linux.close(fd);
+        }
+    };
+    const t = try std.Thread.spawn(.{}, Release.run, .{first});
+    const waited = lockFile(path, true).held;
+    t.join();
+    _ = std.os.linux.close(waited);
 }
 
 /// asks for a line of text, with `default` for an empty answer. null at

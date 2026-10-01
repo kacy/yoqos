@@ -118,6 +118,52 @@
 - `os rollback` on limine no longer warns that secure boot refuses a
   generation from before `[boot] uki`. limine loads that kernel itself,
   without the firmware's check, so it starts.
+- the journal's lines go on the end of the file in place, so an event
+  another os records at the same moment, like the health check at boot,
+  can't drop an apply's `done` line, and a nearly full disk only needs
+  room for the line. a line a power cut left half written stays on its
+  own.
+- `os gc`, `os pin`, and `os carry` take the machine lock, and the health
+  check at boot waits for it. a gc could remove an image an apply had just
+  put on the esp for its menu, a pin could write back the record of a
+  generation gc had just removed, and a fallback at boot could take the
+  same generation number as an `os apply` run right after login.
+- a kernel, initramfs, or image os puts on the esp has its directory
+  synced once it's renamed into place, before the menu that boots it is
+  written. fat kept the rename in memory, so a power cut right after a
+  menu write could leave the newest entry pointing at a file that wasn't
+  there.
+- with `/boot` as the esp, a rollback or fallback marks the new root
+  unsettled while it copies that root's kernel and initramfs onto the
+  esp. a power cut halfway through used to leave a kernel and an
+  initramfs there that didn't match, and the next menu write booted them
+  and copied them into the root's own `/boot`. a staged generation's note
+  is now written when it's recorded, and one that can't be recorded puts
+  back the note the running root had.
+- subvolumes in `@roots` and `@gens` that no generation uses go at the
+  next gc, which runs after every new generation. a staged build stopped
+  with ctrl-c or a power cut left its whole root behind for good, and so
+  did a rollback or gc cut off between a snapshot and its record.
+- a machine that turned generations on before the watchdog fix gets the
+  new `yoq-watchdog.timer` in its next generation. its old one still
+  counted five minutes from the kernel's start, passphrase and all.
+- `os plan` counts the room it takes to sign an image already on the esp,
+  when the menu after it signs and one there has no signature from
+  sbctl's db key. the signed copy goes in beside the image, so a plan
+  that fit could still stop at the menu write with the esp full.
+- the menu that records a generation going on trial keeps the default on
+  the generation it falls back to, and the trial's one-shot boot comes
+  after: grub.cfg's default, limine's and systemd-boot's default entry,
+  and refind's `default_selection`. the default moves when the health
+  check passes it. a power cut between the menu write and the trial used
+  to leave the new generation as the default with no trial and no
+  fallback. the trial is now set up before old generations are removed,
+  and if it can't be, the new generation becomes the default as the
+  message says.
+- `os secret set` syncs the new value before it renames it into place,
+  and the directory after. a power cut right after a first `set` could
+  leave an empty file under the secret's name, which then failed to
+  decrypt at every apply.
 
 ## 0.1.3
 

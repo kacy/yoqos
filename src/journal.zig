@@ -26,14 +26,43 @@ pub fn record(a: Allocator, io: std.Io, root: []const u8, time: i64, event: []co
 }
 
 /// appends `value` as a json line to `file` under `root`, or drops it if
-/// the file can't be written.
+/// the file can't be written. the line goes on the end in place, in one
+/// write, so another os adding a line at the same time, like the health
+/// check at boot or an `os pin`, can't write over it, and a full disk
+/// only needs room for the line, not a copy of the whole log.
 pub fn appendLine(a: Allocator, io: std.Io, root: []const u8, file: []const u8, value: anytype) !void {
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
     const line = try std.fmt.allocPrint(a, "{f}\n", .{std.json.fmt(value, .{ .emit_null_optional_fields = false })});
-    fs.append(file, line) catch |e| switch (e) {
-        error.OutOfMemory => return e,
-        error.WriteFailed => {},
-    };
+    const p = try fs.path(file);
+    if (std.fs.path.dirnamePosix(p)) |d| std.Io.Dir.cwd().createDirPath(io, d) catch return;
+    appendInPlace(try a.dupeZ(u8, p), line);
+}
+
+/// adds `line` to the end of the file at `file`, and syncs it. a line a
+/// power cut left without its newline gets one first, so it stays a line
+/// of its own that readers skip, instead of spoiling this one.
+fn appendInPlace(file: [:0]const u8, line: []const u8) void {
+    const linux = std.os.linux;
+    const opened = linux.open(file, .{ .ACCMODE = .RDWR, .CREAT = true, .APPEND = true, .NOFOLLOW = true, .CLOEXEC = true }, 0o644);
+    if (linux.errno(opened) != .SUCCESS) return;
+    const fd: linux.fd_t = @intCast(opened);
+    defer _ = linux.close(fd);
+    const size = linux.lseek(fd, 0, linux.SEEK.END);
+    if (linux.errno(size) != .SUCCESS) return;
+    if (size > 0) {
+        var last: [1]u8 = undefined;
+        if (linux.pread(fd, &last, 1, @intCast(size - 1)) == 1 and last[0] != '\n') _ = linux.write(fd, "\n", 1);
+    }
+    var done: usize = 0;
+    while (done < line.len) {
+        const n = linux.write(fd, line[done..].ptr, line.len - done);
+        switch (linux.errno(n)) {
+            .SUCCESS => done += n,
+            .INTR => {},
+            else => return,
+        }
+    }
+    _ = linux.fsync(fd);
 }
 
 /// the begin line of a run that started and never finished, if the last
@@ -92,6 +121,31 @@ test "the journal notices an unfinished run, and knows the last done" {
     try record(a, io, root, 5, "begin", "ghi");
     try appendLine(a, io, root, path, .{ .time = 6, .kind = "trial", .step = "passed" });
     try std.testing.expectEqualStrings("ghi", (try unfinished(a, io, root)).?.plan);
+}
+
+test "lines go on the end in place, and a cut-short line stays on its own" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try record(a, io, root, 1, "begin", "abc");
+    // a writer that read the log before this line and wrote it back whole
+    // would lose it; in place, the file keeps its inode and every line.
+    const before = try tmp.dir.statFile(io, path, .{});
+    try record(a, io, root, 2, "done", "abc");
+    const after = try tmp.dir.statFile(io, path, .{});
+    try std.testing.expectEqual(before.inode, after.inode);
+    try std.testing.expectEqual(null, try unfinished(a, io, root));
+    // a power cut left half a line; the next one isn't glued to it.
+    const f = try tmp.dir.openFile(io, path, .{ .mode = .read_write });
+    try f.writePositionalAll(io, "{\"time\":3,\"ev", after.size);
+    f.close(io);
+    try record(a, io, root, 4, "begin", "def");
+    try std.testing.expectEqualStrings("def", (try unfinished(a, io, root)).?.plan);
+    try std.testing.expectEqual(2, (try lastDone(a, io, root)).?);
 }
 
 test "settling a cut-off run leaves an ordinary done line" {

@@ -215,8 +215,10 @@ back to, still starts then. signing covers:
   `/var/lib/sbctl/keys/db/db.pem`, which every signature names.
 - refind's btrfs driver, which `os` installs beside refind.conf.
 
-a signature only adds a few KiB, so `os plan`'s esp estimate leaves it
-out. `os` doesn't rely on sbctl's own pacman hook: a staged generation's
+a signature only adds a few KiB. signing an image that's on the esp
+already takes more, since its signed copy goes in beside it before it
+replaces it, so when there's one without a signature, `os plan` counts
+room for an image that size. `os` doesn't rely on sbctl's own pacman hook: a staged generation's
 image is signed before its trial boot. the hook still runs when packages
 change on the running system, but not in a root `os` builds, like a staged
 one, a clean build, or an install. it signs files at their paths on the
@@ -344,7 +346,10 @@ first one behind. `os add` and the like still edit the config and the
 lock, and `os apply` after the reboot makes the change.
 
 the next boot runs the new generation, while the menu's default stays on
-the one before. once the machine is up, `yoq-health.service` checks it:
+the one before. the menu that adds the new generation already keeps that
+default, and the trial's one-shot boot is set up after it, so a power
+cut in between boots the generation before, not one nothing has tried.
+once the machine is up, `yoq-health.service` checks it:
 systemd isn't in maintenance or shutting down, the display manager is
 running if there is one, and every service the config turns on is running.
 a oneshot service that ran and finished counts as running. when the config

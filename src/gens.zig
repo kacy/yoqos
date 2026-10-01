@@ -42,6 +42,12 @@ pub const Machine = struct {
     /// menu can't sign goes on the esp unsigned, or stays as it is there,
     /// and its path goes here, instead of the menu write stopping.
     left_unsigned: ?*std.ArrayList([]const u8) = null,
+    /// the note naming the root whose boot files aren't on the esp yet
+    /// (see `unsettled`), or a test's stand-in.
+    unsettled_note: []const u8 = generation.unsettled_path,
+    /// what sets limine's and systemd-boot's efi variables, given its
+    /// verb and an entry: bootctl, or a stand-in in tests.
+    bootctl: []const []const u8 = &.{"bootctl"},
 
     /// mounts the top level of the root's filesystem. `close` unmounts it.
     pub fn open(a: Allocator, io: std.Io, boot: facts.Boot, why: *[]const u8) !?Machine {
@@ -79,7 +85,7 @@ pub const Machine = struct {
         std.Io.Dir.cwd().deleteFile(m.io, notice_path) catch {};
         const records = try readRecords(m.a, m.io, "/var");
         if (try m.keepBoot(m.boot.root_subvol.?)) |w| return w;
-        return m.add(records, try m.free(records), m.boot.root_subvol.?, reason, time, config);
+        return m.add(records, try m.free(records), m.boot.root_subvol.?, reason, time, config, false);
     }
 
     /// records the root at `root`, a staged one built beside the running
@@ -91,12 +97,18 @@ pub const Machine = struct {
         const not_staged = try std.fmt.allocPrint(m.a, "{s} isn't a root os staged", .{root});
         if (!std.mem.startsWith(u8, root, prefix)) return not_staged;
         const n = std.fmt.parseInt(u32, root[prefix.len..], 10) catch return not_staged;
-        const why = try m.add(records, n, root, reason, time, config) orelse return null;
-        // unrecorded, nothing boots the staged root: it goes, and so does
-        // its note, rather than wait forever.
+        // it boots the kernel in its own root until a good boot puts it on
+        // the esp, and the note that says so is on disk before the menu
+        // boots it: without it, the next menu write would boot the esp's
+        // older kernel for it, and copy that into its /boot.
+        const before = try m.note();
+        if (try m.setNote(root)) |w| return w;
+        const why = try m.add(records, n, root, reason, time, config, true) orelse return null;
+        // unrecorded, nothing boots the staged root: it goes, and the note
+        // says what it said before, rather than wait forever.
         _ = try m.forget(n);
         _ = try m.drop(try m.at(&.{root}));
-        std.Io.Dir.cwd().deleteFile(m.io, generation.unsettled_path) catch {};
+        _ = try m.setNote(before);
         _ = try m.writeMenu(m.boot.root_subvol.?, records);
         return why;
     }
@@ -112,8 +124,9 @@ pub const Machine = struct {
         const n = try m.free(records);
         const root = try std.fmt.allocPrint(m.a, "/{s}/{d}", .{ generation.roots_dir, n });
         btrfs.snapshot(try m.at(&.{source}), try m.at(&.{root}), false) catch |e| return try std.fmt.allocPrint(m.a, "can't copy {s}: {s}", .{ source, @errorName(e) });
+        const before = try m.note();
         // the esp's boot files change last, once the new root is recorded.
-        const why = try m.carry(root) orelse try m.add(records, n, root, reason, time, config) orelse try m.startBoot(root, later) orelse {
+        const why = try m.carry(root) orelse try m.add(records, n, root, reason, time, config, false) orelse try m.startBoot(root, before, later) orelse {
             made.* = n;
             return null;
         };
@@ -121,35 +134,68 @@ pub const Machine = struct {
         // written for the new root points at one that's gone.
         const left = try m.forget(n) orelse try m.drop(try m.at(&.{root}));
         const running = m.boot.root_subvol.?;
-        const menu_left = try m.writeMenu(running, records);
-        // the running root's kernel goes back on the esp, if it left.
+        const note_left = try m.setNote(before);
+        // the running root's kernel goes back on the esp, if it left,
+        // before the menu boots it from there again.
         const boot_left = if (m.unsettled(running)) null else (try m.restoreBoot(running)).problem();
-        if (menu_left orelse boot_left) |w| return try std.fmt.allocPrint(m.a, "{s}. putting the boot menu back failed too, so it may still name the root that was removed: {s}", .{ why, w });
+        const menu_left = try m.writeMenu(running, records);
+        if (menu_left orelse boot_left orelse note_left) |w| return try std.fmt.allocPrint(m.a, "{s}. putting the boot menu back failed too, so it may still name the root that was removed: {s}", .{ why, w });
         if (left) |w| return try std.fmt.allocPrint(m.a, "{s}. generation {d} couldn't be removed either: {s}", .{ why, n, w });
         return why;
     }
 
     /// puts a new generation's boot files, in the root at `root`, on the
     /// esp. if they don't fit, it boots the ones in its root until a good
-    /// boot finds room, and `later` says why.
-    fn startBoot(m: *const Machine, root: []const u8, later: *?[]const u8) !?[]const u8 {
+    /// boot finds room, and `later` says why. while they're copied, the
+    /// note names `root`, so a copy a power cut stops halfway is neither
+    /// booted from the esp nor kept in its /boot, and the boot that runs
+    /// it finishes the copy (see `unsettled`). once they're all there, the
+    /// note says what it said `before`.
+    fn startBoot(m: *const Machine, root: []const u8, before: ?[]const u8, later: *?[]const u8) !?[]const u8 {
+        if (!m.bootOnEsp()) return null;
+        if (try m.setNote(root)) |w| return w;
         switch (try m.restoreBoot(root)) {
-            .done => return null,
+            .done => return m.setNote(before),
             .failed => |w| return w,
             .full => |w| {
                 // the note keeps its kernel off the esp's entry, and keeps
                 // the esp's older kernel out of its /boot.
-                rootfs.writeAtomic(m.io, generation.unsettled_path, root, null) catch
-                    return try std.fmt.allocPrint(m.a, "{s}. can't write {s} either", .{ w, generation.unsettled_path });
                 later.* = w;
                 return null;
             },
         }
     }
 
+    /// the root the unsettled note names, if there is one.
+    fn note(m: *const Machine) !?[]const u8 {
+        const text = std.Io.Dir.cwd().readFileAlloc(m.io, m.unsettled_note, m.a, .limited(256)) catch |e| switch (e) {
+            error.OutOfMemory => return e,
+            else => return null,
+        };
+        const root = std.mem.trim(u8, text, " \n");
+        return if (root.len == 0) null else root;
+    }
+
+    /// makes the unsettled note name `root`, or with null, removes it.
+    fn setNote(m: *const Machine, root: ?[]const u8) !?[]const u8 {
+        const r = root orelse {
+            std.Io.Dir.cwd().deleteFile(m.io, m.unsettled_note) catch |e| switch (e) {
+                error.FileNotFound => {},
+                else => return try std.fmt.allocPrint(m.a, "can't remove {s}", .{m.unsettled_note}),
+            };
+            return null;
+        };
+        rootfs.writeAtomic(m.io, m.unsettled_note, r, null) catch return try std.fmt.allocPrint(m.a, "can't write {s}", .{m.unsettled_note});
+        return null;
+    }
+
     /// the next generation, from the root at `root`: its read-only record,
-    /// the record file, and the menu with `root` at the top.
-    fn add(m: *const Machine, records: []const generation.Record, n: u32, root: []const u8, reason: []const u8, time: i64, config: ?generation.Config) !?[]const u8 {
+    /// the record file, and the menu with `root` at the top. one that goes
+    /// `on_trial` next leaves the default on the generation its trial
+    /// falls back to (see writeMenuHolding), so a power cut before the
+    /// trial is armed boots that one, not a generation nothing has tried.
+    fn add(m: *const Machine, records: []const generation.Record, n: u32, root: []const u8, reason: []const u8, time: i64, config: ?generation.Config, on_trial: bool) !?[]const u8 {
+        try m.refreshUnits(root);
         btrfs.snapshot(try m.at(&.{root}), try m.numbered(generation.gens_dir, n), true) catch |e| return try std.fmt.allocPrint(m.a, "can't snapshot {s}: {s}", .{ root, @errorName(e) });
         const rec: generation.Record = .{
             .n = n,
@@ -161,7 +207,15 @@ pub const Machine = struct {
         };
         if (try writeRecord(m.a, m.io, "/var", rec)) |w| return w;
         const all = try std.mem.concat(m.a, generation.Record, &.{ records, &.{rec} });
-        return m.writeMenu(root, all);
+        const hold = if (on_trial) generation.trialFallback(all, try m.pendingFallback()) else null;
+        return m.writeMenuHolding(root, all, hold);
+    }
+
+    /// the generation a trial waiting for a reboot falls back to, or 0.
+    pub fn pendingFallback(m: *const Machine) !u32 {
+        const store = trial.Store.of(m.a, m.io, m.boot) orelse return 0;
+        const t = try store.current() orelse return 0;
+        return t.fallback;
     }
 
     /// removes the generations `generation.keeps` doesn't keep: their
@@ -184,13 +238,60 @@ pub const Machine = struct {
                 try roots.append(m.a, r.root);
             } else try old.append(m.a, r);
         }
-        if (old.items.len == 0) return null;
+        const swept = try m.dropStrays(records, running);
+        if (old.items.len == 0 and !swept) return null;
         const head = try std.fmt.allocPrint(m.a, "/{s}", .{records[records.len - 1].root});
         const failed = try m.dropOld(old.items, running, &roots, removed);
         // the menu follows what's left, even after a failure halfway.
         const left = try readRecords(m.a, m.io, "/var");
         if (try m.writeMenu(head, left)) |w| return failed orelse w;
         return failed;
+    }
+
+    /// rewrites os's boot units in the root at `subvol` that an older os
+    /// wrote differently, like a watchdog timer counting its five minutes
+    /// from the kernel's start, which a slow luks passphrase used up. only
+    /// units that don't name the os they run are rewritten, since those
+    /// read the same whichever os wrote them, and only ones os wrote.
+    fn refreshUnits(m: *const Machine, subvol: []const u8) !void {
+        const dir = try m.at(&.{ subvol, "etc/systemd/system" });
+        const a = try enable.units(m.a, "a");
+        const b = try enable.units(m.a, "b");
+        for (a, b) |u, other| {
+            if (!std.mem.eql(u8, u.text, other.text)) continue;
+            const path = try std.fs.path.join(m.a, &.{ dir, u.name });
+            const now = std.Io.Dir.cwd().readFileAlloc(m.io, path, m.a, .limited(64 << 10)) catch continue;
+            const want = try std.fmt.allocPrint(m.a, "{s}{s}", .{ unit_header, u.text });
+            if (!std.mem.startsWith(u8, now, unit_header) or std.mem.eql(u8, now, want)) continue;
+            rootfs.writeAtomic(m.io, path, want, null) catch {};
+        }
+    }
+
+    /// removes the subvolumes a cut-off run left that no generation uses
+    /// (see generation.strays), as far as it can. returns whether any
+    /// went, since a menu written before one went may still name it.
+    fn dropStrays(m: *const Machine, records: []const generation.Record, running: []const u8) !bool {
+        var names: [2][]const []const u8 = undefined;
+        for ([_][]const u8{ generation.roots_dir, generation.gens_dir }, &names) |dir, *out| {
+            var list: std.ArrayList([]const u8) = .empty;
+            var d = std.Io.Dir.cwd().openDir(m.io, try m.at(&.{dir}), .{ .iterate = true }) catch {
+                out.* = list.items;
+                continue;
+            };
+            defer d.close(m.io);
+            var it = d.iterate();
+            while (it.next(m.io) catch null) |e| {
+                if (e.kind == .directory) try list.append(m.a, try m.a.dupe(u8, e.name));
+            }
+            out.* = list.items;
+        }
+        var any = false;
+        for (try generation.strays(m.a, records, names[0], names[1], running)) |path| {
+            const full = try m.at(&.{path});
+            if (!(btrfs.isSubvolume(full) catch false)) continue;
+            if (try m.drop(full) == null) any = true;
+        }
+        return any;
     }
 
     fn dropOld(m: *const Machine, old: []const generation.Record, running: []const u8, roots: *std.ArrayList([]const u8), removed: *std.ArrayList(u32)) !?[]const u8 {
@@ -242,8 +343,17 @@ pub const Machine = struct {
 
     /// the boot menu: the running root, labelled with the newest
     /// generation, then every older one, from a fresh writable copy of its
-    /// record, then the system from before generations.
+    /// record, then the system from before generations. the newest is the
+    /// default.
     pub fn writeMenu(m: *const Machine, head: []const u8, records: []const generation.Record) !?[]const u8 {
+        return m.writeMenuHolding(head, records, null);
+    }
+
+    /// `writeMenu`, with generation `hold` as the default instead of the
+    /// newest, when there's one: a newest generation that goes on trial
+    /// next isn't the default until it has booted well. the trial's
+    /// one-shot boot starts it, and the health check moves the default.
+    pub fn writeMenuHolding(m: *const Machine, head: []const u8, records: []const generation.Record, hold: ?u32) !?[]const u8 {
         if (records.len == 0) return "no generations to put in the menu";
         const cmdline = m.cmdline orelse try rootfs.readProc(m.a, m.io, "/proc/cmdline");
         var entries: std.ArrayList(menu.Entry) = .empty;
@@ -274,14 +384,18 @@ pub const Machine = struct {
             .@"systemd-boot" => writeSdboot,
             .refind => writeRefind,
         };
-        return m.writeOnEsp(entries.items, records, put);
+        const held = if (hold) |n| lists.indexOf(entries.items, "id", try menu.genId(m.a, n)) else null;
+        return m.writeOnEsp(entries.items, records, put, held);
     }
 
-    /// puts the menu in place, for entries whose files are where it says.
-    const MenuWriter = *const fn (*const Machine, []menu.Entry) anyerror!?[]const u8;
+    /// puts the menu in place, for entries whose files are where it says,
+    /// with `entries[held]` as the default when it's given, and the first
+    /// entry otherwise.
+    const MenuWriter = *const fn (*const Machine, []menu.Entry, held: ?usize) anyerror!?[]const u8;
 
-    fn writeGrub(m: *const Machine, entries: []menu.Entry) anyerror!?[]const u8 {
-        return m.write(try std.fs.path.join(m.a, &.{ m.boot.esp.?, "grub/grub.cfg" }), try menu.grub(m.a, .{ .esp_uuid = m.esp_uuid, .root_uuid = m.root_uuid, .default = "head", .entries = entries }));
+    fn writeGrub(m: *const Machine, entries: []menu.Entry, held: ?usize) anyerror!?[]const u8 {
+        const default = if (held) |i| entries[i].id else "head";
+        return m.write(try std.fs.path.join(m.a, &.{ m.boot.esp.?, "grub/grub.cfg" }), try menu.grub(m.a, .{ .esp_uuid = m.esp_uuid, .root_uuid = m.root_uuid, .default = default, .entries = entries }));
     }
 
     fn write(m: *const Machine, path: []const u8, text: []const u8) !?[]const u8 {
@@ -307,7 +421,7 @@ pub const Machine = struct {
     /// when `signs` says so, every image the menu uses is signed before it
     /// goes on the esp, and an unsigned one there already is signed again,
     /// so a fallback to an older generation boots too.
-    fn writeOnEsp(m: *const Machine, entries: []menu.Entry, records: []const generation.Record, put: MenuWriter) !?[]const u8 {
+    fn writeOnEsp(m: *const Machine, entries: []menu.Entry, records: []const generation.Record, put: MenuWriter, held: ?usize) !?[]const u8 {
         const dir = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir });
         const sign = entries.len > 0 and m.signs(entries[0].subvol);
         const work = if (entries.len > 0) try m.at(&.{ entries[0].subvol, sign_dir }) else "";
@@ -317,7 +431,7 @@ pub const Machine = struct {
             if (try m.espFiles(entries, &files)) |w| return w;
             if (try m.fillEsp(dir, &files, records, sign, work)) |w| return w;
         }
-        if (try put(m, entries)) |w| return w;
+        if (try put(m, entries, held)) |w| return w;
         // with no entry using it, everything goes, like images from before
         // `[boot] uki` went off.
         m.removeUnused(dir, files.used.items, "", "");
@@ -592,24 +706,52 @@ pub const Machine = struct {
         }
     }
 
-    fn writeLimine(m: *const Machine, entries: []menu.Entry) anyerror!?[]const u8 {
+    /// limine boots its first entry, the newest, unless the efi variable
+    /// bootctl sets names another. a held default is set there before the
+    /// new section goes in: the generation it names has the same title,
+    /// and so the same id, at the top of the old section.
+    fn writeLimine(m: *const Machine, entries: []menu.Entry, held: ?usize) anyerror!?[]const u8 {
         const conf = try m.loaderConf() orelse return "can't read limine.conf";
+        if (held) |i| {
+            if (try m.setDefault(try menu.limineId(m.a, entries[i].title))) |w| return w;
+        }
         return m.write(m.boot.loader_conf.?, try menu.spliceLimine(m.a, conf, try menu.limine(m.a, entries)));
     }
 
     /// os's entry files in systemd-boot's loader/entries, beside
     /// loader.conf. yoq-*.conf files no entry needs any more go.
-    fn writeSdboot(m: *const Machine, entries: []menu.Entry) anyerror!?[]const u8 {
+    ///
+    /// with a held default, every file but the newest's goes in first, the
+    /// held entry, there now, becomes the default, and only then does
+    /// yoq-head.conf, the default until then, name the new generation.
+    fn writeSdboot(m: *const Machine, entries: []menu.Entry, held: ?usize) anyerror!?[]const u8 {
         const dir = try m.sdbootEntries();
         if (try m.run(&.{ "mkdir", "-p", dir })) |w| return w;
         const files = try menu.sdboot(m.a, entries);
+        const head = try menu.sdbootName(m.a, "head");
         var names: std.ArrayList([]const u8) = .empty;
         for (files) |f| {
+            if (held != null and std.mem.eql(u8, f.name, head)) continue;
+            if (try m.write(try std.fs.path.join(m.a, &.{ dir, f.name }), f.text)) |w| return w;
+            try names.append(m.a, f.name);
+        }
+        if (held) |i| {
+            if (try m.setDefault(try menu.sdbootName(m.a, entries[i].id))) |w| return w;
+            const f = lists.find(files, "name", head).?; // there's always a newest.
             if (try m.write(try std.fs.path.join(m.a, &.{ dir, f.name }), f.text)) |w| return w;
             try names.append(m.a, f.name);
         }
         m.removeUnused(dir, names.items, "yoq-", ".conf");
         return null;
+    }
+
+    /// makes the entry `id` the default of limine or systemd-boot, through
+    /// the efi variable bootctl sets.
+    fn setDefault(m: *const Machine, id: []const u8) !?[]const u8 {
+        var argv: std.ArrayList([]const u8) = .empty;
+        try argv.appendSlice(m.a, m.bootctl);
+        try argv.appendSlice(m.a, &.{ "set-default", id });
+        return m.run(argv.items);
     }
 
     /// systemd-boot's entries directory, beside its loader.conf.
@@ -669,10 +811,9 @@ pub const Machine = struct {
     /// kernel copy on the esp is reused by its name, and the menu that
     /// boots it is synced too.
     fn replaceFile(m: *const Machine, src: []const u8, dest: []const u8) !?[]const u8 {
-        const tmp = try std.fmt.allocPrint(m.a, "{s}.yoq-new", .{dest});
-        const why = try exec.runAll(m.a, m.io, &.{ &.{ "cp", src, tmp }, &.{ "sync", tmp }, &.{ "mv", "-f", tmp, dest } }) orelse return null;
+        const why = try exec.runAll(m.a, m.io, try replaceSteps(m.a, src, dest)) orelse return null;
         // a copy cut short, by a full esp say, would only take up room.
-        std.Io.Dir.cwd().deleteFile(m.io, tmp) catch {};
+        std.Io.Dir.cwd().deleteFile(m.io, try std.fmt.allocPrint(m.a, "{s}.yoq-new", .{dest})) catch {};
         return why;
     }
 
@@ -680,7 +821,7 @@ pub const Machine = struct {
     /// root's own /boot, unless the root is on luks. os's entries go in
     /// yoq.conf beside refind.conf, which includes it, and the driver goes
     /// in if it's missing.
-    fn writeRefind(m: *const Machine, entries: []menu.Entry) anyerror!?[]const u8 {
+    fn writeRefind(m: *const Machine, entries: []menu.Entry, held: ?usize) anyerror!?[]const u8 {
         const conf = try m.loaderConf() orelse return "can't read refind.conf";
         for (entries) |e| {
             if (try menu.refindArgsProblem(m.a, e.args)) |w| return w;
@@ -701,12 +842,9 @@ pub const Machine = struct {
             .root_part = root_part,
             .entries = entries,
         });
-        // with a trial waiting, refind's own default stays the generation
-        // a failed trial falls back to.
-        var file = text;
-        if (trial.Store.of(m.a, m.io, m.boot)) |store| if (try store.current()) |t| {
-            if (lists.find(entries, "id", try menu.genId(m.a, t.fallback))) |e| file = try menu.refindDefault(m.a, text, e.title);
-        };
+        // a held default, or with a trial waiting, the generation a failed
+        // trial falls back to, stays refind's own default.
+        const file = if (try heldTitle(m.a, entries, held, try m.pendingFallback())) |title| try menu.refindDefault(m.a, text, title) else text;
         if (try m.write(try std.fs.path.join(m.a, &.{ dir, menu.refind_file }), file)) |w| return w;
         return m.write(m.boot.loader_conf.?, try menu.spliceRefind(m.a, conf));
     }
@@ -828,8 +966,8 @@ pub const Machine = struct {
     /// since its boot files aren't on the esp yet: it was staged, or they
     /// didn't fit there, and no good boot has put them there since.
     pub fn unsettled(m: *const Machine, subvol: []const u8) bool {
-        const note = std.Io.Dir.cwd().readFileAlloc(m.io, generation.unsettled_path, m.a, .limited(256)) catch return false;
-        return std.mem.eql(u8, std.mem.trim(u8, note, " \n"), subvol);
+        const named = (m.note() catch return false) orelse return false;
+        return std.mem.eql(u8, named, subvol);
     }
 
     /// what making the boot files in `to` match the ones in `from` takes:
@@ -988,16 +1126,65 @@ fn writeFile(a: Allocator, io: std.Io, path: []const u8, text: []const u8) !?[]c
     return null;
 }
 
+/// the commands that put a copy of `src` at `dest` whole: a copy beside
+/// it, synced, renamed into place, and then its directory synced, so the
+/// new name is on disk before a menu written after it names the file. on
+/// fat, syncing the file and the menu's own directory leaves the rename
+/// in memory, and a power cut then leaves a menu whose file isn't there.
+fn replaceSteps(a: Allocator, src: []const u8, dest: []const u8) ![]const []const []const u8 {
+    const tmp = try std.fmt.allocPrint(a, "{s}.yoq-new", .{dest});
+    const dir = std.fs.path.dirnamePosix(dest) orelse ".";
+    return a.dupe([]const []const u8, &.{
+        try a.dupe([]const u8, &.{ "cp", src, tmp }),
+        try a.dupe([]const u8, &.{ "sync", tmp }),
+        try a.dupe([]const u8, &.{ "mv", "-f", tmp, dest }),
+        try a.dupe([]const u8, &.{ "sync", dir }),
+    });
+}
+
+test "a file put on the esp is renamed in, and its directory synced after" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const steps = try replaceSteps(a, "/x/vmlinuz-linux", "/efi/yoq/boot/ab-vmlinuz-linux");
+    try std.testing.expectEqual(4, steps.len);
+    try std.testing.expectEqualStrings("mv", steps[2][0]);
+    try std.testing.expectEqualStrings("sync", steps[3][0]);
+    try std.testing.expectEqualStrings("/efi/yoq/boot", steps[3][1]);
+    // and the steps work: the file's there whole, with nothing beside it.
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src", .data = "kernel" });
+    const dest = try std.fmt.allocPrint(a, "{s}/dest", .{base});
+    try std.testing.expectEqual(null, try exec.runAll(a, std.testing.io, try replaceSteps(a, try std.fmt.allocPrint(a, "{s}/src", .{base}), dest)));
+    try std.testing.expectEqualStrings("kernel", try tmp.dir.readFileAlloc(std.testing.io, "dest", a, .limited(16)));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "dest.yoq-new", .{}));
+}
+
 pub fn recordPath(a: Allocator, var_dir: []const u8, n: u32) ![]const u8 {
     return std.fmt.allocPrint(a, "{s}/{s}/{d}.json", .{ var_dir, generation.records_dir, n });
 }
+
+/// the title of the entry refind's own config defaults to, when it isn't
+/// the newest: `entries[held]`, or with a trial waiting, the generation it
+/// falls back to, `pending`. refind keeps its default in os's file.
+fn heldTitle(a: Allocator, entries: []const menu.Entry, held: ?usize, pending: u32) !?[]const u8 {
+    if (held) |i| return entries[i].title;
+    if (pending == 0) return null;
+    const e = lists.find(entries, "id", try menu.genId(a, pending)) orelse return null;
+    return e.title;
+}
+
+/// the first line of every unit os writes.
+const unit_header = "# written by os.\n";
 
 /// writes os's units that run at boot (enable.units) into the root at
 /// `root`, and turns them on there. `os_path` is the os they run.
 pub fn writeUnits(a: Allocator, io: std.Io, root: []const u8, os_path: []const u8) !?[]const u8 {
     const dir = try std.fs.path.join(a, &.{ root, "etc/systemd/system" });
     for (try enable.units(a, os_path)) |u| {
-        const text = try std.fmt.allocPrint(a, "# written by os.\n{s}", .{u.text});
+        const text = try std.fmt.allocPrint(a, "{s}{s}", .{ unit_header, u.text });
         if (try writeFile(a, io, try std.fs.path.join(a, &.{ dir, u.name }), text)) |w| return w;
         const link = try u.wantsLink(a) orelse continue;
         const at = try std.fs.path.join(a, &.{ dir, link });
@@ -1101,6 +1288,170 @@ fn fail(why: *[]const u8, message: []const u8) ?Machine {
     return null;
 }
 
+/// a menu for generation 3, which goes on trial, and generation 2, the
+/// one it falls back to, for the tests of a held default.
+const held_entries = [_]menu.Entry{
+    .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/3", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw", .esp_dir = "yoq/boot" },
+    .{ .id = "gen-2", .title = "yoq 2", .subvol = "/@roots/boot-2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw", .esp_dir = "yoq/boot" },
+};
+
+/// a machine whose esp, loader config, and bootctl are in `base`: the
+/// stand-in bootctl notes its arguments in `base`/log, then `watch` as it
+/// was when it ran.
+fn heldMachine(a: Allocator, base: []const u8, loader: menu.Loader, conf: []const u8, watch: []const u8) !Machine {
+    const script = try std.fmt.allocPrint(a, "echo \"$1 $2\" >> {s}/log; cat {s} >> {s}/log 2>/dev/null || echo missing >> {s}/log", .{ base, watch, base, base });
+    return .{
+        .a = a,
+        .io = std.testing.io,
+        .boot = .{ .esp = try std.fmt.allocPrint(a, "{s}/esp", .{base}), .loader = @tagName(loader), .loader_conf = conf, .root_subvol = "/@roots/2" },
+        .loader = loader,
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .bootctl = try a.dupe([]const u8, &.{ "sh", "-c", script, "bootctl" }),
+    };
+}
+
+test "a generation going on trial leaves the default on the one before, for each bootloader" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "esp/grub");
+    var entries = held_entries;
+
+    // grub: grub.cfg's own default, which the trial's env file overrides
+    // with a one-shot boot of the newest.
+    const grub = try heldMachine(a, base, .grub, "", "");
+    try std.testing.expectEqual(null, try grub.writeGrub(&entries, 1));
+    const cfg = try tmp.dir.readFileAlloc(io, "esp/grub/grub.cfg", a, .limited(1 << 16));
+    try std.testing.expect(std.mem.indexOf(u8, cfg, "set default=\"gen-2\"\n") != null);
+    try std.testing.expectEqual(null, try grub.writeGrub(&entries, null));
+    try std.testing.expect(std.mem.indexOf(u8, try tmp.dir.readFileAlloc(io, "esp/grub/grub.cfg", a, .limited(1 << 16)), "set default=\"head\"\n") != null);
+
+    // limine: the efi variable names generation 2 before the section that
+    // puts 3 first goes in; until then 2 is the first entry, by that name.
+    const old_limine = "timeout: 3\n" ++ menu.limine_begin ++ "\n/yoq 2\n    protocol: linux\n" ++ menu.limine_end ++ "\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "limine.conf", .data = old_limine });
+    const limine_conf = try std.fmt.allocPrint(a, "{s}/limine.conf", .{base});
+    const limine = try heldMachine(a, base, .limine, limine_conf, limine_conf);
+    try std.testing.expectEqual(null, try limine.writeLimine(&entries, 1));
+    try std.testing.expectEqualStrings("set-default yoq-2\n" ++ old_limine, try tmp.dir.readFileAlloc(io, "log", a, .limited(1 << 16)));
+    try std.testing.expect(std.mem.indexOf(u8, try tmp.dir.readFileAlloc(io, "limine.conf", a, .limited(1 << 16)), "\n/yoq 3\n") != null);
+    // without a held default, the variable is left alone.
+    try tmp.dir.deleteFile(io, "log");
+    try std.testing.expectEqual(null, try limine.writeLimine(&entries, null));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "log", .{}));
+
+    // systemd-boot: generation 2's file goes in, becomes the default, and
+    // only then does yoq-head.conf, the default till then, name 3.
+    try tmp.dir.createDirPath(io, "esp/loader/entries");
+    try tmp.dir.writeFile(io, .{ .sub_path = "esp/loader/entries/yoq-head.conf", .data = "old head\n" });
+    const sd_conf = try std.fmt.allocPrint(a, "{s}/esp/loader/loader.conf", .{base});
+    const sd = try heldMachine(a, base, .@"systemd-boot", sd_conf, try std.fmt.allocPrint(a, "{s}/esp/loader/entries/yoq-head.conf {s}/esp/loader/entries/yoq-gen-2.conf", .{ base, base }));
+    try std.testing.expectEqual(null, try sd.writeSdboot(&entries, 1));
+    const log = try tmp.dir.readFileAlloc(io, "log", a, .limited(1 << 16));
+    try std.testing.expect(std.mem.startsWith(u8, log, "set-default yoq-gen-2.conf\nold head\n# written by os. edits here are overwritten.\ntitle yoq 2\n"));
+    const head = try tmp.dir.readFileAlloc(io, "esp/loader/entries/yoq-head.conf", a, .limited(1 << 16));
+    try std.testing.expect(std.mem.indexOf(u8, head, "title yoq 3\n") != null);
+    _ = try tmp.dir.statFile(io, "esp/loader/entries/yoq-trial.conf", .{});
+
+    // refind: os's file defaults to generation 2, held or with a trial
+    // waiting that falls back to it.
+    try std.testing.expectEqualStrings("yoq 2", (try heldTitle(a, &entries, 1, 0)).?);
+    try std.testing.expectEqualStrings("yoq 2", (try heldTitle(a, &entries, null, 2)).?);
+    try std.testing.expectEqual(null, try heldTitle(a, &entries, null, 0));
+    try std.testing.expectEqual(null, try heldTitle(a, &entries, null, 7));
+}
+
+test "a rollback's kernel copied onto a /boot esp is noted until it's all there" {
+    // root reads the file anyway, so the copy can't be made to fail.
+    if (std.os.linux.geteuid() == 0) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "esp");
+    try tmp.dir.createDirPath(io, "top/@roots/2/boot");
+    try tmp.dir.writeFile(io, .{ .sub_path = "esp/vmlinuz-linux", .data = "old kernel" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "esp/initramfs-linux.img", .data = "old initramfs" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/vmlinuz-linux", .data = "new kernel" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/initramfs-linux.img", .data = "new initramfs" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "note", .data = "/@roots/1" });
+    const m: Machine = .{
+        .a = a,
+        .io = io,
+        .boot = .{ .esp = try std.fmt.allocPrint(a, "{s}/esp", .{base}), .loader = "grub", .root_subvol = "/@roots/1" },
+        .loader = .grub,
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
+        .esp_is_boot = true,
+        .unsettled_note = try std.fmt.allocPrint(a, "{s}/note", .{base}),
+    };
+    // a copy that stops halfway, as a power cut would leave it: the note
+    // names the new root, so nothing boots its files from the esp or keeps
+    // the esp's in its /boot, and the boot that runs it copies them again.
+    const initramfs = try std.fmt.allocPrint(a, "{s}/top/@roots/2/boot/initramfs-linux.img", .{base});
+    try std.testing.expectEqual(null, try exec.run(a, io, &.{ "chmod", "000", initramfs }));
+    var later: ?[]const u8 = null;
+    try std.testing.expect(try m.startBoot("/@roots/2", "/@roots/1", &later) != null);
+    try std.testing.expect(m.unsettled("/@roots/2"));
+    try std.testing.expect(!m.unsettled("/@roots/1"));
+    // once it's all there, the note says what it said before.
+    try std.testing.expectEqual(null, try exec.run(a, io, &.{ "chmod", "644", initramfs }));
+    try std.testing.expectEqual(null, try m.startBoot("/@roots/2", "/@roots/1", &later));
+    try std.testing.expectEqual(null, later);
+    try std.testing.expect(m.unsettled("/@roots/1"));
+    try std.testing.expectEqualStrings("new initramfs", try tmp.dir.readFileAlloc(io, "esp/initramfs-linux.img", a, .limited(64)));
+    try std.testing.expectEqualStrings("new kernel", try tmp.dir.readFileAlloc(io, "esp/vmlinuz-linux", a, .limited(64)));
+    // with no note before, there's none after.
+    try std.testing.expectEqual(null, try m.startBoot("/@roots/2", null, &later));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "note", .{}));
+}
+
+test "a watchdog timer an older os wrote is brought up to date in a new generation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    const dir = "top/@roots/1/etc/systemd/system";
+    try tmp.dir.createDirPath(io, dir);
+    const units = try enable.units(a, "/usr/bin/os");
+    const timer = units[1];
+    try std.testing.expectEqualStrings("yoq-watchdog.timer", timer.name);
+    const old = try std.mem.replaceOwned(u8, a, timer.text, "OnActiveSec=", "OnBootSec=");
+    try tmp.dir.writeFile(io, .{ .sub_path = dir ++ "/yoq-watchdog.timer", .data = try std.fmt.allocPrint(a, "{s}{s}", .{ unit_header, old }) });
+    // the health service names its os, which stays as it is, and so does
+    // a unit someone wrote over.
+    const health = try std.fmt.allocPrint(a, "{s}{s}", .{ unit_header, try std.mem.replaceOwned(u8, a, units[0].text, "/usr/bin/os", "/usr/local/bin/os") });
+    try tmp.dir.writeFile(io, .{ .sub_path = dir ++ "/yoq-health.service", .data = health });
+    try tmp.dir.writeFile(io, .{ .sub_path = dir ++ "/yoq-watchdog.service", .data = "[Service]\nExecStart=/usr/bin/mine\n" });
+    const m: Machine = .{
+        .a = a,
+        .io = io,
+        .boot = .{ .loader = "grub", .root_subvol = "/@roots/1" },
+        .loader = .grub,
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
+    };
+    try m.refreshUnits("/@roots/1");
+    const now = try tmp.dir.readFileAlloc(io, dir ++ "/yoq-watchdog.timer", a, .limited(4096));
+    try std.testing.expect(std.mem.indexOf(u8, now, "OnActiveSec=5min") != null);
+    try std.testing.expect(std.mem.indexOf(u8, now, "OnBootSec") == null);
+    try std.testing.expectEqualStrings(health, try tmp.dir.readFileAlloc(io, dir ++ "/yoq-health.service", a, .limited(4096)));
+    try std.testing.expectEqualStrings("[Service]\nExecStart=/usr/bin/mine\n", try tmp.dir.readFileAlloc(io, dir ++ "/yoq-watchdog.service", a, .limited(4096)));
+}
+
 test "records by number, and dates" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1141,7 +1492,7 @@ test "grub-install keeps grub's efi path" {
 /// the entries a test's menu writer was given.
 var test_put: []const menu.Entry = &.{};
 
-fn testPut(_: *const Machine, entries: []menu.Entry) anyerror!?[]const u8 {
+fn testPut(_: *const Machine, entries: []menu.Entry, _: ?usize) anyerror!?[]const u8 {
     test_put = entries;
     return null;
 }
@@ -1181,7 +1532,7 @@ test "entries for a root with os's ukify config start its image, and unused imag
         .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" },
         .{ .id = "gen-1", .title = "yoq 1", .subvol = "/@roots/1", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" },
     };
-    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     try std.testing.expectEqualStrings(name, test_put[0].uki.?);
     try std.testing.expectEqualStrings(esp_boot_dir, test_put[0].esp_dir.?);
     // grub reads generation 1's files in its root, as without images.
@@ -1201,7 +1552,7 @@ test "entries for a root with os's ukify config start its image, and unused imag
     const renamed = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub 2") });
     try tmp.dir.writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{renamed}), .data = "image" });
     entries[0] = .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
-    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     try std.testing.expectEqualStrings(renamed, test_put[0].uki.?);
     try std.testing.expectError(error.FileNotFound, esp.access(io, name, .{}));
     try esp.access(io, renamed, .{});
@@ -1209,7 +1560,7 @@ test "entries for a root with os's ukify config start its image, and unused imag
     // with [boot] uki off everywhere, the last image goes too.
     try tmp.dir.deleteFile(io, "top/@roots/2/" ++ uki.config_rel);
     entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
-    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     try std.testing.expectEqual(null, test_put[0].uki);
     try std.testing.expectError(error.FileNotFound, esp.access(io, renamed, .{}));
 }
@@ -1261,13 +1612,13 @@ test "with secure boot, images are signed in the root before they replace the es
         .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" },
     };
     // without the key, nothing's signed.
-    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     try std.testing.expectEqualStrings("image", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "signed.log", .{}));
 
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/" ++ secureboot.config_rel, .data = secureboot.config_content });
     entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
-    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     try std.testing.expectEqualStrings(name, test_put[0].uki.?);
     try std.testing.expectEqualStrings("image signed", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
     // the copy in the root was signed, never the esp's own file, and the
@@ -1281,7 +1632,7 @@ test "with secure boot, images are signed in the root before they replace the es
     const failing: Machine = .{ .a = a, .io = io, .boot = m.boot, .loader = .grub, .root_uuid = "r", .esp_uuid = "e", .top = m.top, .signer = &.{"false"} };
     try tmp.dir.writeFile(io, .{ .sub_path = image, .data = "image" });
     entries[0] = .{ .id = "head", .title = "yoq 4", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
-    const why = (try failing.writeOnEsp(&entries, &.{}, testPut)).?;
+    const why = (try failing.writeOnEsp(&entries, &.{}, testPut, null)).?;
     try std.testing.expect(std.mem.startsWith(u8, why, "can't sign "));
     try std.testing.expectEqualStrings("image", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
 }
@@ -1321,12 +1672,12 @@ test "firmware that enforces secure boot has images signed without the config's 
     };
     // secure boot off in the firmware: nothing to sign for.
     try tmp.dir.writeFile(io, .{ .sub_path = image, .data = "image" });
-    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     try std.testing.expectEqualStrings("image", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
     // enforced, with keys: the image is signed, or it wouldn't start.
     m.boot.secure_boot = true;
     entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
-    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     try std.testing.expectEqualStrings("image signed", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
 }
 
@@ -1365,13 +1716,13 @@ test "a way back that can't sign writes the menu anyway" {
     };
     // apply stops.
     test_put = &.{};
-    try std.testing.expect(std.mem.startsWith(u8, (try m.writeOnEsp(&entries, &.{}, testPut)).?, "can't sign "));
+    try std.testing.expect(std.mem.startsWith(u8, (try m.writeOnEsp(&entries, &.{}, testPut, null)).?, "can't sign "));
     try std.testing.expectEqual(0, test_put.len);
     // a way back writes the menu, keeps the image as it is, and notes it.
     var left: std.ArrayList([]const u8) = .empty;
     m.left_unsigned = &left;
     entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
-    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     try std.testing.expectEqualStrings(name, test_put[0].uki.?);
     try std.testing.expectEqualStrings("image", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
     try std.testing.expectEqual(1, left.items.len);
@@ -1430,7 +1781,7 @@ test "images signed with another key are signed again" {
     // signed with the db key: it stays.
     try tmp.dir.writeFile(io, .{ .sub_path = image, .data = try testSignedEfi(a, db.key) });
     try std.testing.expect(fileSigned(io, image_path, key));
-    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "signed.log", .{}));
     // signed with the key from before: signed, but not by this one, so it's
     // signed again.
@@ -1438,7 +1789,7 @@ test "images signed with another key are signed again" {
     try std.testing.expect(fileSigned(io, image_path, null));
     try std.testing.expect(!fileSigned(io, image_path, key));
     entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
-    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     const log = try tmp.dir.readFileAlloc(io, "signed.log", a, .limited(1024));
     try std.testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}/top/@roots/2/{s}/{s}\n", .{ base, sign_dir, name }), log);
 }

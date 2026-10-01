@@ -15,6 +15,7 @@ const facts = @import("../facts.zig");
 const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
 const trial = @import("../trial.zig");
+const menu = @import("../menu.zig");
 const rollback = @import("rollback.zig");
 const journal = @import("../journal.zig");
 const Context = cli.Context;
@@ -29,6 +30,10 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     // the boot finished, so a trial's watchdog stands down. this runs on
     // every boot, so a stray one can't reboot a healthy machine.
     _ = try exec.run(a, ctx.io, &.{ "systemctl", "stop", "yoq-watchdog.timer" });
+    // someone may run os as soon as they log in. ending a trial, falling
+    // back, or settling a kernel waits for that to finish, rather than
+    // both writing the menu and records at once.
+    if (try cli.refused(ctx, cli.waitForMachine(ctx))) return 1;
     const store = trial.Store.of(a, ctx.io, boot) orelse return 0;
     const t = try store.current() orelse {
         try ctx.out.writeAll("no generation on trial.\n");
@@ -54,6 +59,7 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
     const problems = try check(ctx, a);
     if (problems.len == 0) {
+        if (try headDefault(ctx, a, boot)) |why| try ctx.err.print("os: generation {d} is healthy, but couldn't make it grub.cfg's default: {s}. `os gc` writes the menu again.\n", .{ t.n, why });
         if (try store.end()) |why| return cli.fail(ctx, "generation {d} is healthy, but couldn't make it the default: {s}", .{ t.n, why });
         try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .trial, .step = .passed, .generation = t.n });
         try ctx.out.print("generation {d} came up healthy. it's the default now.\n", .{t.n});
@@ -89,6 +95,21 @@ fn fellBack(ctx: *Context, a: Allocator, store: trial.Store, boot: facts.Boot, t
     if (try gens.writeNotice(a, ctx.io, notice)) |why| try ctx.err.print("os: {s}\n", .{why});
     try ctx.out.writeAll(notice);
     return 1;
+}
+
+/// grub.cfg's own default, for a generation that passed its trial: the
+/// menu that recorded it kept the generation before as the default (see
+/// gens.Machine.writeMenuHolding), which the trial's env file overrode
+/// while it lasted. it's written before the trial ends, so a power cut in
+/// between still leaves the trial's fallback as the default. the other
+/// bootloaders keep the default outside their menu, where ending the trial
+/// moves it.
+fn headDefault(ctx: *Context, a: Allocator, boot: facts.Boot) !?[]const u8 {
+    if (menu.Loader.of(boot) != .grub) return null;
+    var why: []const u8 = "";
+    const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse return why;
+    defer m.close();
+    return m.writeMenu(boot.root_subvol.?, try gens.readRecords(a, ctx.io, "/var"));
 }
 
 /// with /boot as the esp, a generation that was staged booted its kernel
