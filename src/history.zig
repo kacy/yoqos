@@ -4,6 +4,7 @@
 const std = @import("std");
 const exec = @import("exec.zig");
 const compose = @import("compose.zig");
+const news = @import("news.zig");
 const Allocator = std.mem.Allocator;
 
 /// one commit in the config's history. `n` counts from 1 at the first,
@@ -52,13 +53,7 @@ pub const Git = struct {
     fn log(ctx: *anyopaque, a: Allocator, dir: []const u8, why: *[]const u8) error{OutOfMemory}!?[]const Entry {
         const g: *Git = @ptrCast(@alignCast(ctx));
         const text = try g.output(a, &.{ "git", "-C", dir, "log", "--reverse", "--format=%H %s", "--", "." }, why) orelse return null;
-        var out: std.ArrayList(Entry) = .empty;
-        var lines = std.mem.tokenizeScalar(u8, text, '\n');
-        while (lines.next()) |line| {
-            const space = std.mem.indexOfScalar(u8, line, ' ') orelse line.len;
-            try out.append(a, .{ .n = out.items.len + 1, .rev = line[0..space], .message = std.mem.trimStart(u8, line[space..], " ") });
-        }
-        return out.items;
+        return try parseLog(a, text);
     }
 
     fn files(ctx: *anyopaque, a: Allocator, dir: []const u8, rev: []const u8, why: *[]const u8) error{OutOfMemory}!?[]const File {
@@ -120,6 +115,31 @@ pub const Git = struct {
         return g.run(a, argv, &ignored);
     }
 };
+
+/// the commits in `git log --format="%H %s"` output. a subject loses its
+/// control characters, so one from a cloned repository can't move the
+/// cursor or rewrite the terminal when `os history` prints it.
+fn parseLog(a: Allocator, text: []const u8) ![]const Entry {
+    var out: std.ArrayList(Entry) = .empty;
+    var lines = std.mem.tokenizeScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        const space = std.mem.indexOfScalar(u8, line, ' ') orelse line.len;
+        const message = try news.plain(a, std.mem.trimStart(u8, line[space..], " "));
+        try out.append(a, .{ .n = out.items.len + 1, .rev = line[0..space], .message = message });
+    }
+    return out.items;
+}
+
+test "commit subjects lose control characters" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const got = try parseLog(arena.allocator(), "aaa add fd\nbbb \x1b[2J\x1b[31mremove\x07 x\xc2\x9b2Jy\n");
+    try std.testing.expectEqual(2, got.len);
+    try std.testing.expectEqualStrings("add fd", got[0].message);
+    try std.testing.expectEqualStrings("bbb", got[1].rev);
+    try std.testing.expectEqual(2, got[1].n);
+    try std.testing.expectEqualStrings("remove  x2Jy", got[1].message);
+}
 
 /// `argv` run without the variables that point git at another repository.
 /// os run from a git hook, or under `git rebase --exec`, inherits GIT_DIR,

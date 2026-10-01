@@ -180,6 +180,10 @@
 - a build or install that stops the processes in its root signals each
   one through a pidfd, after checking it's still in there, so a pid freed
   since the scan and taken by another process isn't killed instead.
+- commit subjects from the config's history lose their control characters,
+  like news titles, before `os history`, `os rollback`, or anything else
+  prints them. a repository `os install` cloned could otherwise move the
+  cursor or rewrite the terminal.
 
 ## 0.1.3
 
