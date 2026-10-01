@@ -144,6 +144,9 @@
   next gc, which runs after every new generation. a staged build stopped
   with ctrl-c or a power cut left its whole root behind for good, and so
   did a rollback or gc cut off between a snapshot and its record.
+- a machine that turned generations on before the watchdog fix gets the
+  new `yoq-watchdog.timer` in its next generation. its old one still
+  counted five minutes from the kernel's start, passphrase and all.
 
 ## 0.1.3
 

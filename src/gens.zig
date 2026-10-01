@@ -189,6 +189,7 @@ pub const Machine = struct {
     /// the next generation, from the root at `root`: its read-only record,
     /// the record file, and the menu with `root` at the top.
     fn add(m: *const Machine, records: []const generation.Record, n: u32, root: []const u8, reason: []const u8, time: i64, config: ?generation.Config) !?[]const u8 {
+        try m.refreshUnits(root);
         btrfs.snapshot(try m.at(&.{root}), try m.numbered(generation.gens_dir, n), true) catch |e| return try std.fmt.allocPrint(m.a, "can't snapshot {s}: {s}", .{ root, @errorName(e) });
         const rec: generation.Record = .{
             .n = n,
@@ -231,6 +232,25 @@ pub const Machine = struct {
         const left = try readRecords(m.a, m.io, "/var");
         if (try m.writeMenu(head, left)) |w| return failed orelse w;
         return failed;
+    }
+
+    /// rewrites os's boot units in the root at `subvol` that an older os
+    /// wrote differently, like a watchdog timer counting its five minutes
+    /// from the kernel's start, which a slow luks passphrase used up. only
+    /// units that don't name the os they run are rewritten, since those
+    /// read the same whichever os wrote them, and only ones os wrote.
+    fn refreshUnits(m: *const Machine, subvol: []const u8) !void {
+        const dir = try m.at(&.{ subvol, "etc/systemd/system" });
+        const a = try enable.units(m.a, "a");
+        const b = try enable.units(m.a, "b");
+        for (a, b) |u, other| {
+            if (!std.mem.eql(u8, u.text, other.text)) continue;
+            const path = try std.fs.path.join(m.a, &.{ dir, u.name });
+            const now = std.Io.Dir.cwd().readFileAlloc(m.io, path, m.a, .limited(64 << 10)) catch continue;
+            const want = try std.fmt.allocPrint(m.a, "{s}{s}", .{ unit_header, u.text });
+            if (!std.mem.startsWith(u8, now, unit_header) or std.mem.eql(u8, now, want)) continue;
+            rootfs.writeAtomic(m.io, path, want, null) catch {};
+        }
     }
 
     /// removes the subvolumes a cut-off run left that no generation uses
@@ -1094,12 +1114,15 @@ pub fn recordPath(a: Allocator, var_dir: []const u8, n: u32) ![]const u8 {
     return std.fmt.allocPrint(a, "{s}/{s}/{d}.json", .{ var_dir, generation.records_dir, n });
 }
 
+/// the first line of every unit os writes.
+const unit_header = "# written by os.\n";
+
 /// writes os's units that run at boot (enable.units) into the root at
 /// `root`, and turns them on there. `os_path` is the os they run.
 pub fn writeUnits(a: Allocator, io: std.Io, root: []const u8, os_path: []const u8) !?[]const u8 {
     const dir = try std.fs.path.join(a, &.{ root, "etc/systemd/system" });
     for (try enable.units(a, os_path)) |u| {
-        const text = try std.fmt.allocPrint(a, "# written by os.\n{s}", .{u.text});
+        const text = try std.fmt.allocPrint(a, "{s}{s}", .{ unit_header, u.text });
         if (try writeFile(a, io, try std.fs.path.join(a, &.{ dir, u.name }), text)) |w| return w;
         const link = try u.wantsLink(a) orelse continue;
         const at = try std.fs.path.join(a, &.{ dir, link });
@@ -1250,6 +1273,43 @@ test "a rollback's kernel copied onto a /boot esp is noted until it's all there"
     // with no note before, there's none after.
     try std.testing.expectEqual(null, try m.startBoot("/@roots/2", null, &later));
     try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "note", .{}));
+}
+
+test "a watchdog timer an older os wrote is brought up to date in a new generation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    const dir = "top/@roots/1/etc/systemd/system";
+    try tmp.dir.createDirPath(io, dir);
+    const units = try enable.units(a, "/usr/bin/os");
+    const timer = units[1];
+    try std.testing.expectEqualStrings("yoq-watchdog.timer", timer.name);
+    const old = try std.mem.replaceOwned(u8, a, timer.text, "OnActiveSec=", "OnBootSec=");
+    try tmp.dir.writeFile(io, .{ .sub_path = dir ++ "/yoq-watchdog.timer", .data = try std.fmt.allocPrint(a, "{s}{s}", .{ unit_header, old }) });
+    // the health service names its os, which stays as it is, and so does
+    // a unit someone wrote over.
+    const health = try std.fmt.allocPrint(a, "{s}{s}", .{ unit_header, try std.mem.replaceOwned(u8, a, units[0].text, "/usr/bin/os", "/usr/local/bin/os") });
+    try tmp.dir.writeFile(io, .{ .sub_path = dir ++ "/yoq-health.service", .data = health });
+    try tmp.dir.writeFile(io, .{ .sub_path = dir ++ "/yoq-watchdog.service", .data = "[Service]\nExecStart=/usr/bin/mine\n" });
+    const m: Machine = .{
+        .a = a,
+        .io = io,
+        .boot = .{ .loader = "grub", .root_subvol = "/@roots/1" },
+        .loader = .grub,
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
+    };
+    try m.refreshUnits("/@roots/1");
+    const now = try tmp.dir.readFileAlloc(io, dir ++ "/yoq-watchdog.timer", a, .limited(4096));
+    try std.testing.expect(std.mem.indexOf(u8, now, "OnActiveSec=5min") != null);
+    try std.testing.expect(std.mem.indexOf(u8, now, "OnBootSec") == null);
+    try std.testing.expectEqualStrings(health, try tmp.dir.readFileAlloc(io, dir ++ "/yoq-health.service", a, .limited(4096)));
+    try std.testing.expectEqualStrings("[Service]\nExecStart=/usr/bin/mine\n", try tmp.dir.readFileAlloc(io, dir ++ "/yoq-watchdog.service", a, .limited(4096)));
 }
 
 test "records by number, and dates" {
