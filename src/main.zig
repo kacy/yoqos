@@ -76,6 +76,7 @@ test {
     _ = @import("lock.zig");
     _ = @import("users.zig");
     _ = @import("rootfs.zig");
+    _ = @import("secrets.zig");
     _ = aur;
     _ = @import("exec.zig");
     _ = @import("news.zig");

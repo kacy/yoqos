@@ -11,6 +11,7 @@ const diag = @import("diag.zig");
 const catalog = @import("catalog.zig");
 const lists = @import("lists.zig");
 const planner = @import("planner.zig");
+const secrets = @import("secrets.zig");
 const Allocator = std.mem.Allocator;
 
 pub const supported_version = 1;
@@ -209,16 +210,21 @@ pub const File = struct {
     source: ?Str = null,
     /// or the content itself.
     text: ?Str = null,
-    /// octal, like "0644", the default.
+    /// or a secret's name: os writes the value `os secret set` keeps for
+    /// it, which never goes into the config.
+    secret: ?Str = null,
+    /// octal, like "0644", the default, or "0600" for a secret.
     mode: ?Str = null,
     /// what the file holds: `text`, or `source` as it was read when the
     /// config loaded. not a key.
     content: ?[]const u8 = null,
 
     pub const default_mode = "0644";
+    pub const secret_mode = "0600";
 
     pub fn modeOf(f: *const File) []const u8 {
-        return if (f.mode) |m| m.v else default_mode;
+        if (f.mode) |m| return m.v;
+        return if (f.secret != null) secret_mode else default_mode;
     }
 };
 
@@ -508,8 +514,12 @@ fn validateFiles(c: *const Config, diags: *diag.List) !void {
             if (!std.mem.eql(u8, m.path, e.name)) continue;
             try diags.addHint(.bad_value, f.src, "os writes {s} itself", .{e.name}, "`{s}` in the config makes this file; drop the [files] entry", .{cause});
         }
-        if ((f.source == null) == (f.text == null)) {
-            try diags.add(.bad_value, f.src, "{s} needs one of source or text", .{e.name}, "source names a file next to the config; text is the content itself");
+        const given = @as(u8, @intFromBool(f.source != null)) + @intFromBool(f.text != null) + @intFromBool(f.secret != null);
+        if (given != 1) {
+            try diags.add(.bad_value, f.src, "{s} needs exactly one of source, text, or secret", .{e.name}, "source names a file next to the config, text is the content itself, and secret names a value `os secret set` keeps");
+        }
+        if (f.secret) |s| {
+            if (secrets.nameProblem(s.v)) |hint| try diags.add(.bad_value, s.src, "\"{s}\" isn't a secret's name", .{s.v}, hint);
         }
         if (f.mode) |m| {
             if (!validMode(m.v)) try diags.add(.bad_value, m.src, "\"{s}\" isn't a file mode", .{m.v}, "write it in octal, like \"0644\" or \"0600\"");
@@ -907,6 +917,34 @@ test "[files] paths are plain and stay out of os's own state" {
     try validate(&f.part.config, &f.diags);
     try testing.expectEqual(1, f.diags.items.items.len);
     try f.expectDiag(0, .bad_value, 1, "\"/etc/../../tmp/x\" isn't a path os can write");
+}
+
+test "a file takes exactly one of source, text, and secret" {
+    const f = try Fixture.init(
+        \\[files."/etc/wifi.psk"]
+        \\secret = "wifi/home"
+        \\[files."/etc/both"]
+        \\text = "x"
+        \\secret = "x"
+        \\[files."/etc/none"]
+        \\mode = "0600"
+        \\[files."/etc/badname"]
+        \\secret = "../key"
+        \\[files."/etc/shared"]
+        \\secret = "shared"
+        \\mode = "0644"
+        \\
+    );
+    defer f.deinit();
+    try validate(&f.part.config, &f.diags);
+    try testing.expectEqual(3, f.diags.items.items.len);
+    try f.expectDiag(0, .bad_value, 3, "/etc/both needs exactly one of source, text, or secret");
+    try f.expectDiag(1, .bad_value, 6, "/etc/none needs exactly one of source, text, or secret");
+    try f.expectDiag(2, .bad_value, 9, "\"../key\" isn't a secret's name");
+    const files = &f.part.config.files;
+    try testing.expectEqualStrings("wifi/home", files.get("/etc/wifi.psk").?.secret.?.v);
+    try testing.expectEqualStrings("0600", files.get("/etc/wifi.psk").?.modeOf());
+    try testing.expectEqualStrings("0644", files.get("/etc/shared").?.modeOf());
 }
 
 test "a console login needs no session" {
