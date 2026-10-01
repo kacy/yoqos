@@ -28,7 +28,9 @@ pub fn secretCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (!takes_name) return list(ctx, &w, store);
     const name = words[1];
     if (secrets.nameProblem(name)) |hint| return cli.fail(ctx, "\"{s}\" isn't a secret's name: {s}.", .{ name, hint });
-    if (try cli.refused(ctx, cli.lockForEdit(ctx))) return 1;
+    // the store is the machine's whatever --root says, and so is the lock
+    // an apply holds while it reads values.
+    if (std.os.linux.geteuid() == 0 and try cli.refused(ctx, cli.lockMachine())) return 1;
     return if (eql(verb, "set")) set(ctx, &w, store, name) else remove(ctx, &w, store, name);
 }
 
