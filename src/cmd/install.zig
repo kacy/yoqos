@@ -321,13 +321,14 @@ const Installer = struct {
         return null;
     }
 
-    /// the luks volume the install opened, closed, if it's open. right
-    /// after an unmount the kernel can still hold it for a moment, so a
-    /// busy close is tried again. one that never closes is said, since
-    /// the disk stays in use until it does.
+    /// the luks volume an install opens, closed, if it's open: this one's,
+    /// or one an earlier --encrypt run left when it was cut off, which
+    /// holds the disk even for an install without --encrypt. right after
+    /// an unmount the kernel can still hold it for a moment, so a busy
+    /// close is tried again. one that never closes is said, since the
+    /// disk stays in use until it does.
     fn closeLuks(in: *Installer) void {
         const mapped = "/dev/mapper/" ++ install.luks_install_name;
-        if (!in.encrypt) return;
         var why: []const u8 = "";
         for (0..close_tries) |_| {
             if (!rootfs.pathExists(in.ctx.io, mapped)) return;

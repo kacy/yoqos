@@ -56,6 +56,9 @@
   namespace that use the root it built. a shell in another terminal whose
   working directory was `/mnt/yoq`, or a command that named a path there,
   was killed too.
+- `os install` closes the luks volume an `--encrypt` run left open when it
+  was cut off, with or without `--encrypt` this time. before, a run
+  without it couldn't wipe the disk the volume held.
 
 ## 0.1.3
 

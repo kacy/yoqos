@@ -29,13 +29,17 @@ cat tests/vm/initramfs.toml >> /tmp/yoq-access.toml
 check "/usr/local/bin/os install /root/machines --disk /dev/vda1 --update 2>&1 | grep -c '^  no  disk'" 1
 check "/usr/local/bin/os install /root/machines --disk /dev/vdb --update </dev/null >/dev/null 2>&1; echo \$?; lsblk -nro NAME /dev/vdb | wc -l" "2
 1"
+# an --encrypt run that was cut off leaves its luks volume open, which
+# holds the disk; an install without --encrypt closes it too.
+"$vm" ssh "pacman -S --noconfirm --needed --noprogressbar cryptsetup tpm2-tss >/dev/null"
+"$vm" ssh "printf x | cryptsetup luksFormat --batch-mode --pbkdf pbkdf2 --pbkdf-force-iterations 1000 --key-file=- /dev/vdb && printf x | cryptsetup open --key-file=- /dev/vdb yoq-install"
 "$vm" ssh "/usr/local/bin/os install /root/machines --disk /dev/vdb --update --yes" | tail -n 20
+check "test -e /dev/mapper/yoq-install && echo open || echo closed" closed
 serial_console /dev/vdb1
 
 # the encrypted one: the config sets the key the initramfs needs to unlock
 # the root, and has tpm2-tss, which it unlocks with the tpm through. the
 # passphrase file ends in a newline, which isn't part of the passphrase.
-"$vm" ssh "pacman -S --noconfirm --needed --noprogressbar cryptsetup tpm2-tss >/dev/null"
 "$vm" ssh "rm -rf /root/sealed && cp -a /root/machines /root/sealed && cd /root/sealed && sed -i 's/^packages = \\[/&\\n  \"tpm2-tss\",/' imported.toml && printf '\\n[boot]\\nencrypt = true\\n' >> machine.toml && git add -A && git -c user.name=t -c user.email=t@localhost commit -q -m 'on luks, with the tpm'"
 "$vm" ssh "printf 'correct horse battery\\n' > /root/luks-passphrase"
 # without the key, the install stops before it changes anything.
