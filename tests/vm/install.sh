@@ -89,6 +89,8 @@ check "grep -rlsF 'correct horse battery' /etc /var/lib/yoq /var/log /root /boot
 settled
 "$vm" ssh "/usr/local/bin/os status" || true
 check "/usr/local/bin/os doctor | grep -c '^  ok  luks: the root is /dev/mapper/root, from /dev/vda2'" 1
+# the tpm unlocks it without secure boot: a warning, which fails nothing.
+check "/usr/local/bin/os doctor | grep -c '^warn  tpm unlock: the tpm unlocks the root, and secure boot is off\$'" 1
 check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 "$vm" reboot
 check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in use."

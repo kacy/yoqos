@@ -15,6 +15,9 @@ pub const Check = struct {
     found: []const u8,
     /// what to do about it, when it isn't ok.
     fix: ?[]const u8 = null,
+    /// a check that isn't ok only says something worth knowing: it shows
+    /// as "warn", with its fix, and stops nothing.
+    warn: bool = false,
 };
 
 pub const Step = struct {
@@ -43,18 +46,27 @@ pub const Plan = struct {
     }
 };
 
+/// whether no check fails. a warning doesn't.
 pub fn allOk(checks: []const Check) bool {
     for (checks) |c| {
-        if (!c.ok) return false;
+        if (!c.ok and !c.warn) return false;
     }
     return true;
 }
 
-/// each check, with its fix when it fails.
+/// whether a check that isn't ok only warns.
+pub fn anyWarning(checks: []const Check) bool {
+    for (checks) |c| {
+        if (!c.ok and c.warn) return true;
+    }
+    return false;
+}
+
+/// each check, with its fix when it fails or warns.
 pub fn writeChecks(w: *std.Io.Writer, checks: []const Check) !void {
     try w.writeAll("checks\n");
     for (checks) |c| {
-        try w.print("  {s}  {s}: {s}\n", .{ if (c.ok) "ok" else "no", c.what, c.found });
+        try w.print("{s}  {s}: {s}\n", .{ if (c.ok) "  ok" else if (c.warn) "warn" else "  no", c.what, c.found });
         if (!c.ok) try w.print("        {s}\n", .{c.fix.?});
     }
 }
