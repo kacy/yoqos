@@ -117,4 +117,12 @@ check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in
 # generation 1 stays in the menu, booting its copies on the esp.
 check "grep -c 'linux (\${yoq_esp})/yoq/boot/' /boot/grub/grub.cfg" 1
 check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
+# leaving: grub-mkconfig's menu takes what unlocks the root from grub's
+# defaults, where os puts it, since only os's own entries had it.
+check "/usr/local/bin/os uninstall --yes --delete-generations >/tmp/out 2>&1; echo \$?" 0
+check "grep -c '^GRUB_CMDLINE_LINUX=.* rd.luks.name=' /etc/default/grub" 1
+check "grep -c 'rd.luks.options=tpm2-device=auto' /boot/grub/grub.cfg | grep -c -v '^0\$'" 1
+"$vm" reboot
+check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in use."
+check "test -e /var/lib/yoq && echo state || echo none" none
 echo "install ok"

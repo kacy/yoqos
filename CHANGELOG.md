@@ -100,6 +100,24 @@
   secret set` again after secure boot changes.
 - `os install` checks the live system has every secret the config names
   before it erases the disk, where it used to stop at the build.
+- a quoted kernel argument, like `acpi_osi="!Windows 2012"`, goes into
+  every generation's entries as it was. it used to be split at its
+  spaces, which lost runs of spaces, and a word inside its quotes that
+  looked like `root=` was dropped.
+- grub passes a unified kernel image a quoted kernel argument with its
+  quotes. its chainloader joins the words as it read them, without
+  quotes, so the image got `acpi_osi=!Windows 2012` as two arguments.
+- `os uninstall` on grub adds what unlocks a luks root, and the consoles,
+  to `/etc/default/grub` when it lacks them, before grub-mkconfig writes
+  the menu. after `os install --encrypt`, only os's entries had them, so
+  the machine it left couldn't open its root.
+- `os uninstall` on systemd-boot or refind won't start while the firmware
+  enforces secure boot and arch's kernel in `/boot` has no signature. the
+  entry it left boots that kernel instead of `os`'s signed images, which
+  the firmware refused.
+- `os rollback` on limine no longer warns that secure boot refuses a
+  generation from before `[boot] uki`. limine loads that kernel itself,
+  without the firmware's check, so it starts.
 
 ## 0.1.3
 

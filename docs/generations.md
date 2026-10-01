@@ -444,12 +444,13 @@ next boot tries again once there's room.
   not on a real omarchy install. omarchy builds its own unified kernel
   images, and `os` doesn't boot those: it boots the kernel and initramfs
   files in `/boot`, or with `[boot] uki`, images it builds from them. the
-  vm tests boot images on systemd-boot only so far.
+  vm tests boot images on systemd-boot and limine so far.
 - secure boot is tested on systemd-boot only. grub as `os` installs it
   doesn't boot under secure boot, and limine stops booting if its config's
   checksum was enrolled (`limine enroll-config`), since `os` edits
   limine.conf. a generation from before `uki` boots a kernel without a
-  signature, so the firmware refuses it while secure boot is on.
+  signature, so on systemd-boot and refind the firmware refuses it while
+  secure boot is on.
 
 ## later
 

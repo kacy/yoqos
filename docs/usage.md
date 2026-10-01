@@ -542,14 +542,20 @@ units that run at boot. if `enable-rollback` turned off snap-pac's
 snapshots of the root, they come back on. the bootloader gets set up to
 boot the running root without `os`:
 
-- grub reads a menu from `grub-mkconfig` in `/boot/grub` again.
+- grub reads a menu from `grub-mkconfig` in `/boot/grub` again. what
+  unlocks a luks root, and the consoles, go in `/etc/default/grub` first
+  when it doesn't have them, since `grub-mkconfig` takes the kernel's
+  arguments from there.
 - limine gets one plain entry where `os`'s section was.
 - refind boots the kernel in `/boot` through `refind_linux.conf`.
 - systemd-boot gets one entry of its own, `arch-linux.conf`, as its
   default, where os's were.
 
 limine, refind, and systemd-boot need the esp mounted at `/boot` for this,
-since that's where arch installs the kernel.
+since that's where arch installs the kernel. while the firmware enforces
+secure boot, refind and systemd-boot also need that kernel signed, since
+`os`'s signed images go: `sbctl sign -s /boot/vmlinuz-linux` does it, and
+keeps doing it for each new kernel. otherwise turn secure boot off first.
 
 the other generations stay as btrfs subvolumes unless you say yes when it
 asks, or pass `--delete-generations`. the running root stays where it is,
@@ -1179,9 +1185,11 @@ them. an image is signed when it's written, and while the running
 generation or the new one has `secure_boot`, every menu write signs
 whatever images the menu boots, so the generation a failed trial falls
 back to starts too. a generation from before `uki` boots a plain kernel,
-which firmware enforcing secure boot refuses; turn secure boot off in the
-firmware before you boot one. `os rollback` says so before it goes back
-to one. turning `secure_boot` off stops the
+which firmware enforcing secure boot refuses on systemd-boot and refind;
+turn secure boot off in the firmware before you boot one. `os rollback`
+says so before it goes back to one. limine loads a plain kernel itself,
+without asking the firmware, as long as its config's checksum isn't
+enrolled. turning `secure_boot` off stops the
 signing only once the firmware stops enforcing secure boot: until then,
 as long as sbctl has keys, every menu write still signs, so a generation
 without the key starts too.
