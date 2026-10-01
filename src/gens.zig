@@ -428,7 +428,7 @@ pub const Machine = struct {
     /// or the firmware enforces secure boot and sbctl has keys. the
     /// running one counts since its firmware may enforce secure boot
     /// already, whatever generation goes on top.
-    fn signs(m: *const Machine, head: []const u8) bool {
+    pub fn signs(m: *const Machine, head: []const u8) bool {
         if (secureboot.enforcedWithKeys(m.boot.secure_boot, m.boot.sbctl_keys)) return true;
         if (m.has(head, secureboot.config_rel) catch false) return true;
         const running = m.boot.root_subvol orelse return false;
