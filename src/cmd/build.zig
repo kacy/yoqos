@@ -94,6 +94,7 @@ pub fn buildCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.err.print("os: {s} can't have spaces or backslashes in it.\n", .{real});
         return 1;
     }
+    if (rootfs.privateMounts(ctx.io)) |why| return cli.fail(ctx, "{s}", .{why});
     var b: Builder = .{ .ctx = ctx, .a = a, .dir = real };
     // on every way out: a bind of /dev left behind would take the host's
     // device nodes with it when someone removes the directory.

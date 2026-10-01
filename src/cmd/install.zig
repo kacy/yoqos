@@ -100,6 +100,7 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         return 1;
     }
     if (try cli.approve(ctx, yes, "install", "install?")) |code| return code;
+    if (rootfs.privateMounts(ctx.io)) |why| return fail(ctx, why);
     try ctx.out.writeByte('\n');
     defer in.unmountAll();
     for (steps) |s| {
