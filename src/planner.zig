@@ -785,25 +785,29 @@ fn encryptFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
     return .{ .path = encrypt_initramfs_path, .content = encrypt_initramfs_content, .cause = "boot.encrypt", .src = encrypt.src, .reboot = "initramfs" };
 }
 
-/// the ukify config for `[boot] uki`, in a root whose boot menu os
-/// writes: one running a generation, or one being built, where mounts say
-/// nothing (no root filesystem in facts). a machine without generations
-/// boots the way it always has, so there the key only brings ukify.
+/// the ukify config for `[boot] uki`, which has the menu boot an image.
 fn ukiFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
-    const v = c.boot.uki orelse return null;
-    if (!v.v) return null;
-    if (f.boot.root_fs != null and !generation.running(f.boot.root_subvol)) return null;
-    return .{ .path = uki.config_path, .content = uki.config_content, .cause = "boot.uki", .src = v.src, .reboot = uki_reboot };
+    return menuFile(c.boot.uki, f, .{ .path = uki.config_path, .content = uki.config_content, .cause = "boot.uki", .reboot = uki_reboot });
 }
 
-/// the file that has a root's images signed for `[boot] secure_boot`,
-/// where os writes the menu, as for `ukiFile`. the next menu signs every
-/// image it boots, so turning it on or off waits for a reboot.
+/// the file that has a root's images signed for `[boot] secure_boot`.
 fn secureBootFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
-    const v = c.boot.secure_boot orelse return null;
+    return menuFile(c.boot.secure_boot, f, .{ .path = secureboot.config_path, .content = secureboot.config_content, .cause = "boot.secure_boot", .reboot = secure_boot_reboot });
+}
+
+/// `file`, which tells os's boot menu how to boot a root, when `key` is
+/// on and os writes the menu: in a root running a generation, or one
+/// being built, where mounts say nothing (no root filesystem in facts).
+/// a machine without generations boots the way it always has, so there
+/// the key only brings its package. the next menu reads it, so a change
+/// waits for a reboot.
+fn menuFile(key: ?config.Val(bool), f: *const facts.Facts, file: DesiredFile) ?DesiredFile {
+    const v = key orelse return null;
     if (!v.v) return null;
     if (f.boot.root_fs != null and !generation.running(f.boot.root_subvol)) return null;
-    return .{ .path = secureboot.config_path, .content = secureboot.config_content, .cause = "boot.secure_boot", .src = v.src, .reboot = secure_boot_reboot };
+    var out = file;
+    out.src = v.src;
+    return out;
 }
 
 /// what the observer should look at for this config: every file it might
@@ -871,11 +875,14 @@ pub fn espNeed(p: *const Plan, b: *const facts.Boot, uki_on: bool) ?EspNeed {
     var initramfs = false;
     var microcode = false;
     var every = false;
+    // systemd brings the stub, which every image starts with.
+    var stub = false;
     for (p.changes) |c| {
         const r = c.reboot orelse continue;
         if (std.mem.eql(u8, r, "initramfs") or std.mem.eql(u8, r, "microcode")) initramfs = true;
         if (std.mem.eql(u8, r, "microcode")) microcode = true;
         if (std.mem.eql(u8, r, uki_reboot)) every = true;
+        if (std.mem.eql(u8, r, "systemd")) stub = true;
     }
     // the files the plan changes, and every file, for a menu that stops
     // booting images and needs copies of them all again.
@@ -899,7 +906,7 @@ pub fn espNeed(p: *const Plan, b: *const facts.Boot, uki_on: bool) ?EspNeed {
         for (b.boot_files) |f| {
             if (!std.mem.startsWith(u8, f.name, "vmlinuz-")) continue;
             const k = f.name["vmlinuz-".len..];
-            if (every or initramfs or kernelChanges(p, k)) images.add(f.size + initramfsSize(b, k) + ucode + uki.stub_size, 0);
+            if (every or stub or initramfs or kernelChanges(p, k)) images.add(f.size + initramfsSize(b, k) + ucode + uki.stub_size, 0);
         }
     }
     for (p.changes) |c| {
@@ -1880,6 +1887,10 @@ test "unified kernel images on the esp take a kernel's files together" {
     try testing.expectEqual(51 * mib, espNeed(&lts, &b, true).?.need);
     const tool: Plan = .{ .changes = &.{.{ .op = .add, .kind = .package, .subject = "ripgrep", .to = "14" }} };
     try testing.expectEqual(null, espNeed(&tool, &b, true));
+    // a new systemd brings a new stub, and every image is new.
+    const systemd: Plan = .{ .changes = &.{.{ .op = .change, .kind = .package, .subject = "systemd", .from = "258-1", .to = "258-2", .reboot = "systemd" }} };
+    try testing.expectEqual(51 * mib, espNeed(&systemd, &b, true).?.need);
+    try testing.expectEqual(null, espNeed(&systemd, &b, false));
     // turning them on makes every kernel's image.
     const on: Plan = .{ .changes = &.{.{ .op = .add, .kind = .file, .subject = uki.config_path, .reboot = uki_reboot }} };
     try testing.expectEqual(51 * mib, espNeed(&on, &b, true).?.need);

@@ -133,7 +133,8 @@ pub const Boot = struct {
     secure_boot: ?bool = null,
     setup_mode: ?bool = null,
     /// efi binaries on the esp without a signature: os's images in
-    /// yoq/boot, and everything under EFI.
+    /// yoq/boot, which count as unsigned unless sbctl's db key signed
+    /// them, and everything under EFI, which any signature will do for.
     unsigned: []const []const u8 = &.{},
     /// the pacman database lives in /usr/lib/sysimage/pacman.
     pacman_moved: bool = false,

@@ -155,10 +155,12 @@ the esp isn't there, and runs ukify through chroot, so it's the root's own
 ukify and stub. that matters the first time: the root built for the
 change that turns `uki` on has ukify, and the running system doesn't yet.
 nothing gets mounted for it either. the image goes in `yoq/boot` on the
-esp, named by the content of the files in it, like
-`0123456789abcdef-yoq.efi`, so generations with the same kernel and
-initramfs share one. `os gc`, and every menu write, removes the images no
-entry uses any more.
+esp, named by the content of the files in it and of the root's stub, like
+`0123456789abcdef-yoq.efi`, so generations with the same kernel,
+initramfs, and stub share one. a new systemd brings a new stub, so the
+next menu builds every image again, and `os plan` counts the room for
+them. `os gc`, and every menu write, removes the images no entry uses any
+more.
 
 an image has no command line built in. each entry passes its own, with
 the root, `rootflags=subvol=`, the console and luks arguments, and
@@ -195,7 +197,10 @@ with sbctl's db key. the steps that make and enroll the keys are in
 
 the key writes `/etc/kernel/yoq-secure-boot.conf` into the generation, the
 same way `uki` writes its ukify config. a menu written for a root that has
-it, or written while the running root has it, signs:
+it, or written while the running root has it, signs. so does every menu
+written while the firmware enforces secure boot and sbctl has keys,
+whatever the config says. a generation without the key, like one rolled
+back to, still starts then. signing covers:
 
 - each new image, built in `/tmp/yoq-uki` inside its root, with
   `sbctl sign <image>` run from the running system, before it's copied to
@@ -203,8 +208,11 @@ it, or written while the running root has it, signs:
   in `/var/lib/sbctl` do the signing, so it doesn't matter whether the
   root being built has sbctl yet.
 - each image the menu boots that's on the esp already without a
-  signature, like the ones from before the key: a copy goes into
-  `/tmp/yoq-sign` in the newest root, gets signed, and replaces it.
+  signature from sbctl's db key, like the ones from before the key, or
+  ones signed with keys sbctl made before: a copy goes into
+  `/tmp/yoq-sign` in the newest root, gets signed, and replaces it. `os`
+  tells whose signature an image has by the issuer and serial number of
+  `/var/lib/sbctl/keys/db/db.pem`, which every signature names.
 - refind's btrfs driver, which `os` installs beside refind.conf.
 
 a signature only adds a few KiB, so `os plan`'s esp estimate leaves it
@@ -216,11 +224,17 @@ esp, which isn't mounted there, so it would only fail. `os` turns it off
 for those transactions by linking `zz-sbctl.hook` to `/dev/null` in a hook
 directory libalpm reads after the root's own.
 
+when sbctl can't sign, say its keys are gone, `os apply` and `os update`
+stop, but a rollback, a fallback, or `os gc` goes on: the menu is written,
+new images go on the esp unsigned, images there stay as they are, and a
+warning names them.
+
 turning `secure_boot` on or off changes the file, so it waits for a
 reboot, with "secure boot" as the reason, and the next boot tries it once.
 the keys are in `/var`, which no generation holds, so a rollback keeps
 them. `os gc` signs images it finds unsigned when the running generation
-has the key, for example after the keys were made late.
+has the key, or the firmware enforces secure boot, for example after the
+keys were made late.
 
 ## how they work
 

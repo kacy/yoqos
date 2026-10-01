@@ -46,6 +46,23 @@
 
 ### fixes
 
+- an image signed with a key other than sbctl's db key, say from before
+  `sbctl create-keys` made new ones, counts as unsigned: the next menu
+  write signs it again, and `os doctor` lists it until then.
+- `os rollback`, the fallback from a failed trial, and `os gc` write the
+  boot menu when sbctl can't sign, say without its keys, and warn about
+  the images left unsigned, instead of stopping. `os apply` and `os
+  update` still stop with E0134.
+- an image's name covers systemd's stub too, so a new stub builds new
+  images instead of reusing ones with the old stub. `os plan` counts the
+  room a systemd upgrade's images take.
+- while the firmware enforces secure boot and sbctl has keys, `os` signs
+  every image it puts on the esp, even for a generation without
+  `[boot] secure_boot`. after a rollback past turning it on, the next
+  kernel's image was left unsigned, and its trial couldn't start.
+- `os rollback` warns, before it asks, when the generation it goes back to
+  is from before `[boot] uki` and the firmware enforces secure boot, which
+  refuses that generation's unsigned kernel.
 - on a luks root, grub and refind boot every generation from copies on the
   esp, since they can't read btrfs inside luks, and grub.cfg no longer
   looks for a root filesystem none of its entries use.

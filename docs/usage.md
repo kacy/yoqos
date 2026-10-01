@@ -1143,7 +1143,12 @@ job, in this order:
 5. turn secure boot on in the firmware setup, if enrolling didn't, and
    reboot.
 
-without the keys, `os plan` and `os apply` stop with E0134.
+without the keys, `os plan` and `os apply` stop with E0134. a way back
+doesn't: `os rollback`, a fallback from a failed trial, and `os gc` write
+the boot menu even when they can't sign, keep the images that are signed
+already, and warn about the ones that aren't, which firmware enforcing
+secure boot won't start. put the keys back, or make and enroll new ones,
+and `os gc` signs them.
 
 what `os` signs: its images in `yoq/boot` on the esp, and refind's btrfs
 driver, which it installs. each image is signed in a work directory inside
@@ -1161,8 +1166,11 @@ generation or the new one has `secure_boot`, every menu write signs
 whatever images the menu boots, so the generation a failed trial falls
 back to starts too. a generation from before `uki` boots a plain kernel,
 which firmware enforcing secure boot refuses; turn secure boot off in the
-firmware before you boot one. the same goes for turning `secure_boot`
-off: once it's off, images aren't signed any more.
+firmware before you boot one. `os rollback` says so before it goes back
+to one. turning `secure_boot` off stops the
+signing only once the firmware stops enforcing secure boot: until then,
+as long as sbctl has keys, every menu write still signs, so a generation
+without the key starts too.
 
 `os install` won't install a config with `secure_boot = true`: a new
 machine has no keys yet. install without it, then follow the steps above
