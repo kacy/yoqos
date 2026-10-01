@@ -197,8 +197,8 @@ the key writes `/etc/kernel/yoq-secure-boot.conf` into the generation, the
 same way `uki` writes its ukify config. a menu written for a root that has
 it, or written while the running root has it, signs. so does every menu
 written while the firmware enforces secure boot and sbctl has keys,
-whatever the config says, so a generation without the key, like one
-rolled back to, still starts. signing covers:
+whatever the config says. a generation without the key, like one rolled
+back to, still starts then. signing covers:
 
 - each new image, built in `/tmp/yoq-uki` inside its root, with
   `sbctl sign <image>` run from the running system, before it's copied to
