@@ -34,6 +34,7 @@ pub const Code = enum {
     aur_missing,
     esp_full,
     secret_missing,
+    secure_boot_keys,
 };
 
 pub const Entry = struct {
@@ -237,6 +238,18 @@ pub const table = [_]Entry{
             "keeps its own, encrypted with systemd-creds under /var/lib/yoq/secrets, so a config copied to " ++
             "a new machine needs its secrets set again there. `os secret set <name>` asks for the value, or " ++
             "reads it from stdin, as in `printf '%s' \"$value\" | sudo os secret set <name>`. then plan again.",
+    },
+    .{
+        .code = .secure_boot_keys,
+        .id = "E0134",
+        .title = "secure boot is on, but there are no keys to sign with",
+        .explanation = "with `[boot] secure_boot = true`, os signs every unified kernel image it puts on the " ++
+            "esp with sbctl's db key, in /var/lib/sbctl, and that key isn't there. os never makes or enrolls " ++
+            "keys itself. in this order: install sbctl and run `sbctl create-keys`; run `os apply`, which " ++
+            "signs the next generation's images; reboot into the firmware's setup and put secure boot in setup " ++
+            "mode (clearing its keys), then boot and run `sbctl enroll-keys -m`, which keeps microsoft's keys " ++
+            "next to yours, for firmware drivers signed with them; sign the bootloader with `sbctl sign -s " ++
+            "<file>` (`os doctor` lists what's unsigned); then turn secure boot on and reboot.",
     },
 };
 

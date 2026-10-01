@@ -35,6 +35,14 @@
 - facts note a machine that boots unified kernel images already, from
   mkinitcpio's presets or `EFI/Linux` on the esp, and `os init` sets
   `[boot] uki` there when ukify is installed.
+- `[boot] secure_boot = true`, with `uki`, signs every image `os` puts on
+  the esp with sbctl's keys, before it gets there, along with refind's
+  btrfs driver. it brings sbctl, waits for a reboot like a new kernel, and
+  stops with E0134 when sbctl has no keys. `os` never makes or enrolls
+  keys; usage.md has the one-time steps.
+- `os doctor` checks sbctl, its keys, the firmware's secure boot and setup
+  mode, and lists efi files on the esp without a signature. facts carry
+  the same, and `os gc` signs images left unsigned.
 
 ### fixes
 

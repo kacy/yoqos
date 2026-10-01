@@ -390,7 +390,7 @@ pub fn transact(a: Allocator, io: std.Io, t: api.Transaction, diags: *diag.List)
 
     const h = try Handle.open(a, t.target.root, t.target.dbpath, diags) orelse return false;
     defer h.close();
-    if (!try configure(a, h, t, diags)) return false;
+    if (!try configure(a, io, h, t, diags)) return false;
     var questions: Questions = .{ .a = a, .providers = &.{}, .remove = t.remove };
     _ = c.alpm_option_set_questioncb(h.h, Questions.answer, &questions);
     var log: Log = .{ .a = a, .diags = diags, .progress = t.target.progress };
@@ -557,6 +557,22 @@ fn fail(diags: *diag.List, comptime fmt: []const u8, args: anytype) Error!bool {
     return false;
 }
 
+/// adds a hook directory, after the root's own, where the hooks
+/// `api.maskedFor` names link to /dev/null, which turns them off. a later
+/// directory's hook overrides one of the same name. false if it can't.
+fn maskHooks(a: Allocator, io: std.Io, h: Handle, root: []const u8) Error!bool {
+    const names = api.maskedFor(root);
+    if (names.len == 0) return true;
+    const dir = try std.fs.path.join(a, &.{ root, api.masked_dir });
+    std.Io.Dir.cwd().createDirPath(io, dir) catch return false;
+    for (names) |name| {
+        const link = try std.fs.path.join(a, &.{ dir, name });
+        std.Io.Dir.cwd().deleteFile(io, link) catch {};
+        std.Io.Dir.cwd().symLink(io, "/dev/null", link, .{}) catch return false;
+    }
+    return c.alpm_option_add_hookdir(h.h, try dirZ(a, &.{dir})) == 0;
+}
+
 /// a directory path with the trailing slash libalpm wants.
 fn dirZ(a: Allocator, parts: []const []const u8) ![*:0]const u8 {
     const joined = try std.fs.path.join(a, parts);
@@ -567,10 +583,11 @@ fn dirZ(a: Allocator, parts: []const []const u8) ![*:0]const u8 {
 const trust_all = c.ALPM_SIG_PACKAGE_OPTIONAL | c.ALPM_SIG_PACKAGE_MARGINAL_OK | c.ALPM_SIG_PACKAGE_UNKNOWN_OK |
     c.ALPM_SIG_DATABASE_OPTIONAL | c.ALPM_SIG_DATABASE_MARGINAL_OK | c.ALPM_SIG_DATABASE_UNKNOWN_OK;
 
-fn configure(a: Allocator, h: Handle, t: api.Transaction, diags: *diag.List) Error!bool {
+fn configure(a: Allocator, io: std.Io, h: Handle, t: api.Transaction, diags: *diag.List) Error!bool {
     if (c.alpm_option_add_cachedir(h.h, try dirZ(a, &.{t.target.cachedir})) != 0 or
         c.alpm_option_add_hookdir(h.h, try dirZ(a, &.{ t.target.root, "usr/share/libalpm/hooks" })) != 0 or
         c.alpm_option_add_hookdir(h.h, try dirZ(a, &.{ t.target.root, "etc/pacman.d/hooks" })) != 0 or
+        !try maskHooks(a, io, h, t.target.root) or
         c.alpm_option_add_architecture(h.h, sync.arch) != 0 or
         c.alpm_option_set_logfile(h.h, (try a.dupeZ(u8, try std.fs.path.join(a, &.{ t.target.root, "var/log/pacman.log" }))).ptr) != 0)
     {

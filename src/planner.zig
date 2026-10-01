@@ -20,6 +20,7 @@ const lists = @import("lists.zig");
 const generation = @import("generation.zig");
 const menu = @import("menu.zig");
 const uki = @import("uki.zig");
+const secureboot = @import("secureboot.zig");
 const Allocator = std.mem.Allocator;
 
 pub const schema = "yoq.plan/1";
@@ -155,6 +156,9 @@ pub fn wants(a: Allocator, c: *const config.Config) ![]const Want {
     } else try addWant(a, &out, catalog.default_kernel, "boot.kernel", null);
     if (c.boot.uki) |v| {
         if (v.v) try addWant(a, &out, uki.package, "boot.uki", v.src);
+    }
+    if (c.boot.secure_boot) |v| {
+        if (v.v) try addWant(a, &out, secureboot.package, "boot.secure_boot", v.src);
     }
     if (c.hardware.cpu) |v| try addWants(a, &out, catalog.cpuPackages(v.v), "hardware.cpu", v.src);
     if (c.hardware.gpu) |v| try addWants(a, &out, catalog.gpuPackages(v.v), "hardware.gpu", v.src);
@@ -552,19 +556,24 @@ pub fn isInitramfsDropIn(path: []const u8) bool {
 }
 
 /// why a change to a file os writes needs a reboot: a drop-in changes the
-/// initramfs, and the ukify config changes what the menu boots.
+/// initramfs, the ukify config changes what the menu boots, and the
+/// secure boot file whether its images are signed.
 fn fileReboot(path: []const u8) ?[]const u8 {
     if (isInitramfsDropIn(path)) return "initramfs";
+    if (std.mem.eql(u8, path, secureboot.config_path)) return secure_boot_reboot;
     return if (std.mem.eql(u8, path, uki.config_path)) uki_reboot else null;
 }
 
 /// the reboot reason for turning `[boot] uki` on or off.
 pub const uki_reboot = "uki";
 
+/// the reboot reason for turning `[boot] secure_boot` on or off.
+pub const secure_boot_reboot = "secure boot";
+
 /// files os writes from other keys, each starting with a "written by os"
 /// line. one still there that nothing asks for any more is removed. the
 /// session's own config isn't here: it's the user's file.
-const generated_paths = [_][]const u8{ sysctl_path, modules_path, greetd_config_path, tty_session_path, nvidia_initramfs_path, encrypt_initramfs_path, uki.config_path };
+const generated_paths = [_][]const u8{ sysctl_path, modules_path, greetd_config_path, tty_session_path, nvidia_initramfs_path, encrypt_initramfs_path, uki.config_path, secureboot.config_path };
 
 /// the first line of a file os makes from `key`.
 fn header(comptime key: []const u8) []const u8 {
@@ -662,6 +671,7 @@ pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts
         nvidiaFile(c, f),
         encryptFile(c, f),
         ukiFile(c, f),
+        secureBootFile(c, f),
     };
     for (made) |m| {
         if (m) |d| try out.append(a, d);
@@ -784,6 +794,16 @@ fn ukiFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
     if (!v.v) return null;
     if (f.boot.root_fs != null and !generation.running(f.boot.root_subvol)) return null;
     return .{ .path = uki.config_path, .content = uki.config_content, .cause = "boot.uki", .src = v.src, .reboot = uki_reboot };
+}
+
+/// the file that has a root's images signed for `[boot] secure_boot`,
+/// where os writes the menu, as for `ukiFile`. the next menu signs every
+/// image it boots, so turning it on or off waits for a reboot.
+fn secureBootFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
+    const v = c.boot.secure_boot orelse return null;
+    if (!v.v) return null;
+    if (f.boot.root_fs != null and !generation.running(f.boot.root_subvol)) return null;
+    return .{ .path = secureboot.config_path, .content = secureboot.config_content, .cause = "boot.secure_boot", .src = v.src, .reboot = secure_boot_reboot };
 }
 
 /// what the observer should look at for this config: every file it might
@@ -971,6 +991,17 @@ pub fn checkEsp(a: Allocator, p: *const Plan, f: *const facts.Facts, diags: *dia
     const of = if (b.esp_size) |s| try std.fmt.allocPrint(a, " of {d} MiB", .{s / mib}) else "";
     const hint = if (e.collectable) try generation.gcHint(a, b.generations, b.root_subvol orelse "") else generation.manual_hint;
     try diags.add(.esp_full, null, "the esp at {s} has {d} MiB free{s}, and this plan's new boot files need about {d} MiB", .{ b.esp.?, free / mib, of, (e.need + mib - 1) / mib }, hint);
+    return false;
+}
+
+/// refuses, with a diagnostic, a plan for a machine with generations
+/// whose config signs images for secure boot, when sbctl has no keys to
+/// sign them with. os never makes or enrolls keys itself. returns whether
+/// the plan can go ahead.
+pub fn checkSecureBoot(c: *const config.Config, f: *const facts.Facts, diags: *diag.List) !bool {
+    const v = c.boot.secure_boot orelse return true;
+    if (!v.v or f.boot.sbctl_keys or !generation.running(f.boot.root_subvol)) return true;
+    try diags.add(.secure_boot_keys, v.src, "secure_boot is on, but sbctl has no keys in {s} to sign with", .{secureboot.keys_dir}, "run `sbctl create-keys`, then plan again. enroll the keys only once a generation with signed images is ready");
     return false;
 }
 
@@ -1523,6 +1554,61 @@ test "[boot] uki brings ukify, and its config where os writes the menu" {
     // left on, the config there is the one it wants.
     const with: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{lockPkg("systemd-ukify", "258-1", &.{})} };
     for ((try plan(a, &c, &with, &had, &t.diags)).?.changes) |ch| try testing.expect(ch.kind != .file);
+}
+
+test "[boot] secure_boot brings sbctl, and its file where os writes the menu" {
+    var t: T = .{};
+    defer t.deinit();
+    const a = t.a();
+    const c = try t.cfg("[boot]\nkernel = \"none\"\nuki = true\nsecure_boot = true\n");
+    try testing.expectEqualStrings("boot.secure_boot", findWant(try wants(a, &c), "sbctl").?.cause.?);
+    const on_gens: facts.Facts = .{ .boot = .{ .root_fs = "btrfs", .root_subvol = "/@roots/3", .sbctl_keys = true } };
+    const want = try desiredFiles(a, &c, &on_gens);
+    try testing.expectEqual(2, want.len);
+    try testing.expectEqualStrings("/etc/kernel/yoq-secure-boot.conf", want[1].path);
+    try testing.expectEqualStrings("secure boot", want[1].reboot.?);
+    try testing.expect(std.mem.startsWith(u8, want[1].content, "# written by os from [boot] secure_boot in the config."));
+    try testing.expectEqual(0, (try desiredFiles(a, &c, &.{ .boot = .{ .root_fs = "ext4" } })).len);
+
+    // turning it off takes the file out, which needs a reboot too.
+    const off = try t.cfg("[boot]\nkernel = \"none\"\nuki = true\n");
+    try testing.expectEqual(null, findWant(try wants(a, &off), "sbctl"));
+    var files = [_]facts.File{
+        .{ .path = uki.config_path, .sha256 = &facts.sha256Hex(uki.config_content), .mode = "0644", .ours = true },
+        .{ .path = secureboot.config_path, .sha256 = &facts.sha256Hex(secureboot.config_content), .mode = "0644", .ours = true },
+    };
+    const had: facts.Facts = .{ .files = &files, .boot = on_gens.boot };
+    const with: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{ lockPkg("sbctl", "0.17-1", &.{}), lockPkg("systemd-ukify", "258-1", &.{}) } };
+    const p = (try plan(a, &off, &with, &had, &t.diags)).?;
+    var removed = false;
+    for (p.changes) |ch| {
+        if (ch.kind != .file) continue;
+        try testing.expectEqual(Op.remove, ch.op);
+        try testing.expectEqualStrings(secureboot.config_path, ch.subject);
+        try testing.expectEqualStrings("secure boot", ch.reboot.?);
+        removed = true;
+    }
+    try testing.expect(removed);
+    // left on, the file there is the one it wants.
+    for ((try plan(a, &c, &with, &had, &t.diags)).?.changes) |ch| try testing.expect(ch.kind != .file);
+}
+
+test "secure boot without sbctl's keys stops the plan" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("[boot]\nkernel = \"none\"\nuki = true\nsecure_boot = true\n");
+    try testing.expect(try checkSecureBoot(&c, &.{ .boot = .{ .root_fs = "btrfs", .root_subvol = "/@roots/3", .sbctl_keys = true } }, &t.diags));
+    // without generations, nothing is signed, so nothing needs keys.
+    try testing.expect(try checkSecureBoot(&c, &.{ .boot = .{ .root_fs = "ext4" } }, &t.diags));
+    try testing.expectEqual(0, t.diags.items.items.len);
+    try testing.expect(!try checkSecureBoot(&c, &.{ .boot = .{ .root_fs = "btrfs", .root_subvol = "/@roots/3" } }, &t.diags));
+    try testing.expectEqual(1, t.diags.items.items.len);
+    const d = t.diags.items.items[0];
+    try testing.expectEqual(diag.Code.secure_boot_keys, d.code);
+    try testing.expectEqualStrings("secure_boot is on, but sbctl has no keys in /var/lib/sbctl/keys to sign with", d.message);
+    try testing.expect(std.mem.startsWith(u8, d.hint.?, "run `sbctl create-keys`"));
+    const off = try t.cfg("[boot]\nkernel = \"none\"\nuki = true\nsecure_boot = false\n");
+    try testing.expect(try checkSecureBoot(&off, &.{ .boot = .{ .root_fs = "btrfs", .root_subvol = "/@roots/3" } }, &t.diags));
 }
 
 test "a package from a service keeps its install reason" {

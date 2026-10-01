@@ -21,6 +21,24 @@ pub const available = build_options.alpm;
 pub const own_env = "YOQ_APPLY";
 const impl = if (available) @import("alpm_c.zig") else struct {};
 
+/// package hooks os turns off in a transaction into a root other than the
+/// running system: a staged generation, a clean build, an install.
+/// sbctl's signs the files in its database at their paths on the esp,
+/// which isn't mounted in such a root, so it fails there; and os signs
+/// everything it puts on the esp itself.
+pub const masked_hooks = [_][]const u8{"zz-sbctl.hook"};
+
+/// where the links that mask them go, under the target root, in a hook
+/// directory libalpm reads after the root's own. a link to /dev/null is
+/// pacman's way to turn a hook off.
+pub const masked_dir = "run/yoq-masked-hooks";
+
+/// the hooks masked in a transaction into `root`: none for the running
+/// system, where the esp is mounted and the hooks work.
+pub fn maskedFor(root: []const u8) []const []const u8 {
+    return if (std.mem.trimEnd(u8, root, "/").len == 0) &.{} else &masked_hooks;
+}
+
 pub const Error = error{ AlpmUnavailable, OutOfMemory };
 
 pub const SyncDb = struct {
@@ -500,6 +518,15 @@ test "a package replaces one it conflicts with that the plan removes" {
     try testing.expect(!try transact(t2.arena.allocator(), testing.io, keep, &t2.diags));
 }
 
+test "hooks masked in other roots" {
+    try testing.expectEqual(0, maskedFor("/").len);
+    try testing.expectEqual(0, maskedFor("//").len);
+    for ([_][]const u8{ "/run/yoq/next", "/mnt/yoq", "/var/tmp/clean/" }) |root| {
+        try testing.expectEqual(1, maskedFor(root).len);
+        try testing.expectEqualStrings("zz-sbctl.hook", maskedFor(root)[0]);
+    }
+}
+
 test "a hook that fails after packages change is reported, with its output" {
     if (!available) return error.SkipZigTest;
     if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
@@ -523,4 +550,29 @@ test "a hook that fails after packages change is reported, with its output" {
     try testing.expectEqualStrings("hook 90-fails.hook: command failed to execute correctly", d.message);
     try testing.expect(std.mem.startsWith(u8, d.hint.?, "call to execv failed"));
     try std.Io.Dir.cwd().access(testing.io, try std.fs.path.join(a, &.{ base.target.root, "usr/share/doc/glibc/README" }), .{});
+}
+
+test "sbctl's hook stays off in a root other than the running one" {
+    if (!available) return error.SkipZigTest;
+    if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
+    var t: Fixture = .{};
+    defer t.deinit();
+    try t.init();
+    const a = t.arena.allocator();
+    const base = try fixtureRoot(&t);
+    const hooks = try std.fs.path.join(a, &.{ base.target.root, "usr/share/libalpm/hooks" });
+    try std.Io.Dir.cwd().createDirPath(testing.io, hooks);
+    // a stand-in for sbctl's hook that would fail if it ran.
+    try std.Io.Dir.cwd().writeFile(testing.io, .{
+        .sub_path = try std.fs.path.join(a, &.{ hooks, "zz-sbctl.hook" }),
+        .data = "[Trigger]\nOperation = Install\nType = Package\nTarget = glibc\n\n[Action]\nWhen = PostTransaction\nExec = /usr/bin/no-such-command\n",
+    });
+    var install = base;
+    install.install = (try t.resolve(&.{"glibc"}, &.{})).lock.packages;
+    try testing.expect(try transact(a, testing.io, install, &t.diags));
+    try testing.expectEqual(0, t.diags.items.items.len);
+    var buf: [64]u8 = undefined;
+    const link = try std.fs.path.join(a, &.{ base.target.root, masked_dir, "zz-sbctl.hook" });
+    const n = try std.Io.Dir.cwd().readLink(testing.io, link, &buf);
+    try testing.expectEqualStrings("/dev/null", buf[0..n]);
 }

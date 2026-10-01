@@ -19,6 +19,7 @@ const diag = @import("diag.zig");
 const lists = @import("lists.zig");
 const secrets = @import("secrets.zig");
 const uki = @import("uki.zig");
+const secureboot = @import("secureboot.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Options = struct {
@@ -166,9 +167,12 @@ const Reader = struct {
             .snapper_root = r.exists("etc/snapper/configs/root"),
             .encrypt_dropin = r.exists(facts.initramfs_dropins[1..] ++ "/" ++ facts.encrypt_dropin),
             .uki = r.exists(uki.config_rel) or try r.presetsBuildUki(),
+            .sbctl_keys = r.exists(secureboot.db_key_rel) and r.exists(secureboot.db_cert_rel),
         };
         if (!std.mem.eql(u8, r.root, "/")) return b;
         b.uefi = r.exists("sys/firmware/efi");
+        if (try r.file(secureboot.secure_boot_var)) |v| b.secure_boot = secureboot.efiFlag(v);
+        if (try r.file(secureboot.setup_mode_var)) |v| b.setup_mode = secureboot.efiFlag(v);
         // an automounted esp only shows up in mountinfo once it's used.
         for ([_][]const u8{ "efi/EFI", "boot/efi/EFI", "boot/EFI" }) |p| _ = r.exists(p);
         const ms = try mounts(r.a, try r.file("proc/self/mountinfo") orelse "");
@@ -203,6 +207,7 @@ const Reader = struct {
             }
             b.boot_files = try r.bootFiles();
             if (!b.uki) b.uki = uki.anyImage(try r.names(try std.fs.path.join(r.a, &.{ esp[1..], "EFI/Linux" }), .file));
+            b.unsigned = try r.unsigned(esp);
         }
         if (generation.running(b.root_subvol)) {
             b.menu_missing = try r.menuMissing(b);
@@ -219,6 +224,28 @@ const Reader = struct {
             };
         }
         return b;
+    }
+
+    /// the efi binaries on the esp at `esp` without a signature: os's
+    /// images, and everything under EFI, by path.
+    fn unsigned(r: Reader, esp: []const u8) ![]const []const u8 {
+        var out: std.ArrayList([]const u8) = .empty;
+        for (try r.names(try std.fs.path.join(r.a, &.{ esp[1..], gens.esp_boot_dir }), .file)) |name| {
+            if (!isEfi(name)) continue;
+            const p = try std.fs.path.join(r.a, &.{ esp, gens.esp_boot_dir, name });
+            if (!gens.fileSigned(r.io, try r.path(p[1..]))) try out.append(r.a, p);
+        }
+        var dir = std.Io.Dir.cwd().openDir(r.io, try r.path(try std.fs.path.join(r.a, &.{ esp[1..], "EFI" })), .{ .iterate = true }) catch return out.items;
+        defer dir.close(r.io);
+        var walker = try dir.walk(r.a);
+        defer walker.deinit();
+        while (walker.next(r.io) catch null) |e| {
+            if (e.kind != .file or !isEfi(e.basename)) continue;
+            const p = try std.fs.path.join(r.a, &.{ esp, "EFI", e.path });
+            if (!gens.fileSigned(r.io, try r.path(p[1..]))) try out.append(r.a, p);
+        }
+        lists.sortStrings(out.items);
+        return out.items;
     }
 
     /// whether one of mkinitcpio's presets builds unified kernel images.
@@ -365,6 +392,10 @@ fn mkinitcpioList(a: Allocator, text: []const u8, comptime key: []const u8, out:
         var names = std.mem.tokenizeAny(u8, line[start..end], " \t\"'");
         while (names.next()) |n| try out.append(a, try a.dupe(u8, n));
     }
+}
+
+fn isEfi(name: []const u8) bool {
+    return name.len > 4 and std.ascii.eqlIgnoreCase(name[name.len - 4 ..], ".efi");
 }
 
 /// a dm-crypt device opened from a luks volume, from its dm uuid in

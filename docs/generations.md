@@ -187,6 +187,41 @@ as long as ukify is installed. `os` leaves the machine's own images alone and bu
 kernel and initramfs files in `/boot`, so mkinitcpio has to keep writing
 the initramfs files too (`default_image=`).
 
+## secure boot
+
+with `[boot] secure_boot = true` as well as `uki`, `os` signs the images
+with sbctl's db key. the steps that make and enroll the keys are in
+[usage.md](usage.md#secure-boot); `os` never runs them.
+
+the key writes `/etc/kernel/yoq-secure-boot.conf` into the generation, the
+same way `uki` writes its ukify config. a menu written for a root that has
+it, or written while the running root has it, signs:
+
+- each new image, built in `/tmp/yoq-uki` inside its root, with
+  `sbctl sign <image>` run from the running system, before it's copied to
+  the esp and renamed into place. the running system's sbctl and its keys
+  in `/var/lib/sbctl` do the signing, so it doesn't matter whether the
+  root being built has sbctl yet.
+- each image the menu boots that's on the esp already without a
+  signature, like the ones from before the key: a copy goes into
+  `/tmp/yoq-sign` in the newest root, gets signed, and replaces it.
+- refind's btrfs driver, which `os` installs beside refind.conf.
+
+a signature only adds a few KiB, so `os plan`'s esp estimate leaves it
+out. `os` doesn't rely on sbctl's own pacman hook: a staged generation's
+image is signed before its trial boot. the hook still runs when packages
+change on the running system, but not in a root `os` builds, like a staged
+one, a clean build, or an install. it signs files at their paths on the
+esp, which isn't mounted there, so it would only fail. `os` turns it off
+for those transactions by linking `zz-sbctl.hook` to `/dev/null` in a hook
+directory libalpm reads after the root's own.
+
+turning `secure_boot` on or off changes the file, so it waits for a
+reboot, with "secure boot" as the reason, and the next boot tries it once.
+the keys are in `/var`, which no generation holds, so a rollback keeps
+them. `os gc` signs images it finds unsigned when the running generation
+has the key, for example after the keys were made late.
+
 ## how they work
 
 everything lives in the btrfs top level:
@@ -393,7 +428,11 @@ next boot tries again once there's room.
   images, and `os` doesn't boot those: it boots the kernel and initramfs
   files in `/boot`, or with `[boot] uki`, images it builds from them. the
   vm tests boot images on systemd-boot only so far.
-- secure boot: images aren't signed.
+- secure boot is tested on systemd-boot only. grub as `os` installs it
+  doesn't boot under secure boot, and limine stops booting if its config's
+  checksum was enrolled (`limine enroll-config`), since `os` edits
+  limine.conf. a generation from before `uki` boots a kernel without a
+  signature, so the firmware refuses it while secure boot is on.
 
 ## later
 

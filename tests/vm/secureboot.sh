@@ -1,0 +1,84 @@
+#!/bin/sh
+# [boot] secure_boot on systemd-boot, on firmware that can enforce secure
+# boot (vm.sh's VM_SECBOOT) and starts in setup mode. os refuses without
+# sbctl's keys, then signs the next generation's image with them; the
+# keys are enrolled, and the trial boots that image with secure boot on.
+# a trial that can't boot still falls back to the generation before. at
+# the end the keys come out of the firmware again, so the tests after
+# this boot without secure boot. runs after uki.sh, in the same vm.
+set -eu
+. tests/vm/lib.sh
+
+entries=$VM_ESP/loader/entries
+stub_image="f=\$(ls /sys/firmware/efi/efivars/StubImageIdentifier-* 2>/dev/null) && tail -c +5 \$f | tr -d '\\000' | tr '\\\\' / || echo none"
+on_failure="bootctl status --no-pager 2>&1 | head -n 30; cat /proc/cmdline; ls -l $VM_ESP/yoq/boot; /usr/local/bin/os doctor"
+
+# a command that prints one of the firmware's secure boot variables,
+# 1 or 0: its value comes after 4 bytes of attributes.
+efivar() {
+    echo "tail -c 1 /sys/firmware/efi/efivars/$1-8be4df61-93ca-11d2-aa0d-00e098032b8c | od -An -tu1 | tr -d ' '"
+}
+
+"$vm" reboot
+settled
+check "$(efivar SetupMode)" 1
+check "$(efivar SecureBoot)" 0
+
+# both keys under [boot]; uki.sh's rollback took uki out again.
+"$vm" ssh "sed -i -e '/^uki = /d' -e '/^secure_boot = /d' /etc/yoq/machine.toml && if grep -q '^\\[boot\\]' /etc/yoq/machine.toml; then sed -i -e '/^\\[boot\\]/a secure_boot = true' -e '/^\\[boot\\]/a uki = true' /etc/yoq/machine.toml; else printf '\\n[boot]\\nuki = true\\nsecure_boot = true\\n' >> /etc/yoq/machine.toml; fi"
+# no keys yet: nothing is built.
+check "/usr/local/bin/os update --yes 2>&1 | grep -c 'error\\[E0134\\]' || true" 1
+on_trial no
+
+# the one-time step os leaves to the person: sbctl's keys.
+"$vm" ssh "pacman -S --noconfirm --needed --noprogressbar sbctl >/dev/null && sbctl create-keys >/dev/null"
+check "test -f /var/lib/sbctl/keys/db/db.key && test -f /var/lib/sbctl/keys/db/db.pem && echo yes" yes
+
+"$vm" ssh "/usr/local/bin/os update --yes" | tail -n 3
+on_trial yes
+check "grep -c '^efi /yoq/boot/[0-9a-f]*-yoq.efi\$' $entries/yoq-trial.conf" 1
+image=$("$vm" ssh "sed -n 's|^efi ||p' $entries/yoq-trial.conf")
+# every image os put on the esp is signed; systemd-boot's own files aren't
+# yet, and doctor names them.
+check "/usr/local/bin/os doctor | grep '^  no  esp signatures:' | grep -c -e '$image' -e '/yoq/boot/' || true" 0
+check "/usr/local/bin/os doctor | grep -c '^  no  esp signatures: unsigned: .*systemd' || true" 1
+
+# the bootloader signed, then the keys enrolled with microsoft's, as the
+# docs say. the vm's option roms aren't signed by anyone, so sbctl's
+# check for them is skipped.
+"$vm" ssh "find $VM_ESP/EFI -iname '*.efi' -type f -exec sbctl sign -s {} \\; >/dev/null"
+check "/usr/local/bin/os doctor | grep -c '^  ok  esp signatures: every efi file is signed\$'" 1
+"$vm" ssh "sbctl enroll-keys --microsoft --yes-this-might-brick-my-machine >/dev/null"
+check "$(efivar SetupMode)" 0
+
+# the trial boots os's signed image, with secure boot on.
+"$vm" reboot
+settled
+show_env
+check "$(efivar SecureBoot)" 1
+check "bootctl status --no-pager 2>/dev/null | grep -c 'Secure Boot: enabled (user)'" 1
+check "$stub_image" "$image"
+check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'the default now'" 1
+on_trial no
+check "/usr/local/bin/os doctor | grep -c '^  ok  firmware secure boot: on\$'" 1
+check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
+
+# a trial whose kernel can't start: a signed image of its own, with a
+# garbage initramfs, so the firmware runs it and the kernel panics. the
+# next boot falls back to the generation before, whose image is signed.
+"$vm" ssh "/usr/local/bin/os add --yes intel-ucode" | tail -n 1
+on_trial yes
+before=$(second_newest)
+"$vm" ssh "echo not an initramfs > /root/garbage.img && ukify build --config=/etc/kernel/yoq-uki.conf --linux=/boot/vmlinuz-linux --initrd=/root/garbage.img --output=$VM_ESP/yoq/boot/garbage.efi >/dev/null && sbctl sign $VM_ESP/yoq/boot/garbage.efi >/dev/null && sed -i 's|^efi .*|efi /yoq/boot/garbage.efi|' $entries/yoq-trial.conf && cat $entries/yoq-trial.conf"
+show_env
+falls_back "$before"
+check "$(efivar SecureBoot)" 1
+
+# the platform key out again: setup mode, and no secure boot from the
+# next boot on.
+"$vm" ssh "sbctl reset >/dev/null"
+"$vm" reboot
+settled
+check "$(efivar SetupMode)" 1
+check "$(efivar SecureBoot)" 0
+echo "secure boot ok"

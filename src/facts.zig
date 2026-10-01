@@ -122,6 +122,15 @@ pub const Boot = struct {
     /// presets build them, the esp has some in EFI/Linux, or the root has
     /// os's ukify config from `[boot] uki`.
     uki: bool = false,
+    /// sbctl's signing key and certificate are in /var/lib/sbctl.
+    sbctl_keys: bool = false,
+    /// the firmware enforces secure boot, and it's in setup mode, taking
+    /// new keys. null where there's no efi variable to say.
+    secure_boot: ?bool = null,
+    setup_mode: ?bool = null,
+    /// efi binaries on the esp without a signature: os's images in
+    /// yoq/boot, and everything under EFI.
+    unsigned: []const []const u8 = &.{},
     /// the pacman database lives in /usr/lib/sysimage/pacman.
     pacman_moved: bool = false,
     /// snapper has a config for the root, which snap-pac snapshots.

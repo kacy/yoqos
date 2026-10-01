@@ -184,6 +184,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     // on the esp would only be thrown away.
     if (!try planner.checkEsp(a, p, &result.facts, &w.diags)) return Outcome.failed(&w);
     if (!try planner.checkSecrets(result.state.config(), &result.facts, &w.diags)) return Outcome.failed(&w);
+    if (!try planner.checkSecureBoot(result.state.config(), &result.facts, &w.diags)) return Outcome.failed(&w);
     const cut = try journal.unfinished(a, ctx.io, ctx.root);
     var settled_generation = false;
     if (cut) |begin| {

@@ -11,6 +11,8 @@ const journal = @import("../journal.zig");
 const output = @import("../output.zig");
 const status = @import("../status.zig");
 const locking = @import("lock.zig");
+const facts = @import("../facts.zig");
+const secureboot = @import("../secureboot.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
@@ -84,6 +86,10 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             });
         }
         if (try enable.luksCheck(a, &b)) |c| try checks.append(a, c);
+        const wants = if (loaded) |l| if (l.config.boot.secure_boot) |v| v.v else false else false;
+        if (wants or (b.secure_boot orelse false)) {
+            try secureBootChecks(a, &b, wants, rootfs.pathExists(ctx.io, "/usr/bin/sbctl"), &checks);
+        }
         if (b.esp) |esp| {
             const room = try freeBytes(ctx, a, esp);
             try checks.append(a, .{
@@ -109,6 +115,45 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.out.writeAll(if (ok) "\nnothing to fix.\n" else "\nthe lines under each \"no\" say what to do.\n");
     }
     return if (ok) 0 else 1;
+}
+
+/// what secure boot needs: sbctl, its keys, firmware that enforces it,
+/// and signatures on every efi binary on the esp. `wants` is the
+/// config's `[boot] secure_boot`; without it, the firmware's state is
+/// only shown.
+fn secureBootChecks(a: Allocator, b: *const facts.Boot, wants: bool, sbctl: bool, checks: *std.ArrayList(enable.Check)) !void {
+    try checks.append(a, .{
+        .what = "sbctl",
+        .ok = sbctl,
+        .found = if (sbctl) "installed" else "missing",
+        .fix = "it makes, enrolls, and signs with the keys. `pacman -S sbctl` to make keys before the first apply; with secure_boot on, os installs it too.",
+    });
+    try checks.append(a, .{
+        .what = "secure boot keys",
+        .ok = b.sbctl_keys,
+        .found = if (b.sbctl_keys) secureboot.keys_dir else "none",
+        .fix = "`sbctl create-keys` makes them in " ++ secureboot.keys_dir ++ ". os never makes or enrolls keys itself.",
+    });
+    const on = b.secure_boot orelse false;
+    try checks.append(a, .{
+        .what = "firmware secure boot",
+        .ok = on or !wants,
+        .found = secureboot.describe(b.secure_boot, b.setup_mode),
+        .fix = if (b.setup_mode orelse false)
+            "the firmware takes new keys now. once `os doctor` finds nothing unsigned, `sbctl enroll-keys -m` enrolls sbctl's keys and microsoft's, and the next boot enforces them."
+        else
+            "in the firmware's setup, clear its secure boot keys (setup mode), boot, and run `sbctl enroll-keys -m`; then turn secure boot on there.",
+    });
+    const mine = if (b.esp) |esp| try secureboot.ours(a, b.unsigned, esp) else &.{};
+    try checks.append(a, .{
+        .what = "esp signatures",
+        .ok = b.unsigned.len == 0,
+        .found = if (b.unsigned.len == 0) "every efi file is signed" else try std.fmt.allocPrint(a, "unsigned: {s}", .{try std.mem.join(a, ", ", b.unsigned)}),
+        .fix = if (mine.len == b.unsigned.len)
+            "os signs its images in yoq/boot when it writes the boot menu; `os gc` writes it now."
+        else
+            "os signs its own images in yoq/boot when it writes the boot menu (`os gc` writes it now). sign the bootloader's files with `sbctl sign -s <file>`, which signs them again whenever their package updates them.",
+    });
 }
 
 /// how many days old the lock's date is.
@@ -161,6 +206,33 @@ fn hasNoPasswd(text: []const u8) bool {
         if (std.mem.indexOf(u8, t, "NOPASSWD") != null) return true;
     }
     return false;
+}
+
+test "secure boot checks" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var checks: std.ArrayList(enable.Check) = .empty;
+    var b: facts.Boot = .{ .esp = "/boot", .secure_boot = false, .setup_mode = true, .unsigned = &.{ "/boot/EFI/systemd/systemd-bootx64.efi", "/boot/yoq/boot/0123456789abcdef-yoq.efi" } };
+    try secureBootChecks(a, &b, true, false, &checks);
+    try std.testing.expectEqual(4, checks.items.len);
+    for (checks.items) |c| try std.testing.expect(!c.ok);
+    try std.testing.expectEqualStrings("off, in setup mode", checks.items[2].found);
+    try std.testing.expect(std.mem.indexOf(u8, checks.items[2].fix.?, "sbctl enroll-keys -m") != null);
+    try std.testing.expectEqualStrings("unsigned: /boot/EFI/systemd/systemd-bootx64.efi, /boot/yoq/boot/0123456789abcdef-yoq.efi", checks.items[3].found);
+    try std.testing.expect(std.mem.indexOf(u8, checks.items[3].fix.?, "sbctl sign -s") != null);
+
+    b = .{ .esp = "/boot", .secure_boot = true, .setup_mode = false, .sbctl_keys = true };
+    checks.clearRetainingCapacity();
+    try secureBootChecks(a, &b, true, true, &checks);
+    for (checks.items) |c| try std.testing.expect(c.ok);
+    try std.testing.expectEqualStrings("on", checks.items[2].found);
+
+    // with secure boot off and not asked for, the firmware is only shown.
+    b = .{ .secure_boot = false, .setup_mode = false, .sbctl_keys = true };
+    checks.clearRetainingCapacity();
+    try secureBootChecks(a, &b, false, true, &checks);
+    try std.testing.expect(checks.items[2].ok);
 }
 
 test "a sudoers rule without a password, and a commented one" {

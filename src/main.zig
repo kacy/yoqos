@@ -101,6 +101,7 @@ test {
     _ = @import("generation.zig");
     _ = @import("menu.zig");
     _ = @import("uki.zig");
+    _ = @import("secureboot.zig");
     _ = @import("trial.zig");
     _ = @import("uninstall.zig");
     _ = @import("install.zig");

@@ -70,6 +70,17 @@ pub fn readStreaming(a: Allocator, io: std.Io, path: []const u8) error{OutOfMemo
     };
 }
 
+/// the start of a file, up to `out.len` bytes, like an efi binary's
+/// headers. null if it's missing or can't be read.
+pub fn readHead(io: std.Io, path: []const u8, out: []u8) ?[]u8 {
+    const f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
+    defer f.close(io);
+    var buf: [256]u8 = undefined;
+    var fr = f.readerStreaming(io, &buf);
+    const n = fr.interface.readSliceShort(out) catch return null;
+    return out[0..n];
+}
+
 /// a file under /proc, like /proc/cmdline, or "" if it can't be read.
 pub fn readProc(a: Allocator, io: std.Io, path: []const u8) error{OutOfMemory}![]const u8 {
     return try readStreaming(a, io, path) orelse "";

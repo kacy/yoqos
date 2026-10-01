@@ -46,6 +46,9 @@ pub fn ukifyArgv(a: Allocator, root: []const u8, kernel: []const u8, initrds: []
     return argv.items;
 }
 
+/// how an image's name ends.
+pub const suffix = "-yoq.efi";
+
 /// the image's name on the esp, from the sha256 sums of what goes in it,
 /// kernel first: "<16 hex>-yoq.efi". generations with the same boot files
 /// share one.
@@ -56,7 +59,7 @@ pub fn name(a: Allocator, sums: []const []const u8) ![]const u8 {
         h.update("\n");
     }
     const hex = std.fmt.bytesToHex(h.finalResult(), .lower);
-    return std.fmt.allocPrint(a, "{s}-yoq.efi", .{hex[0..16]});
+    return std.fmt.allocPrint(a, "{s}" ++ suffix, .{hex[0..16]});
 }
 
 /// whether a mkinitcpio preset builds unified kernel images: one of its
