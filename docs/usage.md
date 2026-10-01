@@ -1071,8 +1071,11 @@ runs. with `encrypt = true`, `os` makes sure mkinitcpio's hooks can do
 that. when they have neither `encrypt` nor `sd-encrypt`, it writes
 `/etc/mkinitcpio.conf.d/90-yoq-encrypt.conf`, which adds `sd-encrypt`
 before `filesystems` and swaps busybox's hooks, like `udev` and `keymap`,
-for systemd's, which sd-encrypt needs. like any change to the initramfs,
-it waits for a reboot.
+for systemd's, which sd-encrypt needs. sd-encrypt also asks for the tpm's
+kernel modules, and mkinitcpio counts it as a failed build, without saying
+why, when autodetect finds none, as on a kernel with the tpm driver built
+in. the drop-in stops that one call from counting. like any change to the
+initramfs, it waits for a reboot.
 
 `os init` sets the key when the root is on luks. an encrypted archinstall
 machine has the hooks already, so no drop-in comes with it. `os install
