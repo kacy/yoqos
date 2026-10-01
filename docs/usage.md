@@ -644,6 +644,15 @@ it stopped.
    linux archive, which is slower, but gives you exactly what the lock
    says.
 
+   a config repository is code you run as root. its packages' install
+   scripts, mkinitcpio hooks, and ukify all run as root: in a chroot on
+   the live system, which doesn't keep a root process in, and then on the
+   new machine. a config can also read files on the live system through
+   `[files] source` paths, and its secrets come from the live system's
+   store. install only from a repository you'd be fine running as root.
+   when the source is a url, the plan says so on its `source` line before
+   it asks.
+
 7. read what it's going to do, and say yes:
 
    ```

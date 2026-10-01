@@ -4,6 +4,9 @@
 
 ### new
 
+- `os install` shows a url source in its plan, with a line saying its
+  packages' scripts run as root on the live system and the new machine.
+  treat a config repository like code.
 - `[files."<path>"] secret = "<name>"` writes a value that never goes into
   the config or the lock. `os secret set <name>` keeps it, encrypted with
   systemd-creds under `/var/lib/yoq/secrets`, and `os secret list` and
