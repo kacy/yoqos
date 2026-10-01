@@ -336,7 +336,11 @@ const max_links = 40;
 fn openParent(a: Allocator, root: []const u8, rel: []const u8, make: bool) error{OutOfMemory}!Parent {
     const linux = std.os.linux;
     var stack: std.ArrayList(linux.fd_t) = .empty;
-    defer for (stack.items[0..stack.items.len -| 1]) |fd| {
+    // every directory still on the stack closes. the one returned is
+    // popped off first, since a return's value comes before its defers.
+    // one left open would keep the mount it's on busy, like an install's
+    // target, whose luks volume then can't close.
+    defer for (stack.items) |fd| {
         _ = linux.close(fd);
     };
     const root_fd = linux.open(try a.dupeZ(u8, root), .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
@@ -432,6 +436,9 @@ test "a checked write follows root's symlinks, and refuses others' and open dire
     const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/root", .{tmp.sub_path});
     try tmp.dir.createDirPath(io, "root/usr/lib");
     try tmp.dir.createDirPath(io, "elsewhere");
+    // no directory it opens stays open, whatever the outcome.
+    const fds = try openFds(io);
+    defer std.testing.expectEqual(fds, openFds(io) catch 0) catch @panic("a checked write left a directory open");
     // a normal path, made as it goes.
     try std.testing.expectEqual(null, try writeChecked(a, root, "etc/motd", "hi", 0o600));
     try std.testing.expectEqualStrings("hi", try tmp.dir.readFileAlloc(io, "root/etc/motd", a, .limited(64)));
@@ -462,6 +469,16 @@ test "a checked write follows root's symlinks, and refuses others' and open dire
     try std.testing.expectEqual(null, try removeChecked(a, root, "lib/x.conf"));
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "root/usr/lib/x.conf", .{}));
     try std.testing.expectEqual(null, try removeChecked(a, root, "no/such/dir/f"));
+}
+
+/// how many files this process has open.
+fn openFds(io: std.Io) !usize {
+    var d = try std.Io.Dir.cwd().openDir(io, "/proc/self/fd", .{ .iterate = true });
+    defer d.close(io);
+    var n: usize = 0;
+    var it = d.iterate();
+    while (try it.next(io)) |_| n += 1;
+    return n;
 }
 
 test "a symlink another user owns is refused, as root" {

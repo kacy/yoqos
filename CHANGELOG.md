@@ -191,6 +191,9 @@
   sticky) and at a symlink another user owns. before, a user who owned a
   directory on the way, like their home, could point the write, a secret's
   value included, at any file on the machine.
+- a checked `[files]` write no longer leaves a directory on the way open.
+  in an install, one in the target kept it busy, so its luks volume
+  couldn't close until os exited.
 
 ## 0.1.3
 

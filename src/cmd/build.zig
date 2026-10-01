@@ -618,6 +618,28 @@ test "a process is signalled only while it's still inside the build" {
     try std.testing.expect(term == .signal);
 }
 
+test "processes working inside a build are stopped" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "build/etc/pacman.d/gnupg");
+    const dir = try std.Io.Dir.cwd().realPathFileAlloc(io, try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/build", .{tmp.sub_path}), a);
+    // one sitting in it, and one named by its arguments, like gpg-agent
+    // with its --homedir there, from /.
+    var in_cwd = try std.process.spawn(io, .{ .argv = &.{ "sleep", "30" }, .cwd = .{ .path = dir }, .stdin = .ignore });
+    var by_arg = try std.process.spawn(io, .{ .argv = &.{ "sh", "-c", "while :; do sleep 1; done", try std.fmt.allocPrint(a, "--homedir={s}/etc/pacman.d/gnupg", .{dir}) }, .cwd = .{ .path = "/" }, .stdin = .ignore });
+    // and one outside it, which stays.
+    var outside = try std.process.spawn(io, .{ .argv = &.{ "sleep", "30" }, .cwd = .{ .path = "/" }, .stdin = .ignore });
+    defer outside.kill(io);
+    stopProcessesIn(a, io, dir);
+    try std.testing.expect((try in_cwd.wait(io)) == .signal);
+    try std.testing.expect((try by_arg.wait(io)) == .signal);
+    try std.Io.Dir.cwd().access(io, try std.fmt.allocPrint(a, "/proc/{d}/cwd", .{outside.id.?}), .{});
+}
+
 test "the parent pid from a stat line, past a name with spaces and parentheses" {
     try std.testing.expectEqual(@as(?std.posix.pid_t, 812), parentOf("4242 (bash) S 812 4242 812 0 -1 4194560"));
     try std.testing.expectEqual(@as(?std.posix.pid_t, 1), parentOf("77 (a (b) c) S 1 77 77 0 -1"));
