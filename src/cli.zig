@@ -33,6 +33,7 @@ const doctor = @import("cmd/doctor.zig");
 const docs = @import("cmd/docs.zig");
 const update = @import("cmd/update.zig");
 const events_cmd = @import("cmd/events.zig");
+const secret_cmd = @import("cmd/secret.zig");
 const schemas = @import("schema.zig");
 const secrets = @import("secrets.zig");
 
@@ -81,6 +82,9 @@ pub const Context = struct {
     /// where secrets are kept: the machine's own, always, whatever --root
     /// says, since a root os builds is for this machine too.
     secrets: ?secrets.Store = null,
+    /// turns echo on the terminal off and on again, while a secret's
+    /// value is typed.
+    set_echo: ?*const fn (on: bool) void = null,
 };
 
 const Handler = *const fn (ctx: *Context, args: []const [:0]const u8) anyerror!u8;
@@ -107,6 +111,7 @@ const commands = [_]Command{
     .{ .name = "disable", .summary = "turn services off in the config", .handler = edit.disableCmd },
     .{ .name = "edit", .summary = "open the config in $EDITOR, check it, and apply it", .handler = edit.editCmd },
     .{ .name = "adopt", .summary = "put packages installed outside os into the config", .handler = edit.adoptCmd },
+    .{ .name = "secret", .summary = "keep, list, or remove the values files name with secret", .handler = secret_cmd.secretCmd },
     .{ .name = "rollback", .summary = "go back to an earlier generation", .handler = rollback.rollbackCmd },
     .{ .name = "enable-rollback", .summary = "turn on generations of the whole system (btrfs)", .handler = enable_rollback.enableRollbackCmd },
     .{ .name = "install", .summary = "put the machine a config describes on a blank disk, from a live system", .handler = install_cmd.installCmd },
@@ -642,6 +647,8 @@ pub const TestRun = struct {
     input: ?[]const u8 = null,
     /// or a reader of the test's own for them, which does the same.
     in: ?*std.Io.Reader = null,
+    /// stdin from a pipe rather than a terminal: no questions get asked.
+    piped: ?[]const u8 = null,
     /// answers downloads. by default every download fails, so no test
     /// touches the network by accident.
     fetcher: ?sync.Fetcher = null,
@@ -682,6 +689,10 @@ pub const TestRun = struct {
         if (t.in) |r| {
             t.ctx.in = r;
             t.ctx.interactive = true;
+        }
+        if (t.piped) |text| {
+            t.reader = .fixed(text);
+            t.ctx.in = &t.reader;
         }
         t.code = try run(&t.ctx, args);
     }
@@ -727,6 +738,7 @@ test {
     _ = docs;
     _ = update;
     _ = events_cmd;
+    _ = secret_cmd;
     _ = @import("cmd/lock.zig");
     _ = @import("cmd/stage.zig");
 }

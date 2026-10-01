@@ -57,6 +57,20 @@ pub fn wipe(value: []u8) void {
     std.crypto.secureZero(u8, value);
 }
 
+/// a secret as `os secret` reports it, never with its value. `os secret
+/// set` and `rm` print one with --json, and `os secret list` a list.
+pub const Entry = struct {
+    name: []const u8,
+    /// this machine keeps a value for it.
+    set: bool,
+    /// the files the config writes it to.
+    files: []const []const u8 = &.{},
+};
+
+pub const entry_schema = "yoq.secret/1";
+pub const list_schema = "yoq.secrets/1";
+pub const List = struct { secrets: []const Entry };
+
 /// what looking a secret up found.
 pub const Lookup = union(enum) {
     /// the value, in a buffer the caller wipes when it's done.

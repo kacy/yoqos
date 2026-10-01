@@ -43,6 +43,7 @@ pub fn main(init: std.process.Init) !void {
         .editor = env.get("VISUAL") orelse env.get("EDITOR") orelse "vi",
         .progress = if (err_tty) .terminal else .log,
         .secrets = secret_store.store(),
+        .set_echo = setEcho,
     };
     const code = cli.run(&ctx, argv[1..]) catch |e| blk: {
         err.interface.print("os: {s}\n", .{@errorName(e)}) catch {};
@@ -52,6 +53,15 @@ pub fn main(init: std.process.Init) !void {
     out.interface.flush() catch {};
     err.interface.flush() catch {};
     std.process.exit(code);
+}
+
+/// turns the terminal's echo on stdin off or on again.
+fn setEcho(on: bool) void {
+    const linux = std.os.linux;
+    var t: linux.termios = undefined;
+    if (linux.errno(linux.tcgetattr(0, &t)) != .SUCCESS) return;
+    t.lflag.ECHO = on;
+    _ = linux.tcsetattr(0, .NOW, &t);
 }
 
 /// the config this machine reads unless --config says otherwise:
