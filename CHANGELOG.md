@@ -52,6 +52,24 @@
 - the trial watchdog's five minutes count from when it starts in the booted
   root, so a passphrase typed slowly at a trial boot doesn't count against
   it.
+- a build or install that ends only stops processes in its own mount
+  namespace that use the root it built. a shell in another terminal whose
+  working directory was `/mnt/yoq`, or a command that named a path there,
+  was killed too.
+- `os install` closes the luks volume an `--encrypt` run left open when it
+  was cut off, with or without `--encrypt` this time. before, a run
+  without it couldn't wipe the disk the volume held.
+- `os enable-rollback` refuses a root on lvm, or another device-mapper
+  volume that isn't luks, and `os doctor` flags one. lvm inside luks
+  looked like a plain partition, so grub's entries looked for the root on
+  a disk it can't read. facts carry the volume's kind as `root_dm`.
+- `--passphrase-file` reads the file straight into one buffer that's
+  wiped after, so a file that's too long, or a read that grew its buffer,
+  leaves no copy in memory, and it refuses a file of more than one line,
+  whose passphrase nobody could type at boot.
+- `os install --tpm` checks for a tpm 2.0, not just any tpm, and for
+  tpm2-tss on the live system, which systemd-cryptenroll needs. either one
+  missing used to stop the install halfway, after the disk was erased.
 
 ## 0.1.3
 
