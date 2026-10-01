@@ -327,36 +327,54 @@ const umount_tries = 3;
 /// first, then a kill for any still there.
 fn stopProcessesIn(a: Allocator, io: std.Io, dir: []const u8) void {
     for ([_]std.posix.SIG{ .TERM, .KILL }) |sig| {
-        const pids = processesIn(a, io, dir) catch return;
+        const pids = processesIn(a, io, "/proc", dir) catch return;
         if (pids.len == 0) return;
         for (pids) |pid| std.posix.kill(pid, sig) catch {};
         io.sleep(.fromMilliseconds(500), .awake) catch {};
     }
 }
 
-fn processesIn(a: Allocator, io: std.Io, dir: []const u8) ![]const std.posix.pid_t {
+/// the processes in `proc_path` (/proc, or a test's stand-in) that use
+/// something inside `dir`.
+fn processesIn(a: Allocator, io: std.Io, proc_path: []const u8, dir: []const u8) ![]const std.posix.pid_t {
     var out: std.ArrayList(std.posix.pid_t) = .empty;
-    var proc = std.Io.Dir.cwd().openDir(io, "/proc", .{ .iterate = true }) catch return out.items;
+    var proc = std.Io.Dir.cwd().openDir(io, proc_path, .{ .iterate = true }) catch return out.items;
     defer proc.close(io);
+    // the mounts under `dir` are only in os's own mount namespace, which
+    // it makes private before it mounts any (rootfs.privateMounts). a
+    // process in another one holds none of them, like a shell in another
+    // terminal sitting in the empty directory they're mounted on there.
+    var ns_buf: [64]u8 = undefined;
+    const ns_len = proc.readLink(io, "self/ns/mnt", &ns_buf) catch return out.items;
     // os and the shells that started it are never stopped, even when
     // they sit inside `dir`, like a build run from its own directory.
-    const ours = try ancestors(a, io);
+    const ours = try ancestors(a, io, proc_path);
     var it = proc.iterate();
     while (it.next(io) catch null) |e| {
         const pid = std.fmt.parseInt(std.posix.pid_t, e.name, 10) catch continue;
         if (std.mem.indexOfScalar(std.posix.pid_t, ours, pid) != null) continue;
-        if (try usesInside(a, io, proc, e.name, dir)) try out.append(a, pid);
+        if (!try inNamespace(a, io, proc, e.name, ns_buf[0..ns_len])) continue;
+        if (try usesInside(a, io, proc_path, proc, e.name, dir)) try out.append(a, pid);
     }
     return out.items;
 }
 
-/// this process and every parent above it, by /proc/<pid>/stat's ppid.
-fn ancestors(a: Allocator, io: std.Io) ![]const std.posix.pid_t {
+/// whether process `pid` (its /proc name) is in the mount namespace `ns`,
+/// as /proc/<pid>/ns/mnt names it.
+fn inNamespace(a: Allocator, io: std.Io, proc: std.Io.Dir, pid: []const u8, ns: []const u8) !bool {
+    var buf: [64]u8 = undefined;
+    const n = proc.readLink(io, try std.fmt.allocPrint(a, "{s}/ns/mnt", .{pid}), &buf) catch return false;
+    return std.mem.eql(u8, buf[0..n], ns);
+}
+
+/// this process and every parent above it, by <proc_path>/<pid>/stat's
+/// ppid.
+fn ancestors(a: Allocator, io: std.Io, proc_path: []const u8) ![]const std.posix.pid_t {
     var out: std.ArrayList(std.posix.pid_t) = .empty;
     var pid: std.posix.pid_t = std.os.linux.getpid();
     while (pid > 1 and out.items.len < 64) {
         try out.append(a, pid);
-        const stat = try rootfs.readStreaming(a, io, try std.fmt.allocPrint(a, "/proc/{d}/stat", .{pid})) orelse break;
+        const stat = try rootfs.readStreaming(a, io, try std.fmt.allocPrint(a, "{s}/{d}/stat", .{ proc_path, pid })) orelse break;
         pid = parentOf(stat) orelse break;
     }
     return out.items;
@@ -372,7 +390,7 @@ fn parentOf(stat: []const u8) ?std.posix.pid_t {
 }
 
 /// whether process `pid` (its /proc name) uses something inside `dir`.
-fn usesInside(a: Allocator, io: std.Io, proc: std.Io.Dir, pid: []const u8, dir: []const u8) !bool {
+fn usesInside(a: Allocator, io: std.Io, proc_path: []const u8, proc: std.Io.Dir, pid: []const u8, dir: []const u8) !bool {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     var links: std.ArrayList([]const u8) = .empty;
     try links.appendSlice(a, &.{ try std.fmt.allocPrint(a, "{s}/root", .{pid}), try std.fmt.allocPrint(a, "{s}/cwd", .{pid}) });
@@ -387,7 +405,7 @@ fn usesInside(a: Allocator, io: std.Io, proc: std.Io.Dir, pid: []const u8, dir: 
         const n = proc.readLink(io, link, &buf) catch continue;
         if (inside(buf[0..n], dir)) return true;
     }
-    const cmdline = try rootfs.readStreaming(a, io, try std.fmt.allocPrint(a, "/proc/{s}/cmdline", .{pid})) orelse return false;
+    const cmdline = try rootfs.readStreaming(a, io, try std.fmt.allocPrint(a, "{s}/{s}/cmdline", .{ proc_path, pid })) orelse return false;
     return argsInside(cmdline, dir);
 }
 
@@ -520,6 +538,36 @@ test "paths a build can't explain or be explained by" {
     try std.testing.expect(ignoredPath("usr/local/bin/os"));
     try std.testing.expect(!ignoredPath("etc/hostname"));
     try std.testing.expect(!ignoredPath("usr/local"));
+}
+
+test "only processes in os's own mount namespace are stopped" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const Fake = struct { pid: []const u8, ns: []const u8, cwd: []const u8, cmdline: []const u8 = "" };
+    const fakes = [_]Fake{
+        .{ .pid = "self", .ns = "mnt:[1]", .cwd = "/" },
+        // a hook still running in the build.
+        .{ .pid = "100", .ns = "mnt:[1]", .cwd = "/mnt/yoq/etc" },
+        // a shell in another terminal, in the host's empty /mnt/yoq.
+        .{ .pid = "200", .ns = "mnt:[2]", .cwd = "/mnt/yoq" },
+        // gpg's agent for the build's keyring, named by its home.
+        .{ .pid = "300", .ns = "mnt:[1]", .cwd = "/mnt/yoqother", .cmdline = "gpg-agent\x00--homedir\x00/mnt/yoq/etc/pacman.d/gnupg\x00" },
+        .{ .pid = "400", .ns = "mnt:[1]", .cwd = "/home" },
+    };
+    for (fakes) |f| {
+        try tmp.dir.createDirPath(io, try std.fmt.allocPrint(a, "{s}/ns", .{f.pid}));
+        try tmp.dir.symLink(io, f.ns, try std.fmt.allocPrint(a, "{s}/ns/mnt", .{f.pid}), .{});
+        try tmp.dir.symLink(io, f.cwd, try std.fmt.allocPrint(a, "{s}/cwd", .{f.pid}), .{});
+        try tmp.dir.symLink(io, "/", try std.fmt.allocPrint(a, "{s}/root", .{f.pid}), .{});
+        try tmp.dir.writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "{s}/cmdline", .{f.pid}), .data = f.cmdline });
+    }
+    const got = try processesIn(a, io, try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}), "/mnt/yoq");
+    std.mem.sort(std.posix.pid_t, @constCast(got), {}, std.sort.asc(std.posix.pid_t));
+    try std.testing.expectEqualSlices(std.posix.pid_t, &.{ 100, 300 }, got);
 }
 
 test "the parent pid from a stat line, past a name with spaces and parentheses" {

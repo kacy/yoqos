@@ -52,6 +52,10 @@
 - the trial watchdog's five minutes count from when it starts in the booted
   root, so a passphrase typed slowly at a trial boot doesn't count against
   it.
+- a build or install that ends only stops processes in its own mount
+  namespace that use the root it built. a shell in another terminal whose
+  working directory was `/mnt/yoq`, or a command that named a path there,
+  was killed too.
 
 ## 0.1.3
 
