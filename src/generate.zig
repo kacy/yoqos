@@ -253,6 +253,8 @@ test "unified kernel images set [boot] uki, when ukify is there" {
     const c = try fromFacts(a, &f);
     try testing.expect(c.boot.uki.?.v);
     try testing.expect(std.mem.endsWith(u8, try machineToml(a, &c, "2026-10-01"), "\n[boot]\nuki = true\n"));
+    // without generations, os makes no menu, so ukify is all the key wants.
+    try testing.expectEqual(0, (try planner.desiredFiles(a, &c, &.{ .packages = &pkgs, .boot = .{ .uki = true, .root_fs = "ext4" } })).len);
     // with no ukify to build them, the key would plan an install.
     try testing.expectEqual(null, (try fromFacts(a, &.{ .packages = pkgs[0..1], .boot = .{ .uki = true } })).boot.uki);
     try testing.expectEqual(null, (try fromFacts(a, &.{ .packages = &pkgs })).boot.uki);
