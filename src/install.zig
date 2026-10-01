@@ -50,6 +50,9 @@ pub const Found = struct {
     /// the lock has these.
     has_kernel: bool,
     has_grub: bool,
+    /// btrfs-progs, which os uses for generations, and the initramfs to
+    /// check the root with fsck.btrfs.
+    has_btrfs_progs: bool,
     /// tools the install runs that aren't on the live system.
     missing: []const []const u8 = &.{},
     /// luks2 under the btrfs filesystem, and whether the tpm unlocks it.
@@ -125,6 +128,12 @@ pub fn plan(a: Allocator, f: Found) !Plan {
         .ok = f.aur == 0,
         .found = try std.fmt.allocPrint(a, "{d}", .{f.aur}),
         .fix = "aur packages build on a running machine. install without them, then add them back and run `os update` there.",
+    });
+    try checks.append(a, .{
+        .what = "btrfs tools",
+        .ok = f.has_btrfs_progs,
+        .found = if (f.has_btrfs_progs) "in the lock" else "no btrfs-progs in the lock",
+        .fix = "the new machine's root is btrfs: os keeps its generations with btrfs-progs, and the initramfs checks the root with its fsck.btrfs. add btrfs-progs to packages.",
     });
     var summary: std.ArrayList([]const u8) = .empty;
     try summary.append(a, try std.fmt.allocPrint(a, "install {s} on {s} ({d} GiB). everything on it is erased.", .{ f.host, f.disk, f.size >> 30 }));
@@ -265,6 +274,7 @@ test "what stops an install" {
         .update = true,
         .has_kernel = true,
         .has_grub = true,
+        .has_btrfs_progs = true,
     };
     try testing.expect((try plan(a, f)).ready());
     // a lock from an earlier day installs from the archive.
@@ -290,6 +300,11 @@ test "what stops an install" {
     try testing.expectEqual(2, notes(r.summary));
     f.virtual = true;
     try testing.expectEqual(1, notes((try plan(a, f)).summary));
+    // generations on btrfs need btrfs-progs.
+    f.has_btrfs_progs = false;
+    const s = try plan(a, f);
+    try testing.expect(!s.ready());
+    try testing.expectEqualStrings("no btrfs-progs in the lock", s.checks[s.checks.len - 1].found);
 }
 
 test "an encrypted install" {
@@ -312,6 +327,7 @@ test "an encrypted install" {
         .update = true,
         .has_kernel = true,
         .has_grub = true,
+        .has_btrfs_progs = true,
         .encrypt = true,
         .interactive = true,
         .config_encrypt = true,

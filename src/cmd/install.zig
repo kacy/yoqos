@@ -258,6 +258,7 @@ const Installer = struct {
             .update = update,
             .has_kernel = has_kernel,
             .has_grub = l.package("grub") != null,
+            .has_btrfs_progs = l.package("btrfs-progs") != null,
             .encrypt = in.encrypt,
             .tpm = in.tpm,
             .passphrase_file = in.secret != null,
