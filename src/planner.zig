@@ -785,25 +785,29 @@ fn encryptFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
     return .{ .path = encrypt_initramfs_path, .content = encrypt_initramfs_content, .cause = "boot.encrypt", .src = encrypt.src, .reboot = "initramfs" };
 }
 
-/// the ukify config for `[boot] uki`, in a root whose boot menu os
-/// writes: one running a generation, or one being built, where mounts say
-/// nothing (no root filesystem in facts). a machine without generations
-/// boots the way it always has, so there the key only brings ukify.
+/// the ukify config for `[boot] uki`, which has the menu boot an image.
 fn ukiFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
-    const v = c.boot.uki orelse return null;
-    if (!v.v) return null;
-    if (f.boot.root_fs != null and !generation.running(f.boot.root_subvol)) return null;
-    return .{ .path = uki.config_path, .content = uki.config_content, .cause = "boot.uki", .src = v.src, .reboot = uki_reboot };
+    return menuFile(c.boot.uki, f, .{ .path = uki.config_path, .content = uki.config_content, .cause = "boot.uki", .reboot = uki_reboot });
 }
 
-/// the file that has a root's images signed for `[boot] secure_boot`,
-/// where os writes the menu, as for `ukiFile`. the next menu signs every
-/// image it boots, so turning it on or off waits for a reboot.
+/// the file that has a root's images signed for `[boot] secure_boot`.
 fn secureBootFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
-    const v = c.boot.secure_boot orelse return null;
+    return menuFile(c.boot.secure_boot, f, .{ .path = secureboot.config_path, .content = secureboot.config_content, .cause = "boot.secure_boot", .reboot = secure_boot_reboot });
+}
+
+/// `file`, which tells os's boot menu how to boot a root, when `key` is
+/// on and os writes the menu: in a root running a generation, or one
+/// being built, where mounts say nothing (no root filesystem in facts).
+/// a machine without generations boots the way it always has, so there
+/// the key only brings its package. the next menu reads it, so a change
+/// waits for a reboot.
+fn menuFile(key: ?config.Val(bool), f: *const facts.Facts, file: DesiredFile) ?DesiredFile {
+    const v = key orelse return null;
     if (!v.v) return null;
     if (f.boot.root_fs != null and !generation.running(f.boot.root_subvol)) return null;
-    return .{ .path = secureboot.config_path, .content = secureboot.config_content, .cause = "boot.secure_boot", .src = v.src, .reboot = secure_boot_reboot };
+    var out = file;
+    out.src = v.src;
+    return out;
 }
 
 /// what the observer should look at for this config: every file it might
