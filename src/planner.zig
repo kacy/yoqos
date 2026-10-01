@@ -422,8 +422,7 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
     var files: std.ArrayList(Change) = .empty;
     for (want) |d| {
         const mode = try normalMode(a, d.mode);
-        // a secret others can read is allowed, but the plan says so.
-        const exposed = if (d.secret != null and (std.fmt.parseInt(u32, mode, 8) catch 0) & 0o044 != 0) ", which lets others read the secret" else "";
+        const exposed = exposure(d, mode);
         var ch: Change = .{
             .op = .change,
             .kind = .file,
@@ -467,6 +466,14 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
     }
     lists.sortByField(Change, "subject", files.items);
     try changes.appendSlice(a, files.items);
+}
+
+/// a secret others can read is allowed, but the plan says so after its
+/// mode.
+fn exposure(d: DesiredFile, mode: []const u8) []const u8 {
+    if (d.secret == null) return "";
+    const bits = std.fmt.parseInt(u32, mode, 8) catch 0;
+    return if (bits & 0o044 != 0) ", which lets others read the secret" else "";
 }
 
 /// what a plan's `content` says for a file whose hash couldn't be taken.
