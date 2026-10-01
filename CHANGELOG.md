@@ -177,6 +177,9 @@
 - `os secret set`, anything that decrypts a secret, and `os install
   --passphrase-file` mark the process as not dumpable before they hold
   the value, so it stays out of core dumps and out of /proc/<pid>/mem.
+- a build or install that stops the processes in its root signals each
+  one through a pidfd, after checking it's still in there, so a pid freed
+  since the scan and taken by another process isn't killed instead.
 
 ## 0.1.3
 
