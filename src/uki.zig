@@ -102,10 +102,10 @@ const testing = std.testing;
 test "ukify's arguments" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const argv = try ukifyArgv(arena.allocator(), &.{"chroot"}, "/run/yoq/top/@roots/4", "/tmp/yoq-uki/vmlinuz-linux", &.{ "/tmp/yoq-uki/amd-ucode.img", "/tmp/yoq-uki/initramfs-linux.img" }, "/tmp/yoq-uki/yoq.efi");
+    const argv = try ukifyArgv(arena.allocator(), &.{"chroot"}, "/run/yoq/private/top/@roots/4", "/tmp/yoq-uki/vmlinuz-linux", &.{ "/tmp/yoq-uki/amd-ucode.img", "/tmp/yoq-uki/initramfs-linux.img" }, "/tmp/yoq-uki/yoq.efi");
     const want = [_][]const u8{
         "chroot",
-        "/run/yoq/top/@roots/4",
+        "/run/yoq/private/top/@roots/4",
         "ukify",
         "build",
         "--config=/etc/kernel/yoq-uki.conf",

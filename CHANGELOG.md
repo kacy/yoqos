@@ -165,10 +165,10 @@
   leave an empty file under the secret's name, which then failed to
   decrypt at every apply.
 - the directories in a root's /tmp where os builds and signs images are
-  made fresh and root's alone, and /run/yoq, where the top level is
-  mounted, is root's alone too. another user could reach that /tmp through
-  the mount, make the directory first, and swap an image before sbctl
-  signed it.
+  made fresh and root's alone, and the top level is mounted at
+  /run/yoq/private/top, in a directory only root can go into. another user
+  could reach that /tmp through the mount at /run/yoq/top, make the
+  directory first, and swap an image before sbctl signed it.
 - with secure boot, an image on the esp without sbctl's signature is built
   again from its root's files and signed, and an unsigned refind driver is
   replaced by a signed copy of refind's own. before, `os` signed whatever

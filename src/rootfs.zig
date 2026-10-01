@@ -163,17 +163,64 @@ fn namespaceProblem(e: std.os.linux.E) ?[]const u8 {
     };
 }
 
-/// os's directory under /run, where it locks the machine and mounts the
-/// top level of the root's filesystem. it's root's alone: through that
-/// mount, anyone who could get in could reach every root's world-writable
-/// /tmp, where os builds and signs images.
+/// os's directory under /run, where it locks the machine and mounts
+/// roots. others can go through it: libalpm downloads into a staged
+/// root's cache, under /run/yoq/next, as pacman's download user.
 pub const run_dir = "/run/yoq";
 
-/// makes `run_dir`, or takes it back to root alone. false if it can't.
+/// the directory in `run_dir` that's root's alone, where the top level of
+/// the root's filesystem is mounted. through that mount, anyone could
+/// reach every root's world-writable /tmp, where os builds and signs
+/// images.
+pub const private_dir = run_dir ++ "/private";
+
+/// makes `run_dir`, open to others. false if it can't.
 pub fn makeRunDir() bool {
+    return makeDir(run_dir, 0o755);
+}
+
+/// makes `private_dir` in `run_dir`. false unless it ends up a directory
+/// of root's, never a symlink, that only root can go into.
+pub fn makePrivateDir() bool {
+    return makeRunDir() and makeDir(private_dir, 0o700);
+}
+
+/// makes the directory at `path`, or takes one that's there to `mode`.
+/// false unless it ends up a directory of root's (or this process's
+/// user's, in tests) with that mode.
+fn makeDir(path: [:0]const u8, mode: u32) bool {
     const linux = std.os.linux;
-    _ = linux.mkdir(run_dir, 0o700);
-    return linux.errno(linux.chmod(run_dir, 0o700)) == .SUCCESS;
+    switch (linux.errno(linux.mkdir(path, mode))) {
+        .SUCCESS, .EXIST => {},
+        else => return false,
+    }
+    var st: linux.Statx = undefined;
+    if (linux.errno(linux.statx(linux.AT.FDCWD, path, linux.AT.SYMLINK_NOFOLLOW, .{ .TYPE = true, .UID = true, .MODE = true }, &st)) != .SUCCESS) return false;
+    if (st.mode & linux.S.IFMT != linux.S.IFDIR or !trustedOwner(st.uid)) return false;
+    if (st.mode & 0o7777 != mode and linux.errno(linux.chmod(path, mode)) != .SUCCESS) return false;
+    return true;
+}
+
+test "the run directory stays open, and the private one in it is root's alone" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    // one a run before made root's alone goes back to open.
+    try tmp.dir.createDirPath(io, "yoq");
+    try tmp.dir.setFilePermissions(io, "yoq", @enumFromInt(0o700), .{});
+    try std.testing.expect(makeDir(try std.fmt.allocPrintSentinel(a, "{s}/yoq", .{base}, 0), 0o755));
+    try std.testing.expect(makeDir(try std.fmt.allocPrintSentinel(a, "{s}/yoq/private", .{base}, 0), 0o700));
+    try std.testing.expectEqual(0o755, @intFromEnum((try tmp.dir.statFile(io, "yoq", .{})).permissions) & 0o7777);
+    try std.testing.expectEqual(0o700, @intFromEnum((try tmp.dir.statFile(io, "yoq/private", .{})).permissions) & 0o7777);
+    // a symlink in its place isn't used.
+    try tmp.dir.createDirPath(io, "theirs");
+    try tmp.dir.symLink(io, "../theirs", "yoq/linked", .{});
+    try std.testing.expect(!makeDir(try std.fmt.allocPrintSentinel(a, "{s}/yoq/linked", .{base}, 0), 0o700));
+    try std.testing.expect(@intFromEnum((try tmp.dir.statFile(io, "theirs", .{})).permissions) & 0o777 != 0o700);
 }
 
 pub fn pathExists(io: std.Io, path: []const u8) bool {

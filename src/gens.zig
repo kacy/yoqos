@@ -65,7 +65,7 @@ pub const Machine = struct {
             .root_uuid = try blkid(a, io, boot.root_device.?, "UUID", why) orelse return null,
             .esp_uuid = try blkid(a, io, boot.esp_device.?, "UUID", why) orelse return null,
         };
-        if (std.mem.startsWith(u8, m.top, rootfs.run_dir ++ "/") and !rootfs.makeRunDir()) return fail(why, "can't make " ++ rootfs.run_dir);
+        if (std.mem.startsWith(u8, m.top, rootfs.private_dir ++ "/") and !rootfs.makePrivateDir()) return fail(why, "can't make " ++ rootfs.private_dir ++ ", a directory only root can go into");
         if (try m.run(&.{ "mkdir", "-p", m.top })) |w| return fail(why, w);
         if (try m.run(&.{ "mount", "-o", "subvolid=5", boot.root_device.?, m.top })) |w| return fail(why, w);
         return m;
