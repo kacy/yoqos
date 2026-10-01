@@ -821,7 +821,7 @@ bluetooth = false
 | `packages` | packages you want installed. dependencies come along on their own. |
 | `[providers]` | which package provides a virtual one, like `initramfs` |
 | `[system]` | `hostname` (a plain name or a dotted one like `atlas.lan`), `timezone`, `locale`, and `keymap` |
-| `[boot]` | `kernel`: `linux` unless you say otherwise. `none` for a machine without its own kernel, like a container. `modules`: kernel modules to load at every boot, like `i2c-dev`. `encrypt`: `true` when the root is on luks, so the initramfs unlocks it. |
+| `[boot]` | `kernel`: `linux` unless you say otherwise. `none` for a machine without its own kernel, like a container. `modules`: kernel modules to load at every boot, like `i2c-dev`. `encrypt`: `true` when the root is on luks, so the initramfs unlocks it. `uki`: `true` to boot generations from unified kernel images. |
 | `[hardware]` | `cpu`: `amd` or `intel`. `gpu`: `amd`, `intel`, `nvidia`, or `none`. these bring in microcode and drivers. `nvidia` also loads its modules early, with a drop-in in `/etc/mkinitcpio.conf.d`, unless mkinitcpio.conf does already. |
 | `[desktop]` | `session`: `hyprland`. `audio`: `pipewire`. `login`: `greetd`, `sddm`, or `tty`. these bring in their packages; see [the desktop](#the-desktop). |
 | `[users.<name>]` | `shell`, and `groups`: the full list of groups beyond the user's own |
@@ -1085,6 +1085,25 @@ machine has the hooks already, so no drop-in comes with it. `os install
 --encrypt` needs the key, since a new machine starts from mkinitcpio's own
 hooks. the key holds nothing secret and doesn't say how the disk unlocks:
 that's in the luks header and on the kernel's command line.
+
+### unified kernel images
+
+```toml
+[boot]
+uki = true
+```
+
+on a machine with generations, `uki = true` makes every new generation
+boot a unified kernel image: its kernel, microcode, and initramfs in one
+efi file, which `os` builds with ukify and puts on the esp. it works with
+all four bootloaders, and it brings `systemd-ukify` with it. turning it on
+or off changes what the menu boots, so the change waits for a reboot and
+the next boot tries it once, like a new kernel. see
+[generations.md](generations.md#unified-kernel-images).
+
+without generations, `os` doesn't write the boot menu, so the key only
+installs ukify. `os init` sets it on a machine that boots unified kernel
+images already, like omarchy, when ukify is installed there.
 
 ### repositories
 
