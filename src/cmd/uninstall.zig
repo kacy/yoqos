@@ -167,6 +167,16 @@ const Uninstaller = struct {
             // grub reads its menu from /boot again, the way arch sets it up,
             // and grub-mkconfig names this root's subvolume.
             .grub => {
+                // grub-mkconfig's entries take their arguments from grub's
+                // defaults, which may lack what unlocks a luks root: os
+                // passed it in its own entries, as after `os install
+                // --encrypt`.
+                const defaults = "/etc/default/grub";
+                if (std.Io.Dir.cwd().readFileAlloc(u.ctx.io, defaults, u.a, .limited(1 << 20))) |text| {
+                    if (try uninstall.grubDefaults(u.a, text, try rootfs.readProc(u.a, u.ctx.io, "/proc/cmdline"))) |more| {
+                        rootfs.writeAtomic(u.ctx.io, defaults, more, null) catch return "can't write " ++ defaults;
+                    }
+                } else |_| {}
                 if (try u.run(try gens.grubInstall(u.a, u.ctx.io, esp, "/boot"))) |w| return w;
                 if (try u.run(&.{ "grub-mkconfig", "-o", "/boot/grub/grub.cfg" })) |w| return w;
                 if (!std.mem.eql(u8, esp, "/boot")) return u.run(&.{ "rm", "-rf", try std.fs.path.join(u.a, &.{ esp, "grub" }) });

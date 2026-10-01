@@ -107,6 +107,10 @@
 - grub passes a unified kernel image a quoted kernel argument with its
   quotes. its chainloader joins the words as it read them, without
   quotes, so the image got `acpi_osi=!Windows 2012` as two arguments.
+- `os uninstall` on grub adds what unlocks a luks root, and the consoles,
+  to `/etc/default/grub` when it lacks them, before grub-mkconfig writes
+  the menu. after `os install --encrypt`, only os's entries had them, so
+  the machine it left couldn't open its root.
 
 ## 0.1.3
 

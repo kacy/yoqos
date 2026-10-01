@@ -542,7 +542,10 @@ units that run at boot. if `enable-rollback` turned off snap-pac's
 snapshots of the root, they come back on. the bootloader gets set up to
 boot the running root without `os`:
 
-- grub reads a menu from `grub-mkconfig` in `/boot/grub` again.
+- grub reads a menu from `grub-mkconfig` in `/boot/grub` again. what
+  unlocks a luks root, and the consoles, go in `/etc/default/grub` first
+  when it doesn't have them, since `grub-mkconfig` takes the kernel's
+  arguments from there.
 - limine gets one plain entry where `os`'s section was.
 - refind boots the kernel in `/boot` through `refind_linux.conf`.
 - systemd-boot gets one entry of its own, `arch-linux.conf`, as its
