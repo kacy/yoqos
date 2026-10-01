@@ -101,6 +101,12 @@ pub const Boot = struct {
     top_is_default: bool = true,
     root_fs: ?[]const u8 = null,
     root_device: ?[]const u8 = null,
+    /// when the root's filesystem is on luks, opened by dm-crypt: the luks
+    /// header's uuid, the name it's opened as under /dev/mapper, and the
+    /// partition it's on.
+    luks_uuid: ?[]const u8 = null,
+    luks_name: ?[]const u8 = null,
+    luks_device: ?[]const u8 = null,
     /// the root's btrfs subvolume: "/@", or "/" for the top level.
     root_subvol: ?[]const u8 = null,
     /// /var is a subvolume of its own.
@@ -108,8 +114,10 @@ pub const Boot = struct {
     /// the other data directories (home, root, srv, usr/local) that are
     /// mounted apart from the root.
     data_apart: []const []const u8 = &.{},
-    /// mkinitcpio's HOOKS.
+    /// mkinitcpio's HOOKS, without os's own drop-ins.
     initramfs_hooks: []const []const u8 = &.{},
+    /// os's drop-in that adds sd-encrypt to them is there.
+    encrypt_dropin: bool = false,
     /// the pacman database lives in /usr/lib/sysimage/pacman.
     pacman_moved: bool = false,
     /// snapper has a config for the root, which snap-pac snapshots.
@@ -125,7 +133,33 @@ pub const Boot = struct {
     boot_files: []const BootFile = &.{},
     /// on a machine with generations: the ones recorded, by number.
     generations: []const Generation = &.{},
+
+    /// whether the initramfs can unlock a luks root: mkinitcpio's hooks
+    /// have encrypt or sd-encrypt, or os's drop-in adds sd-encrypt.
+    pub fn unlocksLuks(b: *const Boot) bool {
+        return b.encrypt_dropin or hasEncryptHook(b.initramfs_hooks);
+    }
 };
+
+/// whether mkinitcpio's hooks unlock luks: busybox's encrypt, or
+/// systemd's sd-encrypt.
+pub fn hasEncryptHook(hooks: []const []const u8) bool {
+    return lists.contains(hooks, "encrypt") or lists.contains(hooks, "sd-encrypt");
+}
+
+/// where mkinitcpio's drop-ins are.
+pub const initramfs_dropins = "/etc/mkinitcpio.conf.d";
+
+/// os's drop-in that unlocks a luks root. it's read last, so it adds to
+/// the hooks every other drop-in leaves.
+pub const encrypt_dropin = "90-yoq-encrypt.conf";
+
+/// whether a mkinitcpio drop-in, by name, is one os makes from other
+/// keys. facts leave these out of the hooks and modules they list, since
+/// the planner decides from those whether os's are needed.
+pub fn osDropIn(name: []const u8) bool {
+    return std.mem.startsWith(u8, name, "10-yoq-") or std.mem.eql(u8, name, encrypt_dropin);
+}
 
 pub const BootFile = struct { name: []const u8, size: u64 };
 

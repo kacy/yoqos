@@ -149,7 +149,7 @@ const Reader = struct {
         var out: std.ArrayList([]const u8) = .empty;
         if (try r.file("etc/mkinitcpio.conf")) |text| try mkinitcpioList(r.a, text, key, &out);
         for (try r.names("etc/mkinitcpio.conf.d", null)) |name| {
-            if (std.mem.startsWith(u8, name, "10-yoq-") or !std.mem.endsWith(u8, name, ".conf")) continue;
+            if (facts.osDropIn(name) or !std.mem.endsWith(u8, name, ".conf")) continue;
             const text = try r.file(try std.fmt.allocPrint(r.a, "etc/mkinitcpio.conf.d/{s}", .{name})) orelse continue;
             try mkinitcpioList(r.a, text, key, &out);
         }
@@ -163,6 +163,7 @@ const Reader = struct {
             .initramfs_hooks = try r.mkinitcpio("HOOKS"),
             .pacman_moved = std.mem.endsWith(u8, dbpath, "sysimage/pacman"),
             .snapper_root = r.exists("etc/snapper/configs/root"),
+            .encrypt_dropin = r.exists(facts.initramfs_dropins[1..] ++ "/" ++ facts.encrypt_dropin),
         };
         if (!std.mem.eql(u8, r.root, "/")) return b;
         b.uefi = r.exists("sys/firmware/efi");
@@ -172,6 +173,7 @@ const Reader = struct {
         const root = mountAt(ms, "/") orelse return b;
         b.root_fs = root.fstype;
         b.root_device = root.source;
+        try r.luks(&b, root.source);
         if (std.mem.eql(u8, root.fstype, "btrfs")) {
             b.root_subvol = root.root;
             if (mountAt(ms, "/var")) |v| b.var_subvol = std.mem.eql(u8, v.fstype, "btrfs") and !std.mem.eql(u8, v.root, root.root);
@@ -214,6 +216,23 @@ const Reader = struct {
             };
         }
         return b;
+    }
+
+    /// the luks volume under the root, when `source` is a dm-crypt
+    /// device opened from one: /dev/mapper/<name>, or /dev/dm-<n>.
+    fn luks(r: Reader, b: *facts.Boot, source: []const u8) !void {
+        if (!std.mem.startsWith(u8, source, "/dev/")) return;
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const n = std.Io.Dir.cwd().readLink(r.io, try r.path(source[1..]), &buf) catch 0;
+        const dm = std.fs.path.basename(if (n > 0) buf[0..n] else source);
+        if (!std.mem.startsWith(u8, dm, "dm-")) return;
+        const sys = try std.fmt.allocPrint(r.a, "sys/block/{s}", .{dm});
+        const crypt = cryptOf(try r.file(try std.fmt.allocPrint(r.a, "{s}/dm/uuid", .{sys})) orelse return) orelse return;
+        b.luks_uuid = try dashedUuid(r.a, crypt.uuid);
+        b.luks_name = crypt.name;
+        const under = try r.names(try std.fmt.allocPrint(r.a, "{s}/slaves", .{sys}), null);
+        // luks on one partition; a volume on several devices isn't one.
+        if (under.len == 1) b.luks_device = try std.fmt.allocPrint(r.a, "/dev/{s}", .{under[0]});
     }
 
     /// the kernels, initramfs images, and microcode in /boot, with their
@@ -333,6 +352,29 @@ fn mkinitcpioList(a: Allocator, text: []const u8, comptime key: []const u8, out:
         var names = std.mem.tokenizeAny(u8, line[start..end], " \t\"'");
         while (names.next()) |n| try out.append(a, try a.dupe(u8, n));
     }
+}
+
+/// a dm-crypt device opened from a luks volume, from its dm uuid in
+/// sysfs, like "CRYPT-LUKS2-0f7a...e1-root": the luks header's uuid,
+/// without dashes, and the name it's opened as.
+pub const Crypt = struct { uuid: []const u8, name: []const u8 };
+
+pub fn cryptOf(dm_uuid: []const u8) ?Crypt {
+    const text = std.mem.trim(u8, dm_uuid, " \n");
+    const rest = for ([_][]const u8{ "CRYPT-LUKS2-", "CRYPT-LUKS1-" }) |p| {
+        if (std.mem.startsWith(u8, text, p)) break text[p.len..];
+    } else return null;
+    if (rest.len < 34 or rest[32] != '-') return null;
+    for (rest[0..32]) |ch| {
+        if (!std.ascii.isHex(ch)) return null;
+    }
+    return .{ .uuid = rest[0..32], .name = rest[33..] };
+}
+
+/// a uuid of 32 hex digits in its usual form, 8-4-4-4-12.
+pub fn dashedUuid(a: Allocator, hex: []const u8) ![]const u8 {
+    std.debug.assert(hex.len == 32);
+    return std.fmt.allocPrint(a, "{s}-{s}-{s}-{s}-{s}", .{ hex[0..8], hex[8..12], hex[12..16], hex[16..20], hex[20..32] });
 }
 
 /// one line of /proc/self/mountinfo.
@@ -734,6 +776,48 @@ test "mkinitcpio drop-ins read in name order, past os's own" {
     const got = try r.mkinitcpio("MODULES");
     try testing.expectEqual(3, got.len);
     for ([_][]const u8{ "a", "b", "c" }, got) |want, have| try testing.expectEqualStrings(want, have);
+    // the drop-in for luks is os's too, though it isn't named 10-yoq-.
+    try tmp.dir.writeFile(io, .{ .sub_path = "etc/mkinitcpio.conf", .data = "HOOKS=(base systemd filesystems)\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "etc/mkinitcpio.conf.d/90-yoq-encrypt.conf", .data = "HOOKS=(base systemd sd-encrypt filesystems)\n" });
+    try testing.expectEqual(3, (try r.mkinitcpio("HOOKS")).len);
+    const b = try r.boot("usr/lib/sysimage/pacman");
+    try testing.expect(b.encrypt_dropin);
+    try testing.expect(b.unlocksLuks());
+    try testing.expect(!facts.osDropIn("50-yoq-test.conf"));
+}
+
+test "the luks volume under the root" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const c = cryptOf("CRYPT-LUKS2-0f7a1c2e9b3d4e5f8a6b7c8d9e0f1a2b-root\n").?;
+    try testing.expectEqualStrings("root", c.name);
+    try testing.expectEqualStrings("0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b", try dashedUuid(a, c.uuid));
+    // a name can have dashes of its own.
+    try testing.expectEqualStrings("luks-0f7a", cryptOf("CRYPT-LUKS1-0f7a1c2e9b3d4e5f8a6b7c8d9e0f1a2b-luks-0f7a").?.name);
+    try testing.expectEqual(null, cryptOf("LVM-abcdef"));
+    try testing.expectEqual(null, cryptOf("CRYPT-PLAIN-root"));
+    try testing.expectEqual(null, cryptOf("CRYPT-LUKS2-0f7a1c2e-root"));
+    try testing.expectEqual(null, cryptOf("CRYPT-LUKS2-zf7a1c2e9b3d4e5f8a6b7c8d9e0f1a2b-root"));
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = testing.io;
+    try tmp.dir.createDirPath(io, "dev/mapper");
+    try tmp.dir.symLink(io, "../dm-0", "dev/mapper/root", .{});
+    try tmp.dir.createDirPath(io, "sys/block/dm-0/dm");
+    try tmp.dir.createDirPath(io, "sys/block/dm-0/slaves/nvme0n1p2");
+    try tmp.dir.writeFile(io, .{ .sub_path = "sys/block/dm-0/dm/uuid", .data = "CRYPT-LUKS2-0f7a1c2e9b3d4e5f8a6b7c8d9e0f1a2b-root\n" });
+    const r: Reader = .{ .a = a, .io = io, .root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}) };
+    var b: facts.Boot = .{};
+    try r.luks(&b, "/dev/mapper/root");
+    try testing.expectEqualStrings("0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b", b.luks_uuid.?);
+    try testing.expectEqualStrings("root", b.luks_name.?);
+    try testing.expectEqualStrings("/dev/nvme0n1p2", b.luks_device.?);
+    // a plain partition has no luks under it.
+    var plain: facts.Boot = .{};
+    try r.luks(&plain, "/dev/vda2");
+    try testing.expectEqual(null, plain.luks_uuid);
 }
 
 test "files in /etc a new root gets anyway" {
