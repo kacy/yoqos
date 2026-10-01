@@ -115,7 +115,7 @@ pub fn statusCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         const notice = try fs.read(gens.notice_path[1..]);
         if (notice.len > 0) try ctx.out.print("\nnote: {s}", .{notice});
     }
-    return if (s.failing.len > 0) 1 else 0;
+    return if (s.failed()) 1 else 0;
 }
 
 pub fn whyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {

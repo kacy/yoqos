@@ -227,6 +227,46 @@ test "set at a terminal asks twice" {
     try testing.expectEqualStrings("hunter2", mem.values.get("wifi/home").?);
 }
 
+test "plan, status, why, and list never show a secret's value" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrintSentinel(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}, 0);
+    try tmp.dir.createDirPath(testing.io, "etc");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "etc/wifi.psk", .data = "old horse battery" });
+    // an empty package database, for builds that read one.
+    try tmp.dir.createDirPath(testing.io, "var/lib/pacman/local");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "var/lib/pacman/local/ALPM_DB_VERSION", .data = "9\n" });
+    var mem: secrets.Memory = .init(testing.allocator);
+    defer mem.deinit();
+    const value = "correct horse battery";
+    _ = try mem.store().set(a, "wifi/home", value);
+    var t: cli.TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "[boot]\nkernel = \"none\"\n" ++ config_text);
+    try t.fs.put("/etc/yoq/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n");
+
+    const runs = [_][]const [:0]const u8{
+        &.{ "plan", "--json" },       &.{ "plan", "-v" },                     &.{ "status", "--json" },         &.{"status"},
+        &.{ "why", "/etc/wifi.psk" }, &.{ "why", "--json", "/etc/wifi.psk" }, &.{ "secret", "list", "--json" },
+    };
+    var planned = false;
+    for (runs) |args| {
+        try run(&t, &mem, try std.mem.concat(a, [:0]const u8, &.{ &.{ "--root", root }, args }));
+        const shown = try std.mem.concat(a, u8, &.{ t.out.buffered(), t.err.buffered() });
+        for ([_][]const u8{ "horse", &@import("../facts.zig").sha256Hex(value) }) |leak| {
+            if (std.mem.indexOf(u8, shown, leak) != null) {
+                std.debug.print("os {s} showed {s}:\n{s}\n", .{ args[0], leak, shown });
+                return error.TestUnexpectedResult;
+            }
+        }
+        if (std.mem.indexOf(u8, shown, "rewrite, mode 0600") != null) planned = true;
+    }
+    try testing.expect(planned);
+}
+
 test "list, rm, and what they refuse" {
     var mem: secrets.Memory = .init(testing.allocator);
     defer mem.deinit();
