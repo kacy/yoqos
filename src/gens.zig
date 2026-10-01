@@ -223,13 +223,41 @@ pub const Machine = struct {
                 try roots.append(m.a, r.root);
             } else try old.append(m.a, r);
         }
-        if (old.items.len == 0) return null;
+        const swept = try m.dropStrays(records, running);
+        if (old.items.len == 0 and !swept) return null;
         const head = try std.fmt.allocPrint(m.a, "/{s}", .{records[records.len - 1].root});
         const failed = try m.dropOld(old.items, running, &roots, removed);
         // the menu follows what's left, even after a failure halfway.
         const left = try readRecords(m.a, m.io, "/var");
         if (try m.writeMenu(head, left)) |w| return failed orelse w;
         return failed;
+    }
+
+    /// removes the subvolumes a cut-off run left that no generation uses
+    /// (see generation.strays), as far as it can. returns whether any
+    /// went, since a menu written before one went may still name it.
+    fn dropStrays(m: *const Machine, records: []const generation.Record, running: []const u8) !bool {
+        var names: [2][]const []const u8 = undefined;
+        for ([_][]const u8{ generation.roots_dir, generation.gens_dir }, &names) |dir, *out| {
+            var list: std.ArrayList([]const u8) = .empty;
+            var d = std.Io.Dir.cwd().openDir(m.io, try m.at(&.{dir}), .{ .iterate = true }) catch {
+                out.* = list.items;
+                continue;
+            };
+            defer d.close(m.io);
+            var it = d.iterate();
+            while (it.next(m.io) catch null) |e| {
+                if (e.kind == .directory) try list.append(m.a, try m.a.dupe(u8, e.name));
+            }
+            out.* = list.items;
+        }
+        var any = false;
+        for (try generation.strays(m.a, records, names[0], names[1], running)) |path| {
+            const full = try m.at(&.{path});
+            if (!(btrfs.isSubvolume(full) catch false)) continue;
+            if (try m.drop(full) == null) any = true;
+        }
+        return any;
     }
 
     fn dropOld(m: *const Machine, old: []const generation.Record, running: []const u8, roots: *std.ArrayList([]const u8), removed: *std.ArrayList(u32)) !?[]const u8 {

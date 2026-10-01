@@ -141,6 +141,10 @@
   the next menu write booted and copied into the root's own `/boot`. a
   staged generation that couldn't be recorded no longer takes the running
   root's note with it.
+- subvolumes in `@roots` and `@gens` that no generation uses go at the
+  next gc, which runs after every new generation. a staged build stopped
+  with ctrl-c or a power cut left its whole root behind for good, and so
+  did a rollback or gc cut off between a snapshot and its record.
 
 ## 0.1.3
 

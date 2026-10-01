@@ -76,6 +76,75 @@ pub const Record = struct {
     pinned: bool = false,
 };
 
+/// the subvolumes among `roots` (names in @roots) and `gens` (names in
+/// @gens) that belong to no generation in `records`, as paths from the
+/// top level. a run cut off leaves these: a staged build stopped with
+/// ctrl-c, a rollback between its snapshot and its record, or gc between
+/// a record and its snapshots. nothing would ever remove them, and a
+/// staged root can hold gigabytes. the root `running` runs stays, and so
+/// do names os doesn't make.
+pub fn strays(a: Allocator, records: []const Record, roots: []const []const u8, gens: []const []const u8, running_root: []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    if (records.len == 0) return out.items;
+    for (gens) |name| {
+        const n = std.fmt.parseInt(u32, name, 10) catch continue;
+        if (find(records, n) == null) try out.append(a, try std.fmt.allocPrint(a, gens_dir ++ "/{s}", .{name}));
+    }
+    for (roots) |name| {
+        const path = try std.fmt.allocPrint(a, roots_dir ++ "/{s}", .{name});
+        if (std.mem.eql(u8, std.mem.trimStart(u8, running_root, "/"), path)) continue;
+        const used = if (std.mem.startsWith(u8, name, "boot-")) blk: {
+            const n = std.fmt.parseInt(u32, name["boot-".len..], 10) catch continue;
+            break :blk find(records, n) != null;
+        } else blk: {
+            _ = std.fmt.parseInt(u32, name, 10) catch continue;
+            for (records) |r| {
+                if (std.mem.eql(u8, r.root, path)) break :blk true;
+                if (r.from) |f| if (std.mem.eql(u8, std.mem.trimStart(u8, f, "/"), path)) break :blk true;
+            }
+            break :blk false;
+        };
+        if (!used) try out.append(a, path);
+    }
+    return out.items;
+}
+
+test "subvolumes no generation uses" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const records = [_]Record{
+        .{ .n = 1, .time = 1, .root = "@roots/1", .reason = "enable-rollback", .from = "/" },
+        .{ .n = 3, .time = 3, .root = "@roots/1", .reason = "add fd" },
+        .{ .n = 4, .time = 4, .root = "@roots/4", .reason = "update" },
+    };
+    const got = try strays(a, &records, &.{
+        "1",
+        "4",
+        // a staged build stopped with ctrl-c, and a rollback cut off
+        // before its record.
+        "5",
+        "6",
+        // copies for the menu, and one gc removed the record of.
+        "boot-1",
+        "boot-3",
+        "boot-2",
+        // the copy the machine runs, after a fallback took its record.
+        "boot-7",
+        // not os's.
+        "mine",
+    }, &.{ "1", "2", "3", "4", "keep" }, "/@roots/boot-7");
+    try testing.expectEqual(4, got.len);
+    try testing.expectEqualStrings("@gens/2", got[0]);
+    try testing.expectEqualStrings("@roots/5", got[1]);
+    try testing.expectEqualStrings("@roots/6", got[2]);
+    try testing.expectEqualStrings("@roots/boot-2", got[3]);
+    try testing.expectEqual(0, (try strays(a, &records, &.{ "1", "4" }, &.{ "1", "3", "4" }, "/@roots/4")).len);
+    // with no records in this /var, as before enable-rollback's reboot,
+    // nothing is a stray.
+    try testing.expectEqual(0, (try strays(a, &.{}, &.{ "1", "boot-1" }, &.{"1"}, "/")).len);
+}
+
 /// how many generations garbage collection keeps, besides pinned ones and
 /// the first.
 pub const default_keep = 5;
