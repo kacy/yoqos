@@ -671,7 +671,7 @@ rebooting.
 
 it checks first that the firmware is uefi and that the disk is a whole
 disk of 16 gib or more that nothing has mounted. it also checks that the tools it runs are
-there, and that the lock has a kernel and grub. arch's own iso works too,
+there, and that the lock has a kernel, grub, and btrfs-progs. arch's own iso works too,
 with `os` added: `pacman -U` the release package, or copy the binary. on
 another live system, `pacman -S dosfstools btrfs-progs grub git` first.
 
@@ -737,7 +737,8 @@ a config written for another machine only has what it lists, and `os`
 doesn't add anything. the install plan notes what a new machine usually
 needs and the config lacks, so check that it has:
 
-- a kernel, like `linux`, and `grub`;
+- a kernel, like `linux`, `grub`, and `btrfs-progs`, which generations
+  need;
 - `linux-firmware`, on real hardware, or wi-fi and some graphics won't
   work;
 - something that brings up the network, like `[services] networkmanager =
@@ -1071,10 +1072,12 @@ runs. with `encrypt = true`, `os` makes sure mkinitcpio's hooks can do
 that. when they have neither `encrypt` nor `sd-encrypt`, it writes
 `/etc/mkinitcpio.conf.d/90-yoq-encrypt.conf`, which adds `sd-encrypt`
 before `filesystems` and swaps busybox's hooks, like `udev` and `keymap`,
-for systemd's, which sd-encrypt needs. sd-encrypt also asks for the tpm's
-kernel modules, and mkinitcpio counts it as a failed build, without saying
-why, when autodetect finds none, as on a kernel with the tpm driver built
-in. the drop-in stops that one call from counting. like any change to the
+for systemd's, which sd-encrypt needs. with autodetect, mkinitcpio also counts
+it as a failed build, without saying why, when it looks for a kind of
+module the machine uses and finds none, which is what it finds when the
+driver is built into the kernel, as arch's tpm and btrfs drivers are.
+sd-encrypt looks for the tpm's on every build, so the drop-in stops
+finding none from counting. like any change to the
 initramfs, it waits for a reboot.
 
 `os init` sets the key when the root is on luks. an encrypted archinstall
