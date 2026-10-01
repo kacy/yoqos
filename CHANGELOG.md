@@ -93,6 +93,8 @@
   terminal, with `--json` or stdout redirected too, where it used to read
   it with echo on. its questions go to stderr, and a typed line too long
   to read says so, not that nothing was typed.
+- `os apply` writes a secret only if it still has the value the plan was
+  made for, so an `os secret set` in between stops it instead.
 
 ## 0.1.3
 

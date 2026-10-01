@@ -86,7 +86,7 @@ pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock
         const ok = switch (c.kind) {
             .setting => try settings.apply(a, io, t.root, c.subject, c.to.?, diags),
             .user => try users.apply(a, io, t.root, c, diags),
-            .file => if (c.op == .remove) try removeFile(a, io, t.root, c.subject, diags) else try writeFile(a, io, t.root, files, store, c.subject, units, diags),
+            .file => if (c.op == .remove) try removeFile(a, io, t.root, c.subject, diags) else try writeFile(a, io, t.root, files, store, p, c.subject, units, diags),
             else => true,
         };
         if (!ok) return null;
@@ -133,8 +133,9 @@ fn rebuildInitramfs(a: Allocator, io: std.Io, root: []const u8, diags: *diag.Lis
 /// writes a managed file whole, with its mode. on a running machine
 /// (`live`, as for units) the sysctl file and the module list are loaded
 /// right away. a secret's value is read from `store` just for the write,
-/// and wiped after it.
-fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.DesiredFile, store: ?secrets.Store, path: []const u8, live: bool, diags: *diag.List) !bool {
+/// and wiped after it. it has to be the value `p` was made for, since
+/// `os secret set` may have run since.
+fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.DesiredFile, store: ?secrets.Store, p: *const planner.Plan, path: []const u8, live: bool, diags: *diag.List) !bool {
     const d = lists.find(files, "path", path).?; // the plan came from these files.
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
     const mode = std.fmt.parseInt(u32, d.mode, 8) catch unreachable; // validated with the config.
@@ -152,6 +153,12 @@ fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.
         };
         if (value == null) {
             try diags.addHint(.apply_failed, null, "can't write {s}: can't read the secret \"{s}\": {s}", .{ path, name, why }, "`os secret set {s}` sets it", .{name});
+            return false;
+        }
+        const key = try store.?.key(a);
+        const planned = p.plannedHash(path);
+        if (key == null or planned == null or !std.mem.eql(u8, planned.?, &secrets.keyedHex(&key.?, value.?))) {
+            try diags.add(.plan_moved, null, "the secret \"{s}\" isn't the value the plan was made for, so {s} wasn't written", .{ name, path }, "run it again and look over the new plan");
             return false;
         }
     }
@@ -344,10 +351,17 @@ test "a secret's file is written from the store, and the facts only hold its key
     f = try observe.observe(a, io, opts, &diags);
     p = (try planner.plan(a, &c, &l, &f, &diags)).?;
     try testing.expectEqualStrings("rewrite, mode 0600", p.changes[0].to.?);
+    // a value set after the plan was made isn't the one it was made for.
+    _ = try store.set(a, "wifi/home", "hunter4");
+    try testing.expectEqual(null, try run(a, io, &p, &l, files, store, t, false, &diags));
+    try testing.expectEqualStrings("hunter2", try tmp.dir.readFileAlloc(io, "etc/wifi.psk", a, .limited(64)));
+    try testing.expectEqual(diag.Code.plan_moved, diags.items.items[diags.items.items.len - 1].code);
+    _ = try store.set(a, "wifi/home", "hunter3");
     _ = (try run(a, io, &p, &l, files, store, t, false, &diags)).?;
     try testing.expectEqualStrings("hunter3", try tmp.dir.readFileAlloc(io, "etc/wifi.psk", a, .limited(64)));
-    // the refusal earlier is the only problem, and it doesn't hold the value.
-    try testing.expectEqual(2, diags.items.items.len);
+    // the refusals earlier are the only problems, and they don't hold the
+    // value.
+    try testing.expectEqual(3, diags.items.items.len);
     for (diags.items.items) |d| try testing.expect(std.mem.indexOf(u8, d.message, "hunter") == null);
 }
 
