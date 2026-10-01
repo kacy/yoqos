@@ -296,6 +296,11 @@ pub const Builder = struct {
 /// detached lazily, which leaves its device in use until the last user
 /// lets go; those are the result.
 pub fn unmountTree(a: Allocator, io: std.Io, dir: []const u8, keep: []const []const u8, with_dir: bool) ![]const []const u8 {
+    // libalpm checks signatures against the root's keyring, so gpg's
+    // daemons for it run on this machine, with their home in the root.
+    // asked first, they clean up after themselves.
+    const gnupg = try std.fs.path.join(a, &.{ dir, "etc/pacman.d/gnupg" });
+    if (rootfs.pathExists(io, gnupg)) _ = exec.run(a, io, &.{ "gpgconf", "--homedir", gnupg, "--kill", "all" }) catch {};
     stopProcessesIn(a, io, dir);
     const text = try rootfs.readProc(a, io, "/proc/self/mountinfo");
     var lazy: std.ArrayList([]const u8) = .empty;
@@ -315,8 +320,10 @@ pub fn unmountTree(a: Allocator, io: std.Io, dir: []const u8, keep: []const []co
 
 const umount_tries = 3;
 
-/// stops the processes whose root or working directory is inside `dir`:
-/// a term first, then a kill for any still there.
+/// stops the processes that use something inside `dir`: as their root or
+/// working directory, an open file, or a path they were started with,
+/// like gpg-agent's --homedir, whose watch on it holds the mount. a term
+/// first, then a kill for any still there.
 fn stopProcessesIn(a: Allocator, io: std.Io, dir: []const u8) void {
     for ([_]std.posix.SIG{ .TERM, .KILL }) |sig| {
         const pids = processesIn(a, io, dir) catch return;
@@ -335,16 +342,40 @@ fn processesIn(a: Allocator, io: std.Io, dir: []const u8) ![]const std.posix.pid
     while (it.next(io) catch null) |e| {
         const pid = std.fmt.parseInt(std.posix.pid_t, e.name, 10) catch continue;
         if (pid == self) continue;
-        for ([_][]const u8{ "root", "cwd" }) |link| {
-            var buf: [std.fs.max_path_bytes]u8 = undefined;
-            const n = proc.readLink(io, try std.fmt.allocPrint(a, "{s}/{s}", .{ e.name, link }), &buf) catch continue;
-            if (inside(buf[0..n], dir)) {
-                try out.append(a, pid);
-                break;
-            }
-        }
+        if (try usesInside(a, io, proc, e.name, dir)) try out.append(a, pid);
     }
     return out.items;
+}
+
+/// whether process `pid` (its /proc name) uses something inside `dir`.
+fn usesInside(a: Allocator, io: std.Io, proc: std.Io.Dir, pid: []const u8, dir: []const u8) !bool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var links: std.ArrayList([]const u8) = .empty;
+    try links.appendSlice(a, &.{ try std.fmt.allocPrint(a, "{s}/root", .{pid}), try std.fmt.allocPrint(a, "{s}/cwd", .{pid}) });
+    const fd_dir = try std.fmt.allocPrint(a, "{s}/fd", .{pid});
+    if (proc.openDir(io, fd_dir, .{ .iterate = true })) |fds_const| {
+        var fds = fds_const;
+        defer fds.close(io);
+        var it = fds.iterate();
+        while (it.next(io) catch null) |f| try links.append(a, try std.fmt.allocPrint(a, "{s}/{s}", .{ fd_dir, f.name }));
+    } else |_| {}
+    for (links.items) |link| {
+        const n = proc.readLink(io, link, &buf) catch continue;
+        if (inside(buf[0..n], dir)) return true;
+    }
+    const cmdline = try rootfs.readStreaming(a, io, try std.fmt.allocPrint(a, "/proc/{s}/cmdline", .{pid})) orelse return false;
+    return argsInside(cmdline, dir);
+}
+
+/// whether a /proc cmdline, its arguments split by nuls, names a path
+/// inside `dir`, alone or after an option's "=".
+fn argsInside(cmdline: []const u8, dir: []const u8) bool {
+    var args = std.mem.tokenizeScalar(u8, cmdline, 0);
+    while (args.next()) |arg| {
+        const value = if (std.mem.indexOfScalar(u8, arg, '=')) |i| arg[i + 1 ..] else arg;
+        if (inside(arg, dir) or inside(value, dir)) return true;
+    }
+    return false;
 }
 
 /// whether `path` is `dir` or under it.
@@ -446,6 +477,11 @@ test "a process inside a build, by its root or working directory" {
     try std.testing.expect(inside("/mnt/yoq/etc/pacman.d/gnupg", "/mnt/yoq"));
     try std.testing.expect(!inside("/mnt/yoqother", "/mnt/yoq"));
     try std.testing.expect(!inside("/", "/mnt/yoq"));
+    // gpg's daemons for a root's keyring run here, named by their home.
+    try std.testing.expect(argsInside("gpg-agent\x00--homedir\x00/mnt/yoq/etc/pacman.d/gnupg\x00--use-standard-socket\x00--daemon\x00", "/mnt/yoq"));
+    try std.testing.expect(argsInside("keyboxd\x00--homedir=/mnt/yoq/etc/pacman.d/gnupg\x00", "/mnt/yoq"));
+    try std.testing.expect(!argsInside("gpg-agent\x00--homedir\x00/root/.gnupg\x00", "/mnt/yoq"));
+    try std.testing.expect(!argsInside("sshd: root@pts/0\x00", "/mnt/yoq"));
 }
 
 test "a build's pacman.conf leaves out os's repositories" {
