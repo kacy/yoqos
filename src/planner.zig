@@ -614,14 +614,16 @@ pub const encrypt_initramfs_content =
     \\done
     \\HOOKS=("${_yoq_hooks[@]}")
     \\unset _yoq_hooks _yoq_hook
-    \\# sd-encrypt asks for the tpm's modules with add_checked_modules, which
-    \\# counts finding none as a build error, without saying so. with
-    \\# autodetect, and the tpm driver built into the kernel, there are none
-    \\# to find, so that call alone doesn't count.
+    \\# with autodetect, add_checked_modules keeps only the modules this machine
+    \\# uses, and mkinitcpio counts finding none as a failed build, without
+    \\# saying why. that's what it finds when the driver is built into the
+    \\# kernel, as arch's tpm and btrfs drivers are, and sd-encrypt asks for
+    \\# the tpm's on every build. finding none isn't a failure here; a module
+    \\# it finds and can't add still is.
     \\if declare -F add_checked_modules >/dev/null && ! declare -F _yoq_add_checked_modules >/dev/null; then
     \\    eval "_yoq_$(declare -f add_checked_modules)"
     \\    add_checked_modules() {
-    \\        _yoq_add_checked_modules "$@" || [[ $* == /drivers/char/tpm/ ]]
+    \\        _yoq_add_checked_modules "$@" || true
     \\    }
     \\fi
     \\
@@ -1399,9 +1401,9 @@ test "the drop-in that unlocks a luks root, unless the hooks do already" {
     try testing.expect(std.mem.startsWith(u8, want[0].content, "# written by os from [boot] encrypt in the config."));
     try testing.expect(std.mem.indexOf(u8, want[0].content, "    filesystems)\n") != null);
     try testing.expect(std.mem.indexOf(u8, want[0].content, "_yoq_hooks+=(sd-encrypt)\n") != null);
-    // sd-encrypt's call for tpm modules that autodetect leaves out isn't a
-    // build error; any other call that finds nothing still is.
-    try testing.expect(std.mem.indexOf(u8, want[0].content, "_yoq_add_checked_modules \"$@\" || [[ $* == /drivers/char/tpm/ ]]\n") != null);
+    // autodetect finding no modules for a driver built into the kernel
+    // isn't a failed build.
+    try testing.expect(std.mem.indexOf(u8, want[0].content, "_yoq_add_checked_modules \"$@\" || true\n") != null);
 
     // busybox's encrypt, as an older archinstall sets up, or sd-encrypt.
     const unlocking = [_][]const []const u8{ &.{ "base", "udev", "encrypt", "filesystems" }, &.{ "base", "systemd", "sd-encrypt", "filesystems" } };
