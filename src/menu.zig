@@ -48,6 +48,17 @@ pub const Entry = struct {
         return if (std.mem.eql(u8, e.subvol, "/")) "/boot" else std.fmt.allocPrint(a, "{s}/boot", .{e.subvol});
     }
 
+    /// the file the bootloader starts: the image, or the kernel.
+    fn loaded(e: Entry) []const u8 {
+        return e.uki orelse e.kernel;
+    }
+
+    /// the initrds the bootloader loads beside the kernel: none for an
+    /// image, which has them inside.
+    fn looseInitrds(e: Entry) []const []const u8 {
+        return if (e.uki == null) e.initrds else &.{};
+    }
+
     /// `file`'s path from the top of the esp, or of the root's filesystem
     /// for an entry without esp_dir.
     fn path(e: Entry, a: Allocator, file: []const u8) ![]u8 {
@@ -156,13 +167,14 @@ pub fn grub(a: Allocator, c: Grub) ![]const u8 {
         if (std.mem.eql(u8, e.id, "head")) try out.appendSlice(a, "  if [ \"${yoq_trial_arg}\" ]; then set yoq_tried=1; save_env -f (${yoq_esp})/yoq/grubenv yoq_tried; fi\n");
         // grub's chainloader passes what follows the file to it as its
         // load options, which the image's stub makes the command line.
-        if (e.uki) |u| {
-            try out.print(a, "  insmod chain\n  chainloader {s}/{s} {s} ${{yoq_trial_arg}}\n}}\n", .{ dir, u, e.args });
-            continue;
+        const command = if (e.uki == null) "linux" else "insmod chain\n  chainloader";
+        try out.print(a, "  {s} {s}/{s} {s} ${{yoq_trial_arg}}\n", .{ command, dir, e.loaded(), e.args });
+        if (e.uki == null) {
+            try out.appendSlice(a, "  initrd");
+            for (e.initrds) |i| try out.print(a, " {s}/{s}", .{ dir, i });
+            try out.append(a, '\n');
         }
-        try out.print(a, "  linux {s}/{s} {s} ${{yoq_trial_arg}}\n  initrd", .{ dir, e.kernel, e.args });
-        for (e.initrds) |i| try out.print(a, " {s}/{s}", .{ dir, i });
-        try out.appendSlice(a, "\n}\n");
+        try out.appendSlice(a, "}\n");
     }
     return out.items;
 }
@@ -203,12 +215,9 @@ pub fn limineOne(a: Allocator, e: Entry) ![]const u8 {
 }
 
 fn limineEntry(a: Allocator, out: *std.ArrayList(u8), e: Entry) !void {
-    if (e.uki) |u| {
-        try out.print(a, "/{s}\n    protocol: efi\n    path: boot():{s}\n    cmdline: {s}\n", .{ try plainTitle(a, e.title), try e.path(a, u), e.args });
-        return;
-    }
-    try out.print(a, "/{s}\n    protocol: linux\n    path: boot():{s}\n", .{ try plainTitle(a, e.title), try e.path(a, e.kernel) });
-    for (e.initrds) |i| try out.print(a, "    module_path: boot():{s}\n", .{try e.path(a, i)});
+    const protocol = if (e.uki == null) "linux" else "efi";
+    try out.print(a, "/{s}\n    protocol: {s}\n    path: boot():{s}\n", .{ try plainTitle(a, e.title), protocol, try e.path(a, e.loaded()) });
+    for (e.looseInitrds()) |i| try out.print(a, "    module_path: boot():{s}\n", .{try e.path(a, i)});
     try out.print(a, "    cmdline: {s}\n", .{e.args});
 }
 
@@ -283,12 +292,8 @@ pub fn sdboot(a: Allocator, entries: []const Entry) ![]const Named {
 pub fn sdbootEntry(a: Allocator, e: Entry, sort_key: []const u8, version: usize) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     try out.print(a, "# written by os. edits here are overwritten.\ntitle {s}\nsort-key {s}\nversion {d}\n", .{ try plainTitle(a, e.title), sort_key, version });
-    if (e.uki) |u| {
-        try out.print(a, "efi {s}\n", .{try e.path(a, u)});
-    } else {
-        try out.print(a, "linux {s}\n", .{try e.path(a, e.kernel)});
-        for (e.initrds) |i| try out.print(a, "initrd {s}\n", .{try e.path(a, i)});
-    }
+    try out.print(a, "{s} {s}\n", .{ if (e.uki == null) "linux" else "efi", try e.path(a, e.loaded()) });
+    for (e.looseInitrds()) |i| try out.print(a, "initrd {s}\n", .{try e.path(a, i)});
     try out.print(a, "options {s}\n", .{e.args});
     return out.items;
 }
@@ -311,11 +316,10 @@ pub fn refind(a: Allocator, c: Refind) ![]const u8 {
     const all = if (try trialEntry(a, c.entries)) |t| try std.mem.concat(a, Entry, &.{ c.entries, &.{t} }) else c.entries;
     for (all) |e| {
         const volume = if (e.esp_dir != null) c.esp_part else c.root_part;
-        try out.print(a, "\nmenuentry \"{s}\" {{\n    volume {s}\n    loader {s}\n    options \"{s}", .{ try plainTitle(a, e.title), volume, try e.path(a, e.uki orelse e.kernel), e.args });
+        try out.print(a, "\nmenuentry \"{s}\" {{\n    volume {s}\n    loader {s}\n    options \"{s}", .{ try plainTitle(a, e.title), volume, try e.path(a, e.loaded()), e.args });
         // the kernel loads its initrds itself, from its own volume; refind's
-        // initrd line takes only one. an image has them inside.
-        const initrds = if (e.uki == null) e.initrds else &.{};
-        for (initrds) |i| {
+        // initrd line takes only one.
+        for (e.looseInitrds()) |i| {
             const back = try e.path(a, i);
             std.mem.replaceScalar(u8, back, '/', '\\');
             try out.print(a, " initrd={s}", .{back});
