@@ -133,14 +133,13 @@
   written. fat kept the rename in memory, so a power cut right after a
   menu write could leave the newest entry pointing at a file that wasn't
   there.
-- with `/boot` as the esp, a rollback or fallback notes the new root as
+- with `/boot` as the esp, a rollback or fallback marks the new root
   unsettled while it copies that root's kernel and initramfs onto the
-  esp, and a staged generation's note is written as it's recorded, after
-  what the note said before is kept. a copy a power cut stopped halfway
-  used to leave a kernel and initramfs that didn't match on the esp, which
-  the next menu write booted and copied into the root's own `/boot`. a
-  staged generation that couldn't be recorded no longer takes the running
-  root's note with it.
+  esp. a power cut halfway through used to leave a kernel and an
+  initramfs there that didn't match, and the next menu write booted them
+  and copied them into the root's own `/boot`. a staged generation's note
+  is now written when it's recorded, and one that can't be recorded puts
+  back the note the running root had.
 - subvolumes in `@roots` and `@gens` that no generation uses go at the
   next gc, which runs after every new generation. a staged build stopped
   with ctrl-c or a power cut left its whole root behind for good, and so
