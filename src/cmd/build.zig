@@ -307,16 +307,18 @@ pub fn unmountTree(a: Allocator, io: std.Io, dir: []const u8, keep: []const []co
     var lazy: std.ArrayList([]const u8) = .empty;
     for (try mountsUnder(a, text, dir, with_dir)) |p| {
         if (lists.contains(keep, p)) continue;
-        for (0..umount_tries) |i| {
-            if (try exec.run(a, io, &.{ "umount", p }) == null) break;
-            if (i + 1 < umount_tries) {
-                io.sleep(.fromMilliseconds(500), .awake) catch {};
-                continue;
-            }
-            if (try exec.run(a, io, &.{ "umount", "-l", p }) == null) try lazy.append(a, p);
-        }
+        if (try unmount(a, io, p) == .lazily) try lazy.append(a, p);
     }
     return lazy.items;
+}
+
+/// unmounts `point`, trying again while it's busy, and at last lazily.
+fn unmount(a: Allocator, io: std.Io, point: []const u8) !enum { unmounted, lazily, failed } {
+    for (0..umount_tries) |i| {
+        if (i > 0) io.sleep(.fromMilliseconds(500), .awake) catch {};
+        if (try exec.run(a, io, &.{ "umount", point }) == null) return .unmounted;
+    }
+    return if (try exec.run(a, io, &.{ "umount", "-l", point }) == null) .lazily else .failed;
 }
 
 const umount_tries = 3;
