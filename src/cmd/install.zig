@@ -318,11 +318,23 @@ const Installer = struct {
         return null;
     }
 
-    /// the luks volume the install opened, closed, if it's open.
+    /// the luks volume the install opened, closed, if it's open. right
+    /// after an unmount the kernel can still hold it for a moment, so a
+    /// busy close is tried again. one that never closes is said, since
+    /// the disk stays in use until it does.
     fn closeLuks(in: *Installer) void {
-        if (!in.encrypt or !rootfs.pathExists(in.ctx.io, "/dev/mapper/" ++ install.luks_install_name)) return;
-        _ = exec.run(in.a, in.ctx.io, &.{ "cryptsetup", "close", install.luks_install_name }) catch {};
+        const mapped = "/dev/mapper/" ++ install.luks_install_name;
+        if (!in.encrypt) return;
+        var why: []const u8 = "";
+        for (0..close_tries) |_| {
+            if (!rootfs.pathExists(in.ctx.io, mapped)) return;
+            why = (exec.run(in.a, in.ctx.io, &.{ "cryptsetup", "close", install.luks_install_name }) catch return) orelse return;
+            in.ctx.io.sleep(.fromSeconds(1), .awake) catch {};
+        }
+        in.ctx.err.print("os: {s} is still open ({s}). `cryptsetup close {s}` closes it once nothing uses it.\n", .{ mapped, why, install.luks_install_name }) catch {};
     }
+
+    const close_tries = 5;
 
     /// the esp, and btrfs with every subvolume generation 1 and its data
     /// live in.
@@ -501,10 +513,12 @@ const Installer = struct {
         };
     }
 
-    /// everything under the target, however the install ended, and the
-    /// luks volume under it.
+    /// everything under the target, however the install ended, deepest
+    /// first and not lazily where it can be, then the luks volume under
+    /// it, which a lazily detached mount would keep busy.
     fn unmountAll(in: *Installer) void {
-        _ = exec.run(in.a, in.ctx.io, &.{ "umount", "-R", install.target }) catch {};
+        const lazy = building.unmountTree(in.a, in.ctx.io, install.target, &.{}, true) catch &.{};
+        for (lazy) |p| in.ctx.err.print("os: {s} was busy, so it was detached lazily; its disk stays in use until whatever holds it stops.\n", .{p}) catch {};
         in.closeLuks();
     }
 };
