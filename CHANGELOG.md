@@ -164,6 +164,11 @@
   and the directory after. a power cut right after a first `set` could
   leave an empty file under the secret's name, which then failed to
   decrypt at every apply.
+- the directories in a root's /tmp where os builds and signs images are
+  made fresh and root's alone, and /run/yoq, where the top level is
+  mounted, is root's alone too. another user could reach that /tmp through
+  the mount, make the directory first, and swap an image before sbctl
+  signed it.
 
 ## 0.1.3
 

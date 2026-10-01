@@ -10,6 +10,7 @@ const compose = @import("compose.zig");
 const pipeline = @import("pipeline.zig");
 const facts_mod = @import("facts.zig");
 const generation = @import("generation.zig");
+const rootfs = @import("rootfs.zig");
 const gens = @import("gens.zig");
 const observe = @import("observe.zig");
 const sync = @import("sync.zig");
@@ -575,7 +576,7 @@ pub fn waitForMachine(ctx: *Context) ?[]const u8 {
 }
 
 /// where os locks the running machine while it changes it.
-const lock_path = "/run/yoq/lock";
+const lock_path = rootfs.run_dir ++ "/lock";
 var lock_held = false;
 var lock_message: [128]u8 = undefined;
 
@@ -589,7 +590,7 @@ pub fn lockMachine() ?[]const u8 {
 /// takes the machine lock, waiting for it with `wait`.
 fn takeLock(wait: bool) ?[]const u8 {
     if (lock_held) return null;
-    _ = std.os.linux.mkdir("/run/yoq", 0o755);
+    _ = rootfs.makeRunDir();
     switch (lockFile(lock_path, wait)) {
         // the fd stays open for as long as this process runs.
         .held => lock_held = true,

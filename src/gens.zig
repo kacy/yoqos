@@ -59,6 +59,7 @@ pub const Machine = struct {
             .root_uuid = try blkid(a, io, boot.root_device.?, "UUID", why) orelse return null,
             .esp_uuid = try blkid(a, io, boot.esp_device.?, "UUID", why) orelse return null,
         };
+        if (std.mem.startsWith(u8, m.top, rootfs.run_dir ++ "/") and !rootfs.makeRunDir()) return fail(why, "can't make " ++ rootfs.run_dir);
         if (try m.run(&.{ "mkdir", "-p", m.top })) |w| return fail(why, w);
         if (try m.run(&.{ "mount", "-o", "subvolid=5", boot.root_device.?, m.top })) |w| return fail(why, w);
         return m;
@@ -624,9 +625,18 @@ pub const Machine = struct {
         return m.signCopy(driver, work);
     }
 
-    /// empties the directory at `path`, making it if it isn't there.
+    /// makes the directory at `path` again, empty and root's alone. it's
+    /// in a root's /tmp, which anyone can write to through the top level's
+    /// mount, so one that shows up again after the old one goes is a
+    /// failure, never used: its owner could swap an image before it's
+    /// signed.
     fn freshDir(m: *const Machine, path: []const u8) !?[]const u8 {
-        return exec.runAll(m.a, m.io, &.{ &.{ "rm", "-rf", path }, &.{ "mkdir", "-p", path } });
+        if (try m.run(&.{ "rm", "-rf", path })) |w| return w;
+        if (std.fs.path.dirnamePosix(path)) |parent| std.Io.Dir.cwd().createDirPath(m.io, parent) catch {};
+        return switch (std.os.linux.errno(std.os.linux.mkdir(try m.a.dupeZ(u8, path), 0o700))) {
+            .SUCCESS => null,
+            else => |e| try std.fmt.allocPrint(m.a, "can't make {s}: {s}", .{ path, @tagName(e) }),
+        };
     }
 
     fn removeDir(m: *const Machine, path: []const u8) void {
@@ -1805,4 +1815,26 @@ test "an efi binary without a certificate table isn't signed" {
     try tmp.dir.writeFile(io, .{ .sub_path = "plain.efi", .data = "not an efi binary" });
     try std.testing.expect(!fileSigned(io, try std.fmt.allocPrint(a, "{s}/plain.efi", .{base}), null));
     try std.testing.expect(!fileSigned(io, try std.fmt.allocPrint(a, "{s}/missing.efi", .{base}), null));
+}
+
+test "a work directory in a root's /tmp is made fresh, and root's alone" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    // someone else's directory, and a link to it where os works.
+    try tmp.dir.createDirPath(io, "theirs");
+    try tmp.dir.writeFile(io, .{ .sub_path = "theirs/yoq.efi", .data = "theirs" });
+    try tmp.dir.createDirPath(io, "top/@roots/2/tmp");
+    try tmp.dir.symLink(io, try std.fmt.allocPrint(a, "{s}/theirs", .{try std.Io.Dir.cwd().realPathFileAlloc(io, base, a)}), "top/@roots/2/" ++ sign_dir, .{});
+    const m: Machine = .{ .a = a, .io = io, .boot = .{}, .loader = .grub, .root_uuid = "r", .esp_uuid = "e", .top = try std.fmt.allocPrint(a, "{s}/top", .{base}) };
+    const work = try m.at(&.{ "/@roots/2", sign_dir });
+    try std.testing.expectEqual(null, try m.freshDir(work));
+    const st = try tmp.dir.statFile(io, "top/@roots/2/" ++ sign_dir, .{ .follow_symlinks = false });
+    try std.testing.expectEqual(.directory, st.kind);
+    try std.testing.expectEqual(0o700, @intFromEnum(st.permissions) & 0o777);
+    try std.testing.expectEqualStrings("theirs", try tmp.dir.readFileAlloc(io, "theirs/yoq.efi", a, .limited(64)));
 }

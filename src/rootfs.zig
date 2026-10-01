@@ -163,6 +163,19 @@ fn namespaceProblem(e: std.os.linux.E) ?[]const u8 {
     };
 }
 
+/// os's directory under /run, where it locks the machine and mounts the
+/// top level of the root's filesystem. it's root's alone: through that
+/// mount, anyone who could get in could reach every root's world-writable
+/// /tmp, where os builds and signs images.
+pub const run_dir = "/run/yoq";
+
+/// makes `run_dir`, or takes it back to root alone. false if it can't.
+pub fn makeRunDir() bool {
+    const linux = std.os.linux;
+    _ = linux.mkdir(run_dir, 0o700);
+    return linux.errno(linux.chmod(run_dir, 0o700)) == .SUCCESS;
+}
+
 pub fn pathExists(io: std.Io, path: []const u8) bool {
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
