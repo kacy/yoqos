@@ -429,7 +429,10 @@ pub const Machine = struct {
     /// goes on the esp, and one there without sbctl's signature is built
     /// again and signed, so a fallback to an older generation boots too.
     /// what's on the esp is never signed as it is: whoever can write to
-    /// it, like another system on the disk, could have put it there.
+    /// it, like another system on the disk, could have put it there. each
+    /// image has its entry's command line in it then, so images are per
+    /// entry, shared only by entries with the same command line, and the
+    /// entry a trial boots has one of its own (see ukiName).
     fn writeOnEsp(m: *const Machine, entries: []menu.Entry, records: []const generation.Record, put: MenuWriter, held: ?usize) !?[]const u8 {
         const dir = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir });
         const sign = entries.len > 0 and m.signs(entries[0].subvol);
@@ -474,9 +477,10 @@ pub const Machine = struct {
     /// `sign`, an image there without sbctl's signature is built again.
     fn espFiles(m: *const Machine, entries: []menu.Entry, files: *EspFiles, sign: bool) !?[]const u8 {
         const copies = menu.copiesOnEsp(m.boot);
-        for (entries) |*e| {
+        for (entries, 0..) |*e, n| {
             if (try m.bootsImage(e.subvol)) {
-                if (try m.ukiName(e, files, sign)) |w| return w;
+                // the first entry is the one a trial boots.
+                if (try m.ukiName(e, files, sign, n == 0)) |w| return w;
                 continue;
             }
             if (!copies or e.esp_dir != null) continue;
@@ -635,16 +639,24 @@ pub const Machine = struct {
     }
 
     /// a unified kernel image the esp doesn't have yet: the root whose
-    /// tools build it, its files, kernel first, and where it goes. `again`
-    /// when the esp has one by that name, but without sbctl's signature.
-    const UkiBuild = struct { root: []const u8, files: []const []const u8, dest: []const u8, size: u64, again: bool = false };
+    /// tools build it, its files, kernel first, the command line that goes
+    /// in it, if any, and where it goes. `again` when the esp has one by
+    /// that name, but without sbctl's signature.
+    const UkiBuild = struct { root: []const u8, files: []const []const u8, cmdline: ?[]const u8 = null, dest: []const u8, size: u64, again: bool = false };
 
     /// makes `e` start a unified kernel image of its kernel and initrds,
     /// named by their content and the stub of the root that builds it,
     /// and notes the name in `files`, along with the build if the esp
     /// doesn't have it yet, or with `sign`, has it without sbctl's
     /// signature.
-    fn ukiName(m: *const Machine, e: *menu.Entry, files: *EspFiles, sign: bool) !?[]const u8 {
+    ///
+    /// with `sign`, the image has the entry's command line in it, and the
+    /// entry passes none: with secure boot on, systemd's stub ignores the
+    /// loader's command line for an image that has one, and the signature
+    /// covers it, so nobody who can only write the esp can change it. the
+    /// entry a trial boots, `trial_boots`, gets a second image then, with
+    /// the trial's command line.
+    fn ukiName(m: *const Machine, e: *menu.Entry, files: *EspFiles, sign: bool, trial_boots: bool) !?[]const u8 {
         const from = try m.imageSource(e.subvol);
         var inputs: std.ArrayList([]const u8) = .empty;
         var sums: std.ArrayList([]const u8) = .empty;
@@ -659,18 +671,32 @@ pub const Machine = struct {
         }
         const stub = try m.hash(try m.at(&.{ e.subvol, uki.stub_rel }), &why) orelse return why;
         try sums.append(m.a, stub.sum);
-        const name = try uki.name(m.a, sums.items);
-        e.uki = name;
+        const b: UkiBuild = .{ .root = try m.at(&.{e.subvol}), .files = inputs.items, .dest = "", .size = size };
         e.esp_dir = esp_boot_dir;
-        if (lists.contains(files.used.items, name)) return null;
-        const dest = try m.newOnEsp(name, files) orelse {
-            const there = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir, name });
-            if (!sign or try m.signedNow(there)) return null;
-            try files.builds.append(m.a, .{ .root = try m.at(&.{e.subvol}), .files = inputs.items, .dest = there, .size = size, .again = true });
-            return null;
-        };
-        try files.builds.append(m.a, .{ .root = try m.at(&.{e.subvol}), .files = inputs.items, .dest = dest, .size = size });
+        e.embedded = sign;
+        e.uki = try m.noteImage(b, sums.items, if (sign) e.args else null, files, sign);
+        if (sign and trial_boots) e.trial_uki = try m.noteImage(b, sums.items, try menu.trialArgs(m.a, e.args), files, sign);
         return null;
+    }
+
+    /// the name of the image `b` builds with `cmdline` in it, noted in
+    /// `files` with its build when the esp doesn't have it, or with
+    /// `sign`, has it without sbctl's signature.
+    fn noteImage(m: *const Machine, b: UkiBuild, sums: []const []const u8, cmdline: ?[]const u8, files: *EspFiles, sign: bool) ![]const u8 {
+        const name = try uki.name(m.a, sums, cmdline);
+        var build = b;
+        build.cmdline = cmdline;
+        if (lists.contains(files.used.items, name)) return name;
+        if (try m.newOnEsp(name, files)) |dest| {
+            build.dest = dest;
+        } else {
+            const there = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir, name });
+            if (!sign or try m.signedNow(there)) return name;
+            build.dest = there;
+            build.again = true;
+        }
+        try files.builds.append(m.a, build);
+        return name;
     }
 
     /// where an image's kernel and initrds come from: the root's own /boot
@@ -702,7 +728,7 @@ pub const Machine = struct {
             try inside.append(m.a, try std.fmt.allocPrint(m.a, "/{s}/{s}", .{ uki.work_dir, base }));
         }
         const out = "/" ++ uki.work_dir ++ "/yoq.efi";
-        if (try m.run(try uki.ukifyArgv(m.a, m.chroot, b.root, inside.items[0], inside.items[1..], out))) |w| {
+        if (try m.run(try uki.ukifyArgv(m.a, m.chroot, b.root, inside.items[0], inside.items[1..], b.cmdline, out))) |w| {
             return try std.fmt.allocPrint(m.a, "can't build a unified kernel image in {s}: {s}", .{ b.root, w });
         }
         const image = try std.fs.path.join(m.a, &.{ work, "yoq.efi" });
@@ -844,6 +870,8 @@ pub const Machine = struct {
     fn writeRefind(m: *const Machine, entries: []menu.Entry, held: ?usize) anyerror!?[]const u8 {
         const conf = try m.loaderConf() orelse return "can't read refind.conf";
         for (entries) |e| {
+            // an image with its command line in it needs none from refind.
+            if (e.embedded) continue;
             if (try menu.refindArgsProblem(m.a, e.args)) |w| return w;
         }
         const dir = std.fs.path.dirnamePosix(m.boot.loader_conf.?).?;
@@ -1534,7 +1562,7 @@ test "entries for a root with os's ukify config start its image, and unused imag
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/vmlinuz-linux", .data = "kernel" });
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/initramfs-linux.img", .data = "initramfs" });
     try writeTestStub(tmp.dir, io, "top/@roots/2", "stub");
-    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") });
+    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") }, null);
     // the image is there already, so nothing's built; an older one isn't
     // used any more.
     try tmp.dir.writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{name}), .data = "image" });
@@ -1569,7 +1597,7 @@ test "entries for a root with os's ukify config start its image, and unused imag
     // a new stub makes a new image, here one the esp has already, and the
     // old one goes.
     try writeTestStub(tmp.dir, io, "top/@roots/2", "stub 2");
-    const renamed = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub 2") });
+    const renamed = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub 2") }, null);
     try tmp.dir.writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{renamed}), .data = "image" });
     entries[0] = .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
     try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
@@ -1627,7 +1655,7 @@ test "with the esp at /boot, an image is built from the root's copies, not the e
         .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw", .esp_dir = "" },
     };
     try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
-    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") });
+    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") }, null);
     try std.testing.expectEqualStrings(name, test_put[0].uki.?);
     try std.testing.expectEqualStrings("kernel", try tmp.dir.readFileAlloc(io, try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{name}), a, .limited(64)));
 }
@@ -1655,8 +1683,15 @@ test "with secure boot, images are signed in the root before they replace the es
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/vmlinuz-linux", .data = "kernel" });
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/initramfs-linux.img", .data = "initramfs" });
     try writeTestStub(tmp.dir, io, "top/@roots/2", "stub");
-    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") });
+    const sums: []const []const u8 = &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") };
+    const shared = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{try uki.name(a, sums, null)});
+    try tmp.dir.writeFile(io, .{ .sub_path = shared, .data = "image" });
+    // with secure boot, the entry's image has its command line in it, and
+    // the trial's twin has the trial's.
+    const name = try uki.name(a, sums, "rw");
+    const trial_name = try uki.name(a, sums, "rw yoq.trial");
     const image = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{name});
+    const trial_image = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{trial_name});
     try tmp.dir.writeFile(io, .{ .sub_path = image, .data = "image" });
     // a stand-in for sbctl, which notes what it signed.
     try tmp.dir.writeFile(io, .{ .sub_path = "sign.sh", .data =
@@ -1679,21 +1714,30 @@ test "with secure boot, images are signed in the root before they replace the es
     var entries = [_]menu.Entry{
         .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" },
     };
-    // without the key, nothing's signed.
+    // without the key, nothing's signed, and the entry passes its command
+    // line to the shared image.
     try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
-    try std.testing.expectEqualStrings("image", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
+    try std.testing.expectEqualStrings("image", try tmp.dir.readFileAlloc(io, shared, a, .limited(64)));
+    try std.testing.expect(!test_put[0].embedded);
+    try std.testing.expectEqual(null, test_put[0].trial_uki);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "signed.log", .{}));
 
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/" ++ secureboot.config_rel, .data = secureboot.config_content });
     entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
     try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     try std.testing.expectEqualStrings(name, test_put[0].uki.?);
+    try std.testing.expect(test_put[0].embedded);
+    try std.testing.expectEqualStrings(trial_name, test_put[0].trial_uki.?);
     // the unsigned image on the esp, which anyone who can write there
     // could have put there, wasn't signed: one built again in the root
-    // was, and replaced it. the work directory is gone again.
-    try std.testing.expectEqualStrings("built signed", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
+    // was, and replaced it. the trial's is new. the work directory is gone
+    // again, and so is the shared image, which no entry uses now.
+    try std.testing.expectEqualStrings("built cmdline=rw signed", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
+    try std.testing.expectEqualStrings("built cmdline=rw yoq.trial signed", try tmp.dir.readFileAlloc(io, trial_image, a, .limited(64)));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, shared, .{}));
     const log = try tmp.dir.readFileAlloc(io, "signed.log", a, .limited(1024));
-    try std.testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}/top/@roots/2/{s}/yoq.efi\n", .{ base, uki.work_dir }), log);
+    const signed_one = try std.fmt.allocPrint(a, "{s}/top/@roots/2/{s}/yoq.efi\n", .{ base, uki.work_dir });
+    try std.testing.expectEqualStrings(try std.mem.concat(a, u8, &.{ signed_one, signed_one }), log);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "top/@roots/2/" ++ uki.work_dir, .{}));
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, try std.fmt.allocPrint(a, "{s}.yoq-new", .{image}), .{}));
 
@@ -1723,8 +1767,9 @@ test "firmware that enforces secure boot has images signed without the config's 
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/vmlinuz-linux", .data = "kernel" });
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/initramfs-linux.img", .data = "initramfs" });
     try writeTestStub(tmp.dir, io, "top/@roots/2", "stub");
-    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") });
-    const image = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{name});
+    const sums: []const []const u8 = &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") };
+    const image = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{try uki.name(a, sums, null)});
+    const signed_image = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{try uki.name(a, sums, "rw")});
     try tmp.dir.writeFile(io, .{ .sub_path = "sign.sh", .data = "[ \"$1\" = sign ] && printf ' signed' >> \"$2\"\n" });
     var m: Machine = .{
         .a = a,
@@ -1744,11 +1789,13 @@ test "firmware that enforces secure boot has images signed without the config's 
     try tmp.dir.writeFile(io, .{ .sub_path = image, .data = "image" });
     try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     try std.testing.expectEqualStrings("image", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
-    // enforced, with keys: the image is signed, or it wouldn't start.
+    // enforced, with keys: the image is signed, or it wouldn't start, and
+    // has the command line in it.
     m.boot.secure_boot = true;
     entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
     try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
-    try std.testing.expectEqualStrings("built signed", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
+    try std.testing.expect(test_put[0].embedded);
+    try std.testing.expectEqualStrings("built cmdline=rw signed", try tmp.dir.readFileAlloc(io, signed_image, a, .limited(64)));
 }
 
 test "a way back that can't sign writes the menu anyway" {
@@ -1767,7 +1814,7 @@ test "a way back that can't sign writes the menu anyway" {
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/vmlinuz-linux", .data = "kernel" });
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/initramfs-linux.img", .data = "initramfs" });
     try writeTestStub(tmp.dir, io, "top/@roots/2", "stub");
-    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") });
+    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") }, "rw");
     const image = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{name});
     try tmp.dir.writeFile(io, .{ .sub_path = image, .data = "image" });
     // sbctl without its keys.
@@ -1796,8 +1843,9 @@ test "a way back that can't sign writes the menu anyway" {
     entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
     try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     try std.testing.expectEqualStrings(name, test_put[0].uki.?);
-    try std.testing.expectEqualStrings("built", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
-    try std.testing.expectEqual(1, left.items.len);
+    try std.testing.expectEqualStrings("built cmdline=rw", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
+    // the trial's twin too.
+    try std.testing.expectEqual(2, left.items.len);
     try std.testing.expect(std.mem.endsWith(u8, left.items[0], name));
 }
 
@@ -1832,9 +1880,11 @@ test "images signed with another key are signed again" {
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/vmlinuz-linux", .data = "kernel" });
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/initramfs-linux.img", .data = "initramfs" });
     try writeTestStub(tmp.dir, io, "top/@roots/2", "stub");
-    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") });
-    const image = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{name});
+    const sums: []const []const u8 = &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") };
+    const image = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{try uki.name(a, sums, "rw")});
     const image_path = try std.fmt.allocPrint(a, "{s}/{s}", .{ base, image });
+    // the trial's twin, signed with the db key throughout.
+    try tmp.dir.writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{try uki.name(a, sums, "rw yoq.trial")}), .data = try testSignedEfi(a, db.key) });
     try tmp.dir.writeFile(io, .{ .sub_path = "sign.sh", .data = "[ \"$1\" = sign ] && echo \"$2\" >> \"$(dirname \"$0\")/signed.log\"\n" });
     const m: Machine = .{
         .a = a,
@@ -1911,12 +1961,14 @@ test "refind's driver on the esp is replaced by a signed copy of refind's own" {
 }
 
 /// a stand-in for chroot running ukify in a test's root: the image it
-/// builds holds "built".
+/// builds holds "built", and " cmdline=" and the command line it was
+/// given, if any.
 fn testChroot(dir: std.Io.Dir, io: std.Io, a: Allocator, base: []const u8) ![]const []const u8 {
     try dir.writeFile(io, .{ .sub_path = "chroot.sh", .data =
         \\root=$1; shift
-        \\for arg; do case $arg in --output=*) out=${arg#--output=} ;; esac; done
-        \\printf built > "$root$out"
+        \\cmdline=
+        \\for arg; do case $arg in --output=*) out=${arg#--output=} ;; --cmdline=*) cmdline=" cmdline=${arg#--cmdline=}" ;; esac; done
+        \\printf 'built%s' "$cmdline" > "$root$out"
         \\
     });
     return a.dupe([]const u8, &.{ "sh", try std.fmt.allocPrint(a, "{s}/chroot.sh", .{base}) });
