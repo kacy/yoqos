@@ -752,15 +752,16 @@ pub const EspNeed = struct {
 /// files the running root has now, a sixteenth bigger: a kernel the plan
 /// changes gets a new kernel and initramfs, one it adds gets a pair like
 /// the largest there, an initramfs change gets every initramfs new, and a
-/// microcode change the microcode images too. limine and systemd-boot keep
-/// every generation's copies side by side, so those add up. with the esp
+/// microcode change the microcode images too. limine and systemd-boot, and
+/// any bootloader on a luks root, keep every generation's copies side by
+/// side, so those add up. with the esp
 /// at /boot, the first good boot also puts them over the running ones
 /// there, one at a time.
 pub fn espNeed(p: *const Plan, b: *const facts.Boot) ?EspNeed {
     if (!generation.running(b.root_subvol)) return null;
     const esp = b.esp orelse return null;
-    const loader = menu.Loader.of(b.*) orelse return null;
-    const hashed = loader == .limine or loader == .@"systemd-boot";
+    if (menu.Loader.of(b.*) == null) return null;
+    const hashed = menu.copiesOnEsp(b.*);
     const in_place = std.mem.eql(u8, esp, "/boot");
     if (!hashed and !in_place) return null;
 
@@ -1568,6 +1569,10 @@ test "how much room a plan's new boot files take on the esp" {
     try testing.expectEqual(null, espNeed(&upgrade, &b));
     b.loader = "refind";
     try testing.expectEqual(null, espNeed(&upgrade, &b));
+    // unless the root is on luks: then they can't, and boot copies on the
+    // esp like limine.
+    b.luks_uuid = "0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b";
+    try testing.expectEqual(EspNeed{ .need = 51 * mib, .collectable = true }, espNeed(&upgrade, &b).?);
     // without generations, pacman changes the files in place, as always.
     b = .{ .esp = "/boot", .loader = "systemd-boot", .root_subvol = "/@", .boot_files = &files };
     try testing.expectEqual(null, espNeed(&upgrade, &b));
