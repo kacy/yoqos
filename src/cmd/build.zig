@@ -337,14 +337,37 @@ fn processesIn(a: Allocator, io: std.Io, dir: []const u8) ![]const std.posix.pid
     var out: std.ArrayList(std.posix.pid_t) = .empty;
     var proc = std.Io.Dir.cwd().openDir(io, "/proc", .{ .iterate = true }) catch return out.items;
     defer proc.close(io);
-    const self = std.os.linux.getpid();
+    // os and the shells that started it are never stopped, even when
+    // they sit inside `dir`, like a build run from its own directory.
+    const ours = try ancestors(a, io);
     var it = proc.iterate();
     while (it.next(io) catch null) |e| {
         const pid = std.fmt.parseInt(std.posix.pid_t, e.name, 10) catch continue;
-        if (pid == self) continue;
+        if (std.mem.indexOfScalar(std.posix.pid_t, ours, pid) != null) continue;
         if (try usesInside(a, io, proc, e.name, dir)) try out.append(a, pid);
     }
     return out.items;
+}
+
+/// this process and every parent above it, by /proc/<pid>/stat's ppid.
+fn ancestors(a: Allocator, io: std.Io) ![]const std.posix.pid_t {
+    var out: std.ArrayList(std.posix.pid_t) = .empty;
+    var pid: std.posix.pid_t = std.os.linux.getpid();
+    while (pid > 1 and out.items.len < 64) {
+        try out.append(a, pid);
+        const stat = try rootfs.readStreaming(a, io, try std.fmt.allocPrint(a, "/proc/{d}/stat", .{pid})) orelse break;
+        pid = parentOf(stat) orelse break;
+    }
+    return out.items;
+}
+
+/// the ppid in a /proc/<pid>/stat line. the command name sits in
+/// parentheses and may hold spaces or ')', so fields count from the last ')'.
+fn parentOf(stat: []const u8) ?std.posix.pid_t {
+    const close = std.mem.lastIndexOfScalar(u8, stat, ')') orelse return null;
+    var fields = std.mem.tokenizeScalar(u8, stat[close + 1 ..], ' ');
+    _ = fields.next() orelse return null; // state
+    return std.fmt.parseInt(std.posix.pid_t, fields.next() orelse return null, 10) catch null;
 }
 
 /// whether process `pid` (its /proc name) uses something inside `dir`.
@@ -496,4 +519,10 @@ test "paths a build can't explain or be explained by" {
     try std.testing.expect(ignoredPath("usr/local/bin/os"));
     try std.testing.expect(!ignoredPath("etc/hostname"));
     try std.testing.expect(!ignoredPath("usr/local"));
+}
+
+test "the parent pid from a stat line, past a name with spaces and parentheses" {
+    try std.testing.expectEqual(@as(?std.posix.pid_t, 812), parentOf("4242 (bash) S 812 4242 812 0 -1 4194560"));
+    try std.testing.expectEqual(@as(?std.posix.pid_t, 1), parentOf("77 (a (b) c) S 1 77 77 0 -1"));
+    try std.testing.expectEqual(@as(?std.posix.pid_t, null), parentOf("garbage"));
 }
