@@ -208,6 +208,8 @@ const Installer = struct {
     /// the luks volume's uuid, which the kernel's command line names.
     luks_uuid: []const u8 = "",
     luks_device: []const u8 = "",
+    /// the config's url, shown in the plan, or null for a local directory.
+    source: ?[]const u8 = null,
 
     fn run(in: *Installer, argv: []const []const u8) !?[]const u8 {
         return exec.run(in.a, in.ctx.io, argv);
@@ -235,6 +237,7 @@ const Installer = struct {
         else
             try exec.runAll(in.a, in.ctx.io, &.{ &.{ "mkdir", "-p", staging }, &.{ "cp", "-a", try std.fmt.allocPrint(in.a, "{s}/.", .{source}), staging } });
         if (why) |w| return try std.fmt.allocPrint(in.a, "can't fetch the config from {s}: {s}", .{ shown, try std.mem.replaceOwned(u8, in.a, w, source, shown) });
+        if (!local) in.source = shown;
         if (host) |h| in.config_rel = try std.fmt.allocPrint(in.a, "hosts/{s}/machine.toml", .{h});
         const path = try std.fs.path.join(in.a, &.{ staging, in.config_rel });
         if (!rootfs.pathExists(in.ctx.io, path)) return try std.fmt.allocPrint(in.a, "{s} has no {s}", .{ shown, in.config_rel });
@@ -281,6 +284,7 @@ const Installer = struct {
             .firmware = l.package("linux-firmware") != null,
             .network = health.networked(c),
             .sudo_user = sudo_user,
+            .source = in.source,
             .disk = in.disk,
             .size = size,
             .whole = rootfs.pathExists(ctx.io, try std.fmt.allocPrint(in.a, "/sys/class/block/{s}", .{name})) and

@@ -36,6 +36,9 @@ pub const Found = struct {
     /// something on it is mounted.
     mounted: bool,
     uefi: bool,
+    /// the url the config came from, without credentials, or null when
+    /// it's a directory on this system.
+    source: ?[]const u8 = null,
     /// the host the config is for, and what it asks for.
     host: []const u8,
     packages: usize,
@@ -166,6 +169,13 @@ pub fn plan(a: Allocator, f: Found) !Plan {
     var summary: std.ArrayList([]const u8) = .empty;
     try summary.append(a, try std.fmt.allocPrint(a, "install {s} on {s} ({d} GiB). everything on it is erased.", .{ f.host, f.disk, f.size >> 30 }));
     try summary.append(a, "");
+    // a config runs its packages' scripts, hooks, and builds as root, in
+    // a chroot here and then on the new machine, so a remote one gets a
+    // word before the question.
+    if (f.source) |url| {
+        try summary.append(a, try std.fmt.allocPrint(a, "source    {s}", .{url}));
+        try summary.append(a, "          what it installs runs as root here and on the new machine: trust it like code");
+    }
     try summary.append(a, try std.fmt.allocPrint(a, "disk      an esp of {d} MiB at /boot, and btrfs for the rest:", .{esp_mib}));
     try summary.append(a, "          @roots/1, @var, @home, @root, @srv, @usrlocal");
     if (f.encrypt) {
@@ -493,6 +503,35 @@ test "secrets the live system doesn't have stop the install before the disk" {
     const last = p.checks[p.checks.len - 1];
     try testing.expectEqualStrings("secrets", last.what);
     try testing.expectEqualStrings("not set here: vpn, wifi/home", last.found);
+}
+
+test "a remote config's source is in the plan" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f: Found = .{
+        .disk = "/dev/vdb",
+        .size = 20 << 30,
+        .whole = true,
+        .mounted = false,
+        .has_btrfs_progs = true,
+        .uefi = true,
+        .host = "atlas",
+        .packages = 412,
+        .users = &.{},
+        .services = 1,
+        .aur = 0,
+        .lock_date = "2026-09-29",
+        .today = "2026-09-29",
+        .update = true,
+        .has_kernel = true,
+        .has_grub = true,
+    };
+    for ((try plan(a, f)).summary) |l| try testing.expect(!std.mem.startsWith(u8, l, "source"));
+    f.source = "https://example.com/config.git";
+    const p = try plan(a, f);
+    try testing.expectEqualStrings("source    https://example.com/config.git", p.summary[2]);
+    try testing.expect(std.mem.indexOf(u8, p.summary[3], "runs as root") != null);
 }
 
 fn notes(lines: []const []const u8) usize {
