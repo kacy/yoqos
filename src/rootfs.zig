@@ -127,6 +127,31 @@ const Statfs = extern struct {
     spare: [4]i64,
 };
 
+/// gives os a mount namespace of its own, with every mount in it
+/// private, for commands that mount a root to build in. what they mount
+/// then never reaches another namespace, like a service's, where an
+/// unmount wouldn't follow and the mount would keep its disk busy, and it
+/// all goes when os exits. the programs os runs see it too. an esp that
+/// systemd automounts is mounted first, since its automount can't reach
+/// in here. call it before mounting anything: a mount from before is a
+/// copy here, and unmounting it here leaves the original. null when it
+/// worked, or why not.
+pub fn privateMounts(io: std.Io) ?[]const u8 {
+    const linux = std.os.linux;
+    for ([_][]const u8{ "/efi/EFI", "/boot/efi/EFI", "/boot/EFI" }) |p| _ = pathExists(io, p);
+    if (namespaceProblem(linux.errno(linux.unshare(linux.CLONE.NEWNS)))) |why| return why;
+    return namespaceProblem(linux.errno(linux.mount(null, "/", null, linux.MS.REC | linux.MS.PRIVATE, 0)));
+}
+
+fn namespaceProblem(e: std.os.linux.E) ?[]const u8 {
+    return switch (e) {
+        .SUCCESS => null,
+        .PERM => "can't give os mounts of its own: that needs root",
+        .NOMEM, .NOSPC => "can't give os mounts of its own: the kernel is out of room for them",
+        else => "can't give os mounts of its own",
+    };
+}
+
 pub fn pathExists(io: std.Io, path: []const u8) bool {
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
@@ -193,6 +218,12 @@ test "an atomic write keeps its mode, and a symlink in the way stays untouched" 
     try std.testing.expectEqualStrings("hash", try tmp.dir.readFileAlloc(io, "secret", a, .limited(16)));
     const st = try tmp.dir.statFile(io, "secret", .{});
     try std.testing.expectEqual(0o600, @intFromEnum(st.permissions) & 0o777);
+}
+
+test "why os can't have mounts of its own" {
+    try std.testing.expectEqual(null, namespaceProblem(.SUCCESS));
+    try std.testing.expectEqualStrings("can't give os mounts of its own: that needs root", namespaceProblem(.PERM).?);
+    try std.testing.expectEqualStrings("can't give os mounts of its own", namespaceProblem(.INVAL).?);
 }
 
 test "the boot time from /proc/stat" {
