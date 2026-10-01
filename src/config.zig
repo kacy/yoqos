@@ -143,6 +143,9 @@ pub const Boot = struct {
     /// boot unified kernel images: os builds one from each generation's
     /// kernel, microcode, and initramfs, and its menu entries start them.
     uki: ?Val(bool) = null,
+    /// sign those images, and the loader files os installs, with sbctl's
+    /// keys, for firmware that enforces secure boot. needs `uki`.
+    secure_boot: ?Val(bool) = null,
 };
 
 pub const Hardware = struct {
@@ -448,6 +451,10 @@ pub fn validate(c: *const Config, diags: *diag.List) !void {
     try validateSystem(c, diags);
     try validateRepos(c, diags);
     try validateModules(c, diags);
+    if (c.boot.secure_boot) |sb| {
+        const images = if (c.boot.uki) |u| u.v else false;
+        if (sb.v and !images) try diags.add(.bad_value, sb.src, "secure_boot needs uki", .{}, "secure boot signs unified kernel images; set `uki = true` in [boot] too");
+    }
     if (c.desktop.session_config) |sc| {
         if (c.desktop.session == null) try diags.add(.bad_value, sc.src, "session_config needs a session", .{}, "set `session = \"hyprland\"` in [desktop] too");
     }
@@ -884,6 +891,26 @@ test "kernel module names" {
     try validate(&f.part.config, &f.diags);
     try testing.expectEqual(1, f.diags.items.items.len);
     try f.expectDiag(0, .bad_value, 2, "\"bad name\" isn't a kernel module name");
+}
+
+test "secure boot needs unified kernel images" {
+    const f = try Fixture.init("[boot]\nsecure_boot = true\n");
+    defer f.deinit();
+    try validate(&f.part.config, &f.diags);
+    try testing.expectEqual(1, f.diags.items.items.len);
+    try f.expectDiag(0, .bad_value, 2, "secure_boot needs uki");
+    const off = try Fixture.init("[boot]\nuki = false\nsecure_boot = true\n");
+    defer off.deinit();
+    try validate(&off.part.config, &off.diags);
+    try testing.expectEqual(1, off.diags.items.items.len);
+    const on = try Fixture.init("[boot]\nuki = true\nsecure_boot = true\n");
+    defer on.deinit();
+    try validate(&on.part.config, &on.diags);
+    try testing.expectEqual(0, on.diags.items.items.len);
+    const neither = try Fixture.init("[boot]\nsecure_boot = false\n");
+    defer neither.deinit();
+    try validate(&neither.part.config, &neither.diags);
+    try testing.expectEqual(0, neither.diags.items.items.len);
 }
 
 test "a session's config needs a session" {
