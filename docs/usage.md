@@ -987,16 +987,21 @@ with E0133 and the `os secret set` to run, and `os status` lists the secret
 as failing. `os install` writes the files from the live system's values,
 so it checks that each one is set there before it touches the disk.
 
-no value ever shows up in what `os` prints or keeps: not in the plan, facts,
-status, events, the journal, error messages, the lock, or generation
-records. to tell whether a file needs rewriting, the observer hashes the
-file and the value with hmac-sha256, under a random key made on the first
-`os secret set` and kept beside the values in `/var/lib/yoq/secrets/.key`,
-and the plan compares those. anyone can check guesses against a plain
-sha-256 of a short password, but not against an hmac without the key, so a
-plan or facts document is still safe to share. the plan's hash covers the keyed
-hash, so `os apply <file>` won't write a value other than the one the plan
-was made for.
+no value ever shows up in what `os` prints or records: not in the config,
+the lock, the plan, facts, status, events, the journal, error messages, or
+a generation's json record. to tell whether a file needs rewriting, the
+observer hashes the file and the value with hmac-sha256, under a random key
+made on the first `os secret set` and kept beside the values in
+`/var/lib/yoq/secrets/.key`, and the plan compares those. anyone can check
+guesses against a plain sha-256 of a short password, but not against an
+hmac without the key, so a plan or facts document is still safe to share.
+the plan's hash covers the keyed hash, so `os apply <file>` won't write a
+value other than the one the plan was made for.
+
+the file itself is another matter: a generation's root holds it as it was
+written, readable by root only. so a rollback brings that file back until
+the next apply writes the current value, and `os secret rm` doesn't remove
+the copies in older generations. `os gc` does, when it removes them.
 
 reading values needs root, so `os plan` without root can't tell whether a
 file holds the current value, and only shows it when it's missing or its
