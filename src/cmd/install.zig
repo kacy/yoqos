@@ -517,6 +517,8 @@ const Installer = struct {
     /// first and not lazily where it can be, then the luks volume under
     /// it, which a lazily detached mount would keep busy.
     fn unmountAll(in: *Installer) void {
+        // what the install said goes out before any warning from here.
+        in.ctx.out.flush() catch {};
         const lazy = building.unmountTree(in.a, in.ctx.io, install.target, &.{}, true) catch &.{};
         for (lazy) |p| in.ctx.err.print("os: {s} was busy, so it was detached lazily; its disk stays in use until whatever holds it stops.\n", .{p}) catch {};
         in.closeLuks();
