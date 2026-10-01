@@ -39,6 +39,9 @@ pub const Entry = struct {
     /// they aren't in the root's own /boot: the newest entry's, when /boot
     /// is the esp, and every entry's for a bootloader that reads only fat.
     esp_dir: ?[]const u8 = null,
+    /// a unified kernel image in esp_dir, which the entry starts with its
+    /// args instead of the kernel and initrds, which are in the image.
+    uki: ?[]const u8 = null,
 
     /// where the root keeps its boot files, from the top of its filesystem.
     fn rootDir(e: Entry, a: Allocator) ![]const u8 {
@@ -151,6 +154,12 @@ pub fn grub(a: Allocator, c: Grub) ![]const u8 {
         // the newest entry notes that it was tried, so a fallback after it
         // counts, and an older entry picked by hand doesn't.
         if (std.mem.eql(u8, e.id, "head")) try out.appendSlice(a, "  if [ \"${yoq_trial_arg}\" ]; then set yoq_tried=1; save_env -f (${yoq_esp})/yoq/grubenv yoq_tried; fi\n");
+        // grub's chainloader passes what follows the file to it as its
+        // load options, which the image's stub makes the command line.
+        if (e.uki) |u| {
+            try out.print(a, "  insmod chain\n  chainloader {s}/{s} {s} ${{yoq_trial_arg}}\n}}\n", .{ dir, u, e.args });
+            continue;
+        }
         try out.print(a, "  linux {s}/{s} {s} ${{yoq_trial_arg}}\n  initrd", .{ dir, e.kernel, e.args });
         for (e.initrds) |i| try out.print(a, " {s}/{s}", .{ dir, i });
         try out.appendSlice(a, "\n}\n");
@@ -194,6 +203,10 @@ pub fn limineOne(a: Allocator, e: Entry) ![]const u8 {
 }
 
 fn limineEntry(a: Allocator, out: *std.ArrayList(u8), e: Entry) !void {
+    if (e.uki) |u| {
+        try out.print(a, "/{s}\n    protocol: efi\n    path: boot():{s}\n    cmdline: {s}\n", .{ try plainTitle(a, e.title), try e.path(a, u), e.args });
+        return;
+    }
     try out.print(a, "/{s}\n    protocol: linux\n    path: boot():{s}\n", .{ try plainTitle(a, e.title), try e.path(a, e.kernel) });
     for (e.initrds) |i| try out.print(a, "    module_path: boot():{s}\n", .{try e.path(a, i)});
     try out.print(a, "    cmdline: {s}\n", .{e.args});
@@ -269,8 +282,13 @@ pub fn sdboot(a: Allocator, entries: []const Entry) ![]const Named {
 /// one entry file, for `os uninstall` too, which leaves one of its own.
 pub fn sdbootEntry(a: Allocator, e: Entry, sort_key: []const u8, version: usize) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
-    try out.print(a, "# written by os. edits here are overwritten.\ntitle {s}\nsort-key {s}\nversion {d}\nlinux {s}\n", .{ try plainTitle(a, e.title), sort_key, version, try e.path(a, e.kernel) });
-    for (e.initrds) |i| try out.print(a, "initrd {s}\n", .{try e.path(a, i)});
+    try out.print(a, "# written by os. edits here are overwritten.\ntitle {s}\nsort-key {s}\nversion {d}\n", .{ try plainTitle(a, e.title), sort_key, version });
+    if (e.uki) |u| {
+        try out.print(a, "efi {s}\n", .{try e.path(a, u)});
+    } else {
+        try out.print(a, "linux {s}\n", .{try e.path(a, e.kernel)});
+        for (e.initrds) |i| try out.print(a, "initrd {s}\n", .{try e.path(a, i)});
+    }
     try out.print(a, "options {s}\n", .{e.args});
     return out.items;
 }
@@ -293,10 +311,11 @@ pub fn refind(a: Allocator, c: Refind) ![]const u8 {
     const all = if (try trialEntry(a, c.entries)) |t| try std.mem.concat(a, Entry, &.{ c.entries, &.{t} }) else c.entries;
     for (all) |e| {
         const volume = if (e.esp_dir != null) c.esp_part else c.root_part;
-        try out.print(a, "\nmenuentry \"{s}\" {{\n    volume {s}\n    loader {s}\n    options \"{s}", .{ try plainTitle(a, e.title), volume, try e.path(a, e.kernel), e.args });
+        try out.print(a, "\nmenuentry \"{s}\" {{\n    volume {s}\n    loader {s}\n    options \"{s}", .{ try plainTitle(a, e.title), volume, try e.path(a, e.uki orelse e.kernel), e.args });
         // the kernel loads its initrds itself, from its own volume; refind's
-        // initrd line takes only one.
-        for (e.initrds) |i| {
+        // initrd line takes only one. an image has them inside.
+        const initrds = if (e.uki == null) e.initrds else &.{};
+        for (initrds) |i| {
             const back = try e.path(a, i);
             std.mem.replaceScalar(u8, back, '/', '\\');
             try out.print(a, " initrd={s}", .{back});
@@ -548,6 +567,97 @@ test "systemd-boot's entry files" {
     , files[1].text);
     try testing.expect(std.mem.indexOf(u8, files[2].text, "sort-key yoq-trial\n") != null);
     try testing.expect(std.mem.endsWith(u8, files[2].text, "options root=UUID=r rw yoq.trial\n"));
+}
+
+/// entries that start unified kernel images on the esp: the newest one,
+/// and an older generation's, each with its own command line.
+const uki_entries = [_]Entry{
+    .{ .id = "head", .title = "yoq 3 · uki", .subvol = "/@roots/3", .kernel = "vmlinuz-linux", .initrds = &.{ "amd-ucode.img", "initramfs-linux.img" }, .args = "root=UUID=r rootflags=subvol=/@roots/3 rw", .esp_dir = "yoq/boot", .uki = "0123456789abcdef-yoq.efi" },
+    .{ .id = "gen-2", .title = "yoq 2", .subvol = "/@roots/boot-2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "root=UUID=r rootflags=subvol=/@roots/boot-2 rw", .esp_dir = "yoq/boot", .uki = "fedcba9876543210-yoq.efi" },
+};
+
+test "entries that start unified kernel images" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const g = try grub(a, .{ .esp_uuid = "41B2-0FB5", .root_uuid = "r", .default = "head", .entries = &uki_entries });
+    try testing.expect(std.mem.indexOf(u8, g, "--set=root") == null);
+    try testing.expect(std.mem.endsWith(u8, g,
+        \\menuentry "yoq 3 · uki" --id head {
+        \\  if [ "${yoq_trial_arg}" ]; then set yoq_tried=1; save_env -f (${yoq_esp})/yoq/grubenv yoq_tried; fi
+        \\  insmod chain
+        \\  chainloader (${yoq_esp})/yoq/boot/0123456789abcdef-yoq.efi root=UUID=r rootflags=subvol=/@roots/3 rw ${yoq_trial_arg}
+        \\}
+        \\
+        \\menuentry "yoq 2" --id gen-2 {
+        \\  insmod chain
+        \\  chainloader (${yoq_esp})/yoq/boot/fedcba9876543210-yoq.efi root=UUID=r rootflags=subvol=/@roots/boot-2 rw ${yoq_trial_arg}
+        \\}
+        \\
+    ));
+
+    try testing.expectEqualStrings(limine_begin ++
+        \\
+        \\/yoq 3 - uki
+        \\    protocol: efi
+        \\    path: boot():/yoq/boot/0123456789abcdef-yoq.efi
+        \\    cmdline: root=UUID=r rootflags=subvol=/@roots/3 rw
+        \\/yoq 2
+        \\    protocol: efi
+        \\    path: boot():/yoq/boot/fedcba9876543210-yoq.efi
+        \\    cmdline: root=UUID=r rootflags=subvol=/@roots/boot-2 rw
+        \\/yoq trial boot
+        \\    protocol: efi
+        \\    path: boot():/yoq/boot/0123456789abcdef-yoq.efi
+        \\    cmdline: root=UUID=r rootflags=subvol=/@roots/3 rw yoq.trial
+        \\
+    ++ limine_end ++ "\n", try limine(a, &uki_entries));
+
+    const sd = try sdboot(a, &uki_entries);
+    try testing.expectEqualStrings(
+        \\# written by os. edits here are overwritten.
+        \\title yoq 2
+        \\sort-key yoq
+        \\version 1
+        \\efi /yoq/boot/fedcba9876543210-yoq.efi
+        \\options root=UUID=r rootflags=subvol=/@roots/boot-2 rw
+        \\
+    , sd[1].text);
+    try testing.expectEqualStrings(
+        \\# written by os. edits here are overwritten.
+        \\title yoq trial boot
+        \\sort-key yoq-trial
+        \\version 2
+        \\efi /yoq/boot/0123456789abcdef-yoq.efi
+        \\options root=UUID=r rootflags=subvol=/@roots/3 rw yoq.trial
+        \\
+    , sd[2].text);
+
+    const r = try refind(a, .{ .esp_part = "esp-guid", .root_part = "", .entries = &uki_entries });
+    try testing.expectEqualStrings(
+        \\# written by os: one entry per generation. edits here are overwritten.
+        \\
+        \\menuentry "yoq 3 - uki" {
+        \\    volume esp-guid
+        \\    loader /yoq/boot/0123456789abcdef-yoq.efi
+        \\    options "root=UUID=r rootflags=subvol=/@roots/3 rw"
+        \\}
+        \\
+        \\menuentry "yoq 2" {
+        \\    volume esp-guid
+        \\    loader /yoq/boot/fedcba9876543210-yoq.efi
+        \\    options "root=UUID=r rootflags=subvol=/@roots/boot-2 rw"
+        \\}
+        \\
+        \\menuentry "yoq trial boot" {
+        \\    volume esp-guid
+        \\    loader /yoq/boot/0123456789abcdef-yoq.efi
+        \\    options "root=UUID=r rootflags=subvol=/@roots/3 rw yoq.trial"
+        \\}
+        \\
+        \\default_selection "yoq 3 - uki"
+        \\
+    , r);
 }
 
 test "refind can't take a quote in the kernel arguments" {
