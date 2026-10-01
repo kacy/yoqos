@@ -151,6 +151,15 @@
   when the menu after it signs and one there has no signature from
   sbctl's db key. the signed copy goes in beside the image, so a plan
   that fit could still stop at the menu write with the esp full.
+- the menu that records a generation going on trial keeps the default on
+  the generation it falls back to, and the trial's one-shot boot comes
+  after: grub.cfg's default, limine's and systemd-boot's default entry,
+  and refind's `default_selection`. the default moves when the health
+  check passes it. a power cut between the menu write and the trial used
+  to leave the new generation as the default with no trial and no
+  fallback. the trial is now set up before old generations are removed,
+  and if it can't be, the new generation becomes the default as the
+  message says.
 - `os secret set` syncs the new value before it renames it into place,
   and the directory after. a power cut right after a first `set` could
   leave an empty file under the secret's name, which then failed to

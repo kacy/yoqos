@@ -76,6 +76,32 @@ pub const Record = struct {
     pinned: bool = false,
 };
 
+/// the generation a trial of the newest of `records` falls back to, which
+/// stays the menu's default until the trial passes: with a trial already
+/// waiting for a reboot, the one that trial falls back to, `pending`, the
+/// last that booted, while it's there; otherwise the one before the
+/// newest. null with no generation before it.
+pub fn trialFallback(records: []const Record, pending: u32) ?u32 {
+    if (records.len < 2) return null;
+    if (pending != 0 and pending != records[records.len - 1].n and find(records, pending) != null) return pending;
+    return records[records.len - 2].n;
+}
+
+test "a trial falls back to the generation that booted last" {
+    const r = struct {
+        fn at(n: u32) Record {
+            return .{ .n = n, .time = n, .root = "@roots/1", .reason = "apply" };
+        }
+    }.at;
+    try testing.expectEqual(null, trialFallback(&.{r(1)}, 0));
+    try testing.expectEqual(3, trialFallback(&.{ r(1), r(3), r(4) }, 0));
+    // a trial for 4 waits still, from 3: 5 replaces it, and falls back to 3.
+    try testing.expectEqual(3, trialFallback(&.{ r(1), r(3), r(4), r(5) }, 3));
+    // unless gc took 3, or the pending one is the newest itself.
+    try testing.expectEqual(4, trialFallback(&.{ r(1), r(4), r(5) }, 3));
+    try testing.expectEqual(4, trialFallback(&.{ r(1), r(4), r(5) }, 5));
+}
+
 /// the subvolumes among `roots` (names in @roots) and `gens` (names in
 /// @gens) that belong to no generation in `records`, as paths from the
 /// top level. a run cut off leaves these: a staged build stopped with

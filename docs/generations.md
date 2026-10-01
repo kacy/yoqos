@@ -346,7 +346,10 @@ first one behind. `os add` and the like still edit the config and the
 lock, and `os apply` after the reboot makes the change.
 
 the next boot runs the new generation, while the menu's default stays on
-the one before. once the machine is up, `yoq-health.service` checks it:
+the one before. the menu that adds the new generation already keeps that
+default, and the trial's one-shot boot is set up after it, so a power
+cut in between boots the generation before, not one nothing has tried.
+once the machine is up, `yoq-health.service` checks it:
 systemd isn't in maintenance or shutting down, the display manager is
 running if there is one, and every service the config turns on is running.
 a oneshot service that ran and finished counts as running. when the config
