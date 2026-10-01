@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const enable = @import("enable.zig");
+const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 
 /// where the new machine is mounted while it's built.
@@ -105,6 +106,11 @@ pub fn isTpm2(version_major: ?[]const u8) bool {
     return std.mem.eql(u8, std.mem.trim(u8, version_major orelse return false, " \n"), "2");
 }
 
+/// what --tpm protects without secure boot: the tpm hands over the key to
+/// whatever boots, and only secure boot keeps that from being an image
+/// someone put on the esp, or a command line with init=/bin/sh in it.
+pub const tpm_note = "note: the tpm unlocks the disk at boot without a passphrase. without secure boot, someone who can change the boot files can get a shell with the disk unlocked, so it protects a powered-off disk, not a machine left alone. turn on uki and secure_boot under [boot] on the new machine to close that.";
+
 pub const Plan = struct {
     checks: []const enable.Check,
     /// the lines that describe the install, before the question.
@@ -198,6 +204,7 @@ pub fn plan(a: Allocator, f: Found) !Plan {
     if (!f.firmware and !f.virtual) try summary.append(a, "note: no linux-firmware in packages. wi-fi and some graphics won't work without it.");
     if (!f.network) try summary.append(a, "note: nothing in the config brings up a network, like `networkmanager = true` in [services].");
     if (!f.sudo_user) try summary.append(a, "note: no user in wheel with sudo installed, so only root can run anything as root.");
+    if (f.encrypt and f.tpm and !f.secure_boot) try summary.append(a, tpm_note);
     return .{ .checks = checks.items, .summary = summary.items };
 }
 
@@ -421,6 +428,19 @@ test "an encrypted install" {
     p = try plan(a, f);
     try testing.expect(p.ready());
     try testing.expectEqualStrings("          the tpm unlocks it by itself, and the passphrase still works", p.summary[5]);
+    // without secure boot, the tpm keeps a powered-off disk safe, and the
+    // plan says so.
+    try testing.expectEqualStrings(tpm_note, p.summary[p.summary.len - 1]);
+    try testing.expect(std.mem.startsWith(u8, tpm_note, "note: "));
+    // with it in the config, nothing to note (the install waits for it,
+    // though; see "secure boot waits for the installed machine").
+    f.secure_boot = true;
+    try testing.expect(!lists.contains((try plan(a, f)).summary, tpm_note));
+    f.secure_boot = false;
+    // the passphrase alone has nothing to note.
+    f.tpm = false;
+    try testing.expect(!lists.contains((try plan(a, f)).summary, tpm_note));
+    f.tpm = true;
 
     try testing.expectEqualStrings("rd.luks.name=0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b=root", try luksArgs(a, "0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b", false));
     try testing.expectEqualStrings("rd.luks.name=u=root rd.luks.options=tpm2-device=auto", try luksArgs(a, "u", true));
