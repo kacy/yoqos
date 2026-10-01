@@ -260,6 +260,7 @@ const Installer = struct {
             .has_grub = l.package("grub") != null,
             .has_btrfs_progs = l.package("btrfs-progs") != null,
             .encrypt = in.encrypt,
+            .secure_boot = if (c.boot.secure_boot) |v| v.v else false,
             .tpm = in.tpm,
             .passphrase_file = in.secret != null,
             .interactive = ctx.interactive,

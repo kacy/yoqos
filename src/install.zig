@@ -65,6 +65,9 @@ pub const Found = struct {
     /// the config has `[boot] encrypt = true`, which the new machine's
     /// initramfs needs to unlock its root.
     config_encrypt: bool = false,
+    /// the config has `[boot] secure_boot = true`, which needs keys the
+    /// new machine doesn't have yet.
+    secure_boot: bool = false,
     /// the live system has a tpm, and the lock has tpm2-tss, which the new
     /// machine's initramfs uses to unlock with it.
     has_tpm: bool = false,
@@ -134,6 +137,12 @@ pub fn plan(a: Allocator, f: Found) !Plan {
         .ok = f.has_btrfs_progs,
         .found = if (f.has_btrfs_progs) "in the lock" else "no btrfs-progs in the lock",
         .fix = "the new machine's root is btrfs: os keeps its generations with btrfs-progs, and the initramfs checks the root with its fsck.btrfs. add btrfs-progs to packages.",
+    });
+    if (f.secure_boot) try checks.append(a, .{
+        .what = "secure boot",
+        .ok = false,
+        .found = "[boot] secure_boot = true",
+        .fix = "its images are signed with the machine's own keys, which don't exist before it does. install without it, then make keys with sbctl on the new machine and turn it on there.",
     });
     var summary: std.ArrayList([]const u8) = .empty;
     try summary.append(a, try std.fmt.allocPrint(a, "install {s} on {s} ({d} GiB). everything on it is erased.", .{ f.host, f.disk, f.size >> 30 }));
@@ -382,6 +391,35 @@ test "a passphrase file's passphrase" {
     try testing.expectEqualStrings("two words ", passphrase(&c).?);
     var d = "\n".*;
     try testing.expectEqual(null, passphrase(&d));
+}
+
+test "secure boot waits for the installed machine" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f: Found = .{
+        .disk = "/dev/vdb",
+        .size = 20 << 30,
+        .whole = true,
+        .mounted = false,
+        .has_btrfs_progs = true,
+        .uefi = true,
+        .host = "atlas",
+        .packages = 412,
+        .users = &.{},
+        .services = 1,
+        .aur = 0,
+        .lock_date = "2026-09-29",
+        .today = "2026-09-29",
+        .update = true,
+        .has_kernel = true,
+        .has_grub = true,
+    };
+    try testing.expect((try plan(a, f)).ready());
+    f.secure_boot = true;
+    const p = try plan(a, f);
+    try testing.expect(!p.ready());
+    try testing.expectEqualStrings("secure boot", p.checks[p.checks.len - 1].what);
 }
 
 fn notes(lines: []const []const u8) usize {
