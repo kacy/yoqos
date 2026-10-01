@@ -174,6 +174,9 @@
   replaced by a signed copy of refind's own. before, `os` signed whatever
   file sat there, so anything that could write to the esp could get its
   own efi binary signed with the machine's key.
+- `os secret set`, anything that decrypts a secret, and `os install
+  --passphrase-file` mark the process as not dumpable before they hold
+  the value, so it stays out of core dumps and out of /proc/<pid>/mem.
 
 ## 0.1.3
 

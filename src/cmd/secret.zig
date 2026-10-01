@@ -36,6 +36,7 @@ pub fn secretCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
 fn set(ctx: *Context, w: *cli.Work, store: secrets.Store, name: []const u8) !u8 {
     const a = w.allocator();
+    secrets.keepPrivate();
     const buf = try a.alloc(u8, secrets.max_len + 1);
     defer secrets.wipe(buf);
     const value = try readValue(ctx, name, buf) orelse return 1;

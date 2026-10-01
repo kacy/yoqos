@@ -52,6 +52,13 @@ pub fn keyedHex(key: *const Key, bytes: []const u8) [64]u8 {
     return std.fmt.bytesToHex(mac, .lower);
 }
 
+/// keeps this process's memory out of core dumps, and out of reach of
+/// other processes of its user, through ptrace or /proc/<pid>/mem, from
+/// before it holds a secret or a passphrase until it exits.
+pub fn keepPrivate() void {
+    _ = linux.prctl(@intFromEnum(linux.PR.SET_DUMPABLE), 0, 0, 0, 0);
+}
+
 /// zeroes a value once it's been used, in a way the compiler keeps.
 pub fn wipe(value: []u8) void {
     std.crypto.secureZero(u8, value);
@@ -197,6 +204,7 @@ pub const System = struct {
         if (problem(ptr) != null) return .unknown;
         const path = try s.credPath(a, name);
         if (!rootfs.pathExists(s.io, path)) return .missing;
+        keepPrivate();
         const buf = try a.alloc(u8, max_len + 1);
         switch (try exec.capture(a, s.io, try decryptArgv(a, name, path), buf)) {
             .ok => |v| return .{ .value = v },
@@ -406,6 +414,19 @@ test "secret names" {
     for ([_][]const u8{ "", "/wifi", "wifi/", "a//b", "../x", "a/../b", "a/./b", ".key", "a/.hidden", "has space", "a\nb", "a:b", "a@b", "a" ** 129 }) |n| {
         try testing.expect(nameProblem(n) != null);
     }
+}
+
+test "a process that holds a secret can't be dumped" {
+    // in a child, so the test runner itself stays as it is.
+    const pid: linux.pid_t = @intCast(linux.fork());
+    if (pid == 0) {
+        keepPrivate();
+        linux.exit_group(@intCast(linux.prctl(@intFromEnum(linux.PR.GET_DUMPABLE), 0, 0, 0, 0)));
+    }
+    var status: u32 = 0;
+    _ = linux.waitpid(pid, &status, 0);
+    try testing.expect(linux.W.IFEXITED(status));
+    try testing.expectEqual(0, linux.W.EXITSTATUS(status));
 }
 
 test "keyed hashes depend on the key" {
