@@ -260,13 +260,15 @@ pub fn units(a: Allocator, os_path: []const u8) ![4]Unit {
         },
         .{
             .name = "yoq-watchdog.timer",
+            // from when the root's systemd starts, not the kernel: time
+            // spent typing a luks passphrase in the initramfs doesn't count.
             .text =
             \\[Unit]
             \\Description=Reboot a generation on trial that doesn't finish booting
             \\ConditionKernelCommandLine=yoq.trial
             \\
             \\[Timer]
-            \\OnBootSec=5min
+            \\OnStartupSec=5min
             \\AccuracySec=10s
             \\
             \\[Install]
