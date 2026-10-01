@@ -17,6 +17,7 @@ const trial = @import("../trial.zig");
 const journal = @import("../journal.zig");
 const rootfs = @import("../rootfs.zig");
 const secureboot = @import("../secureboot.zig");
+const menu = @import("../menu.zig");
 const Context = cli.Context;
 
 pub fn historyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
@@ -136,7 +137,7 @@ fn rollbackGeneration(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, wan
     var left: std.ArrayList([]const u8) = .empty;
     const m = try openWayBack(ctx, a, boot, &left) orelse return 1;
     defer m.close();
-    if (secureBootWarning(boot.secure_boot, try m.bootsImage(source))) |w| try ctx.err.print("os: {s}\n", .{w});
+    if (secureBootWarning(m.loader, boot.secure_boot, try m.bootsImage(source))) |w| try ctx.err.print("os: {s}\n", .{w});
     if (try cli.approve(ctx, yes, "roll back", "roll back?")) |code| return code;
     const made = try startFrom(ctx, a, &m, boot, target, source, reason) orelse return 1;
     try warnUnsigned(ctx, a, left.items);
@@ -163,8 +164,10 @@ pub fn warnUnsigned(ctx: *Context, a: std.mem.Allocator, left: []const []const u
 /// what to say before rolling back to a generation that boots its kernel
 /// and initramfs files, from before `[boot] uki`, while the firmware
 /// enforces secure boot: those have no signature, so it won't start.
-fn secureBootWarning(enforced: ?bool, boots_image: bool) ?[]const u8 {
-    if (boots_image or !(enforced orelse false)) return null;
+/// limine loads a kernel itself, without the firmware's check, as long
+/// as its config's checksum isn't enrolled, which os's edits rule out.
+fn secureBootWarning(loader: menu.Loader, enforced: ?bool, boots_image: bool) ?[]const u8 {
+    if (loader == .limine or boots_image or !(enforced orelse false)) return null;
     return "that generation is from before [boot] uki, and boots a kernel without a signature, which the firmware refuses while it enforces secure boot. turn secure boot off in the firmware setup before the next boot.";
 }
 
@@ -328,10 +331,13 @@ fn logOf(ctx: *Context, a: std.mem.Allocator, top: []const u8) !?[]const history
 const TestRun = cli.TestRun;
 
 test "a rollback to a generation without an image, under secure boot" {
-    try std.testing.expect(secureBootWarning(true, false) != null);
-    try std.testing.expectEqual(null, secureBootWarning(true, true));
-    try std.testing.expectEqual(null, secureBootWarning(false, false));
-    try std.testing.expectEqual(null, secureBootWarning(null, false));
+    try std.testing.expect(secureBootWarning(.@"systemd-boot", true, false) != null);
+    try std.testing.expect(secureBootWarning(.refind, true, false) != null);
+    // limine loads the kernel itself.
+    try std.testing.expectEqual(null, secureBootWarning(.limine, true, false));
+    try std.testing.expectEqual(null, secureBootWarning(.@"systemd-boot", true, true));
+    try std.testing.expectEqual(null, secureBootWarning(.@"systemd-boot", false, false));
+    try std.testing.expectEqual(null, secureBootWarning(.@"systemd-boot", null, false));
 }
 
 test "history lists generations, and rollback needs one to go back to" {

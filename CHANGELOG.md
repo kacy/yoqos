@@ -115,6 +115,9 @@
   enforces secure boot and arch's kernel in `/boot` has no signature. the
   entry it left boots that kernel instead of `os`'s signed images, which
   the firmware refused.
+- `os rollback` on limine no longer warns that secure boot refuses a
+  generation from before `[boot] uki`. limine loads that kernel itself,
+  without the firmware's check, so it starts.
 
 ## 0.1.3
 

@@ -449,7 +449,8 @@ next boot tries again once there's room.
   doesn't boot under secure boot, and limine stops booting if its config's
   checksum was enrolled (`limine enroll-config`), since `os` edits
   limine.conf. a generation from before `uki` boots a kernel without a
-  signature, so the firmware refuses it while secure boot is on.
+  signature, so on systemd-boot and refind the firmware refuses it while
+  secure boot is on.
 
 ## later
 

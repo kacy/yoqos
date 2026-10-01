@@ -1185,9 +1185,11 @@ them. an image is signed when it's written, and while the running
 generation or the new one has `secure_boot`, every menu write signs
 whatever images the menu boots, so the generation a failed trial falls
 back to starts too. a generation from before `uki` boots a plain kernel,
-which firmware enforcing secure boot refuses; turn secure boot off in the
-firmware before you boot one. `os rollback` says so before it goes back
-to one. turning `secure_boot` off stops the
+which firmware enforcing secure boot refuses on systemd-boot and refind;
+turn secure boot off in the firmware before you boot one. `os rollback`
+says so before it goes back to one. limine loads a plain kernel itself,
+without asking the firmware, as long as its config's checksum isn't
+enrolled. turning `secure_boot` off stops the
 signing only once the firmware stops enforcing secure boot: until then,
 as long as sbctl has keys, every menu write still signs, so a generation
 without the key starts too.
