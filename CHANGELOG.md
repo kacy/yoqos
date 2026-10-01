@@ -118,6 +118,11 @@
 - `os rollback` on limine no longer warns that secure boot refuses a
   generation from before `[boot] uki`. limine loads that kernel itself,
   without the firmware's check, so it starts.
+- the journal's lines go on the end of the file in place, so an event
+  another os records at the same moment, like the health check at boot,
+  can't drop an apply's `done` line, and a nearly full disk only needs
+  room for the line. a line a power cut left half written stays on its
+  own.
 
 ## 0.1.3
 
