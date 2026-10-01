@@ -1,9 +1,19 @@
 # changelog
 
-## unreleased
+## 0.1.3
+
+os can now tell you what it did, as json events, and why a file or unit is
+on the machine. `os adopt` takes /etc files into the config, and installs
+and applies show progress while packages download and install, which a
+stalled-looking vm install showed was missing. most of the rest is fixes
+that new failure tests and fuzzing turned up: power cuts, full disks and
+esps, and mkinitcpio drop-ins that never reached a staged initramfs.
 
 ### new
 
+- `os apply`, `os install`, `os update`, and `os rollback` show progress
+  while libalpm downloads and installs packages: one updating line per step
+  on a terminal, a few lines per step in a log, and nothing under `--json`.
 - `os events` prints what os did as json lines: applies, config commits,
   generations, rollbacks, trials, gc, pins, enable-rollback, installs, and
   pacman runs outside os. `--follow` keeps printing new ones, and `--since`
