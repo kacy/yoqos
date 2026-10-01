@@ -28,8 +28,8 @@ pub fn secretCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (!takes_name) return list(ctx, &w, store);
     const name = words[1];
     if (secrets.nameProblem(name)) |hint| return cli.fail(ctx, "\"{s}\" isn't a secret's name: {s}.", .{ name, hint });
-    // the store is the machine's whatever --root says, and so is the lock
-    // an apply holds while it reads values.
+    // the store is the machine's whatever --root says, so the machine's
+    // lock is taken whatever it says too.
     if (std.os.linux.geteuid() == 0 and try cli.refused(ctx, cli.lockMachine())) return 1;
     return if (eql(verb, "set")) set(ctx, &w, store, name) else remove(ctx, &w, store, name);
 }
@@ -42,15 +42,21 @@ fn set(ctx: *Context, w: *cli.Work, store: secrets.Store, name: []const u8) !u8 
     if (value.len == 0) return cli.fail(ctx, "the value is empty, so nothing was kept.", .{});
     if (value.len > secrets.max_len) return cli.fail(ctx, "the value is longer than {d} bytes, so nothing was kept.", .{secrets.max_len});
     if (try store.set(a, name, value)) |why| return cli.fail(ctx, "can't keep the secret {s}: {s}", .{ name, why });
-    const entry: secrets.Entry = .{ .name = name, .set = true, .files = try filesUsing(w, name) };
-    if (ctx.json) {
-        try output.writeDoc(ctx.out, secrets.entry_schema, entry);
-    } else if (entry.files.len == 0) {
+    const files = try filesUsing(w, name);
+    if (ctx.json) return writeEntry(ctx, .{ .name = name, .set = true, .files = files });
+    if (files.len == 0) {
         try ctx.out.print("kept {s}. the config doesn't use it yet; `[files.\"<path>\"] secret = \"{s}\"` writes it to a file.\n", .{ name, name });
-    } else {
-        try ctx.out.print("kept {s}. `os apply` writes it to {s}.\n", .{ name, try std.mem.join(a, ", ", entry.files) });
-    }
+    } else try ctx.out.print("kept {s}. `os apply` writes it to {s}.\n", .{ name, try joined(a, files) });
     return 0;
+}
+
+fn writeEntry(ctx: *Context, entry: secrets.Entry) !u8 {
+    try output.writeDoc(ctx.out, secrets.entry_schema, entry);
+    return 0;
+}
+
+fn joined(a: Allocator, paths: []const []const u8) ![]const u8 {
+    return std.mem.join(a, ", ", paths);
 }
 
 /// the value, into `buf`: typed twice when stdin is a terminal, without
@@ -115,14 +121,11 @@ fn prompt(ctx: *Context, into: []u8) !?[]u8 {
 fn remove(ctx: *Context, w: *cli.Work, store: secrets.Store, name: []const u8) !u8 {
     const a = w.allocator();
     if (try store.remove(a, name)) |why| return cli.fail(ctx, "{s}.", .{why});
-    const entry: secrets.Entry = .{ .name = name, .set = false, .files = try filesUsing(w, name) };
-    if (ctx.json) {
-        try output.writeDoc(ctx.out, secrets.entry_schema, entry);
-    } else if (entry.files.len == 0) {
+    const files = try filesUsing(w, name);
+    if (ctx.json) return writeEntry(ctx, .{ .name = name, .set = false, .files = files });
+    if (files.len == 0) {
         try ctx.out.print("removed {s}.\n", .{name});
-    } else {
-        try ctx.out.print("removed {s}. the config still writes it to {s}, so plans fail until it's set again or those entries go. the files stay as they are.\n", .{ name, try std.mem.join(a, ", ", entry.files) });
-    }
+    } else try ctx.out.print("removed {s}. the config still writes it to {s}, so plans fail until it's set again or those entries go. the files stay as they are.\n", .{ name, try joined(a, files) });
     return 0;
 }
 
@@ -130,13 +133,10 @@ fn list(ctx: *Context, w: *cli.Work, store: secrets.Store) !u8 {
     const a = w.allocator();
     var entries: std.ArrayList(secrets.Entry) = .empty;
     for (try store.names(a)) |n| try entries.append(a, .{ .name = n, .set = true });
-    const uses = try configUses(w);
-    for (uses) |u| {
-        const i = lists.indexOf(entries.items, "name", u.name) orelse blk: {
-            try entries.append(a, .{ .name = u.name, .set = false });
-            break :blk entries.items.len - 1;
-        };
-        const e = &entries.items[i];
+    for (try configUses(w)) |u| {
+        // a name the config uses but this machine doesn't keep is missing.
+        if (lists.indexOf(entries.items, "name", u.name) == null) try entries.append(a, .{ .name = u.name, .set = false });
+        const e = &entries.items[lists.indexOf(entries.items, "name", u.name).?];
         e.files = try std.mem.concat(a, []const u8, &.{ e.files, &.{u.path} });
     }
     lists.sortByField(secrets.Entry, "name", entries.items);
@@ -148,10 +148,10 @@ fn list(ctx: *Context, w: *cli.Work, store: secrets.Store) !u8 {
     for (entries.items) |e| {
         try ctx.out.print("{s: <24} ", .{e.name});
         if (!e.set) {
-            try ctx.out.print("missing: `os secret set {s}`, for {s}\n", .{ e.name, try std.mem.join(a, ", ", e.files) });
+            try ctx.out.print("missing: `os secret set {s}`, for {s}\n", .{ e.name, try joined(a, e.files) });
         } else if (e.files.len == 0) {
             try ctx.out.writeAll("not in the config\n");
-        } else try ctx.out.print("{s}\n", .{try std.mem.join(a, ", ", e.files)});
+        } else try ctx.out.print("{s}\n", .{try joined(a, e.files)});
     }
     return 0;
 }
