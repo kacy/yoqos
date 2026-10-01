@@ -83,6 +83,7 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
                 .fix = "trial boots need these. `os uninstall` then `os enable-rollback` puts them back, or copy them from an older generation.",
             });
         }
+        if (try enable.luksCheck(a, &b)) |c| try checks.append(a, c);
         if (b.esp) |esp| {
             const room = try freeBytes(ctx, a, esp);
             try checks.append(a, .{
