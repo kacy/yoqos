@@ -18,7 +18,8 @@ pub fn main(init: std.process.Init) !void {
     var in_buf: [1024]u8 = undefined;
     const stdin = std.Io.File.stdin();
     var in = stdin.reader(init.io, &in_buf);
-    const tty = (stdout.isTty(init.io) catch false) and (stdin.isTty(init.io) catch false);
+    const in_tty = stdin.isTty(init.io) catch false;
+    const tty = (stdout.isTty(init.io) catch false) and in_tty;
     const err_tty = std.Io.File.stderr().isTty(init.io) catch false;
 
     var disk_files: disk.Files = .{ .io = init.io };
@@ -38,6 +39,7 @@ pub fn main(init: std.process.Init) !void {
         .files = disk_files.files(),
         .in = &in.interface,
         .interactive = tty,
+        .in_tty = in_tty,
         .in_own_transaction = env.get(alpm.own_env) != null,
         .aur_url = env.get("YOQ_AUR") orelse aur.default_url,
         .editor = env.get("VISUAL") orelse env.get("EDITOR") orelse "vi",

@@ -51,15 +51,15 @@ fn set(ctx: *Context, w: *cli.Work, store: secrets.Store, name: []const u8) !u8 
     return 0;
 }
 
-/// the value, into `buf`: typed twice at a terminal, without echo, or
-/// else everything on stdin, byte for byte. null after saying why there's
-/// none.
+/// the value, into `buf`: typed twice when stdin is a terminal, without
+/// echo, even with --json or stdout elsewhere, or else everything on
+/// stdin, byte for byte. null after saying why there's none.
 fn readValue(ctx: *Context, name: []const u8, buf: []u8) !?[]u8 {
     const in = ctx.in orelse {
         try ctx.err.writeAll("os: there's no input to read the value from.\n");
         return null;
     };
-    if (!ctx.interactive) {
+    if (!ctx.in_tty) {
         const n = in.readSliceShort(buf) catch {
             try ctx.err.writeAll("os: can't read the value from stdin.\n");
             return null;
@@ -67,9 +67,10 @@ fn readValue(ctx: *Context, name: []const u8, buf: []u8) !?[]u8 {
         return buf[0..n];
     }
     const half = buf.len / 2;
-    try ctx.out.print("value for {s}: ", .{name});
+    // the questions go to stderr, so --json output stays one document.
+    try ctx.err.print("value for {s}: ", .{name});
     const first = try prompt(ctx, buf[0..half]) orelse return null;
-    try ctx.out.writeAll("again: ");
+    try ctx.err.writeAll("again: ");
     const again = try prompt(ctx, buf[half..]) orelse return null;
     if (!std.mem.eql(u8, first, again)) {
         try ctx.err.writeAll("os: the two didn't match, so nothing was kept.\n");
@@ -82,13 +83,13 @@ fn readValue(ctx: *Context, name: []const u8, buf: []u8) !?[]u8 {
 /// reads the answer to the question just printed, with echo off, and
 /// copies it into `into`. null at the end of input.
 fn prompt(ctx: *Context, into: []u8) !?[]u8 {
-    try ctx.out.flush();
+    try ctx.err.flush();
     if (ctx.set_echo) |echo| echo(false);
     const line = ctx.in.?.takeDelimiter('\n') catch null;
     if (ctx.set_echo) |echo| {
         echo(true);
         // the newline typed wasn't echoed.
-        try ctx.out.writeByte('\n');
+        try ctx.err.writeByte('\n');
     }
     const got = std.mem.trimEnd(u8, line orelse {
         try ctx.err.writeAll("os: no value was typed, so nothing was kept.\n");
@@ -220,11 +221,21 @@ test "set at a terminal asks twice" {
     try testing.expectEqualStrings("hunter2", mem.values.get("wifi/home").?);
     try testing.expect(std.mem.indexOf(u8, t.out.buffered(), "hunter2") == null);
 
+    // with --json, the questions stay off stdout, and the value is still
+    // typed without echo.
+    t.input = "hunter4\nhunter4\n";
+    try run(&t, &mem, &.{ "--json", "secret", "set", "wifi/home" });
+    try testing.expectEqual(0, t.code);
+    try testing.expectEqualStrings("hunter4", mem.values.get("wifi/home").?);
+    const doc = try std.json.parseFromSlice(std.json.Value, testing.allocator, t.out.buffered(), .{});
+    doc.deinit();
+    try testing.expectEqualStrings("value for wifi/home: again: ", t.err.buffered());
+
     t.input = "hunter2\nhunter3\n";
     try run(&t, &mem, &.{ "secret", "set", "wifi/home" });
     try testing.expectEqual(1, t.code);
-    try testing.expectEqualStrings("os: the two didn't match, so nothing was kept.\n", t.err.buffered());
-    try testing.expectEqualStrings("hunter2", mem.values.get("wifi/home").?);
+    try testing.expectEqualStrings("value for wifi/home: again: os: the two didn't match, so nothing was kept.\n", t.err.buffered());
+    try testing.expectEqualStrings("hunter4", mem.values.get("wifi/home").?);
 }
 
 test "plan, status, why, and list never show a secret's value" {

@@ -68,6 +68,9 @@ pub const Context = struct {
     /// stdin and stdout are terminals and --json is off.
     in: ?*std.Io.Reader = null,
     interactive: bool = false,
+    /// stdin is a terminal, whatever stdout is and --json says. a secret's
+    /// value typed there is read without echo.
+    in_tty: bool = false,
     /// this process runs under one of os's own transactions, as the drift
     /// hook does then.
     in_own_transaction: bool = false,
@@ -685,10 +688,12 @@ pub const TestRun = struct {
             t.reader = .fixed(text);
             t.ctx.in = &t.reader;
             t.ctx.interactive = true;
+            t.ctx.in_tty = true;
         }
         if (t.in) |r| {
             t.ctx.in = r;
             t.ctx.interactive = true;
+            t.ctx.in_tty = true;
         }
         if (t.piped) |text| {
             t.reader = .fixed(text);

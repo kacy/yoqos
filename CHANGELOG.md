@@ -89,6 +89,9 @@
   missing used to stop the install halfway, after the disk was erased.
 - ctrl-c at `os secret set`'s prompt puts the terminal's echo back before
   `os` quits.
+- `os secret set` asks for the value without echo whenever stdin is a
+  terminal, with `--json` or stdout redirected too, where it used to read
+  it with echo on. its questions go to stderr.
 
 ## 0.1.3
 
