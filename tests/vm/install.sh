@@ -43,7 +43,11 @@ check "/usr/local/bin/os install /root/machines --disk /dev/vdc --tpm --passphra
 check "cryptsetup isLuks --type luks2 /dev/vdc2 && echo luks2" luks2
 check "cryptsetup luksDump /dev/vdc2 | grep -c 'systemd-tpm2'" 1
 check "printf 'correct horse battery' | cryptsetup open --test-passphrase /dev/vdc2 && echo opens" opens
+# if it's still open, what holds it: a mount in another namespace, a
+# holder, a loop device, or gpg's daemons for the build's keyring.
+on_failure='echo --- namespaces with it mounted; for f in $(grep -l yoq-install /proc/[0-9]*/mountinfo 2>/dev/null); do d=${f%/mountinfo}; echo "$d $(cat $d/comm 2>/dev/null)"; done; echo --- dmsetup; dmsetup info -c; echo --- holders; ls /sys/block/$(basename $(readlink -f /dev/mapper/yoq-install))/holders; echo --- mounts; findmnt -rno TARGET,SOURCE | grep -e yoq -e mapper; echo --- loop; losetup -a; echo --- gpg; ps -eo pid,comm,args | grep -e gpg -e keyboxd -e dirmngr | grep -v grep'
 check "test -e /dev/mapper/yoq-install && echo open || echo closed" closed
+on_failure=
 serial_console /dev/vdc1
 
 "$vm" start-installed
