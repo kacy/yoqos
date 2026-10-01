@@ -80,6 +80,24 @@ check "grep -c 'root=UUID=[^ ]* rootflags=[^ ]*subvol=/@roots/[0-9]*' /proc/cmdl
 "$vm" ssh "sed -i '/^options /d' $entries/yoq-head.conf"
 check "grep -c '^options' $entries/yoq-head.conf || true" 0
 
+# an initramfs planted on the esp goes into the root's copy at the next
+# generation, but never into a signed image: os builds that one in the
+# root with mkinitcpio, so the machine still boots.
+"$vm" ssh "echo not an initramfs > $VM_ESP/initramfs-linux.img"
+"$vm" ssh "/usr/local/bin/os add --yes tree" | tail -n 1
+on_trial no
+# still there: nothing in that apply wrote the initramfs.
+check "grep -c 'not an initramfs' $VM_ESP/initramfs-linux.img" 1
+"$vm" reboot
+settled
+check "f=\$(ls /sys/firmware/efi/efivars/LoaderEntrySelected-*) && tail -c +5 \$f | tr -d '\\000'" yoq-head.conf
+check "$(efivar SecureBoot)" 1
+check "grep -c 'root=UUID=[^ ]* rootflags=[^ ]*subvol=/@roots/[0-9]*' /proc/cmdline" 1
+# the real one back, and the package out again.
+"$vm" ssh "/usr/bin/mkinitcpio -P >/dev/null 2>&1"
+"$vm" ssh "/usr/local/bin/os remove --yes tree" | tail -n 1
+on_trial no
+
 # a trial whose kernel can't start: a signed image of its own, with a
 # garbage initramfs, so the firmware runs it and the kernel panics. it has
 # the running command line in it, with panic=10, since the entry passes
