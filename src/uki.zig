@@ -89,20 +89,23 @@ pub fn signedKernel(kernels: []const Kernel, boot_name: []const u8, boot_sum: ?[
 /// the command that builds an initramfs for kernel `version` in the root
 /// at `root`, through `chroot` (one with /proc, /sys, /dev, and /run
 /// mounted, or a stand-in in tests), so it's the root's own mkinitcpio,
-/// config, and modules. autodetect stays out, since it would look at the
-/// machine, not the root: the image is generic, and bigger. early
-/// microcode comes from mkinitcpio's microcode hook, from the root's
-/// /usr/lib/firmware.
+/// config, and modules. autodetect stays in: a signed image is only built
+/// on the machine that boots it, since `os install` and clean builds
+/// refuse secure boot, so what autodetect finds in /sys is right, and the
+/// image is about as big as the root's own. early microcode comes from
+/// mkinitcpio's microcode hook, from the root's /usr/lib/firmware.
 pub fn mkinitcpioArgv(a: Allocator, chroot: []const []const u8, root: []const u8, version: []const u8, output: []const u8) ![]const []const u8 {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(a, chroot);
-    try argv.appendSlice(a, &.{ root, "/usr/bin/mkinitcpio", "-k", version, "-S", "autodetect", "-g", output });
+    try argv.appendSlice(a, &.{ root, "/usr/bin/mkinitcpio", "-k", version, "-g", output });
     return argv.items;
 }
 
-/// about how much bigger an initramfs without autodetect is than the one
-/// mkinitcpio's presets build, for room on the esp.
-pub const generic_initramfs_factor = 3;
+/// the room an initramfs os builds for a signed image takes, from the size
+/// of the root's own: about the same, with an eighth to spare.
+pub fn signedInitramfs(size: u64) u64 {
+    return size +| size / 8;
+}
 
 /// how an image's name ends.
 pub const suffix = "-yoq.efi";
@@ -212,7 +215,7 @@ test "mkinitcpio's arguments" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const argv = try mkinitcpioArgv(arena.allocator(), &.{"chroot"}, "/run/yoq/private/top/@roots/4", "6.17.1-arch1-1", "/tmp/yoq-uki/initramfs.img");
-    const want = [_][]const u8{ "chroot", "/run/yoq/private/top/@roots/4", "/usr/bin/mkinitcpio", "-k", "6.17.1-arch1-1", "-S", "autodetect", "-g", "/tmp/yoq-uki/initramfs.img" };
+    const want = [_][]const u8{ "chroot", "/run/yoq/private/top/@roots/4", "/usr/bin/mkinitcpio", "-k", "6.17.1-arch1-1", "-g", "/tmp/yoq-uki/initramfs.img" };
     try testing.expectEqual(want.len, argv.len);
     for (want, argv) |w, g| try testing.expectEqualStrings(w, g);
 }

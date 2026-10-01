@@ -1042,8 +1042,8 @@ fn resignRoom(a: Allocator, p: *const Plan, f: *const facts.Facts, uki_on: bool)
 }
 
 /// the room the largest signed image takes, from the running root's boot
-/// files, a sixteenth bigger, like a new one. its initramfs is built
-/// without autodetect, so it's bigger than the one in /boot.
+/// files, a sixteenth bigger, like a new one. os builds its initramfs, so
+/// that counts with a little to spare (see uki.signedInitramfs).
 fn largestImage(b: *const facts.Boot) u64 {
     var kernel: u64 = 0;
     var initramfs: u64 = 0;
@@ -1056,7 +1056,7 @@ fn largestImage(b: *const facts.Boot) u64 {
         } else ucode +|= file.size;
     }
     var e: Estimate = .{};
-    e.add(kernel +| initramfs *| uki.generic_initramfs_factor +| ucode +| uki.stub_size, 0);
+    e.add(kernel +| uki.signedInitramfs(initramfs) +| ucode +| uki.stub_size, 0);
     return e.total;
 }
 
@@ -2064,7 +2064,7 @@ test "signing an image already on the esp needs room beside it" {
         .esp = "/efi",
         .loader = "grub",
         .root_subvol = "/@roots/3",
-        .esp_free = 200 * mib,
+        .esp_free = 100 * mib,
         .boot_files = &boot_files,
         .secure_boot = true,
         .sbctl_keys = true,
@@ -2075,7 +2075,7 @@ test "signing an image already on the esp needs room beside it" {
     // the new one gets an image with its own command line in it.
     const tool: Plan = .{ .changes = &.{.{ .op = .add, .kind = .package, .subject = "tree", .to = "2.2.1" }} };
     try testing.expect(!try checkEsp(a, &tool, &f, &t.diags));
-    try testing.expectEqualStrings("the esp at /efi has 200 MiB free, and this plan's new boot files need about 239 MiB", t.diags.items.items[0].message);
+    try testing.expectEqualStrings("the esp at /efi has 100 MiB free, and this plan's new boot files need about 112 MiB", t.diags.items.items[0].message);
     // with nothing unsigned, or nothing that signs, there's room.
     f.boot.unsigned = &.{"/efi/EFI/BOOT/BOOTX64.EFI"};
     try testing.expect(try checkEsp(a, &tool, &f, &t.diags));
@@ -2096,8 +2096,8 @@ test "with secure boot, each entry's image has its command line, and takes room"
         .{ .name = "initramfs-linux.img", .size = 32 * mib },
         .{ .name = "vmlinuz-linux", .size = 16 * mib },
     };
-    // the initramfs is built without autodetect for a signed image.
-    const now = 16 * mib + 32 * mib * uki.generic_initramfs_factor + uki.stub_size;
+    // os builds the initramfs for a signed image, with an eighth to spare.
+    const now = 16 * mib + 36 * mib + uki.stub_size;
     const image = now + now / 16;
     var files = [_]facts.File{
         .{ .path = uki.config_path, .sha256 = "", .mode = "0644" },

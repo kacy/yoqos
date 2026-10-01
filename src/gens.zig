@@ -695,7 +695,7 @@ pub const Machine = struct {
             sums.items[0] = k.sum;
             b.files = try m.a.dupe([]const u8, &.{try m.at(&.{ e.subvol, uki.modules_dir, k.version, "vmlinuz" })});
             b.version = k.version;
-            b.size += initrds * (uki.generic_initramfs_factor - 1);
+            b.size += uki.signedInitramfs(initrds) - initrds;
         }
         e.esp_dir = esp_boot_dir;
         e.embedded = sign;
@@ -1317,10 +1317,12 @@ pub fn blockHibernation(io: std.Io) void {
 /// where copies of boot files, and unified kernel images, go on the esp.
 pub const esp_boot_dir = "yoq/boot";
 
-/// mounts what mkinitcpio needs in the root given first, as pacstrap
-/// does, then runs the rest there.
+/// mounts what mkinitcpio needs in the root given first, as arch-chroot
+/// does, then runs the rest there. the root goes on itself first, so it's
+/// a mount, and autodetect finds its filesystem at /.
 const api_chroot_script =
     \\r=$1; shift
+    \\mount --bind "$r" "$r" &&
     \\mount -t proc proc "$r/proc" &&
     \\mount -t sysfs -o ro sys "$r/sys" &&
     \\mount --rbind /dev "$r/dev" &&
