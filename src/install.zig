@@ -15,6 +15,14 @@ pub const target = "/mnt/yoq";
 /// for generations, so it's generous.
 pub const esp_mib = 1024;
 
+/// the name the root's luks volume is opened as on the new machine, which
+/// its kernel command line gives sd-encrypt: /dev/mapper/root.
+pub const luks_name = "root";
+
+/// the name it's opened as during the install, which nothing on the live
+/// system is likely to use already.
+pub const luks_install_name = "yoq-install";
+
 /// the smallest disk worth installing on.
 pub const min_bytes: u64 = 16 << 30;
 
@@ -44,6 +52,20 @@ pub const Found = struct {
     has_grub: bool,
     /// tools the install runs that aren't on the live system.
     missing: []const []const u8 = &.{},
+    /// luks2 under the btrfs filesystem, and whether the tpm unlocks it.
+    encrypt: bool = false,
+    tpm: bool = false,
+    /// the passphrase comes from a file, given with --passphrase-file.
+    passphrase_file: bool = false,
+    /// there's a terminal for cryptsetup to ask for it on.
+    interactive: bool = false,
+    /// the config has `[boot] encrypt = true`, which the new machine's
+    /// initramfs needs to unlock its root.
+    config_encrypt: bool = false,
+    /// the live system has a tpm, and the lock has tpm2-tss, which the new
+    /// machine's initramfs uses to unlock with it.
+    has_tpm: bool = false,
+    has_tpm2_tss: bool = false,
     /// what a new machine can't do without, which a config written for
     /// another one may lack. the plan notes each that's missing.
     virtual: bool = false,
@@ -55,6 +77,11 @@ pub const Found = struct {
 /// what the install runs, from arch's live iso: its packages are
 /// util-linux, dosfstools, btrfs-progs, grub, and git.
 pub const tools = [_][]const u8{ "wipefs", "sfdisk", "udevadm", "blkid", "mkfs.fat", "mkfs.btrfs", "grub-install", "grub-editenv", "git" };
+
+/// what --encrypt and --tpm run besides: cryptsetup, and systemd's tool
+/// that puts a tpm key in a luks volume.
+pub const encrypt_tools = [_][]const u8{"cryptsetup"};
+pub const tpm_tools = [_][]const u8{"systemd-cryptenroll"};
 
 pub const Plan = struct {
     checks: []const enable.Check,
@@ -78,7 +105,7 @@ pub fn plan(a: Allocator, f: Found) !Plan {
         .what = "tools",
         .ok = f.missing.len == 0,
         .found = if (f.missing.len == 0) "all here" else try std.fmt.allocPrint(a, "missing {s}", .{try std.mem.join(a, ", ", f.missing)}),
-        .fix = "install them on the live system first: `pacman -S dosfstools btrfs-progs grub git`.",
+        .fix = if (f.encrypt) "install them on the live system first: `pacman -S dosfstools btrfs-progs grub git cryptsetup`." else "install them on the live system first: `pacman -S dosfstools btrfs-progs grub git`.",
     });
     try checks.append(a, .{
         .what = "disk",
@@ -92,6 +119,7 @@ pub fn plan(a: Allocator, f: Found) !Plan {
         .found = if (f.has_kernel and f.has_grub) "in the lock" else if (f.has_kernel) "no grub in the lock" else "no kernel in the lock",
         .fix = "the new machine boots with grub and the kernel its lock names. add grub and a kernel, like linux, to packages.",
     });
+    if (f.encrypt) try encryptChecks(a, f, &checks);
     try checks.append(a, .{
         .what = "aur packages",
         .ok = f.aur == 0,
@@ -103,6 +131,13 @@ pub fn plan(a: Allocator, f: Found) !Plan {
     try summary.append(a, "");
     try summary.append(a, try std.fmt.allocPrint(a, "disk      an esp of {d} MiB at /boot, and btrfs for the rest:", .{esp_mib}));
     try summary.append(a, "          @roots/1, @var, @home, @root, @srv, @usrlocal");
+    if (f.encrypt) {
+        try summary.append(a, "encrypt   luks2 under btrfs, opened at boot as /dev/mapper/" ++ luks_name);
+        try summary.append(a, if (f.tpm)
+            "          the tpm unlocks it by itself, and the passphrase still works"
+        else
+            "          the passphrase unlocks it, typed at every boot");
+    }
     try summary.append(a, "boot      grub, with generation 1 as its first entry");
     const from_archive = !f.update and !std.mem.eql(u8, f.lock_date, f.today);
     try summary.append(a, try std.fmt.allocPrint(a, "packages  {d} from the lock ({s}){s}", .{ f.packages, if (f.update) f.today else f.lock_date, if (from_archive) ", from the arch linux archive" else "" }));
@@ -117,6 +152,50 @@ pub fn plan(a: Allocator, f: Found) !Plan {
     if (!f.network) try summary.append(a, "note: nothing in the config brings up a network, like `networkmanager = true` in [services].");
     if (!f.sudo_user) try summary.append(a, "note: no user in wheel with sudo installed, so only root can run anything as root.");
     return .{ .checks = checks.items, .summary = summary.items };
+}
+
+/// what --encrypt needs: the config's initramfs key, a passphrase, and,
+/// with --tpm, a tpm and what unlocks with it.
+fn encryptChecks(a: Allocator, f: Found, checks: *std.ArrayList(enable.Check)) !void {
+    try checks.append(a, .{
+        .what = "encryption in the config",
+        .ok = f.config_encrypt,
+        .found = if (f.config_encrypt) "[boot] encrypt = true" else "no [boot] encrypt",
+        .fix = "the new machine's initramfs has to unlock its root. put `encrypt = true` under [boot] in the config, and commit it.",
+    });
+    try checks.append(a, .{
+        .what = "passphrase",
+        .ok = f.passphrase_file or f.interactive,
+        .found = if (f.passphrase_file) "from --passphrase-file" else if (f.interactive) "cryptsetup asks for it" else "no terminal to type it on",
+        .fix = "run os install on a terminal, where cryptsetup asks for it, or pass --passphrase-file <file>.",
+    });
+    if (!f.tpm) return;
+    try checks.append(a, .{
+        .what = "tpm",
+        .ok = f.has_tpm and f.has_tpm2_tss,
+        .found = if (!f.has_tpm) "none on this machine" else if (!f.has_tpm2_tss) "no tpm2-tss in the lock" else "tpm2, and tpm2-tss in the lock",
+        .fix = if (!f.has_tpm)
+            "--tpm needs a tpm 2.0, turned on in the firmware. install without --tpm to unlock with the passphrase alone."
+        else
+            "the initramfs unlocks with the tpm through tpm2-tss. add tpm2-tss to packages.",
+    });
+}
+
+/// the arguments that unlock the new machine's root at boot, for
+/// sd-encrypt: its luks volume by uuid, opened as /dev/mapper/root, and
+/// the tpm tried first with --tpm.
+pub fn luksArgs(a: Allocator, luks_uuid: []const u8, tpm: bool) ![]const u8 {
+    return std.fmt.allocPrint(a, "rd.luks.name={s}={s}{s}", .{ luks_uuid, luks_name, if (tpm) " rd.luks.options=tpm2-device=auto" else "" });
+}
+
+/// a passphrase file's contents, as the passphrase it holds: without the
+/// newline an editor or echo leaves at the end, so typing it at boot
+/// matches. null if there's nothing else.
+pub fn passphrase(text: []u8) ?[]u8 {
+    var end = text.len;
+    if (end > 0 and text[end - 1] == '\n') end -= 1;
+    if (end > 0 and text[end - 1] == '\r') end -= 1;
+    return if (end == 0) null else text[0..end];
 }
 
 pub fn writeText(w: *std.Io.Writer, p: *const Plan) !void {
@@ -211,6 +290,82 @@ test "what stops an install" {
     try testing.expectEqual(2, notes(r.summary));
     f.virtual = true;
     try testing.expectEqual(1, notes((try plan(a, f)).summary));
+}
+
+test "an encrypted install" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f: Found = .{
+        .disk = "/dev/vdb",
+        .size = 20 << 30,
+        .whole = true,
+        .mounted = false,
+        .uefi = true,
+        .host = "atlas",
+        .packages = 412,
+        .users = &.{},
+        .services = 1,
+        .aur = 0,
+        .lock_date = "2026-09-29",
+        .today = "2026-09-29",
+        .update = true,
+        .has_kernel = true,
+        .has_grub = true,
+        .encrypt = true,
+        .interactive = true,
+        .config_encrypt = true,
+    };
+    var p = try plan(a, f);
+    try testing.expect(p.ready());
+    var out: std.Io.Writer.Allocating = .init(a);
+    try writeText(&out.writer, &p);
+    try testing.expect(std.mem.indexOf(u8, out.written(),
+        \\  ok  passphrase: cryptsetup asks for it
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(),
+        \\          @roots/1, @var, @home, @root, @srv, @usrlocal
+        \\encrypt   luks2 under btrfs, opened at boot as /dev/mapper/root
+        \\          the passphrase unlocks it, typed at every boot
+        \\
+    ) != null);
+
+    // the config has to build an initramfs that unlocks it.
+    f.config_encrypt = false;
+    p = try plan(a, f);
+    try testing.expect(!p.ready());
+    try testing.expectEqualStrings("no [boot] encrypt", p.checks[4].found);
+    f.config_encrypt = true;
+    // no terminal, and no file.
+    f.interactive = false;
+    try testing.expect(!(try plan(a, f)).ready());
+    f.passphrase_file = true;
+    try testing.expect((try plan(a, f)).ready());
+
+    f.tpm = true;
+    p = try plan(a, f);
+    try testing.expect(!p.ready());
+    try testing.expectEqualStrings("none on this machine", p.checks[6].found);
+    f.has_tpm = true;
+    try testing.expectEqualStrings("no tpm2-tss in the lock", (try plan(a, f)).checks[6].found);
+    f.has_tpm2_tss = true;
+    p = try plan(a, f);
+    try testing.expect(p.ready());
+    try testing.expectEqualStrings("          the tpm unlocks it by itself, and the passphrase still works", p.summary[5]);
+
+    try testing.expectEqualStrings("rd.luks.name=0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b=root", try luksArgs(a, "0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b", false));
+    try testing.expectEqualStrings("rd.luks.name=u=root rd.luks.options=tpm2-device=auto", try luksArgs(a, "u", true));
+}
+
+test "a passphrase file's passphrase" {
+    var a = "hunter2\n".*;
+    try testing.expectEqualStrings("hunter2", passphrase(&a).?);
+    var b = "hunter2".*;
+    try testing.expectEqualStrings("hunter2", passphrase(&b).?);
+    var c = "two words \r\n".*;
+    try testing.expectEqualStrings("two words ", passphrase(&c).?);
+    var d = "\n".*;
+    try testing.expectEqual(null, passphrase(&d));
 }
 
 fn notes(lines: []const []const u8) usize {

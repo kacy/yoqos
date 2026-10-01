@@ -2,7 +2,8 @@
 //! repository describes on a blank disk, from a live arch system. it
 //! fetches the config, shows what it will do, asks, and then builds the
 //! new machine the way `os build --clean` builds a root, as generation 1
-//! of the layout enable-rollback makes, with grub booting it.
+//! of the layout enable-rollback makes, with grub booting it. with
+//! --encrypt, the btrfs filesystem goes inside luks2.
 
 const std = @import("std");
 const rootfs = @import("../rootfs.zig");
@@ -25,7 +26,7 @@ const health = @import("health.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
-const usage_text = "os install <config repository or directory> --disk <device> [--host <name>] [--update] [--yes]";
+const usage_text = "os install <config repository or directory> --disk <device> [--host <name>] [--update] [--encrypt] [--tpm] [--passphrase-file <file>] [--yes]";
 
 /// where the config is fetched to before the disk is ready for it.
 const staging = "/run/yoq/install/config";
@@ -38,6 +39,9 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var host: ?[]const u8 = null;
     var update = false;
     var yes = false;
+    var encrypt = false;
+    var tpm = false;
+    var passphrase_file: ?[]const u8 = null;
     var it: cli.ArgIter = .{ .args = args };
     while (it.next()) |arg| {
         if (!it.isFlag(arg)) {
@@ -49,11 +53,20 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             host = it.value() orelse return cli.usageError(ctx, usage_text);
         } else if (cli.eql(arg, "--update")) {
             update = true;
+        } else if (cli.eql(arg, "--encrypt")) {
+            encrypt = true;
+        } else if (cli.eql(arg, "--tpm")) {
+            // a tpm key is one more way into the luks volume.
+            encrypt = true;
+            tpm = true;
+        } else if (cli.eql(arg, "--passphrase-file")) {
+            passphrase_file = it.value() orelse return cli.usageError(ctx, usage_text);
         } else if (cli.isYes(arg)) {
             yes = true;
         } else return cli.usageError(ctx, usage_text);
     }
     if (source == null or disk == null) return cli.usageError(ctx, usage_text);
+    if (passphrase_file != null and !encrypt) return cli.usageError(ctx, usage_text);
     if (host) |h| {
         if (std.mem.indexOfAny(u8, h, "/.") != null or h.len == 0) return cli.usageError(ctx, usage_text);
     }
@@ -63,7 +76,15 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    var in: Installer = .{ .ctx = ctx, .a = a, .disk = disk.? };
+    var in: Installer = .{ .ctx = ctx, .a = a, .disk = disk.?, .encrypt = encrypt, .tpm = tpm };
+    // read once, kept only in memory, and wiped when the install ends.
+    var secret_buf: []u8 = &.{};
+    defer std.crypto.secureZero(u8, secret_buf);
+    if (passphrase_file) |path| {
+        secret_buf = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, a, .limited(4096)) catch |e|
+            return cli.fail(ctx, "can't read the passphrase from {s}: {s}", .{ path, @errorName(e) });
+        in.secret = install.passphrase(secret_buf) orelse return cli.fail(ctx, "{s} has no passphrase in it", .{path});
+    }
     if (try in.fetch(source.?, host)) |why| return fail(ctx, why);
     if (update) {
         try ctx.out.writeAll("resolving the config against today's packages...\n");
@@ -82,6 +103,7 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     try ctx.out.writeByte('\n');
     defer in.unmountAll();
     for (steps) |s| {
+        if (s.encrypted and !in.encrypt) continue;
         try ctx.out.print("  {s}\n", .{s.what});
         try ctx.out.flush();
         if (try s.run(&in)) |why| return fail(ctx, why);
@@ -101,10 +123,13 @@ fn fail(ctx: *Context, why: []const u8) !u8 {
 const Step = struct {
     what: []const u8,
     run: *const fn (in: *Installer) anyerror!?[]const u8,
+    /// only with --encrypt.
+    encrypted: bool = false,
 };
 
 const steps = [_]Step{
     .{ .what = "partition the disk: an esp and a btrfs filesystem", .run = Installer.partition },
+    .{ .what = "encrypt the btrfs partition with luks2", .run = Installer.luks, .encrypted = true },
     .{ .what = "make the filesystems and their subvolumes", .run = Installer.filesystems },
     .{ .what = "mount them at " ++ install.target, .run = Installer.mount },
     .{ .what = "build the machine from the config and the lock", .run = Installer.build },
@@ -119,7 +144,17 @@ const Installer = struct {
     /// where the host's machine.toml is, under the staged config.
     config_rel: []const u8 = "machine.toml",
     esp: []const u8 = "",
+    /// the device btrfs goes on: the partition, or with --encrypt, the
+    /// luks volume on it, opened.
     root: []const u8 = "",
+    encrypt: bool = false,
+    tpm: bool = false,
+    /// the passphrase from --passphrase-file. it only ever goes to
+    /// cryptsetup and systemd-cryptenroll on their standard input.
+    secret: ?[]const u8 = null,
+    /// the luks volume's uuid, which the kernel's command line names.
+    luks_uuid: []const u8 = "",
+    luks_device: []const u8 = "",
 
     fn run(in: *Installer, argv: []const []const u8) !?[]const u8 {
         return exec.run(in.a, in.ctx.io, argv);
@@ -186,6 +221,16 @@ const Installer = struct {
         for (install.tools) |t| {
             if (!rootfs.pathExists(ctx.io, try std.fmt.allocPrint(in.a, "/usr/bin/{s}", .{t}))) try missing.append(in.a, t);
         }
+        if (in.encrypt) {
+            for (install.encrypt_tools) |t| {
+                if (!rootfs.pathExists(ctx.io, try std.fmt.allocPrint(in.a, "/usr/bin/{s}", .{t}))) try missing.append(in.a, t);
+            }
+        }
+        if (in.tpm) {
+            for (install.tpm_tools) |t| {
+                if (!rootfs.pathExists(ctx.io, try std.fmt.allocPrint(in.a, "/usr/bin/{s}", .{t}))) try missing.append(in.a, t);
+            }
+        }
         var sudo_user = false;
         if (l.package("sudo") != null) {
             for (c.users.entries.items) |u| sudo_user = sudo_user or u.value.groups.contains("wheel");
@@ -212,17 +257,71 @@ const Installer = struct {
             .update = update,
             .has_kernel = has_kernel,
             .has_grub = l.package("grub") != null,
+            .encrypt = in.encrypt,
+            .tpm = in.tpm,
+            .passphrase_file = in.secret != null,
+            .interactive = ctx.interactive,
+            .config_encrypt = if (c.boot.encrypt) |e| e.v else false,
+            .has_tpm = rootfs.pathExists(ctx.io, "/sys/class/tpm/tpm0"),
+            .has_tpm2_tss = l.package("tpm2-tss") != null,
         };
     }
 
     fn partition(in: *Installer) !?[]const u8 {
         const script = "/run/yoq/install/partitions";
         rootfs.writeAtomic(in.ctx.io, script, try install.partitionScript(in.a), null) catch return "can't write the partition table's script";
+        // an earlier run that stopped may have left its luks volume open,
+        // which holds the disk.
+        in.closeLuks();
         if (try in.run(&.{ "wipefs", "-q", "-a", in.disk })) |w| return w;
         if (try exec.runFrom(in.a, in.ctx.io, &.{ "sfdisk", "-q", in.disk }, script)) |w| return w;
         in.esp = try install.partition(in.a, in.disk, 1);
         in.root = try install.partition(in.a, in.disk, 2);
         return in.run(&.{ "udevadm", "settle" });
+    }
+
+    /// luks2 on the btrfs partition, with a tpm key beside the passphrase
+    /// for --tpm, opened for the rest of the install. the passphrase comes
+    /// from --passphrase-file, or cryptsetup asks for it.
+    fn luks(in: *Installer) !?[]const u8 {
+        const io = in.ctx.io;
+        const part = in.root;
+        const open_name = install.luks_install_name;
+        if (in.secret) |s| {
+            if (try exec.runInput(in.a, io, &.{ "cryptsetup", "luksFormat", "--type", "luks2", "--batch-mode", "--key-file=-", part }, s)) |w| return w;
+            if (in.tpm) {
+                if (try exec.runInput(in.a, io, &.{ "systemd-cryptenroll", "--unlock-key-file=/dev/stdin", "--tpm2-device=auto", part }, s)) |w| return w;
+            }
+            if (try exec.runInput(in.a, io, &.{ "cryptsetup", "open", "--key-file=-", part, open_name }, s)) |w| return w;
+        } else {
+            try in.ctx.out.writeAll(if (in.tpm)
+                "\ncryptsetup asks for the disk's passphrase, twice. the tpm unlocks the disk at boot, and the passphrase is the way in when it can't, so keep it safe:\n"
+            else
+                "\ncryptsetup asks for the disk's passphrase, twice. it's typed at every boot:\n");
+            try in.ctx.out.flush();
+            if (try exec.interactive(in.a, io, &.{ "cryptsetup", "luksFormat", "--type", "luks2", "--batch-mode", "--verify-passphrase", part })) |w| return w;
+            if (in.tpm) {
+                try in.ctx.out.writeAll("\nonce more, to add a key the tpm keeps:\n");
+                try in.ctx.out.flush();
+                if (try exec.interactive(in.a, io, &.{ "systemd-cryptenroll", "--tpm2-device=auto", part })) |w| return w;
+            }
+            try in.ctx.out.writeAll("\nand once more, to open it for the install:\n");
+            try in.ctx.out.flush();
+            if (try exec.interactive(in.a, io, &.{ "cryptsetup", "open", part, open_name })) |w| return w;
+        }
+        in.luks_uuid = switch (try exec.output(in.a, io, &.{ "cryptsetup", "luksUUID", part })) {
+            .ok => |t| std.mem.trim(u8, t, " \n"),
+            .failed => |w| return w,
+        };
+        in.luks_device = part;
+        in.root = "/dev/mapper/" ++ open_name;
+        return null;
+    }
+
+    /// the luks volume the install opened, closed, if it's open.
+    fn closeLuks(in: *Installer) void {
+        if (!in.encrypt or !rootfs.pathExists(in.ctx.io, "/dev/mapper/" ++ install.luks_install_name)) return;
+        _ = exec.run(in.a, in.ctx.io, &.{ "cryptsetup", "close", install.luks_install_name }) catch {};
     }
 
     /// the esp, and btrfs with every subvolume generation 1 and its data
@@ -351,11 +450,15 @@ const Installer = struct {
             .root_fs = "btrfs",
             .root_device = in.root,
             .root_subvol = "/" ++ generation.roots_dir ++ "/1",
+            .luks_uuid = if (in.encrypt) in.luks_uuid else null,
+            .luks_name = if (in.encrypt) install.luks_name else null,
+            .luks_device = if (in.encrypt) in.luks_device else null,
         };
         var why: []const u8 = "";
         var m = try gens.Machine.open(in.a, in.ctx.io, boot, &why) orelse return why;
         defer m.close();
         m.cmdline = try install.consoleArgs(in.a, cmdline);
+        if (in.encrypt) m.cmdline = try std.fmt.allocPrint(in.a, "{s} {s}", .{ m.cmdline.?, try install.luksArgs(in.a, in.luks_uuid, in.tpm) });
         m.esp_is_boot = true;
         if (try m.keepBoot(boot.root_subvol.?)) |w| return w;
         btrfs.snapshot(try m.at(&.{boot.root_subvol.?}), try m.at(&.{ generation.gens_dir, "1" }), true) catch |e|
@@ -398,9 +501,11 @@ const Installer = struct {
         };
     }
 
-    /// everything under the target, however the install ended.
+    /// everything under the target, however the install ended, and the
+    /// luks volume under it.
     fn unmountAll(in: *Installer) void {
         _ = exec.run(in.a, in.ctx.io, &.{ "umount", "-R", install.target }) catch {};
+        in.closeLuks();
     }
 };
 

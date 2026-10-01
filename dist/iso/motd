@@ -18,6 +18,8 @@
     4. install from a config repository, a url or a directory:
          os install /root/machines --disk /dev/nvme0n1 --update
        it shows what it will do and asks first, then asks for passwords.
+       for a disk in luks2, add --encrypt to both commands, and --tpm to
+       have the tpm unlock it at boot.
     5. reboot, and take the drive out.
 
   `os help` lists every command. `os docs | less` is the whole manual,

@@ -124,11 +124,13 @@ fn explicitCount(f: *const facts.Facts) usize {
 /// booted from the live iso, from a few answers and the hardware the live
 /// system sees. `os install` builds the machine from it.
 fn initNew(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os init --new [--hostname <name>] [--user <name>] [--timezone <zone>] [--ssh]";
+    const usage_text = "os init --new [--hostname <name>] [--user <name>] [--timezone <zone>] [--ssh] [--encrypt] [--tpm]";
     var hostname: ?[]const u8 = null;
     var user: ?[]const u8 = null;
     var timezone: ?[]const u8 = null;
     var ssh = false;
+    var encrypt = false;
+    var tpm = false;
     var it: cli.ArgIter = .{ .args = args };
     while (it.next()) |arg| {
         if (!it.isFlag(arg)) {
@@ -141,6 +143,10 @@ fn initNew(ctx: *Context, args: []const [:0]const u8) !u8 {
             timezone = it.value() orelse return cli.usageError(ctx, usage_text);
         } else if (cli.eql(arg, "--ssh")) {
             ssh = true;
+        } else if (cli.eql(arg, "--encrypt")) {
+            encrypt = true;
+        } else if (cli.eql(arg, "--tpm")) {
+            tpm = true;
         } else return cli.usageError(ctx, usage_text);
     }
     var w: cli.Work = .init(ctx);
@@ -161,6 +167,8 @@ fn initNew(ctx: *Context, args: []const [:0]const u8) !u8 {
         .gpu = newconfig.gpuChoice(f.gpus),
         .firmware = !virtual,
         .ssh = ssh,
+        .encrypt = encrypt,
+        .tpm = tpm,
     });
     if (!try cli.writeFile(ctx, top, text)) return 1;
     // it has to load, or it's a bug here.
