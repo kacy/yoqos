@@ -485,8 +485,9 @@ pub const Machine = struct {
     const UkiBuild = struct { root: []const u8, files: []const []const u8, dest: []const u8, size: u64 };
 
     /// makes `e` start a unified kernel image of its kernel and initrds,
-    /// named by their content, and notes the name in `files`, along with
-    /// the build if the esp doesn't have it yet.
+    /// named by their content and the stub of the root that builds it,
+    /// and notes the name in `files`, along with the build if the esp
+    /// doesn't have it yet.
     fn ukiName(m: *const Machine, e: *menu.Entry, files: *EspFiles) !?[]const u8 {
         // the newest entry's files may be the esp's own, with /boot there.
         const from = if (e.esp_dir) |d| try std.fs.path.join(m.a, &.{ m.boot.esp.?, d }) else try m.at(&.{ e.subvol, "boot" });
@@ -501,6 +502,8 @@ pub const Machine = struct {
             try sums.append(m.a, h.sum);
             size += h.size;
         }
+        const stub = try m.hash(try m.at(&.{ e.subvol, uki.stub_rel }), &why) orelse return why;
+        try sums.append(m.a, stub.sum);
         const name = try uki.name(m.a, sums.items);
         e.uki = name;
         e.esp_dir = esp_boot_dir;
@@ -1104,7 +1107,8 @@ test "entries for a root with os's ukify config start its image, and unused imag
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/" ++ uki.config_rel, .data = uki.config_content });
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/vmlinuz-linux", .data = "kernel" });
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/initramfs-linux.img", .data = "initramfs" });
-    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs") });
+    try writeTestStub(tmp.dir, io, "top/@roots/2", "stub");
+    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") });
     // the image is there already, so nothing's built; an older one isn't
     // used any more.
     try tmp.dir.writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{name}), .data = "image" });
@@ -1136,12 +1140,31 @@ test "entries for a root with os's ukify config start its image, and unused imag
     try std.testing.expectEqual(1, left.items.len);
     try std.testing.expectEqualStrings(name, left.items[0]);
 
+    // a new stub makes a new image, here one the esp has already, and the
+    // old one goes.
+    try writeTestStub(tmp.dir, io, "top/@roots/2", "stub 2");
+    const renamed = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub 2") });
+    try tmp.dir.writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{renamed}), .data = "image" });
+    entries[0] = .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqualStrings(renamed, test_put[0].uki.?);
+    try std.testing.expectError(error.FileNotFound, esp.access(io, name, .{}));
+    try esp.access(io, renamed, .{});
+
     // with [boot] uki off everywhere, the last image goes too.
     try tmp.dir.deleteFile(io, "top/@roots/2/" ++ uki.config_rel);
     entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
     try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
     try std.testing.expectEqual(null, test_put[0].uki);
-    try std.testing.expectError(error.FileNotFound, esp.access(io, name, .{}));
+    try std.testing.expectError(error.FileNotFound, esp.access(io, renamed, .{}));
+}
+
+/// systemd's stub in the test root at `root`, holding `text`.
+fn writeTestStub(dir: std.Io.Dir, io: std.Io, root: []const u8, text: []const u8) !void {
+    var buf: [256]u8 = undefined;
+    const path = try std.fmt.bufPrint(&buf, "{s}/{s}", .{ root, uki.stub_rel });
+    try dir.createDirPath(io, std.fs.path.dirnamePosix(path).?);
+    try dir.writeFile(io, .{ .sub_path = path, .data = text });
 }
 
 test "with secure boot, images are signed in the root before they replace the esp's" {
@@ -1158,7 +1181,8 @@ test "with secure boot, images are signed in the root before they replace the es
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/" ++ uki.config_rel, .data = uki.config_content });
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/vmlinuz-linux", .data = "kernel" });
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/initramfs-linux.img", .data = "initramfs" });
-    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs") });
+    try writeTestStub(tmp.dir, io, "top/@roots/2", "stub");
+    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") });
     const image = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{name});
     try tmp.dir.writeFile(io, .{ .sub_path = image, .data = "image" });
     // a stand-in for sbctl, which notes what it signed.
@@ -1223,7 +1247,8 @@ test "firmware that enforces secure boot has images signed without the config's 
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/" ++ uki.config_rel, .data = uki.config_content });
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/vmlinuz-linux", .data = "kernel" });
     try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/initramfs-linux.img", .data = "initramfs" });
-    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs") });
+    try writeTestStub(tmp.dir, io, "top/@roots/2", "stub");
+    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") });
     const image = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{name});
     try tmp.dir.writeFile(io, .{ .sub_path = "sign.sh", .data = "[ \"$1\" = sign ] && printf ' signed' >> \"$2\"\n" });
     var m: Machine = .{

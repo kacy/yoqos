@@ -155,10 +155,12 @@ the esp isn't there, and runs ukify through chroot, so it's the root's own
 ukify and stub. that matters the first time: the root built for the
 change that turns `uki` on has ukify, and the running system doesn't yet.
 nothing gets mounted for it either. the image goes in `yoq/boot` on the
-esp, named by the content of the files in it, like
-`0123456789abcdef-yoq.efi`, so generations with the same kernel and
-initramfs share one. `os gc`, and every menu write, removes the images no
-entry uses any more.
+esp, named by the content of the files in it and of the root's stub, like
+`0123456789abcdef-yoq.efi`, so generations with the same kernel,
+initramfs, and stub share one. a new systemd brings a new stub, so the
+next menu builds every image again, and `os plan` counts the room for
+them. `os gc`, and every menu write, removes the images no entry uses any
+more.
 
 an image has no command line built in. each entry passes its own, with
 the root, `rootflags=subvol=`, the console and luks arguments, and

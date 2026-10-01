@@ -46,6 +46,9 @@
 
 ### fixes
 
+- an image's name covers systemd's stub too, so a new stub builds new
+  images instead of reusing ones with the old stub. `os plan` counts the
+  room a systemd upgrade's images take.
 - while the firmware enforces secure boot and sbctl has keys, `os` signs
   every image it puts on the esp, even for a generation without
   `[boot] secure_boot`. after a rollback past turning it on, the next

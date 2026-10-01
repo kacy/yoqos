@@ -49,9 +49,14 @@ pub fn ukifyArgv(a: Allocator, root: []const u8, kernel: []const u8, initrds: []
 /// how an image's name ends.
 pub const suffix = "-yoq.efi";
 
+/// systemd's efi stub, which ukify puts in front of the kernel, relative
+/// to the root that builds the image. its sum goes in the image's name,
+/// so a new stub makes new images.
+pub const stub_rel = "usr/lib/systemd/boot/efi/linuxx64.efi.stub";
+
 /// the image's name on the esp, from the sha256 sums of what goes in it,
-/// kernel first: "<16 hex>-yoq.efi". generations with the same boot files
-/// share one.
+/// kernel first, then the initrds and the stub: "<16 hex>-yoq.efi".
+/// generations with the same boot files and stub share one.
 pub fn name(a: Allocator, sums: []const []const u8) ![]const u8 {
     var h: std.crypto.hash.sha2.Sha256 = .init(.{});
     for (sums) |s| {

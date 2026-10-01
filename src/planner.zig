@@ -875,11 +875,14 @@ pub fn espNeed(p: *const Plan, b: *const facts.Boot, uki_on: bool) ?EspNeed {
     var initramfs = false;
     var microcode = false;
     var every = false;
+    // systemd brings the stub, which every image starts with.
+    var stub = false;
     for (p.changes) |c| {
         const r = c.reboot orelse continue;
         if (std.mem.eql(u8, r, "initramfs") or std.mem.eql(u8, r, "microcode")) initramfs = true;
         if (std.mem.eql(u8, r, "microcode")) microcode = true;
         if (std.mem.eql(u8, r, uki_reboot)) every = true;
+        if (std.mem.eql(u8, r, "systemd")) stub = true;
     }
     // the files the plan changes, and every file, for a menu that stops
     // booting images and needs copies of them all again.
@@ -903,7 +906,7 @@ pub fn espNeed(p: *const Plan, b: *const facts.Boot, uki_on: bool) ?EspNeed {
         for (b.boot_files) |f| {
             if (!std.mem.startsWith(u8, f.name, "vmlinuz-")) continue;
             const k = f.name["vmlinuz-".len..];
-            if (every or initramfs or kernelChanges(p, k)) images.add(f.size + initramfsSize(b, k) + ucode + uki.stub_size, 0);
+            if (every or stub or initramfs or kernelChanges(p, k)) images.add(f.size + initramfsSize(b, k) + ucode + uki.stub_size, 0);
         }
     }
     for (p.changes) |c| {
@@ -1884,6 +1887,10 @@ test "unified kernel images on the esp take a kernel's files together" {
     try testing.expectEqual(51 * mib, espNeed(&lts, &b, true).?.need);
     const tool: Plan = .{ .changes = &.{.{ .op = .add, .kind = .package, .subject = "ripgrep", .to = "14" }} };
     try testing.expectEqual(null, espNeed(&tool, &b, true));
+    // a new systemd brings a new stub, and every image is new.
+    const systemd: Plan = .{ .changes = &.{.{ .op = .change, .kind = .package, .subject = "systemd", .from = "258-1", .to = "258-2", .reboot = "systemd" }} };
+    try testing.expectEqual(51 * mib, espNeed(&systemd, &b, true).?.need);
+    try testing.expectEqual(null, espNeed(&systemd, &b, false));
     // turning them on makes every kernel's image.
     const on: Plan = .{ .changes = &.{.{ .op = .add, .kind = .file, .subject = uki.config_path, .reboot = uki_reboot }} };
     try testing.expectEqual(51 * mib, espNeed(&on, &b, true).?.need);
