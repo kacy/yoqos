@@ -1208,9 +1208,19 @@ an image that has one while secure boot is on, and the signature covers
 it, so nobody who can write the esp can add `init=/bin/sh`. images are
 per entry then, shared only by entries with the same command line, and a
 trial boots a twin of the newest one with `yoq.trial` in it. that takes
-more room on the esp than shared images, and `os plan` counts it. every
-image is built from the kernel and initramfs copies in its root's own
-`/boot`, never from the files on the esp.
+more room on the esp than shared images, and `os plan` counts it.
+
+a signed image never takes its kernel or initramfs from the esp, even
+through the copies `os` keeps in each root. the kernel comes from the
+root's package, in `/usr/lib/modules/<version>/vmlinuz`, and the
+initramfs is built for it inside the root with `mkinitcpio`, from the
+root's own config and modules. that build leaves out autodetect, so the
+initramfs is generic and about three times as big, and early microcode
+comes from mkinitcpio's `microcode` hook, which arch's default hooks
+have; without it, signed images boot without early microcode. each new
+image costs one mkinitcpio run, so a menu write that needs new images
+takes a little longer. one already on the esp under its name, with a
+signature from your key, is reused.
 
 what `os` signs: its images in `yoq/boot` on the esp, and refind's btrfs
 driver, which it installs. each image is signed in a work directory inside

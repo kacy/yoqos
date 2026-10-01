@@ -166,7 +166,9 @@ the files come from the root's own `/boot`, never from the esp. with the
 esp at `/boot`, that's the copies `os` keeps in each root's `/boot`
 directory under the mount, which it makes as the generation is recorded,
 so the newest generation's image doesn't come from files on the esp that
-anything able to write there could have changed.
+anything able to write there could have changed. those copies still come
+from the esp when a generation is recorded, so an image that's signed
+goes further (see [secure boot](#secure-boot)).
 
 without secure boot, an image has no command line built in. each entry
 passes its own, with the root, `rootflags=subvol=`, the console and luks
@@ -225,6 +227,29 @@ back to, still starts then. signing covers:
   unsigned one there is replaced by a signed copy of
   `/usr/share/refind/drivers_x64/btrfs_x64.efi`, signed in
   `/tmp/yoq-sign` in the newest root.
+
+an image that's signed doesn't use the copies in its root's `/boot` as
+they are. with the esp at `/boot`, `os` takes those from the esp each time
+it records a generation, so an initramfs someone put on the esp while the
+machine was off would end up signed. instead:
+
+- the kernel is the one the root's package installed,
+  `/usr/lib/modules/<version>/vmlinuz`, picked by the package name in
+  that directory's `pkgbase` (linux for `vmlinuz-linux`). with more than
+  one version of it, the one matching the copy wins, or else the newest.
+- the initramfs is built for that version inside the root, through chroot
+  with `/proc`, `/sys`, `/dev`, and `/run` mounted in a mount namespace of
+  its own: `mkinitcpio -k <version> -S autodetect -g
+  /tmp/yoq-uki/initramfs.img`. autodetect stays out since it would look at
+  the running machine, not the root. the image is about three times as
+  big, and `os plan` counts it that way.
+- there's no separate microcode image: mkinitcpio's `microcode` hook puts
+  early microcode in the initramfs from the root's `/usr/lib/firmware`.
+
+the copies still name the image, so it's built again, with one mkinitcpio
+run, only when they change, and an image already on the esp under its
+name with sbctl's signature is reused. without signing, nothing here
+changes: images are the copies as they are, and mkinitcpio never runs.
 
 while a menu signs, images are per entry. each one is built with ukify's
 `--cmdline=` set to its entry's command line, and its name covers that
