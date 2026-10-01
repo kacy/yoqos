@@ -206,14 +206,25 @@ pub fn luksArgs(a: Allocator, luks_uuid: []const u8, tpm: bool) ![]const u8 {
     return std.fmt.allocPrint(a, "rd.luks.name={s}={s}{s}", .{ luks_uuid, luks_name, if (tpm) " rd.luks.options=tpm2-device=auto" else "" });
 }
 
+/// the longest passphrase --passphrase-file reads.
+pub const max_passphrase = 4096;
+
+pub const Passphrase = union(enum) {
+    ok: []u8,
+    /// what's wrong with the file, after its name.
+    problem: []const u8,
+};
+
 /// a passphrase file's contents, as the passphrase it holds: without the
 /// newline an editor or echo leaves at the end, so typing it at boot
-/// matches. null if there's nothing else.
-pub fn passphrase(text: []u8) ?[]u8 {
+/// matches. a newline before that couldn't be typed at all.
+pub fn passphrase(text: []u8) Passphrase {
     var end = text.len;
     if (end > 0 and text[end - 1] == '\n') end -= 1;
     if (end > 0 and text[end - 1] == '\r') end -= 1;
-    return if (end == 0) null else text[0..end];
+    if (end == 0) return .{ .problem = "has no passphrase in it" };
+    if (std.mem.indexOfAny(u8, text[0..end], "\r\n") != null) return .{ .problem = "has more than one line, and a passphrase typed at boot can't" };
+    return .{ .ok = text[0..end] };
 }
 
 pub fn writeText(w: *std.Io.Writer, p: *const Plan) !void {
@@ -384,13 +395,17 @@ test "an encrypted install" {
 
 test "a passphrase file's passphrase" {
     var a = "hunter2\n".*;
-    try testing.expectEqualStrings("hunter2", passphrase(&a).?);
+    try testing.expectEqualStrings("hunter2", passphrase(&a).ok);
     var b = "hunter2".*;
-    try testing.expectEqualStrings("hunter2", passphrase(&b).?);
+    try testing.expectEqualStrings("hunter2", passphrase(&b).ok);
     var c = "two words \r\n".*;
-    try testing.expectEqualStrings("two words ", passphrase(&c).?);
+    try testing.expectEqualStrings("two words ", passphrase(&c).ok);
     var d = "\n".*;
-    try testing.expectEqual(null, passphrase(&d));
+    try testing.expectEqualStrings("has no passphrase in it", passphrase(&d).problem);
+    // cryptsetup would take the newline as part of it, and nobody could
+    // type it at the prompt.
+    var e = "hunter2\nhunter3\n".*;
+    try testing.expectEqualStrings("has more than one line, and a passphrase typed at boot can't", passphrase(&e).problem);
 }
 
 test "secure boot waits for the installed machine" {

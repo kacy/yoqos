@@ -63,6 +63,10 @@
   volume that isn't luks, and `os doctor` flags one. lvm inside luks
   looked like a plain partition, so grub's entries looked for the root on
   a disk it can't read. facts carry the volume's kind as `root_dm`.
+- `--passphrase-file` reads the file straight into one buffer that's
+  wiped after, so a file that's too long, or a read that grew its buffer,
+  leaves no copy in memory, and it refuses a file of more than one line,
+  whose passphrase nobody could type at boot.
 
 ## 0.1.3
 

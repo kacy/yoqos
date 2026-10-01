@@ -77,13 +77,16 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer w.deinit();
     const a = w.allocator();
     var in: Installer = .{ .ctx = ctx, .a = a, .disk = disk.?, .encrypt = encrypt, .tpm = tpm };
-    // read once, kept only in memory, and wiped when the install ends.
-    var secret_buf: []u8 = &.{};
-    defer std.crypto.secureZero(u8, secret_buf);
+    // read once, into this buffer only, and wiped when the install ends.
+    var secret_buf: [install.max_passphrase + 1]u8 = undefined;
+    defer std.crypto.secureZero(u8, &secret_buf);
     if (passphrase_file) |path| {
-        secret_buf = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, a, .limited(4096)) catch |e|
+        const text = readSecret(ctx.io, path, &secret_buf) catch |e|
             return cli.fail(ctx, "can't read the passphrase from {s}: {s}", .{ path, @errorName(e) });
-        in.secret = install.passphrase(secret_buf) orelse return cli.fail(ctx, "{s} has no passphrase in it", .{path});
+        in.secret = switch (install.passphrase(text)) {
+            .ok => |s| s,
+            .problem => |why| return cli.fail(ctx, "{s} {s}", .{ path, why }),
+        };
     }
     if (try in.fetch(source.?, host)) |why| return fail(ctx, why);
     if (update) {
@@ -115,6 +118,38 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     try events.record(a, ctx.io, install.target, .{ .time = journal.now(ctx.io), .kind = .install, .generation = 1, .message = found.host });
     try ctx.out.print("\n{s} is installed as generation 1. remove the live medium and reboot.\n", .{found.host});
     return 0;
+}
+
+/// the file at `path`, read straight into `buf`, so there's no other copy
+/// to wipe. one that fills `buf` is too long.
+fn readSecret(io: std.Io, path: []const u8, buf: []u8) ![]u8 {
+    const f = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer f.close(io);
+    var n: usize = 0;
+    while (n < buf.len) {
+        n += f.readStreaming(io, &.{buf[n..]}) catch |e| switch (e) {
+            error.EndOfStream => break,
+            else => return e,
+        };
+    }
+    if (n == buf.len) return error.FileTooBig;
+    return buf[0..n];
+}
+
+test "a passphrase file is read into one buffer, and only so much" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "short", .data = "hunter2\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "long", .data = "x" ** 9 });
+    var path_buf: [256]u8 = undefined;
+    var buf: [9]u8 = undefined;
+    const short = try std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}/short", .{tmp.sub_path});
+    const got = try readSecret(io, short, &buf);
+    try std.testing.expectEqualStrings("hunter2\n", got);
+    try std.testing.expectEqual(@intFromPtr(&buf), @intFromPtr(got.ptr));
+    const long = try std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}/long", .{tmp.sub_path});
+    try std.testing.expectError(error.FileTooBig, readSecret(io, long, &buf));
 }
 
 fn fail(ctx: *Context, why: []const u8) !u8 {

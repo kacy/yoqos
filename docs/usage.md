@@ -701,7 +701,8 @@ encrypt   luks2 under btrfs, opened at boot as /dev/mapper/root
 cryptsetup asks for the passphrase itself, on the terminal: twice when it
 sets up the partition, once more with `--tpm` to add the tpm's key, and
 once more to open it for the install. `os` never sees it. for scripts and
-tests, `--passphrase-file <file>` reads it from a file instead, once. a
+tests, `--passphrase-file <file>` reads it from a file instead, once. it's
+one line of up to 4096 bytes, since it has to be typed at boot too, and a
 newline at the end of the file isn't part of it. it goes to cryptsetup on
 its standard input, and never into the new machine, a log, or json.
 without a terminal, `--encrypt` needs `--passphrase-file`.
