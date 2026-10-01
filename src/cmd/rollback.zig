@@ -15,6 +15,8 @@ const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
 const trial = @import("../trial.zig");
 const journal = @import("../journal.zig");
+const rootfs = @import("../rootfs.zig");
+const secureboot = @import("../secureboot.zig");
 const Context = cli.Context;
 
 pub fn historyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
@@ -212,15 +214,20 @@ pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer m.close();
     var removed: std.ArrayList(u32) = .empty;
     if (try m.collect(keep, &removed)) |problem| return cli.fail(ctx, "{s}", .{problem});
-    // a menu another tool dropped os's entries from gets them back.
-    if (removed.items.len == 0) if (boot.menu_missing) |file| {
+    // a menu another tool dropped os's entries from gets them back, and
+    // with secure boot, images left unsigned, like ones from before
+    // sbctl had keys, get signed.
+    const unsigned = rootfs.pathExists(ctx.io, secureboot.config_path) and
+        (try secureboot.ours(a, boot.unsigned, boot.esp orelse "/")).len > 0;
+    if (removed.items.len == 0 and (boot.menu_missing != null or unsigned)) {
         const records = try gens.readRecords(a, ctx.io, "/var");
         if (records.len > 0) {
             const head = try std.fmt.allocPrint(a, "/{s}", .{records[records.len - 1].root});
             if (try m.writeMenu(head, records)) |problem| return cli.fail(ctx, "{s}", .{problem});
-            try ctx.out.print("wrote the boot menu's generations back into {s}.\n", .{file});
+            if (boot.menu_missing) |file| try ctx.out.print("wrote the boot menu's generations back into {s}.\n", .{file});
+            if (unsigned) try ctx.out.writeAll("signed the boot menu's images.\n");
         }
-    };
+    }
     if (removed.items.len == 0) {
         try ctx.out.writeAll("nothing to remove.\n");
         return 0;

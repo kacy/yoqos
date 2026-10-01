@@ -74,6 +74,17 @@ pub fn signed(head: []const u8) ?bool {
     return size > 0;
 }
 
+/// the paths in `unsigned` that os put on the esp at `esp` itself: its
+/// images, in yoq/boot.
+pub fn ours(a: Allocator, unsigned: []const []const u8, esp: []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    const dir = try std.fmt.allocPrint(a, "{s}/yoq/", .{std.mem.trimEnd(u8, esp, "/")});
+    for (unsigned) |p| {
+        if (std.mem.startsWith(u8, p, dir)) try out.append(a, p);
+    }
+    return out.items;
+}
+
 /// the firmware's secure boot state in a few words, for `os doctor`.
 pub fn describe(on: ?bool, setup: ?bool) []const u8 {
     const enforced = on orelse return "unknown: no efi variables for it";
@@ -103,6 +114,14 @@ test "secure boot and setup mode from efivarfs" {
     try testing.expectEqualStrings("off", describe(false, false));
     try testing.expectEqualStrings("off", describe(false, null));
     try testing.expectEqualStrings("unknown: no efi variables for it", describe(null, null));
+}
+
+test "os's own unsigned files" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const got = try ours(arena.allocator(), &.{ "/boot/EFI/BOOT/BOOTX64.EFI", "/boot/yoq/boot/0123456789abcdef-yoq.efi", "/boot/yoqx/a.efi" }, "/boot");
+    try testing.expectEqual(1, got.len);
+    try testing.expectEqualStrings("/boot/yoq/boot/0123456789abcdef-yoq.efi", got[0]);
 }
 
 /// pe headers with a certificate table of `size` bytes, as a 64-bit
