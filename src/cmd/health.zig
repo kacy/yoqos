@@ -80,7 +80,9 @@ fn fellBack(ctx: *Context, a: Allocator, store: trial.Store, boot: facts.Boot, t
     };
     try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .trial, .step = .failed, .generation = tried });
     const reason = try std.fmt.allocPrint(a, "fell back from {d} to {d}", .{ tried, n });
-    const made = try rollback.startFrom(ctx, a, boot, target, running, reason) orelse return 1;
+    const m = try cli.openMachine(ctx, a, boot) orelse return 1;
+    defer m.close();
+    const made = try rollback.startFrom(ctx, a, &m, boot, target, running, reason) orelse return 1;
     const notice = try std.fmt.allocPrint(a, "generation {d} didn't come up healthy, so this machine went back to generation {d}. it's generation {d} now, with its config. `os rollback {d}` tries {d} again.\n", .{ tried, n, made, tried, tried });
     if (try gens.writeNotice(a, ctx.io, notice)) |why| try ctx.err.print("os: {s}\n", .{why});
     try ctx.out.writeAll(notice);

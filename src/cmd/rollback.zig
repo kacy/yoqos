@@ -17,6 +17,7 @@ const trial = @import("../trial.zig");
 const journal = @import("../journal.zig");
 const rootfs = @import("../rootfs.zig");
 const secureboot = @import("../secureboot.zig");
+const uki = @import("../uki.zig");
 const Context = cli.Context;
 
 pub fn historyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
@@ -133,19 +134,29 @@ fn rollbackGeneration(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, wan
     const source = if (to_booted) boot.root_subvol.? else try std.fmt.allocPrint(a, "/{s}/{d}", .{ generation.gens_dir, n });
     const reason = try std.fmt.allocPrint(a, "{s} {d}: {s}", .{ if (to_booted) "keep" else "rollback to", n, target.reason });
     try ctx.out.print("generation {d} ({s} · {s}) becomes generation {d}, and the next boot runs it.\n/var and /home stay as they are.\n", .{ n, try generation.dateOf(a, target.time), target.reason, generation.next(records) });
+    const m = try cli.openMachine(ctx, a, boot) orelse return 1;
+    defer m.close();
+    const boots_image = rootfs.pathExists(ctx.io, try m.at(&.{ source, uki.config_rel }));
+    if (secureBootWarning(boot.secure_boot, boots_image)) |w| try ctx.err.print("os: {s}\n", .{w});
     if (try cli.approve(ctx, yes, "roll back", "roll back?")) |code| return code;
-    const made = try startFrom(ctx, a, boot, target, source, reason) orelse return 1;
+    const made = try startFrom(ctx, a, &m, boot, target, source, reason) orelse return 1;
     try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .rollback, .generation = n });
     try ctx.out.print("generation {d} is ready. reboot to start it.\n", .{made});
     return 0;
 }
 
+/// what to say before rolling back to a generation that boots its kernel
+/// and initramfs files, from before `[boot] uki`, while the firmware
+/// enforces secure boot: those have no signature, so it won't start.
+fn secureBootWarning(enforced: ?bool, boots_image: bool) ?[]const u8 {
+    if (boots_image or !(enforced orelse false)) return null;
+    return "that generation is from before [boot] uki, and boots a kernel without a signature, which the firmware refuses while it enforces secure boot. turn secure boot off in the firmware setup before the next boot.";
+}
+
 /// starts the next generation from `source`, carrying `target`'s config
 /// back with it so the files match that system, and collects old
 /// generations. returns its number, or null after saying why.
-pub fn startFrom(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, target: generation.Record, source: []const u8, reason: []const u8) !?u32 {
-    const m = try cli.openMachine(ctx, a, boot) orelse return null;
-    defer m.close();
+pub fn startFrom(ctx: *Context, a: std.mem.Allocator, m: *const gens.Machine, boot: facts.Boot, target: generation.Record, source: []const u8, reason: []const u8) !?u32 {
     const config: ?generation.Config = if (target.config_dir != null and target.config_rev != null) .{ .dir = target.config_dir.?, .rev = target.config_rev.? } else null;
     var made: u32 = 0;
     var later: ?[]const u8 = null;
@@ -160,7 +171,7 @@ pub fn startFrom(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, target: 
     if (config) |c| {
         if (!try restoreConfig(ctx, a, c, reason)) return null;
     }
-    try applying.collectOld(ctx, &m, generation.default_keep);
+    try applying.collectOld(ctx, m, generation.default_keep);
     gens.blockHibernation(ctx.io);
     return made;
 }
@@ -299,6 +310,13 @@ fn logOf(ctx: *Context, a: std.mem.Allocator, top: []const u8) !?[]const history
 // -- tests --
 
 const TestRun = cli.TestRun;
+
+test "a rollback to a generation without an image, under secure boot" {
+    try std.testing.expect(secureBootWarning(true, false) != null);
+    try std.testing.expectEqual(null, secureBootWarning(true, true));
+    try std.testing.expectEqual(null, secureBootWarning(false, false));
+    try std.testing.expectEqual(null, secureBootWarning(null, false));
+}
 
 test "history lists generations, and rollback needs one to go back to" {
     var t: TestRun = .{};
