@@ -73,6 +73,10 @@ before=$(second_newest)
 show_env
 falls_back "$before"
 check "$(efivar SecureBoot)" 1
+# uninstall would leave systemd-boot starting arch's unsigned kernel,
+# which the firmware refuses now, so it won't go ahead.
+check "{ /usr/local/bin/os uninstall --yes </dev/null 2>&1 || true; } | grep -c '^  no  secure boot: enforced, and vmlinuz-linux has no signature\$'" 1
+check "test -e /var/lib/yoq && echo state || echo none" state
 
 # the platform key out again: setup mode, and no secure boot from the
 # next boot on.

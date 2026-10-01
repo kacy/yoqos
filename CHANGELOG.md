@@ -111,6 +111,10 @@
   to `/etc/default/grub` when it lacks them, before grub-mkconfig writes
   the menu. after `os install --encrypt`, only os's entries had them, so
   the machine it left couldn't open its root.
+- `os uninstall` on systemd-boot or refind won't start while the firmware
+  enforces secure boot and arch's kernel in `/boot` has no signature. the
+  entry it left boots that kernel instead of `os`'s signed images, which
+  the firmware refused.
 
 ## 0.1.3
 
