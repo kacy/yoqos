@@ -87,6 +87,8 @@
 - `os install --tpm` checks for a tpm 2.0, not just any tpm, and for
   tpm2-tss on the live system, which systemd-cryptenroll needs. either one
   missing used to stop the install halfway, after the disk was erased.
+- ctrl-c at `os secret set`'s prompt puts the terminal's echo back before
+  `os` quits.
 
 ## 0.1.3
 

@@ -55,13 +55,40 @@ pub fn main(init: std.process.Init) !void {
     std.process.exit(code);
 }
 
+/// the terminal as it was before echo went off, while it's off.
+var echo_saved: ?std.os.linux.termios = null;
+/// the signals that end os while it waits on a typed value. each puts
+/// the terminal back first, so ctrl-c doesn't leave it without echo.
+const echo_signals = [_]std.posix.SIG{ .INT, .TERM, .HUP, .QUIT };
+
 /// turns the terminal's echo on stdin off or on again.
 fn setEcho(on: bool) void {
     const linux = std.os.linux;
+    if (on) {
+        const saved = echo_saved orelse return;
+        _ = linux.tcsetattr(0, .NOW, &saved);
+        echo_saved = null;
+        onEchoSignals(linux.SIG.DFL);
+        return;
+    }
     var t: linux.termios = undefined;
     if (linux.errno(linux.tcgetattr(0, &t)) != .SUCCESS) return;
-    t.lflag.ECHO = on;
+    echo_saved = t;
+    onEchoSignals(restoreAndDie);
+    t.lflag.ECHO = false;
     _ = linux.tcsetattr(0, .NOW, &t);
+}
+
+fn onEchoSignals(handler: ?std.posix.Sigaction.handler_fn) void {
+    const act: std.posix.Sigaction = .{ .handler = .{ .handler = handler }, .mask = std.posix.sigemptyset(), .flags = 0 };
+    for (echo_signals) |sig| std.posix.sigaction(sig, &act, null);
+}
+
+/// puts the terminal back, then lets the signal end os as it would have.
+fn restoreAndDie(sig: std.posix.SIG) callconv(.c) void {
+    if (echo_saved) |saved| _ = std.os.linux.tcsetattr(0, .NOW, &saved);
+    onEchoSignals(std.os.linux.SIG.DFL);
+    std.posix.raise(sig) catch {};
 }
 
 /// the config this machine reads unless --config says otherwise:
