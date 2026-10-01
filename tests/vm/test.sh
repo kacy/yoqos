@@ -21,6 +21,9 @@ export VM_ESP VM_ROOT VM_LOADER
 # the ext4 machine installs new ones on a second disk, and on luks on a
 # third, which its tpm unlocks.
 [ "${VM_IMAGE:-cloud}" = ext4 ] && export VM_DISK2=1 VM_DISK3=1 VM_TPM=1
+# systemd-boot runs on firmware that can enforce secure boot, in setup
+# mode until secureboot.sh enrolls keys.
+[ "${VM_IMAGE:-cloud}" = sdboot ] && export VM_SECBOOT=1
 "$vm" start
 trap '"$vm" stop' EXIT
 
@@ -54,6 +57,8 @@ limine | sdboot)
     if [ "$VM_IMAGE" = sdboot ]; then tests/vm/uki.sh; fi
     # boot files live on the esp here, so it can run out of room.
     if [ "$VM_IMAGE" = sdboot ]; then tests/vm/failures.sh esp; fi
+    # signed images under secure boot; it takes the keys out at the end.
+    if [ "$VM_IMAGE" = sdboot ]; then tests/vm/secureboot.sh; fi
     tests/vm/leave.sh
     ;;
 snapper)

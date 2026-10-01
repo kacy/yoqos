@@ -32,6 +32,10 @@
 # with a blank one, and start-installed keeps it, so a key the vm put there
 # is still there for the disk it boots.
 #
+# VM_SECBOOT=1 boots firmware that can enforce secure boot, with smm, on
+# the same firmware variables, which have no keys: it starts in setup
+# mode, where it enforces nothing until keys are enrolled.
+#
 # needs qemu, edk2-ovmf, xorriso, and openssh, and swtpm for VM_TPM. VM_DIR
 # sets where the images and the running vm's files live.
 set -eu
@@ -109,9 +113,15 @@ boot() {
         start_tpm
         set -- "$@" -chardev socket,id=chrtpm,path="$dir/tpm.sock" -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0
     fi
+    code=OVMF_CODE.4m.fd machine=q35
+    if [ -n "${VM_SECBOOT:-}" ]; then
+        # the secure boot build keeps its variables behind smm.
+        code=OVMF_CODE.secboot.4m.fd machine=q35,smm=on
+        set -- "$@" -global driver=cfi.pflash01,property=secure,value=on
+    fi
     seed
-    qemu-system-x86_64 -enable-kvm -cpu host -machine q35 -smp 2 -m 2048 \
-        -drive if=pflash,format=raw,readonly=on,file="$ovmf/OVMF_CODE.4m.fd" \
+    qemu-system-x86_64 -enable-kvm -cpu host -machine "$machine" -smp 2 -m 2048 \
+        -drive if=pflash,format=raw,readonly=on,file="$ovmf/$code" \
         -drive if=pflash,format=raw,file="$vars" \
         -drive if=virtio,file="$disk" \
         -drive media=cdrom,file="$dir/seed.iso" \
@@ -220,7 +230,7 @@ stop)
     rm -rf "$dir/qemu.pid" "$dir/overlay.qcow2" "$dir/vars.fd" "$dir/disk2.qcow2" "$dir/disk3.qcow2" "$dir/tpm"
     ;;
 *)
-    sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac
