@@ -208,8 +208,13 @@ it, or written while the running root has it, signs:
 - refind's btrfs driver, which `os` installs beside refind.conf.
 
 a signature only adds a few KiB, so `os plan`'s esp estimate leaves it
-out. sbctl's own pacman hook may sign files too, but `os` doesn't rely on
-it: a staged generation's image is signed before its trial boot.
+out. `os` doesn't rely on sbctl's own pacman hook: a staged generation's
+image is signed before its trial boot. the hook still runs when packages
+change on the running system, but not in a root `os` builds, like a staged
+one, a clean build, or an install. it signs files at their paths on the
+esp, which isn't mounted there, so it would only fail. `os` turns it off
+for those transactions by linking `zz-sbctl.hook` to `/dev/null` in a hook
+directory libalpm reads after the root's own.
 
 turning `secure_boot` on or off changes the file, so it waits for a
 reboot, with "secure boot" as the reason, and the next boot tries it once.
