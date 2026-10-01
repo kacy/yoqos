@@ -669,10 +669,9 @@ pub const Machine = struct {
     /// kernel copy on the esp is reused by its name, and the menu that
     /// boots it is synced too.
     fn replaceFile(m: *const Machine, src: []const u8, dest: []const u8) !?[]const u8 {
-        const tmp = try std.fmt.allocPrint(m.a, "{s}.yoq-new", .{dest});
-        const why = try exec.runAll(m.a, m.io, &.{ &.{ "cp", src, tmp }, &.{ "sync", tmp }, &.{ "mv", "-f", tmp, dest } }) orelse return null;
+        const why = try exec.runAll(m.a, m.io, try replaceSteps(m.a, src, dest)) orelse return null;
         // a copy cut short, by a full esp say, would only take up room.
-        std.Io.Dir.cwd().deleteFile(m.io, tmp) catch {};
+        std.Io.Dir.cwd().deleteFile(m.io, try std.fmt.allocPrint(m.a, "{s}.yoq-new", .{dest})) catch {};
         return why;
     }
 
@@ -986,6 +985,42 @@ pub fn writeRecord(a: Allocator, io: std.Io, var_dir: []const u8, r: generation.
 fn writeFile(a: Allocator, io: std.Io, path: []const u8, text: []const u8) !?[]const u8 {
     rootfs.writeAtomic(io, path, text, null) catch return try std.fmt.allocPrint(a, "can't write {s}", .{path});
     return null;
+}
+
+/// the commands that put a copy of `src` at `dest` whole: a copy beside
+/// it, synced, renamed into place, and then its directory synced, so the
+/// new name is on disk before a menu written after it names the file. on
+/// fat, syncing the file and the menu's own directory leaves the rename
+/// in memory, and a power cut then leaves a menu whose file isn't there.
+fn replaceSteps(a: Allocator, src: []const u8, dest: []const u8) ![]const []const []const u8 {
+    const tmp = try std.fmt.allocPrint(a, "{s}.yoq-new", .{dest});
+    const dir = std.fs.path.dirnamePosix(dest) orelse ".";
+    return a.dupe([]const []const u8, &.{
+        try a.dupe([]const u8, &.{ "cp", src, tmp }),
+        try a.dupe([]const u8, &.{ "sync", tmp }),
+        try a.dupe([]const u8, &.{ "mv", "-f", tmp, dest }),
+        try a.dupe([]const u8, &.{ "sync", dir }),
+    });
+}
+
+test "a file put on the esp is renamed in, and its directory synced after" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const steps = try replaceSteps(a, "/x/vmlinuz-linux", "/efi/yoq/boot/ab-vmlinuz-linux");
+    try std.testing.expectEqual(4, steps.len);
+    try std.testing.expectEqualStrings("mv", steps[2][0]);
+    try std.testing.expectEqualStrings("sync", steps[3][0]);
+    try std.testing.expectEqualStrings("/efi/yoq/boot", steps[3][1]);
+    // and the steps work: the file's there whole, with nothing beside it.
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src", .data = "kernel" });
+    const dest = try std.fmt.allocPrint(a, "{s}/dest", .{base});
+    try std.testing.expectEqual(null, try exec.runAll(a, std.testing.io, try replaceSteps(a, try std.fmt.allocPrint(a, "{s}/src", .{base}), dest)));
+    try std.testing.expectEqualStrings("kernel", try tmp.dir.readFileAlloc(std.testing.io, "dest", a, .limited(16)));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "dest.yoq-new", .{}));
 }
 
 pub fn recordPath(a: Allocator, var_dir: []const u8, n: u32) ![]const u8 {

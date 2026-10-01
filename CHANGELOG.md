@@ -128,6 +128,11 @@
   put on the esp for its menu, a pin could write back the record of a
   generation gc had just removed, and a fallback at boot could take the
   same generation number as an `os apply` run right after login.
+- a kernel, initramfs, or image os puts on the esp has its directory
+  synced once it's renamed into place, before the menu that boots it is
+  written. fat kept the rename in memory, so a power cut right after a
+  menu write could leave the newest entry pointing at a file that wasn't
+  there.
 
 ## 0.1.3
 
