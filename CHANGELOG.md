@@ -184,6 +184,13 @@
   like news titles, before `os history`, `os rollback`, or anything else
   prints them. a repository `os install` cloned could otherwise move the
   cursor or rewrite the terminal.
+- `[files]` writes and removals walk down to the file one directory at a
+  time and write in the directory they opened. they follow root's
+  symlinks, inside the root being written, but stop with the path and the
+  reason at a directory another user owns or can write to (unless it's
+  sticky) and at a symlink another user owns. before, a user who owned a
+  directory on the way, like their home, could point the write, a secret's
+  value included, at any file on the machine.
 
 ## 0.1.3
 

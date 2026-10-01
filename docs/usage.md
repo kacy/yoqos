@@ -940,7 +940,13 @@ root boots with the drop-in. a root without mkinitcpio is skipped.
 
 a path is absolute and plain: no `.` or `..` parts, no trailing `/`, and
 nothing under `/etc/yoq` or `/var/lib/yoq`, which are `os`'s own. it also
-can't be a file another key writes, like the sysctl file below.
+can't be a file another key writes, like the sysctl file below. `apply`
+walks down to the file one directory at a time. it follows root's
+symlinks, like `/bin`, and refuses a directory on the way that another
+user owns or can write to, unless it has the sticky bit like `/tmp`. it
+also refuses a symlink another user owns, since either one could send the
+write somewhere else. so a file in someone's home needs that home to be
+root's, or the write stops with the path and the reason.
 
 `[sysctl]` becomes one file, `/etc/sysctl.d/99-yoq.conf`, and `apply` loads
 it right away when systemd runs the machine.

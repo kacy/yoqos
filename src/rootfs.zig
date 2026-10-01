@@ -189,19 +189,32 @@ pub fn pathExists(io: std.Io, path: []const u8) bool {
 /// symlink someone left there.
 pub fn writeAtomic(io: std.Io, path: []const u8, bytes: []const u8, bits: ?u32) error{WriteFailed}!void {
     const linux = std.os.linux;
+    const dir = std.fs.path.dirnamePosix(path) orelse ".";
+    std.Io.Dir.cwd().createDirPath(io, dir) catch return error.WriteFailed;
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_z = std.fmt.bufPrintZ(&dir_buf, "{s}", .{dir}) catch return error.WriteFailed;
+    const dfd = linux.open(dir_z, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
+    if (linux.errno(dfd) != .SUCCESS) return error.WriteFailed;
+    defer _ = linux.close(@intCast(dfd));
+    return replaceAt(@intCast(dfd), std.fs.path.basenamePosix(path), bytes, bits);
+}
+
+/// `writeAtomic`'s work, for the file `name` in the open directory `dfd`:
+/// the temporary file and the rename both happen in that directory, so
+/// nothing can swap the path in between.
+fn replaceAt(dfd: std.os.linux.fd_t, name: []const u8, bytes: []const u8, bits: ?u32) error{WriteFailed}!void {
+    const linux = std.os.linux;
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp = std.fmt.bufPrintZ(&buf, "{s}.os-tmp", .{path}) catch return error.WriteFailed;
+    const tmp = std.fmt.bufPrintZ(&buf, "{s}.os-tmp", .{name}) catch return error.WriteFailed;
     var dest_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dest = std.fmt.bufPrintZ(&dest_buf, "{s}", .{path}) catch return error.WriteFailed;
-    const cwd = std.Io.Dir.cwd();
-    if (std.fs.path.dirnamePosix(path)) |d| cwd.createDirPath(io, d) catch return error.WriteFailed;
+    const dest = std.fmt.bufPrintZ(&dest_buf, "{s}", .{name}) catch return error.WriteFailed;
     const mode: linux.mode_t = @intCast(bits orelse 0o644);
     // one left by a crash goes first; unlink removes a symlink itself.
-    _ = linux.unlink(tmp);
-    const opened = linux.open(tmp, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true, .NOFOLLOW = true, .CLOEXEC = true }, mode);
+    _ = linux.unlinkat(dfd, tmp, 0);
+    const opened = linux.openat(dfd, tmp, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true, .NOFOLLOW = true, .CLOEXEC = true }, mode);
     if (linux.errno(opened) != .SUCCESS) return error.WriteFailed;
     const fd: linux.fd_t = @intCast(opened);
-    errdefer _ = linux.unlink(tmp);
+    errdefer _ = linux.unlinkat(dfd, tmp, 0);
     {
         defer _ = linux.close(fd);
         if (linux.errno(linux.fchmod(fd, mode)) != .SUCCESS) return error.WriteFailed;
@@ -216,15 +229,209 @@ pub fn writeAtomic(io: std.Io, path: []const u8, bytes: []const u8, bits: ?u32) 
         }
         if (linux.errno(linux.fsync(fd)) != .SUCCESS) return error.WriteFailed;
     }
-    if (linux.errno(linux.rename(tmp, dest)) != .SUCCESS) return error.WriteFailed;
+    if (linux.errno(linux.renameat(dfd, tmp, dfd, dest)) != .SUCCESS) return error.WriteFailed;
     // the rename itself is only durable once the directory is on disk. a
     // filesystem that can't sync a directory still has the new file.
-    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir = std.fmt.bufPrintZ(&dir_buf, "{s}", .{std.fs.path.dirnamePosix(path) orelse "."}) catch return;
-    const dfd = linux.open(dir, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
-    if (linux.errno(dfd) != .SUCCESS) return;
-    defer _ = linux.close(@intCast(dfd));
-    if (linux.errno(linux.fsync(@intCast(dfd))) == .IO) return error.WriteFailed;
+    if (linux.errno(linux.fsync(dfd)) == .IO) return error.WriteFailed;
+}
+
+/// writes the file at `rel`, a path inside the machine at `root`, like
+/// `writeAtomic`, in a directory `openParent` checked on the way down.
+/// null when it worked, or why not, naming the path.
+pub fn writeChecked(a: Allocator, root: []const u8, rel: []const u8, bytes: []const u8, bits: ?u32) error{OutOfMemory}!?[]const u8 {
+    const shown = try std.fs.path.join(a, &.{ root, rel });
+    const dfd = switch (try openParent(a, root, rel, true)) {
+        .dir => |fd| fd,
+        .refused => |why| return try std.fmt.allocPrint(a, "can't write {s}: {s}", .{ shown, why }),
+        .missing => unreachable, // made on the way.
+    };
+    defer _ = std.os.linux.close(dfd);
+    replaceAt(dfd, std.fs.path.basenamePosix(rel), bytes, bits) catch return try std.fmt.allocPrint(a, "can't write {s}", .{shown});
+    return null;
+}
+
+/// removes the file at `rel` inside `root`, in a directory `openParent`
+/// checked. one that's already gone is fine. null when it worked, or why
+/// not.
+pub fn removeChecked(a: Allocator, root: []const u8, rel: []const u8) error{OutOfMemory}!?[]const u8 {
+    const linux = std.os.linux;
+    const shown = try std.fs.path.join(a, &.{ root, rel });
+    const dfd = switch (try openParent(a, root, rel, false)) {
+        .dir => |fd| fd,
+        .refused => |why| return try std.fmt.allocPrint(a, "can't remove {s}: {s}", .{ shown, why }),
+        .missing => return null,
+    };
+    defer _ = linux.close(dfd);
+    return switch (linux.errno(linux.unlinkat(dfd, try a.dupeZ(u8, std.fs.path.basenamePosix(rel)), 0))) {
+        .SUCCESS, .NOENT => null,
+        else => try std.fmt.allocPrint(a, "can't remove {s}", .{shown}),
+    };
+}
+
+const Parent = union(enum) {
+    dir: std.os.linux.fd_t,
+    /// why os won't write there.
+    refused: []const u8,
+    /// a directory on the way isn't there, and wasn't to be made.
+    missing,
+};
+
+/// the most symlinks a path may go through, as the kernel allows.
+const max_links = 40;
+
+/// opens the directory that holds `rel`, a path inside the machine at
+/// `root`, walking down from the root one directory at a time, and making
+/// the ones that are missing when `make` says so. a directory another
+/// user owns, or that others can write to without the sticky bit, is
+/// refused, and so is a symlink another user owns: either could point the
+/// write somewhere else. a symlink of root's, like /bin -> usr/bin, is
+/// followed, inside the root.
+fn openParent(a: Allocator, root: []const u8, rel: []const u8, make: bool) error{OutOfMemory}!Parent {
+    const linux = std.os.linux;
+    var stack: std.ArrayList(linux.fd_t) = .empty;
+    defer for (stack.items[0..stack.items.len -| 1]) |fd| {
+        _ = linux.close(fd);
+    };
+    const root_fd = linux.open(try a.dupeZ(u8, root), .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
+    if (linux.errno(root_fd) != .SUCCESS) return .{ .refused = "the root can't be opened" };
+    try stack.append(a, @intCast(root_fd));
+    if (try dirProblem(a, stack.items[0], root)) |why| return .{ .refused = why };
+    // what's left to walk, last first.
+    var pending: std.ArrayList([]const u8) = .empty;
+    try pushParts(a, &pending, std.fs.path.dirnamePosix(rel) orelse "");
+    var links: usize = 0;
+    while (pending.pop()) |part| {
+        if (part.len == 0 or std.mem.eql(u8, part, ".")) continue;
+        if (std.mem.eql(u8, part, "..")) {
+            if (stack.items.len > 1) _ = linux.close(stack.pop().?);
+            continue;
+        }
+        const at = stack.items[stack.items.len - 1];
+        const z = try a.dupeZ(u8, part);
+        var st: linux.Statx = undefined;
+        var e = linux.errno(linux.statx(at, z, linux.AT.SYMLINK_NOFOLLOW, .{ .TYPE = true, .UID = true, .MODE = true }, &st));
+        if (e == .NOENT) {
+            if (!make) return .missing;
+            switch (linux.errno(linux.mkdirat(at, z, 0o755))) {
+                .SUCCESS, .EXIST => {},
+                else => return .{ .refused = try std.fmt.allocPrint(a, "can't make the directory {s}", .{part}) },
+            }
+            e = linux.errno(linux.statx(at, z, linux.AT.SYMLINK_NOFOLLOW, .{ .TYPE = true, .UID = true, .MODE = true }, &st));
+        }
+        if (e != .SUCCESS) return .{ .refused = try std.fmt.allocPrint(a, "can't look at {s}", .{part}) };
+        switch (st.mode & linux.S.IFMT) {
+            linux.S.IFLNK => {
+                if (!trustedOwner(st.uid)) return .{ .refused = try std.fmt.allocPrint(a, "{s} on the way is a symlink another user owns", .{part}) };
+                links += 1;
+                if (links > max_links) return .{ .refused = "too many symlinks on the way" };
+                var buf: [std.fs.max_path_bytes]u8 = undefined;
+                const n = linux.readlinkat(at, z, &buf, buf.len);
+                if (linux.errno(n) != .SUCCESS) return .{ .refused = try std.fmt.allocPrint(a, "can't read the symlink {s}", .{part}) };
+                const target = try a.dupe(u8, buf[0..n]);
+                // an absolute target starts again at the root, not the host's.
+                if (target.len > 0 and target[0] == '/') while (stack.items.len > 1) {
+                    _ = linux.close(stack.pop().?);
+                };
+                try pushParts(a, &pending, target);
+            },
+            linux.S.IFDIR => {
+                const opened = linux.openat(at, z, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true }, 0);
+                if (linux.errno(opened) != .SUCCESS) return .{ .refused = try std.fmt.allocPrint(a, "can't open the directory {s}", .{part}) };
+                try stack.append(a, @intCast(opened));
+                // checked once open, so it's the directory os goes on in.
+                if (try dirProblem(a, @intCast(opened), part)) |why| return .{ .refused = why };
+            },
+            else => return .{ .refused = try std.fmt.allocPrint(a, "{s} on the way isn't a directory", .{part}) },
+        }
+    }
+    return .{ .dir = stack.pop().? };
+}
+
+/// adds the parts of `path` to `pending`, so the first comes off first.
+fn pushParts(a: Allocator, pending: *std.ArrayList([]const u8), path: []const u8) !void {
+    var parts: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.tokenizeScalar(u8, path, '/');
+    while (it.next()) |p| try parts.append(a, p);
+    std.mem.reverse([]const u8, parts.items);
+    try pending.appendSlice(a, parts.items);
+}
+
+/// root's, or this process's own user's, as in a test.
+fn trustedOwner(uid: std.os.linux.uid_t) bool {
+    return uid == 0 or uid == std.os.linux.geteuid();
+}
+
+/// why os won't write through the open directory `fd`, named `name`, or
+/// null if it will. a group that can write to it counts as others, unless
+/// it's root's group, or this process's.
+fn dirProblem(a: Allocator, fd: std.os.linux.fd_t, name: []const u8) !?[]const u8 {
+    const linux = std.os.linux;
+    var st: linux.Statx = undefined;
+    if (linux.errno(linux.statx(fd, "", linux.AT.EMPTY_PATH, .{ .UID = true, .GID = true, .MODE = true }, &st)) != .SUCCESS) return try std.fmt.allocPrint(a, "can't look at {s}", .{name});
+    if (!trustedOwner(st.uid)) return try std.fmt.allocPrint(a, "the directory {s} on the way belongs to another user", .{name});
+    const group = st.gid == 0 or st.gid == linux.getegid();
+    const open = st.mode & 0o002 != 0 or (st.mode & 0o020 != 0 and !group);
+    if (open and st.mode & linux.S.ISVTX == 0) return try std.fmt.allocPrint(a, "others can write to the directory {s} on the way", .{name});
+    return null;
+}
+
+test "a checked write follows root's symlinks, and refuses others' and open directories" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/root", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "root/usr/lib");
+    try tmp.dir.createDirPath(io, "elsewhere");
+    // a normal path, made as it goes.
+    try std.testing.expectEqual(null, try writeChecked(a, root, "etc/motd", "hi", 0o600));
+    try std.testing.expectEqualStrings("hi", try tmp.dir.readFileAlloc(io, "root/etc/motd", a, .limited(64)));
+    // /lib -> usr/lib, and an absolute link, which stays inside the root.
+    try tmp.dir.symLink(io, "usr/lib", "root/lib", .{});
+    try tmp.dir.symLink(io, "/usr/lib", "root/abs", .{});
+    try std.testing.expectEqual(null, try writeChecked(a, root, "lib/x.conf", "x", null));
+    try std.testing.expectEqual(null, try writeChecked(a, root, "abs/y.conf", "y", null));
+    try std.testing.expectEqualStrings("x", try tmp.dir.readFileAlloc(io, "root/usr/lib/x.conf", a, .limited(64)));
+    try std.testing.expectEqualStrings("y", try tmp.dir.readFileAlloc(io, "root/usr/lib/y.conf", a, .limited(64)));
+    // a link out of the root through .. stays in it too: .. at the root is
+    // the root.
+    try tmp.dir.symLink(io, "../../../../elsewhere", "root/up", .{});
+    try std.testing.expectEqual(null, try writeChecked(a, root, "up/z", "z", null));
+    try std.testing.expectEqualStrings("z", try tmp.dir.readFileAlloc(io, "root/elsewhere/z", a, .limited(64)));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "elsewhere/z", .{}));
+    // a directory others can write to, without the sticky bit, is refused,
+    // and nothing's written past it.
+    try tmp.dir.createDirPath(io, "root/home/u");
+    try tmp.dir.setFilePermissions(io, "root/home/u", @enumFromInt(0o777), .{});
+    const why = (try writeChecked(a, root, "home/u/.config/x", "secret", 0o600)).?;
+    try std.testing.expect(std.mem.endsWith(u8, why, "others can write to the directory u on the way"));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "root/home/u/.config", .{}));
+    // a sticky one, like /tmp, is fine.
+    try tmp.dir.setFilePermissions(io, "root/home/u", @enumFromInt(0o1777), .{});
+    try std.testing.expectEqual(null, try writeChecked(a, root, "home/u/f", "f", null));
+    // removing goes through the same checks.
+    try std.testing.expectEqual(null, try removeChecked(a, root, "lib/x.conf"));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "root/usr/lib/x.conf", .{}));
+    try std.testing.expectEqual(null, try removeChecked(a, root, "no/such/dir/f"));
+}
+
+test "a symlink another user owns is refused, as root" {
+    if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "root/home/u");
+    try tmp.dir.symLink(io, "/etc", "root/home/u/.config", .{});
+    const link = try std.fmt.allocPrintSentinel(a, "{s}/root/home/u/.config", .{base}, 0);
+    _ = std.os.linux.fchownat(std.os.linux.AT.FDCWD, link, 1000, 1000, std.os.linux.AT.SYMLINK_NOFOLLOW);
+    const why = (try writeChecked(a, try std.fmt.allocPrint(a, "{s}/root", .{base}), "home/u/.config/x", "secret", 0o600)).?;
+    try std.testing.expect(std.mem.endsWith(u8, why, ".config on the way is a symlink another user owns"));
 }
 
 test "an atomic write keeps its mode, and a symlink in the way stays untouched" {

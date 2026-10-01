@@ -141,13 +141,12 @@ fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.
     var value: ?[]u8 = null;
     defer if (value) |v| secrets.wipe(v);
     if (d.secret) |name| value = try secretValue(a, store, p, path, name, diags) orelse return false;
-    fs.writeMode(std.mem.trimStart(u8, path, "/"), value orelse d.content, mode) catch |e| switch (e) {
-        error.OutOfMemory => return e,
-        error.WriteFailed => {
-            try diags.add(.apply_failed, null, "can't write {s}", .{try fs.path(path)}, null);
-            return false;
-        },
-    };
+    // the path is the config's, and a directory on the way may be a
+    // user's, like a home: the write is checked all the way down.
+    if (try rootfs.writeChecked(a, fs.dir, std.mem.trimStart(u8, path, "/"), value orelse d.content, mode)) |why| {
+        try diags.add(.apply_failed, null, "{s}", .{why}, null);
+        return false;
+    }
     if (!live) return true;
     const then: []const []const u8 = if (std.mem.eql(u8, path, planner.sysctl_path))
         &.{ "sysctl", "-p", path }
@@ -215,14 +214,11 @@ fn includeRepos(a: Allocator, io: std.Io, root: []const u8, diags: *diag.List) !
 
 /// removes a file os generated that nothing asks for now.
 fn removeFile(a: Allocator, io: std.Io, root: []const u8, path: []const u8, diags: *diag.List) !bool {
-    const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
-    std.Io.Dir.cwd().deleteFile(io, try fs.path(std.mem.trimStart(u8, path, "/"))) catch |e| switch (e) {
-        error.FileNotFound => {},
-        else => {
-            try diags.add(.apply_failed, null, "can't remove {s}", .{try fs.path(path)}, null);
-            return false;
-        },
-    };
+    _ = io;
+    if (try rootfs.removeChecked(a, root, std.mem.trimStart(u8, path, "/"))) |why| {
+        try diags.add(.apply_failed, null, "{s}", .{why}, null);
+        return false;
+    }
     return true;
 }
 
