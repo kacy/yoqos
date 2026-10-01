@@ -19,6 +19,7 @@ const output = @import("output.zig");
 const lists = @import("lists.zig");
 const generation = @import("generation.zig");
 const menu = @import("menu.zig");
+const uki = @import("uki.zig");
 const Allocator = std.mem.Allocator;
 
 pub const schema = "yoq.plan/1";
@@ -152,6 +153,9 @@ pub fn wants(a: Allocator, c: *const config.Config) ![]const Want {
     if (c.boot.kernel) |k| {
         if (!std.mem.eql(u8, k.v, catalog.no_kernel)) try addWant(a, &out, k.v, "boot.kernel", k.src);
     } else try addWant(a, &out, catalog.default_kernel, "boot.kernel", null);
+    if (c.boot.uki) |v| {
+        if (v.v) try addWant(a, &out, uki.package, "boot.uki", v.src);
+    }
     if (c.hardware.cpu) |v| try addWants(a, &out, catalog.cpuPackages(v.v), "hardware.cpu", v.src);
     if (c.hardware.gpu) |v| try addWants(a, &out, catalog.gpuPackages(v.v), "hardware.gpu", v.src);
     if (c.desktop.session) |v| try addWants(a, &out, catalog.sessionPackages(v.v), "desktop.session", v.src);
@@ -408,7 +412,7 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
             .kind = .file,
             .subject = d.path,
             .cause = d.cause orelse try std.fmt.allocPrint(a, "files.\"{s}\"", .{d.path}),
-            .reboot = d.reboot orelse dropInReboot(d.path),
+            .reboot = d.reboot orelse fileReboot(d.path),
         };
         const hash = try contentHash(a, d, f);
         if (f.file(d.path)) |have| {
@@ -441,7 +445,7 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
             .kind = .file,
             .subject = p,
             .to = "remove: os wrote it, and nothing asks for it now",
-            .reboot = dropInReboot(p),
+            .reboot = fileReboot(p),
         });
     }
     lists.sortByField(Change, "subject", files.items);
@@ -547,14 +551,20 @@ pub fn isInitramfsDropIn(path: []const u8) bool {
     return std.mem.startsWith(u8, path, "/etc/mkinitcpio.conf.d/");
 }
 
-fn dropInReboot(path: []const u8) ?[]const u8 {
-    return if (isInitramfsDropIn(path)) "initramfs" else null;
+/// why a change to a file os writes needs a reboot: a drop-in changes the
+/// initramfs, and the ukify config changes what the menu boots.
+fn fileReboot(path: []const u8) ?[]const u8 {
+    if (isInitramfsDropIn(path)) return "initramfs";
+    return if (std.mem.eql(u8, path, uki.config_path)) uki_reboot else null;
 }
+
+/// the reboot reason for turning `[boot] uki` on or off.
+pub const uki_reboot = "uki";
 
 /// files os writes from other keys, each starting with a "written by os"
 /// line. one still there that nothing asks for any more is removed. the
 /// session's own config isn't here: it's the user's file.
-const generated_paths = [_][]const u8{ sysctl_path, modules_path, greetd_config_path, tty_session_path, nvidia_initramfs_path, encrypt_initramfs_path };
+const generated_paths = [_][]const u8{ sysctl_path, modules_path, greetd_config_path, tty_session_path, nvidia_initramfs_path, encrypt_initramfs_path, uki.config_path };
 
 /// the first line of a file os makes from `key`.
 fn header(comptime key: []const u8) []const u8 {
@@ -651,6 +661,7 @@ pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts
         try modulesFile(a, c),
         nvidiaFile(c, f),
         encryptFile(c, f),
+        ukiFile(c, f),
     };
     for (made) |m| {
         if (m) |d| try out.append(a, d);
@@ -764,6 +775,17 @@ fn encryptFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
     return .{ .path = encrypt_initramfs_path, .content = encrypt_initramfs_content, .cause = "boot.encrypt", .src = encrypt.src, .reboot = "initramfs" };
 }
 
+/// the ukify config for `[boot] uki`, in a root whose boot menu os
+/// writes: one running a generation, or one being built, where mounts say
+/// nothing (no root filesystem in facts). a machine without generations
+/// boots the way it always has, so there the key only brings ukify.
+fn ukiFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
+    const v = c.boot.uki orelse return null;
+    if (!v.v) return null;
+    if (f.boot.root_fs != null and !generation.running(f.boot.root_subvol)) return null;
+    return .{ .path = uki.config_path, .content = uki.config_content, .cause = "boot.uki", .src = v.src, .reboot = uki_reboot };
+}
+
 /// what the observer should look at for this config: every file it might
 /// want or os may have generated, and the repositories' signing keys.
 pub fn wanted(a: Allocator, c: *const config.Config) !facts.Wanted {
@@ -812,39 +834,86 @@ pub const EspNeed = struct {
 /// side, so those add up. with the esp
 /// at /boot, the first good boot also puts them over the running ones
 /// there, one at a time.
-pub fn espNeed(p: *const Plan, b: *const facts.Boot) ?EspNeed {
+///
+/// with `uki_on`, the next generation boots unified kernel images, which
+/// are on the esp for every bootloader: each kernel the plan touches gets
+/// an image as big as its kernel, initramfs, and microcode together, plus
+/// the stub. turning `[boot] uki` on or off makes every kernel's boot
+/// files new.
+pub fn espNeed(p: *const Plan, b: *const facts.Boot, uki_on: bool) ?EspNeed {
     if (!generation.running(b.root_subvol)) return null;
     const esp = b.esp orelse return null;
     if (menu.Loader.of(b.*) == null) return null;
-    const hashed = menu.copiesOnEsp(b.*);
+    const hashed = menu.copiesOnEsp(b.*) or uki_on;
     const in_place = std.mem.eql(u8, esp, "/boot");
     if (!hashed and !in_place) return null;
 
     var initramfs = false;
     var microcode = false;
+    var every = false;
     for (p.changes) |c| {
         const r = c.reboot orelse continue;
         if (std.mem.eql(u8, r, "initramfs") or std.mem.eql(u8, r, "microcode")) initramfs = true;
         if (std.mem.eql(u8, r, "microcode")) microcode = true;
+        if (std.mem.eql(u8, r, uki_reboot)) every = true;
     }
+    // the files the plan changes, and every file, for a menu that stops
+    // booting images and needs copies of them all again.
     var est: Estimate = .{};
+    var all: Estimate = .{};
+    var images: Estimate = .{};
     var largest: [2]u64 = .{ 0, 0 };
+    var ucode: u64 = 0;
     for (b.boot_files) |f| {
+        all.add(f.size, f.size);
         if (kernelOf(f.name)) |k| {
             const i: usize = if (std.mem.startsWith(u8, f.name, "vmlinuz-")) 0 else 1;
             largest[i] = @max(largest[i], f.size);
             if ((i == 1 and initramfs) or kernelChanges(p, k)) est.add(f.size, f.size);
-        } else if (microcode) est.add(f.size, f.size);
+        } else {
+            ucode += f.size;
+            if (microcode) est.add(f.size, f.size);
+        }
+    }
+    if (uki_on) {
+        for (b.boot_files) |f| {
+            if (!std.mem.startsWith(u8, f.name, "vmlinuz-")) continue;
+            const k = f.name["vmlinuz-".len..];
+            if (every or initramfs or kernelChanges(p, k)) images.add(f.size + initramfsSize(b, k) + ucode + uki.stub_size, 0);
+        }
     }
     for (p.changes) |c| {
         if (c.op != .add or !std.mem.eql(u8, c.reboot orelse "", "kernel")) continue;
         if (hasKernel(b, c.subject)) continue;
-        est.add(largest[0], 0);
-        est.add(largest[1], 0);
+        for ([_]*Estimate{ &est, &all }) |e| {
+            e.add(largest[0], 0);
+            e.add(largest[1], 0);
+        }
+        if (uki_on) images.add(largest[0] + largest[1] + ucode + uki.stub_size, 0);
     }
-    const need = (if (hashed) est.total else 0) + (if (in_place) est.growth + est.lead else 0);
+    const copies = if (uki_on) images.total else if (every) all.total else est.total;
+    const need = (if (hashed) copies else 0) + (if (in_place) est.growth + est.lead else 0);
     if (need == 0) return null;
     return .{ .need = need, .collectable = hashed };
+}
+
+/// the size of kernel `kernel`'s initramfs among the boot files, 0 if it
+/// has none.
+fn initramfsSize(b: *const facts.Boot, kernel: []const u8) u64 {
+    for (b.boot_files) |f| {
+        if (!std.mem.startsWith(u8, f.name, "initramfs-")) continue;
+        if (std.mem.eql(u8, kernelOf(f.name) orelse continue, kernel)) return f.size;
+    }
+    return 0;
+}
+
+/// whether the generation a plan makes boots unified kernel images: the
+/// plan writes the ukify config, or keeps the one there.
+pub fn ukiAfter(p: *const Plan, f: *const facts.Facts) bool {
+    for (p.changes) |c| {
+        if (c.kind == .file and std.mem.eql(u8, c.subject, uki.config_path)) return c.op != .remove;
+    }
+    return f.file(uki.config_path) != null;
 }
 
 /// new boot files, as `espNeed` adds them up.
@@ -895,7 +964,7 @@ fn kernelChanges(p: *const Plan, kernel: []const u8) bool {
 /// files.
 pub fn checkEsp(a: Allocator, p: *const Plan, f: *const facts.Facts, diags: *diag.List) !bool {
     const b = &f.boot;
-    const e = espNeed(p, b) orelse return true;
+    const e = espNeed(p, b, ukiAfter(p, f)) orelse return true;
     const free = b.esp_free orelse return true;
     if (generation.fits(e.need, free)) return true;
     const mib = 1 << 20;
@@ -1080,9 +1149,9 @@ pub fn writeJson(w: *std.Io.Writer, a: Allocator, p: *const Plan) !void {
 // -- tests --
 
 test "a mkinitcpio drop-in waits for a reboot, written or removed" {
-    try testing.expectEqualStrings("initramfs", dropInReboot("/etc/mkinitcpio.conf.d/50-local.conf").?);
-    try testing.expectEqual(null, dropInReboot("/etc/mkinitcpio.conf.dx/a.conf"));
-    try testing.expectEqual(null, dropInReboot("/etc/motd"));
+    try testing.expectEqualStrings("initramfs", fileReboot("/etc/mkinitcpio.conf.d/50-local.conf").?);
+    try testing.expectEqual(null, fileReboot("/etc/mkinitcpio.conf.dx/a.conf"));
+    try testing.expectEqual(null, fileReboot("/etc/motd"));
 }
 
 const testing = std.testing;
@@ -1417,6 +1486,45 @@ test "the drop-in that unlocks a luks root, unless the hooks do already" {
     try testing.expectEqual(0, (try desiredFiles(t.a(), &booster, &plain)).len);
 }
 
+test "[boot] uki brings ukify, and its config where os writes the menu" {
+    var t: T = .{};
+    defer t.deinit();
+    const a = t.a();
+    const c = try t.cfg("[boot]\nkernel = \"none\"\nuki = true\n");
+    const w = findWant(try wants(a, &c), "systemd-ukify").?;
+    try testing.expectEqualStrings("boot.uki", w.cause.?);
+
+    const on_gens: facts.Facts = .{ .boot = .{ .root_fs = "btrfs", .root_subvol = "/@roots/3" } };
+    const want = try desiredFiles(a, &c, &on_gens);
+    try testing.expectEqual(1, want.len);
+    try testing.expectEqualStrings("/etc/kernel/yoq-uki.conf", want[0].path);
+    try testing.expectEqualStrings("uki", want[0].reboot.?);
+    try testing.expect(std.mem.startsWith(u8, want[0].content, "# written by os from [boot] uki in the config."));
+    // a root being built, where mounts say nothing, gets it too.
+    try testing.expectEqual(1, (try desiredFiles(a, &c, &.{})).len);
+    // without generations, os writes no menu.
+    for ([_]facts.Boot{ .{ .root_fs = "ext4" }, .{ .root_fs = "btrfs", .root_subvol = "/@" } }) |b| {
+        try testing.expectEqual(0, (try desiredFiles(a, &c, &.{ .boot = b })).len);
+    }
+    const off = try t.cfg("[boot]\nkernel = \"none\"\nuki = false\n");
+    try testing.expectEqual(null, findWant(try wants(a, &off), "systemd-ukify"));
+    try testing.expectEqual(0, (try desiredFiles(a, &off, &on_gens)).len);
+
+    // turning it off takes os's config out, which needs a reboot too.
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
+    var files = [_]facts.File{.{ .path = "/etc/kernel/yoq-uki.conf", .sha256 = &facts.sha256Hex(uki.config_content), .mode = "0644", .ours = true }};
+    const had: facts.Facts = .{ .files = &files, .boot = on_gens.boot };
+    const p = (try plan(a, &off, &l, &had, &t.diags)).?;
+    try testing.expectEqual(1, p.changes.len);
+    try testing.expectEqual(Op.remove, p.changes[0].op);
+    try testing.expectEqualStrings("uki", p.changes[0].reboot.?);
+    try testing.expect(!ukiAfter(&p, &had));
+    try testing.expect(ukiAfter(&.{ .changes = &.{} }, &had));
+    // left on, the config there is the one it wants.
+    const with: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{lockPkg("systemd-ukify", "258-1", &.{})} };
+    for ((try plan(a, &c, &with, &had, &t.diags)).?.changes) |ch| try testing.expect(ch.kind != .file);
+}
+
 test "a package from a service keeps its install reason" {
     var t: T = .{};
     defer t.deinit();
@@ -1630,40 +1738,74 @@ test "how much room a plan's new boot files take on the esp" {
     var b: facts.Boot = .{ .esp = "/efi", .loader = "systemd-boot", .root_subvol = "/@roots/3", .boot_files = &files };
     const upgrade: Plan = .{ .changes = &.{.{ .op = .change, .kind = .package, .subject = "linux", .from = "6.16.8", .to = "6.17.1", .reboot = "kernel" }} };
     // limine and systemd-boot keep the new pair beside the old one.
-    try testing.expectEqual(EspNeed{ .need = 51 * mib, .collectable = true }, espNeed(&upgrade, &b).?);
+    try testing.expectEqual(EspNeed{ .need = 51 * mib, .collectable = true }, espNeed(&upgrade, &b, false).?);
     const lts: Plan = .{ .changes = &.{.{ .op = .add, .kind = .package, .subject = "linux-lts", .to = "6.12.48", .reboot = "kernel" }} };
-    try testing.expectEqual(51 * mib, espNeed(&lts, &b).?.need);
+    try testing.expectEqual(51 * mib, espNeed(&lts, &b, false).?.need);
     const ucode: Plan = .{ .changes = &.{.{ .op = .change, .kind = .package, .subject = "amd-ucode", .from = "1", .to = "2", .reboot = "microcode" }} };
-    try testing.expectEqual(38 * mib + mib / 4, espNeed(&ucode, &b).?.need);
+    try testing.expectEqual(38 * mib + mib / 4, espNeed(&ucode, &b, false).?.need);
     const drop_in: Plan = .{ .changes = &.{.{ .op = .add, .kind = .file, .subject = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf", .reboot = "initramfs" }} };
-    try testing.expectEqual(34 * mib, espNeed(&drop_in, &b).?.need);
+    try testing.expectEqual(34 * mib, espNeed(&drop_in, &b, false).?.need);
     // nothing new to boot, or a kernel that goes.
     const tool: Plan = .{ .changes = &.{.{ .op = .add, .kind = .package, .subject = "ripgrep", .to = "14" }} };
-    try testing.expectEqual(null, espNeed(&tool, &b));
+    try testing.expectEqual(null, espNeed(&tool, &b, false));
     const gone: Plan = .{ .changes = &.{.{ .op = .remove, .kind = .package, .subject = "linux", .from = "6.16.8", .reboot = "kernel" }} };
-    try testing.expectEqual(null, espNeed(&gone, &b));
+    try testing.expectEqual(null, espNeed(&gone, &b, false));
 
     // with the esp at /boot, a good boot also puts them over the running
     // ones, one at a time: the growth, and the largest while it's copied.
     b.esp = "/boot";
-    try testing.expectEqual(EspNeed{ .need = (51 + 35) * mib, .collectable = true }, espNeed(&upgrade, &b).?);
+    try testing.expectEqual(EspNeed{ .need = (51 + 35) * mib, .collectable = true }, espNeed(&upgrade, &b, false).?);
     b.loader = "grub";
-    try testing.expectEqual(EspNeed{ .need = 35 * mib, .collectable = false }, espNeed(&upgrade, &b).?);
+    try testing.expectEqual(EspNeed{ .need = 35 * mib, .collectable = false }, espNeed(&upgrade, &b, false).?);
     // grub and refind read each root's kernel over btrfs.
     b.esp = "/efi";
-    try testing.expectEqual(null, espNeed(&upgrade, &b));
+    try testing.expectEqual(null, espNeed(&upgrade, &b, false));
     b.loader = "refind";
-    try testing.expectEqual(null, espNeed(&upgrade, &b));
+    try testing.expectEqual(null, espNeed(&upgrade, &b, false));
     // unless the root is on luks: then they can't, and boot copies on the
     // esp like limine.
     b.luks_uuid = "0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b";
-    try testing.expectEqual(EspNeed{ .need = 51 * mib, .collectable = true }, espNeed(&upgrade, &b).?);
+    try testing.expectEqual(EspNeed{ .need = 51 * mib, .collectable = true }, espNeed(&upgrade, &b, false).?);
     // without generations, pacman changes the files in place, as always.
     b = .{ .esp = "/boot", .loader = "systemd-boot", .root_subvol = "/@", .boot_files = &files };
-    try testing.expectEqual(null, espNeed(&upgrade, &b));
+    try testing.expectEqual(null, espNeed(&upgrade, &b, false));
     // no boot files to go by.
     b = .{ .esp = "/efi", .loader = "limine", .root_subvol = "/@roots/3" };
-    try testing.expectEqual(null, espNeed(&upgrade, &b));
+    try testing.expectEqual(null, espNeed(&upgrade, &b, false));
+}
+
+test "unified kernel images on the esp take a kernel's files together" {
+    const mib = 1 << 20;
+    const k = 16 * mib - uki.stub_size;
+    const files = [_]facts.BootFile{
+        .{ .name = "amd-ucode.img", .size = 4 * mib },
+        .{ .name = "initramfs-linux.img", .size = 28 * mib },
+        .{ .name = "vmlinuz-linux", .size = k },
+    };
+    // 4 + 28 + 16 MiB with the stub, and a sixteenth: 51 MiB an image.
+    var b: facts.Boot = .{ .esp = "/efi", .loader = "grub", .root_subvol = "/@roots/3", .boot_files = &files };
+    const upgrade: Plan = .{ .changes = &.{.{ .op = .change, .kind = .package, .subject = "linux", .from = "6.16.8", .to = "6.17.1", .reboot = "kernel" }} };
+    // grub reads the roots, but images are on the esp for every bootloader.
+    try testing.expectEqual(null, espNeed(&upgrade, &b, false));
+    try testing.expectEqual(EspNeed{ .need = 51 * mib, .collectable = true }, espNeed(&upgrade, &b, true).?);
+    const drop_in: Plan = .{ .changes = &.{.{ .op = .add, .kind = .file, .subject = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf", .reboot = "initramfs" }} };
+    try testing.expectEqual(51 * mib, espNeed(&drop_in, &b, true).?.need);
+    const lts: Plan = .{ .changes = &.{.{ .op = .add, .kind = .package, .subject = "linux-lts", .to = "6.12.48", .reboot = "kernel" }} };
+    try testing.expectEqual(51 * mib, espNeed(&lts, &b, true).?.need);
+    const tool: Plan = .{ .changes = &.{.{ .op = .add, .kind = .package, .subject = "ripgrep", .to = "14" }} };
+    try testing.expectEqual(null, espNeed(&tool, &b, true));
+    // turning them on makes every kernel's image.
+    const on: Plan = .{ .changes = &.{.{ .op = .add, .kind = .file, .subject = uki.config_path, .reboot = uki_reboot }} };
+    try testing.expectEqual(51 * mib, espNeed(&on, &b, true).?.need);
+    // turning them off on systemd-boot needs copies of every file again.
+    b.loader = "systemd-boot";
+    const off: Plan = .{ .changes = &.{.{ .op = .remove, .kind = .file, .subject = uki.config_path, .reboot = uki_reboot }} };
+    try testing.expectEqual(34 * mib + k + k / 16, espNeed(&off, &b, false).?.need);
+    b.loader = "grub";
+    try testing.expectEqual(null, espNeed(&off, &b, false));
+    // with the esp at /boot, a good boot puts the files there as before.
+    b.esp = "/boot";
+    try testing.expectEqual(EspNeed{ .need = 51 * mib + 28 * mib + 28 * mib / 16 + k / 16, .collectable = true }, espNeed(&upgrade, &b, true).?);
 }
 
 test "a plan whose boot files don't fit on the esp stops before anything is built" {

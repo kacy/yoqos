@@ -138,6 +138,55 @@ other boot: by itself with a tpm key, or with someone typing the
 passphrase. the watchdog's five minutes start once the root's systemd
 does, so the time at the prompt doesn't count.
 
+## unified kernel images
+
+with `[boot] uki = true` in the config, generations boot unified kernel
+images instead of a kernel and initramfs files. each image holds a
+generation's kernel, microcode, and initramfs, with systemd's efi stub in
+front. `os` builds it with the generation's own ukify:
+
+```
+chroot <root> ukify build --config=/etc/kernel/yoq-uki.conf \
+    --linux=<kernel> --initrd=<microcode> --initrd=<initramfs> --output=<image>
+```
+
+it copies the boot files into `/tmp/yoq-uki` inside the root first, since
+the esp isn't there, and runs ukify through chroot, so it's the root's own
+ukify and stub. that matters the first time: the root built for the
+change that turns `uki` on has ukify, and the running system doesn't yet.
+nothing gets mounted for it either. the image goes in `yoq/boot` on the
+esp, named by the content of the files in it, like
+`0123456789abcdef-yoq.efi`, so generations with the same kernel and
+initramfs share one. `os gc`, and every menu write, removes the images no
+entry uses any more.
+
+an image has no command line built in. each entry passes its own, with
+the root, `rootflags=subvol=`, the console and luks arguments, and
+`yoq.trial` on a trial boot, and the stub hands it to the kernel:
+
+| bootloader | entry |
+| --- | --- |
+| grub | `chainloader (esp)/yoq/boot/<image> <command line>` |
+| limine | `protocol: efi`, `path: boot():/yoq/boot/<image>`, `cmdline: <command line>` |
+| systemd-boot | `efi /yoq/boot/<image>`, `options <command line>` |
+| refind | `loader /yoq/boot/<image>`, `options "<command line>"` |
+
+the images are on the esp for every bootloader, grub and refind included,
+so `os plan` counts them against its free space: one per kernel, about as
+big as that kernel, its initramfs, and microcode together. turning `uki`
+on or off makes the next generation's boot files new, so it needs a
+reboot, and the next boot tries it once. `/etc/kernel/yoq-uki.conf` is
+how `os` knows a root boots an image. it's part of the generation, so a
+rollback to a generation from before boots its kernel and initramfs files
+as it always did.
+
+`os init` sets the key on a machine that boots unified kernel images
+already: one whose mkinitcpio presets have a `default_uki=` or
+`fallback_uki=`, or with images in `EFI/Linux` on the esp, like omarchy,
+as long as ukify is installed. `os` leaves the machine's own images alone and builds its own from the
+kernel and initramfs files in `/boot`, so mkinitcpio has to keep writing
+the initramfs files too (`default_image=`).
+
 ## how they work
 
 everything lives in the btrfs top level:
@@ -340,8 +389,11 @@ next boot tries again once there's room.
   updates there, or reboot first.
 - only the three root layouts above.
 - generations with limine are tested on archinstall's layout with snapper,
-  not on a real omarchy install. omarchy builds unified kernel images, and
-  `os` boots the kernel and initramfs files in `/boot` instead.
+  not on a real omarchy install. omarchy builds its own unified kernel
+  images, and `os` doesn't boot those: it boots the kernel and initramfs
+  files in `/boot`, or with `[boot] uki`, images it builds from them. the
+  vm tests boot images on systemd-boot only so far.
+- secure boot: images aren't signed.
 
 ## later
 

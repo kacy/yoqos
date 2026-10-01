@@ -14,6 +14,7 @@ const menu = @import("menu.zig");
 const enable = @import("enable.zig");
 const accounts = @import("accounts.zig");
 const trial = @import("trial.zig");
+const uki = @import("uki.zig");
 const Allocator = std.mem.Allocator;
 
 /// a machine on the rollback rung, with its btrfs top level mounted.
@@ -263,8 +264,7 @@ pub const Machine = struct {
             .@"systemd-boot" => writeSdboot,
             .refind => writeRefind,
         };
-        if (menu.copiesOnEsp(m.boot)) return m.writeOnEsp(entries.items, records, put);
-        return put(m, entries.items);
+        return m.writeOnEsp(entries.items, records, put);
     }
 
     /// puts the menu in place, for entries whose files are where it says.
@@ -284,19 +284,40 @@ pub const Machine = struct {
         return std.Io.Dir.cwd().readFileAlloc(m.io, path, m.a, .limited(1 << 20)) catch null;
     }
 
-    /// for a bootloader that can't read the roots (see menu.copiesOnEsp),
+    /// puts the boot files entries need on the esp, then the menu. for a
+    /// bootloader that can't read the roots (see menu.copiesOnEsp),
     /// entries whose files are in a root's /boot get copies on the esp,
-    /// named by content so generations share them. copies that don't fit
-    /// leave everything as it was, and say which of `records` to remove to
-    /// make room. `put` puts the menu in place; then copies no entry uses
-    /// any more go.
+    /// named by content so generations share them. an entry for a root
+    /// with os's ukify config starts a unified kernel image there instead,
+    /// on every bootloader, built from the same files and shared the same
+    /// way. files that don't fit leave everything as it was, and say which
+    /// of `records` to remove to make room. `put` puts the menu in place;
+    /// then copies and images no entry uses any more go.
     fn writeOnEsp(m: *const Machine, entries: []menu.Entry, records: []const generation.Record, put: MenuWriter) !?[]const u8 {
         const dir = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir });
+        const copies = menu.copiesOnEsp(m.boot);
+        const images = try m.a.alloc(bool, entries.len);
+        var any_image = false;
+        for (entries, images) |e, *u| {
+            u.* = rootfs.pathExists(m.io, try m.at(&.{ e.subvol, uki.config_rel }));
+            any_image = any_image or u.*;
+        }
+        if (!copies and !any_image) {
+            if (try put(m, entries)) |w| return w;
+            // images from before `[boot] uki` went off.
+            m.removeUnused(dir, &.{}, "", "");
+            return null;
+        }
         if (try m.run(&.{ "mkdir", "-p", dir })) |w| return w;
         var used: std.ArrayList([]const u8) = .empty;
         var missing: std.ArrayList(EspCopy) = .empty;
-        for (entries) |*e| {
-            if (e.esp_dir != null) continue;
+        var builds: std.ArrayList(UkiBuild) = .empty;
+        for (entries, images) |*e, image| {
+            if (image) {
+                if (try m.ukiName(e, &used, &builds)) |w| return w;
+                continue;
+            }
+            if (!copies or e.esp_dir != null) continue;
             const from = try m.at(&.{ e.subvol, "boot" });
             if (try m.espName(from, &e.kernel, &used, &missing)) |w| return w;
             const initrds = try m.a.dupe([]const u8, e.initrds);
@@ -308,6 +329,7 @@ pub const Machine = struct {
         }
         var need: u64 = 0;
         for (missing.items) |c| need += c.size;
+        for (builds.items) |b| need += b.size;
         if (need > 0) {
             if (rootfs.freeBytes(dir)) |room| {
                 if (try generation.espRoom(m.a, m.boot.esp.?, need, room, records, m.boot.root_subvol orelse "", true)) |w| return w;
@@ -316,9 +338,71 @@ pub const Machine = struct {
         for (missing.items) |c| {
             if (try m.replaceFile(c.src, c.dest)) |w| return w;
         }
+        for (builds.items) |b| {
+            if (try m.buildUki(b)) |w| return w;
+        }
         if (try put(m, entries)) |w| return w;
         m.removeUnused(dir, used.items, "", "");
         return null;
+    }
+
+    /// a unified kernel image the esp doesn't have yet: the root whose
+    /// tools build it, its files, kernel first, and where it goes.
+    const UkiBuild = struct { root: []const u8, files: []const []const u8, dest: []const u8, size: u64 };
+
+    /// makes `e` start a unified kernel image of its kernel and initrds,
+    /// named by their content, and adds the name to `used`. if the esp
+    /// doesn't have it yet, it goes in `builds`.
+    fn ukiName(m: *const Machine, e: *menu.Entry, used: *std.ArrayList([]const u8), builds: *std.ArrayList(UkiBuild)) !?[]const u8 {
+        // the newest entry's files may be the esp's own, with /boot there.
+        const from = if (e.esp_dir) |d| try std.fs.path.join(m.a, &.{ m.boot.esp.?, d }) else try m.at(&.{ e.subvol, "boot" });
+        var files: std.ArrayList([]const u8) = .empty;
+        var sums: std.ArrayList([]const u8) = .empty;
+        var size: u64 = uki.stub_size;
+        for (try std.mem.concat(m.a, []const u8, &.{ &.{e.kernel}, e.initrds })) |name| {
+            const src = try std.fs.path.join(m.a, &.{ from, name });
+            const sum = switch (try exec.output(m.a, m.io, &.{ "sha256sum", src })) {
+                .ok => |t| t,
+                .failed => |w| return w,
+            };
+            if (sum.len < 64) return try std.fmt.allocPrint(m.a, "can't hash {s}", .{src});
+            const st = std.Io.Dir.cwd().statFile(m.io, src, .{}) catch return try std.fmt.allocPrint(m.a, "can't read {s}", .{src});
+            try files.append(m.a, src);
+            try sums.append(m.a, sum[0..64]);
+            size += st.size;
+        }
+        const name = try uki.name(m.a, sums.items);
+        e.uki = name;
+        e.esp_dir = esp_boot_dir;
+        if (lists.contains(used.items, name)) return null;
+        try used.append(m.a, name);
+        const dest = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir, name });
+        if (rootfs.pathExists(m.io, dest)) return null;
+        try builds.append(m.a, .{ .root = try m.at(&.{e.subvol}), .files = files.items, .dest = dest, .size = size });
+        return null;
+    }
+
+    /// builds a unified kernel image with ukify, chrooted into the root
+    /// it's for, so it's that root's ukify and stub, which a root staged
+    /// with `[boot] uki` has even when the running one doesn't. its files
+    /// go into a directory in the root first, since the esp isn't in
+    /// there, and nothing has to be mounted for this. reflinks keep that
+    /// cheap for files from the root's own /boot.
+    fn buildUki(m: *const Machine, b: UkiBuild) !?[]const u8 {
+        const work = try std.fs.path.join(m.a, &.{ b.root, uki.work_dir });
+        if (try exec.runAll(m.a, m.io, &.{ &.{ "rm", "-rf", work }, &.{ "mkdir", "-p", work } })) |w| return w;
+        defer _ = exec.run(m.a, m.io, &.{ "rm", "-rf", work }) catch null;
+        var inside: std.ArrayList([]const u8) = .empty;
+        for (b.files) |f| {
+            const base = std.fs.path.basename(f);
+            if (try m.run(&.{ "cp", "--reflink=auto", f, try std.fs.path.join(m.a, &.{ work, base }) })) |w| return w;
+            try inside.append(m.a, try std.fmt.allocPrint(m.a, "/{s}/{s}", .{ uki.work_dir, base }));
+        }
+        const out = "/" ++ uki.work_dir ++ "/yoq.efi";
+        if (try m.run(try uki.ukifyArgv(m.a, b.root, inside.items[0], inside.items[1..], out))) |w| {
+            return try std.fmt.allocPrint(m.a, "can't build a unified kernel image in {s}: {s}", .{ b.root, w });
+        }
+        return m.replaceFile(try std.fs.path.join(m.a, &.{ work, "yoq.efi" }), b.dest);
     }
 
     /// a boot file the esp doesn't have yet, and where it goes.
@@ -746,7 +830,7 @@ pub fn blockHibernation(io: std.Io) void {
     , null) catch {};
 }
 
-/// where limine's copies of boot files go, on the esp.
+/// where copies of boot files, and unified kernel images, go on the esp.
 pub const esp_boot_dir = "yoq/boot";
 
 /// grub-install's arguments for grub on `esp`, reading its menu from
@@ -826,4 +910,68 @@ test "grub-install keeps grub's efi path" {
     try tmp.dir.createDirPath(io, "EFI/arch");
     try tmp.dir.writeFile(io, .{ .sub_path = "EFI/arch/grubx64.efi", .data = "" });
     try std.testing.expectEqualStrings("--bootloader-id=arch", try grubEfiPath(a, io, esp));
+}
+
+/// the entries a test's menu writer was given.
+var test_put: []const menu.Entry = &.{};
+
+fn testPut(_: *const Machine, entries: []menu.Entry) anyerror!?[]const u8 {
+    test_put = entries;
+    return null;
+}
+
+test "entries for a root with os's ukify config start its image, and unused images go" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    // generation 2 boots an image, and generation 1 its root's own files.
+    try tmp.dir.createDirPath(io, "top/@roots/2/boot");
+    try tmp.dir.createDirPath(io, "top/@roots/2/etc/kernel");
+    try tmp.dir.createDirPath(io, "top/@roots/1/boot");
+    try tmp.dir.createDirPath(io, "esp/yoq/boot");
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/" ++ uki.config_rel, .data = uki.config_content });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/vmlinuz-linux", .data = "kernel" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/initramfs-linux.img", .data = "initramfs" });
+    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs") });
+    // the image is there already, so nothing's built; an older one isn't
+    // used any more.
+    try tmp.dir.writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{name}), .data = "image" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "esp/yoq/boot/0123456789abcdef-yoq.efi", .data = "old" });
+    const m: Machine = .{
+        .a = a,
+        .io = io,
+        .boot = .{ .esp = try std.fmt.allocPrint(a, "{s}/esp", .{base}), .loader = "grub", .root_subvol = "/@roots/2" },
+        .loader = .grub,
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
+    };
+    var entries = [_]menu.Entry{
+        .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" },
+        .{ .id = "gen-1", .title = "yoq 1", .subvol = "/@roots/1", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" },
+    };
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqualStrings(name, test_put[0].uki.?);
+    try std.testing.expectEqualStrings(esp_boot_dir, test_put[0].esp_dir.?);
+    // grub reads generation 1's files in its root, as without images.
+    try std.testing.expectEqual(null, test_put[1].uki);
+    try std.testing.expectEqual(null, test_put[1].esp_dir);
+    var esp = try tmp.dir.openDir(io, "esp/yoq/boot", .{ .iterate = true });
+    defer esp.close(io);
+    var it = esp.iterate();
+    var left: std.ArrayList([]const u8) = .empty;
+    while (try it.next(io)) |f| try left.append(a, try a.dupe(u8, f.name));
+    try std.testing.expectEqual(1, left.items.len);
+    try std.testing.expectEqualStrings(name, left.items[0]);
+
+    // with [boot] uki off everywhere, the last image goes too.
+    try tmp.dir.deleteFile(io, "top/@roots/2/" ++ uki.config_rel);
+    entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqual(null, test_put[0].uki);
+    try std.testing.expectError(error.FileNotFound, esp.access(io, name, .{}));
 }

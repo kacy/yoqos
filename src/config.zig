@@ -140,6 +140,9 @@ pub const Boot = struct {
     /// the root is on luks, so the initramfs has to unlock it. os adds
     /// sd-encrypt to mkinitcpio's hooks when they can't already.
     encrypt: ?Val(bool) = null,
+    /// boot unified kernel images: os builds one from each generation's
+    /// kernel, microcode, and initramfs, and its menu entries start them.
+    uki: ?Val(bool) = null,
 };
 
 pub const Hardware = struct {

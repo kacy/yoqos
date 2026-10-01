@@ -27,6 +27,14 @@
   partition.
 - `os enable-rollback` and `os doctor` check that the initramfs unlocks a
   luks root.
+- `[boot] uki = true` boots generations from unified kernel images, which
+  `os` builds with each generation's own ukify, without a command line in
+  them, and shares on the esp by content. every bootloader's entries pass
+  the command line to the image. `os plan` counts the images against the
+  esp's room, and `os gc` removes the ones no entry uses.
+- facts note a machine that boots unified kernel images already, from
+  mkinitcpio's presets or `EFI/Linux` on the esp, and `os init` sets
+  `[boot] uki` there when ukify is installed.
 
 ### fixes
 
