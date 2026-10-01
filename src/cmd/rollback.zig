@@ -206,6 +206,9 @@ pub fn carryCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const boot = try w.generations() orelse return 0;
     const running = boot.root_subvol.?;
     const waiting = try waitingRoot(ctx, a, running) orelse return 0;
+    // an os still changing the machine as it shuts down could be removing
+    // that root; the carry made when it was started stands then.
+    if (try cli.refused(ctx, cli.lockForEdit(ctx))) return 1;
     const m = try cli.openMachine(ctx, a, boot) orelse return 1;
     defer m.close();
     if (try m.carry(waiting)) |problem| return cli.fail(ctx, "couldn't carry this machine's state into {s}: {s}", .{ waiting, problem });
@@ -239,6 +242,7 @@ pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     // from a menu copy, collecting could take the record of the very
     // generation this boot runs.
     if (try cli.refused(ctx, applying.bootBlocker(ctx.io))) return 1;
+    if (try cli.refused(ctx, cli.lockForEdit(ctx))) return 1;
     var left: std.ArrayList([]const u8) = .empty;
     const m = try openWayBack(ctx, a, boot, &left) orelse return 1;
     defer m.close();
@@ -290,6 +294,7 @@ pub fn pinCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer w.deinit();
     const a = w.allocator();
     _ = try w.generations() orelse return cli.noGenerations(ctx);
+    if (try cli.refused(ctx, cli.lockForEdit(ctx))) return 1;
     var changed = generation.find(try gens.readRecords(a, ctx.io, "/var"), n) orelse return cli.noGeneration(ctx, n);
     changed.pinned = pin;
     if (try gens.writeRecord(a, ctx.io, "/var", changed)) |why| return cli.fail(ctx, "{s}", .{why});

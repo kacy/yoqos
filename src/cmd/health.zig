@@ -29,6 +29,10 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     // the boot finished, so a trial's watchdog stands down. this runs on
     // every boot, so a stray one can't reboot a healthy machine.
     _ = try exec.run(a, ctx.io, &.{ "systemctl", "stop", "yoq-watchdog.timer" });
+    // someone may run os as soon as they log in. ending a trial, falling
+    // back, or settling a kernel waits for that to finish, rather than
+    // both writing the menu and records at once.
+    if (try cli.refused(ctx, cli.waitForMachine(ctx))) return 1;
     const store = trial.Store.of(a, ctx.io, boot) orelse return 0;
     const t = try store.current() orelse {
         try ctx.out.writeAll("no generation on trial.\n");

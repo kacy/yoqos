@@ -123,6 +123,11 @@
   can't drop an apply's `done` line, and a nearly full disk only needs
   room for the line. a line a power cut left half written stays on its
   own.
+- `os gc`, `os pin`, and `os carry` take the machine lock, and the health
+  check at boot waits for it. a gc could remove an image an apply had just
+  put on the esp for its menu, a pin could write back the record of a
+  generation gc had just removed, and a fallback at boot could take the
+  same generation number as an `os apply` run right after login.
 
 ## 0.1.3
 
