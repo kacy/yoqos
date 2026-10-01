@@ -3,7 +3,8 @@
 # boot (vm.sh's VM_SECBOOT) and starts in setup mode. os refuses without
 # sbctl's keys, then signs the next generation's image with them; the
 # keys are enrolled, and the trial boots that image with secure boot on.
-# a trial that can't boot still falls back to the generation before. at
+# each image has its entry's command line in it, which a line added to the
+# entry on the esp doesn't change. a trial that can't boot still falls back to the generation before. at
 # the end the keys come out of the firmware again, so the tests after
 # this boot without secure boot. runs after uki.sh, in the same vm.
 set -eu
@@ -63,13 +64,31 @@ on_trial no
 check "/usr/local/bin/os doctor | grep -c '^  ok  firmware secure boot: on\$'" 1
 check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 
+# each image has its entry's command line in it, so the entries pass
+# none, and the trial starts a twin with the trial's.
+check "cat $entries/yoq-head.conf $entries/yoq-trial.conf | grep -c '^options' || true" 0
+check "test \"\$(sed -n 's|^efi ||p' $entries/yoq-head.conf)\" != '$image' && echo differs" differs
+check "grep -c 'root=UUID=[^ ]* rootflags=[^ ]*subvol=/@roots/[0-9]*' /proc/cmdline" 1
+# with secure boot on, the stub ignores a command line from the entry: one
+# added to the head's entry on the esp doesn't reach the kernel.
+"$vm" ssh "echo 'options init=/bin/sh yoq.planted' >> $entries/yoq-head.conf"
+"$vm" reboot
+settled
+check "f=\$(ls /sys/firmware/efi/efivars/LoaderEntrySelected-*) && tail -c +5 \$f | tr -d '\\000'" yoq-head.conf
+check "grep -c yoq.planted /proc/cmdline || true" 0
+check "grep -c 'root=UUID=[^ ]* rootflags=[^ ]*subvol=/@roots/[0-9]*' /proc/cmdline" 1
+"$vm" ssh "sed -i '/^options /d' $entries/yoq-head.conf"
+check "grep -c '^options' $entries/yoq-head.conf || true" 0
+
 # a trial whose kernel can't start: a signed image of its own, with a
-# garbage initramfs, so the firmware runs it and the kernel panics. the
-# next boot falls back to the generation before, whose image is signed.
+# garbage initramfs, so the firmware runs it and the kernel panics. it has
+# the running command line in it, with panic=10, since the entry passes
+# none. the next boot falls back to the generation before, whose image is
+# signed.
 "$vm" ssh "/usr/local/bin/os add --yes intel-ucode" | tail -n 1
 on_trial yes
 before=$(second_newest)
-"$vm" ssh "echo not an initramfs > /root/garbage.img && ukify build --config=/etc/kernel/yoq-uki.conf --linux=/boot/vmlinuz-linux --initrd=/root/garbage.img --output=$VM_ESP/yoq/boot/garbage.efi >/dev/null && sbctl sign $VM_ESP/yoq/boot/garbage.efi >/dev/null && sed -i 's|^efi .*|efi /yoq/boot/garbage.efi|' $entries/yoq-trial.conf && cat $entries/yoq-trial.conf"
+"$vm" ssh "echo not an initramfs > /root/garbage.img && ukify build --config=/etc/kernel/yoq-uki.conf --linux=/boot/vmlinuz-linux --initrd=/root/garbage.img --cmdline=\"\$(cat /proc/cmdline)\" --output=$VM_ESP/yoq/boot/garbage.efi >/dev/null && sbctl sign $VM_ESP/yoq/boot/garbage.efi >/dev/null && sed -i 's|^efi .*|efi /yoq/boot/garbage.efi|' $entries/yoq-trial.conf && cat $entries/yoq-trial.conf"
 show_env
 falls_back "$before"
 check "$(efivar SecureBoot)" 1
