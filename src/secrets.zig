@@ -96,6 +96,8 @@ pub const Store = struct {
         remove: *const fn (ptr: *anyopaque, a: Allocator, name: []const u8) error{OutOfMemory}!?[]const u8,
         names: *const fn (ptr: *anyopaque, a: Allocator) error{OutOfMemory}![]const []const u8,
         key: *const fn (ptr: *anyopaque, a: Allocator) error{OutOfMemory}!?Key,
+        /// makes a new key, over any there is. false when it can't.
+        make_key: *const fn (ptr: *anyopaque, a: Allocator) error{OutOfMemory}!bool,
     };
 
     /// why this process can't read or change secrets, or null if it can.
@@ -125,8 +127,13 @@ pub const Store = struct {
     }
 
     /// the machine's key, or null when there's none yet or it can't be
-    /// read.
+    /// read. values kept without one, like a directory restored without
+    /// its dotfiles, get a new one: with no key, a file that doesn't hold
+    /// its value would look like it does.
     pub fn key(s: Store, a: Allocator) !?Key {
+        if (try s.vtable.key(s.ptr, a)) |k| return k;
+        if (s.problem() != null or (try s.names(a)).len == 0) return null;
+        if (!try s.vtable.make_key(s.ptr, a)) return null;
         return s.vtable.key(s.ptr, a);
     }
 };
@@ -143,7 +150,7 @@ pub const System = struct {
     dir: []const u8 = default_dir,
 
     pub fn store(s: *System) Store {
-        return .{ .ptr = s, .vtable = &.{ .problem = problem, .get = get, .set = set, .remove = remove, .names = names, .key = key } };
+        return .{ .ptr = s, .vtable = &.{ .problem = problem, .get = get, .set = set, .remove = remove, .names = names, .key = key, .make_key = makeKeyFn } };
     }
 
     fn of(ptr: *anyopaque) *System {
@@ -219,6 +226,10 @@ pub const System = struct {
         }
     }
 
+    fn makeKeyFn(ptr: *anyopaque, a: Allocator) error{OutOfMemory}!bool {
+        return of(ptr).makeKey(a);
+    }
+
     fn makeKey(s: *const System, a: Allocator) !bool {
         var k: Key = undefined;
         defer wipe(&k);
@@ -289,7 +300,7 @@ pub const Memory = struct {
     }
 
     pub fn store(m: *Memory) Store {
-        return .{ .ptr = m, .vtable = &.{ .problem = problem, .get = get, .set = set, .remove = remove, .names = names, .key = key } };
+        return .{ .ptr = m, .vtable = &.{ .problem = problem, .get = get, .set = set, .remove = remove, .names = names, .key = key, .make_key = makeKey } };
     }
 
     fn of(ptr: *anyopaque) *Memory {
@@ -330,6 +341,11 @@ pub const Memory = struct {
 
     fn key(ptr: *anyopaque, _: Allocator) error{OutOfMemory}!?Key {
         return of(ptr).machine_key;
+    }
+
+    fn makeKey(ptr: *anyopaque, _: Allocator) error{OutOfMemory}!bool {
+        of(ptr).machine_key = @splat(0xa5);
+        return true;
     }
 };
 

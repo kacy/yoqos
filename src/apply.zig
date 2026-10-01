@@ -351,6 +351,32 @@ test "a secret's file is written from the store, and the facts only hold its key
     for (diags.items.items) |d| try testing.expect(std.mem.indexOf(u8, d.message, "hunter") == null);
 }
 
+test "values kept without a key get one, so a stale file still shows" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+    var diags: diag.List = .init(testing.allocator);
+    defer diags.deinit();
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "etc");
+    try tmp.dir.writeFile(io, .{ .sub_path = "etc/wifi.psk", .data = "old value" });
+    var mem: secrets.Memory = .init(testing.allocator);
+    defer mem.deinit();
+    // a value with no key beside it.
+    try mem.values.put(mem.arena.allocator(), "wifi/home", "hunter2");
+    const observe = @import("observe.zig");
+
+    const c = try helpers.configFrom(a, "[boot]\nkernel = \"none\"\n[files.\"/etc/wifi.psk\"]\nsecret = \"wifi/home\"\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
+    const f = try observe.observe(a, io, .{ .root = root, .packages = false, .units = false, .wanted = try planner.wanted(a, &c), .secrets = mem.store() }, &diags);
+    const p = (try planner.plan(a, &c, &l, &f, &diags)).?;
+    try testing.expectEqual(1, p.changes.len);
+    try testing.expectEqualStrings("rewrite, mode 0600", p.changes[0].to.?);
+}
+
 test "mkinitcpio drop-ins rebuild the initramfs once" {
     const drop: planner.Change = .{ .op = .add, .kind = .file, .subject = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf" };
     const other: planner.Change = .{ .op = .add, .kind = .file, .subject = "/etc/sysctl.d/99-yoq.conf" };

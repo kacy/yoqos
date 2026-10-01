@@ -53,7 +53,7 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
     const history = try accounts.parseHistory(a, try r.file(accounts.history_path) orelse "");
     f.id_changes = try accounts.changes(a, history, try accounts.systemIds(a, passwd orelse "", group));
     f.pacman_changes = try drift.since(a, io, opts.root);
-    const key = if (opts.secrets) |s| try s.key(a) else null;
+    const key = if (opts.secrets) |s| (if (opts.wanted.secrets.len > 0) try s.key(a) else null) else null;
     f.files = try files(a, io, opts.root, opts.wanted, key);
     f.secrets = try secretFacts(a, opts.secrets, opts.wanted.secrets, key);
     f.pacman = try pacmanSetup(a, io, r, opts.wanted.keys);

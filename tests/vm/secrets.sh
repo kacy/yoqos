@@ -26,6 +26,9 @@ check "grep -rl hunter2 /var/lib/yoq /etc/yoq | wc -l" 0
 check "printf hunter3 | $os secret set test/value >/dev/null; $os plan | grep -c 'rewrite, mode 0600'" 1
 check "$os apply --yes >/dev/null; cat /etc/yoq-secret-test" hunter3
 check "$os plan" "nothing to do. this machine matches its config."
+# values without their key get a new one, so a changed file still shows.
+check "rm /var/lib/yoq/secrets/.key; printf x > /etc/yoq-secret-test; $os plan | grep -c 'rewrite, mode 0600'" 1
+check "$os apply --yes >/dev/null; cat /etc/yoq-secret-test" hunter3
 # without its value, the plan says how to set one, and status fails.
 check "$os secret rm test/value" "removed test/value. the config still writes it to /etc/yoq-secret-test, so plans fail until it's set again or those entries go. the files stay as they are."
 check "$os plan 2>&1 | grep -c '^error.E0133'" 1
