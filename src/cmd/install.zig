@@ -253,28 +253,13 @@ const Installer = struct {
             .ok => |t| std.mem.trim(u8, t, " \n"),
             .failed => "",
         };
-        var missing: std.ArrayList([]const u8) = .empty;
-        for (install.tools) |t| {
-            if (!rootfs.pathExists(ctx.io, try std.fmt.allocPrint(in.a, "/usr/bin/{s}", .{t}))) try missing.append(in.a, t);
-        }
-        if (in.encrypt) {
-            for (install.encrypt_tools) |t| {
-                if (!rootfs.pathExists(ctx.io, try std.fmt.allocPrint(in.a, "/usr/bin/{s}", .{t}))) try missing.append(in.a, t);
-            }
-        }
-        if (in.tpm) {
-            for (install.tpm_tools) |t| {
-                if (!rootfs.pathExists(ctx.io, try std.fmt.allocPrint(in.a, "/usr/bin/{s}", .{t}))) try missing.append(in.a, t);
-            }
-            if (!rootfs.pathExists(ctx.io, install.tpm_library)) try missing.append(in.a, "tpm2-tss");
-        }
         var tpm_version: [8]u8 = undefined;
         var sudo_user = false;
         if (l.package("sudo") != null) {
             for (c.users.entries.items) |u| sudo_user = sudo_user or u.value.groups.contains("wheel");
         }
         return .{
-            .missing = missing.items,
+            .missing = try in.missingTools(),
             .virtual = try exec.run(in.a, ctx.io, &.{ "systemd-detect-virt", "-q" }) == null,
             .firmware = l.package("linux-firmware") != null,
             .network = health.networked(c),
@@ -307,6 +292,20 @@ const Installer = struct {
         };
     }
 
+    /// what the install runs and the live system lacks.
+    fn missingTools(in: *Installer) ![]const []const u8 {
+        var missing: std.ArrayList([]const u8) = .empty;
+        var wanted: std.ArrayList([]const u8) = .empty;
+        try wanted.appendSlice(in.a, &install.tools);
+        if (in.encrypt) try wanted.appendSlice(in.a, &install.encrypt_tools);
+        if (in.tpm) try wanted.appendSlice(in.a, &install.tpm_tools);
+        for (wanted.items) |t| {
+            if (!rootfs.pathExists(in.ctx.io, try std.fmt.allocPrint(in.a, "/usr/bin/{s}", .{t}))) try missing.append(in.a, t);
+        }
+        if (in.tpm and !rootfs.pathExists(in.ctx.io, install.tpm_library)) try missing.append(in.a, "tpm2-tss");
+        return missing.items;
+    }
+
     fn partition(in: *Installer) !?[]const u8 {
         const script = "/run/yoq/install/partitions";
         rootfs.writeAtomic(in.ctx.io, script, try install.partitionScript(in.a), null) catch return "can't write the partition table's script";
@@ -324,38 +323,50 @@ const Installer = struct {
     /// for --tpm, opened for the rest of the install. the passphrase comes
     /// from --passphrase-file, or cryptsetup asks for it.
     fn luks(in: *Installer) !?[]const u8 {
-        const io = in.ctx.io;
         const part = in.root;
-        const open_name = install.luks_install_name;
-        if (in.secret) |s| {
-            if (try exec.runInput(in.a, io, &.{ "cryptsetup", "luksFormat", "--type", "luks2", "--batch-mode", "--key-file=-", part }, s)) |w| return w;
-            if (in.tpm) {
-                if (try exec.runInput(in.a, io, &.{ "systemd-cryptenroll", "--unlock-key-file=/dev/stdin", "--tpm2-device=auto", part }, s)) |w| return w;
-            }
-            if (try exec.runInput(in.a, io, &.{ "cryptsetup", "open", "--key-file=-", part, open_name }, s)) |w| return w;
-        } else {
-            try in.ctx.out.writeAll(if (in.tpm)
-                "\ncryptsetup asks for the disk's passphrase, twice. the tpm unlocks the disk at boot, and the passphrase is the way in when it can't, so keep it safe:\n"
-            else
-                "\ncryptsetup asks for the disk's passphrase, twice. it's typed at every boot:\n");
-            try in.ctx.out.flush();
-            if (try exec.interactive(in.a, io, &.{ "cryptsetup", "luksFormat", "--type", "luks2", "--batch-mode", "--verify-passphrase", part })) |w| return w;
-            if (in.tpm) {
-                try in.ctx.out.writeAll("\nonce more, to add a key the tpm keeps:\n");
-                try in.ctx.out.flush();
-                if (try exec.interactive(in.a, io, &.{ "systemd-cryptenroll", "--tpm2-device=auto", part })) |w| return w;
-            }
-            try in.ctx.out.writeAll("\nand once more, to open it for the install:\n");
-            try in.ctx.out.flush();
-            if (try exec.interactive(in.a, io, &.{ "cryptsetup", "open", part, open_name })) |w| return w;
-        }
-        in.luks_uuid = switch (try exec.output(in.a, io, &.{ "cryptsetup", "luksUUID", part })) {
+        const made = if (in.secret) |s| try in.luksFromFile(part, s) else try in.luksAsking(part);
+        if (made) |w| return w;
+        in.luks_uuid = switch (try exec.output(in.a, in.ctx.io, &.{ "cryptsetup", "luksUUID", part })) {
             .ok => |t| std.mem.trim(u8, t, " \n"),
             .failed => |w| return w,
         };
         in.luks_device = part;
-        in.root = "/dev/mapper/" ++ open_name;
+        in.root = "/dev/mapper/" ++ install.luks_install_name;
         return null;
+    }
+
+    /// luks on `part` with the passphrase `secret`, which each program
+    /// reads on its standard input.
+    fn luksFromFile(in: *Installer, part: []const u8, secret: []const u8) !?[]const u8 {
+        const io = in.ctx.io;
+        if (try exec.runInput(in.a, io, &.{ "cryptsetup", "luksFormat", "--type", "luks2", "--batch-mode", "--key-file=-", part }, secret)) |w| return w;
+        if (in.tpm) {
+            if (try exec.runInput(in.a, io, &.{ "systemd-cryptenroll", "--unlock-key-file=/dev/stdin", "--tpm2-device=auto", part }, secret)) |w| return w;
+        }
+        return exec.runInput(in.a, io, &.{ "cryptsetup", "open", "--key-file=-", part, install.luks_install_name }, secret);
+    }
+
+    /// luks on `part`, with cryptsetup and systemd-cryptenroll asking for
+    /// the passphrase on the terminal.
+    fn luksAsking(in: *Installer, part: []const u8) !?[]const u8 {
+        const io = in.ctx.io;
+        try in.say(if (in.tpm)
+            "\ncryptsetup asks for the disk's passphrase, twice. the tpm unlocks the disk at boot, and the passphrase is the way in when it can't, so keep it safe:\n"
+        else
+            "\ncryptsetup asks for the disk's passphrase, twice. it's typed at every boot:\n");
+        if (try exec.interactive(in.a, io, &.{ "cryptsetup", "luksFormat", "--type", "luks2", "--batch-mode", "--verify-passphrase", part })) |w| return w;
+        if (in.tpm) {
+            try in.say("\nonce more, to add a key the tpm keeps:\n");
+            if (try exec.interactive(in.a, io, &.{ "systemd-cryptenroll", "--tpm2-device=auto", part })) |w| return w;
+        }
+        try in.say("\nand once more, to open it for the install:\n");
+        return exec.interactive(in.a, io, &.{ "cryptsetup", "open", part, install.luks_install_name });
+    }
+
+    /// `text`, on the terminal before the program that asks runs.
+    fn say(in: *Installer, text: []const u8) !void {
+        try in.ctx.out.writeAll(text);
+        try in.ctx.out.flush();
     }
 
     /// the luks volume an install opens, closed, if it's open: this one's,
@@ -492,26 +503,12 @@ const Installer = struct {
     /// and grub, both at the removable path every firmware looks at and,
     /// where efibootmgr can, as a boot entry of its own.
     fn recordFirst(in: *Installer) !?[]const u8 {
-        try in.ctx.out.writeAll("  record generation 1, and install grub with its menu\n");
-        try in.ctx.out.flush();
-        const cmdline = try rootfs.readProc(in.a, in.ctx.io, "/proc/cmdline");
-        const boot: facts.Boot = .{
-            .uefi = true,
-            .esp = try in.at("boot"),
-            .esp_device = in.esp,
-            .loader = "grub",
-            .root_fs = "btrfs",
-            .root_device = in.root,
-            .root_subvol = "/" ++ generation.roots_dir ++ "/1",
-            .luks_uuid = if (in.encrypt) in.luks_uuid else null,
-            .luks_name = if (in.encrypt) install.luks_name else null,
-            .luks_device = if (in.encrypt) in.luks_device else null,
-        };
+        try in.say("  record generation 1, and install grub with its menu\n");
+        const boot = in.bootFacts();
         var why: []const u8 = "";
         var m = try gens.Machine.open(in.a, in.ctx.io, boot, &why) orelse return why;
         defer m.close();
-        m.cmdline = try install.consoleArgs(in.a, cmdline);
-        if (in.encrypt) m.cmdline = try std.fmt.allocPrint(in.a, "{s} {s}", .{ m.cmdline.?, try install.luksArgs(in.a, in.luks_uuid, in.tpm) });
+        m.cmdline = try in.kernelArgs();
         m.esp_is_boot = true;
         if (try m.keepBoot(boot.root_subvol.?)) |w| return w;
         btrfs.snapshot(try m.at(&.{boot.root_subvol.?}), try m.at(&.{ generation.gens_dir, "1" }), true) catch |e|
@@ -534,14 +531,53 @@ const Installer = struct {
         if (try exec.runAll(in.a, in.ctx.io, &.{
             &.{ "mkdir", "-p", try std.fs.path.join(in.a, &.{ esp, "yoq" }) },
             &.{ "grub-editenv", try std.fs.path.join(in.a, &.{ esp, generation.grubenv }), "create" },
-            &.{ "grub-install", "--target=x86_64-efi", try std.fmt.allocPrint(in.a, "--efi-directory={s}", .{esp}), try std.fmt.allocPrint(in.a, "--boot-directory={s}", .{esp}), "--removable" },
+            try in.grubInstall(esp, "--removable"),
         })) |w| return w;
         if (try in.run(&.{ "efibootmgr", "--version" }) == null) {
-            if (try in.run(&.{ "grub-install", "--target=x86_64-efi", try std.fmt.allocPrint(in.a, "--efi-directory={s}", .{esp}), try std.fmt.allocPrint(in.a, "--boot-directory={s}", .{esp}), "--bootloader-id=yoq" })) |w| {
+            if (try in.run(try in.grubInstall(esp, "--bootloader-id=yoq"))) |w| {
                 try in.ctx.err.print("os: no boot entry of its own ({s}); the disk still boots from the removable path.\n", .{w});
             }
         }
         return null;
+    }
+
+    /// how the new machine boots, as its facts will say once it runs.
+    fn bootFacts(in: *Installer) facts.Boot {
+        var boot: facts.Boot = .{
+            .uefi = true,
+            .esp = install.target ++ "/boot",
+            .esp_device = in.esp,
+            .loader = "grub",
+            .root_fs = "btrfs",
+            .root_device = in.root,
+            .root_subvol = "/" ++ generation.roots_dir ++ "/1",
+        };
+        if (in.encrypt) {
+            boot.luks_uuid = in.luks_uuid;
+            boot.luks_name = install.luks_name;
+            boot.luks_device = in.luks_device;
+        }
+        return boot;
+    }
+
+    /// the new machine's kernel arguments: the live system's consoles, and
+    /// with --encrypt, what unlocks its root.
+    fn kernelArgs(in: *Installer) ![]const u8 {
+        const args = try install.consoleArgs(in.a, try rootfs.readProc(in.a, in.ctx.io, "/proc/cmdline"));
+        if (!in.encrypt) return args;
+        return std.fmt.allocPrint(in.a, "{s} {s}", .{ args, try install.luksArgs(in.a, in.luks_uuid, in.tpm) });
+    }
+
+    /// grub-install's arguments for the esp at `esp`, with its menu
+    /// there, put `where`: the removable path, or a boot entry.
+    fn grubInstall(in: *Installer, esp: []const u8, where: []const u8) ![]const []const u8 {
+        return in.a.dupe([]const u8, &.{
+            "grub-install",
+            "--target=x86_64-efi",
+            try std.fmt.allocPrint(in.a, "--efi-directory={s}", .{esp}),
+            try std.fmt.allocPrint(in.a, "--boot-directory={s}", .{esp}),
+            where,
+        });
     }
 
     fn uuid(in: *Installer, device: []const u8, why: *[]const u8) !?[]const u8 {
