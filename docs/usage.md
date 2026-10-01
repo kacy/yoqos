@@ -711,7 +711,8 @@ without a terminal, `--encrypt` needs `--passphrase-file`.
 --tpm2-device=auto`, so the machine unlocks at boot without anyone typing.
 the passphrase still works for when the tpm can't unlock it, like after
 some firmware updates or with the disk in another machine, so keep it
-somewhere safe. `--tpm` means `--encrypt` too.
+somewhere safe. `--tpm` means `--encrypt` too, and needs a tpm 2.0; a
+1.2 one doesn't count.
 
 the config has to say the root is encrypted, or the new machine's
 initramfs can't unlock it: `[boot] encrypt = true` (see [encrypted

@@ -67,6 +67,9 @@
   wiped after, so a file that's too long, or a read that grew its buffer,
   leaves no copy in memory, and it refuses a file of more than one line,
   whose passphrase nobody could type at boot.
+- `os install --tpm` checks for a tpm 2.0, not just any tpm, and for
+  tpm2-tss on the live system, which systemd-cryptenroll needs. either one
+  missing used to stop the install halfway, after the disk was erased.
 
 ## 0.1.3
 

@@ -266,7 +266,9 @@ const Installer = struct {
             for (install.tpm_tools) |t| {
                 if (!rootfs.pathExists(ctx.io, try std.fmt.allocPrint(in.a, "/usr/bin/{s}", .{t}))) try missing.append(in.a, t);
             }
+            if (!rootfs.pathExists(ctx.io, install.tpm_library)) try missing.append(in.a, "tpm2-tss");
         }
+        var tpm_version: [8]u8 = undefined;
         var sudo_user = false;
         if (l.package("sudo") != null) {
             for (c.users.entries.items) |u| sudo_user = sudo_user or u.value.groups.contains("wheel");
@@ -300,7 +302,7 @@ const Installer = struct {
             .passphrase_file = in.secret != null,
             .interactive = ctx.interactive,
             .config_encrypt = if (c.boot.encrypt) |e| e.v else false,
-            .has_tpm = rootfs.pathExists(ctx.io, "/sys/class/tpm/tpm0"),
+            .has_tpm = install.isTpm2(rootfs.readHead(ctx.io, "/sys/class/tpm/tpm0/tpm_version_major", &tpm_version)),
             .has_tpm2_tss = l.package("tpm2-tss") != null,
         };
     }
