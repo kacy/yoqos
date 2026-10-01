@@ -104,6 +104,9 @@
   every generation's entries as it was. it used to be split at its
   spaces, which lost runs of spaces, and a word inside its quotes that
   looked like `root=` was dropped.
+- grub passes a unified kernel image a quoted kernel argument with its
+  quotes. its chainloader joins the words as it read them, without
+  quotes, so the image got `acpi_osi=!Windows 2012` as two arguments.
 
 ## 0.1.3
 

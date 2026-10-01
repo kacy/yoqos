@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const facts = @import("facts.zig");
+const generation = @import("generation.zig");
 const Allocator = std.mem.Allocator;
 
 /// the bootloaders generations work with.
@@ -165,10 +166,19 @@ pub fn grub(a: Allocator, c: Grub) ![]const u8 {
         // the newest entry notes that it was tried, so a fallback after it
         // counts, and an older entry picked by hand doesn't.
         if (std.mem.eql(u8, e.id, "head")) try out.appendSlice(a, "  if [ \"${yoq_trial_arg}\" ]; then set yoq_tried=1; save_env -f (${yoq_esp})/yoq/grubenv yoq_tried; fi\n");
-        // grub's chainloader passes what follows the file to it as its
-        // load options, which the image's stub makes the command line.
-        const command = if (e.uki == null) "linux" else "insmod chain\n  chainloader";
-        try out.print(a, "  {s} {s}/{s} {s} ${{yoq_trial_arg}}\n", .{ command, dir, e.loaded(), e.args });
+        if (e.uki == null) {
+            try out.print(a, "  linux {s}/{s} {s} ${{yoq_trial_arg}}\n", .{ dir, e.kernel, e.args });
+        } else {
+            // grub's chainloader passes what follows the file to it as its
+            // load options, which the image's stub makes the command line.
+            // it joins the words as grub read them, so a word with quotes
+            // in it goes in single quotes, which keep it as it is. `linux`
+            // puts quotes back by itself.
+            try out.print(a, "  insmod chain\n  chainloader {s}/{s}", .{ dir, e.uki.? });
+            var words: generation.Words = .{ .text = e.args };
+            while (words.next()) |w| try grubWord(a, &out, w);
+            try out.appendSlice(a, " ${yoq_trial_arg}\n");
+        }
         if (e.uki == null) {
             try out.appendSlice(a, "  initrd");
             for (e.initrds) |i| try out.print(a, " {s}/{s}", .{ dir, i });
@@ -177,6 +187,19 @@ pub fn grub(a: Allocator, c: Grub) ![]const u8 {
         try out.appendSlice(a, "}\n");
     }
     return out.items;
+}
+
+/// a space, then `word` as grub reads it back: as it is, or in single
+/// quotes when grub would change it, with each quote in it closed,
+/// escaped, and opened again.
+fn grubWord(a: Allocator, out: *std.ArrayList(u8), word: []const u8) !void {
+    try out.append(a, ' ');
+    if (std.mem.indexOfAny(u8, word, "\"'\\$;|&<>{} \t") == null) return out.appendSlice(a, word);
+    try out.append(a, '\'');
+    for (word) |ch| {
+        if (ch == '\'') try out.appendSlice(a, "'\\''") else try out.append(a, ch);
+    }
+    try out.append(a, '\'');
 }
 
 /// the identifier limine gives an entry at the top of its menu, which
@@ -667,6 +690,21 @@ test "entries that start unified kernel images" {
         \\default_selection "yoq 3 - uki"
         \\
     , r);
+}
+
+test "grub's chainloader gets quoted kernel arguments as they are" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const args = "root=UUID=r rw acpi_osi=\"!Windows  2012\" it's";
+    const entries = [_]Entry{
+        .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/3", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = args, .esp_dir = "yoq/boot", .uki = "0123456789abcdef-yoq.efi" },
+        .{ .id = "gen-2", .title = "yoq 2", .subvol = "/@roots/boot-2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = args, .esp_dir = "yoq/boot" },
+    };
+    const g = try grub(a, .{ .esp_uuid = "e", .root_uuid = "r", .default = "head", .entries = &entries });
+    try testing.expect(std.mem.indexOf(u8, g, "  chainloader (${yoq_esp})/yoq/boot/0123456789abcdef-yoq.efi root=UUID=r rw 'acpi_osi=\"!Windows  2012\"' 'it'\\''s' ${yoq_trial_arg}\n") != null);
+    // grub's linux command quotes the arguments again by itself.
+    try testing.expect(std.mem.indexOf(u8, g, "  linux (${yoq_esp})/yoq/boot/vmlinuz-linux " ++ args ++ " ${yoq_trial_arg}\n") != null);
 }
 
 test "refind can't take a quote in the kernel arguments" {
