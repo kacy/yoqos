@@ -976,7 +976,8 @@ rollback keeps today's values, and they don't move with the config: another
 machine can't decrypt them, so a new machine, or one `os install` puts on a
 disk, needs each one set again. until then, `os plan` and `os apply` stop
 with E0133 and the `os secret set` to run, and `os status` lists the secret
-as failing.
+as failing. `os install` writes the files from the live system's values,
+so it checks that each one is set there before it touches the disk.
 
 no value ever shows up in what `os` prints or keeps: not in the plan, facts,
 status, events, the journal, error messages, the lock, or generation

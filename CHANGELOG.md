@@ -95,6 +95,8 @@
   to read says so, not that nothing was typed.
 - `os apply` writes a secret only if it still has the value the plan was
   made for, so an `os secret set` in between stops it instead.
+- `os install` checks the live system has every secret the config names
+  before it erases the disk, where it used to stop at the build.
 
 ## 0.1.3
 
