@@ -53,6 +53,57 @@ pub fn ukifyArgv(a: Allocator, chroot: []const []const u8, root: []const u8, ker
     return argv.items;
 }
 
+/// where a root's kernels are, as their packages install them: one
+/// directory per version, with the kernel as `vmlinuz` and the package's
+/// name in `pkgbase`.
+pub const modules_dir = "usr/lib/modules";
+
+/// a kernel in a root's modules directory.
+pub const Kernel = struct {
+    version: []const u8,
+    /// the package it's from, like "linux" or "linux-lts".
+    pkgbase: []const u8,
+    /// the sha256 of its vmlinuz, in hex.
+    sum: []const u8,
+};
+
+/// the kernel in `kernels` an image for `/boot/<boot_name>` is built from
+/// when it's signed: the one from the package the name says, like linux
+/// for vmlinuz-linux, never the copy in /boot, which came from the esp.
+/// with several versions of it, the one whose vmlinuz matches the copy
+/// (`boot_sum`), or else the newest. null if the root has none.
+pub fn signedKernel(kernels: []const Kernel, boot_name: []const u8, boot_sum: ?[]const u8) ?Kernel {
+    if (!std.mem.startsWith(u8, boot_name, "vmlinuz-")) return null;
+    const pkgbase = boot_name["vmlinuz-".len..];
+    var best: ?Kernel = null;
+    for (kernels) |k| {
+        if (!std.mem.eql(u8, std.mem.trim(u8, k.pkgbase, " \n"), pkgbase)) continue;
+        if (boot_sum) |s| {
+            if (std.mem.eql(u8, k.sum, s)) return k;
+        }
+        if (best == null or std.mem.order(u8, k.version, best.?.version) == .gt) best = k;
+    }
+    return best;
+}
+
+/// the command that builds an initramfs for kernel `version` in the root
+/// at `root`, through `chroot` (one with /proc, /sys, /dev, and /run
+/// mounted, or a stand-in in tests), so it's the root's own mkinitcpio,
+/// config, and modules. autodetect stays out, since it would look at the
+/// machine, not the root: the image is generic, and bigger. early
+/// microcode comes from mkinitcpio's microcode hook, from the root's
+/// /usr/lib/firmware.
+pub fn mkinitcpioArgv(a: Allocator, chroot: []const []const u8, root: []const u8, version: []const u8, output: []const u8) ![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, chroot);
+    try argv.appendSlice(a, &.{ root, "/usr/bin/mkinitcpio", "-k", version, "-S", "autodetect", "-g", output });
+    return argv.items;
+}
+
+/// about how much bigger an initramfs without autodetect is than the one
+/// mkinitcpio's presets build, for room on the esp.
+pub const generic_initramfs_factor = 3;
+
 /// how an image's name ends.
 pub const suffix = "-yoq.efi";
 
@@ -140,6 +191,30 @@ test "ukify's arguments" {
     try testing.expectEqual(want.len + 1, signed.len);
     try testing.expectEqualStrings("--cmdline=" ++ cmdline, signed[signed.len - 2]);
     try testing.expectEqualStrings("--output=/tmp/yoq-uki/yoq.efi", signed[signed.len - 1]);
+}
+
+test "a signed image's kernel comes from its package, not /boot" {
+    const kernels = [_]Kernel{
+        .{ .version = "6.16.8-arch1-1", .pkgbase = "linux\n", .sum = "old" },
+        .{ .version = "6.17.1-arch1-1", .pkgbase = "linux\n", .sum = "new" },
+        .{ .version = "6.12.48-1-lts", .pkgbase = "linux-lts\n", .sum = "lts" },
+    };
+    // the copy matches one of them.
+    try testing.expectEqualStrings("6.16.8-arch1-1", signedKernel(&kernels, "vmlinuz-linux", "old").?.version);
+    // a copy that matches none, like one planted on the esp: the newest.
+    try testing.expectEqualStrings("6.17.1-arch1-1", signedKernel(&kernels, "vmlinuz-linux", "planted").?.version);
+    try testing.expectEqualStrings("6.12.48-1-lts", signedKernel(&kernels, "vmlinuz-linux-lts", null).?.version);
+    try testing.expectEqual(null, signedKernel(&kernels, "vmlinuz-linux-zen", "x"));
+    try testing.expectEqual(null, signedKernel(&kernels, "initramfs-linux.img", "x"));
+}
+
+test "mkinitcpio's arguments" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const argv = try mkinitcpioArgv(arena.allocator(), &.{"chroot"}, "/run/yoq/private/top/@roots/4", "6.17.1-arch1-1", "/tmp/yoq-uki/initramfs.img");
+    const want = [_][]const u8{ "chroot", "/run/yoq/private/top/@roots/4", "/usr/bin/mkinitcpio", "-k", "6.17.1-arch1-1", "-S", "autodetect", "-g", "/tmp/yoq-uki/initramfs.img" };
+    try testing.expectEqual(want.len, argv.len);
+    for (want, argv) |w, g| try testing.expectEqualStrings(w, g);
 }
 
 test "an image's name follows what's in it" {
