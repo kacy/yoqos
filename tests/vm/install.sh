@@ -12,7 +12,8 @@ key=$(cat "${VM_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/yoq-vm}/key.pub")
 "$vm" ssh "/usr/local/bin/os init >/dev/null 2>&1 || true"
 
 # the config repository the new machine comes from: this machine's, less
-# its aur packages, plus a way in over ssh for the test and a mkinitcpio
+# its aur packages, plus btrfs-progs, which this ext4 machine lacks and a
+# btrfs one needs, a way in over ssh for the test, and a mkinitcpio
 # drop-in, which the new machine's initramfs has to be built with.
 cat > /tmp/yoq-access.toml <<TOML
 
@@ -22,7 +23,7 @@ mode = "0600"
 TOML
 cat tests/vm/initramfs.toml >> /tmp/yoq-access.toml
 "$vm" copy /tmp/yoq-access.toml /root/yoq-access.toml
-"$vm" ssh "rm -rf /root/machines && cp -a /etc/yoq/. /root/machines && cd /root/machines && sed -i '/^aur = /d' machine.toml && cat /root/yoq-access.toml >> machine.toml && git add -A && git -c user.name=t -c user.email=t@localhost commit -q -m 'a way in for tests'"
+"$vm" ssh "rm -rf /root/machines && cp -a /etc/yoq/. /root/machines && cd /root/machines && sed -i '/^aur = /d' machine.toml && { grep -q '\"btrfs-progs\"' imported.toml || sed -i 's/^packages = \\[/&\\n  \"btrfs-progs\",/' imported.toml; } && cat /root/yoq-access.toml >> machine.toml && git add -A && git -c user.name=t -c user.email=t@localhost commit -q -m 'a way in for tests'"
 
 # a partition isn't a disk, and nothing changes without a yes.
 check "/usr/local/bin/os install /root/machines --disk /dev/vda1 --update 2>&1 | grep -c '^  no  disk'" 1
