@@ -422,7 +422,10 @@ next boot tries again once there's room.
   reboot, or on an older generation booted from the menu, changes the
   kernel on a `/boot` esp that the next boot shares. use `os` for kernel
   updates there, or reboot first.
-- only the three root layouts above.
+- only the three root layouts above, on a partition or right inside luks
+  on one. a root on lvm, even lvm inside luks, or on another
+  device-mapper volume, isn't supported yet, and `enable-rollback` says
+  so.
 - generations with limine are tested on archinstall's layout with snapper,
   not on a real omarchy install. omarchy builds its own unified kernel
   images, and `os` doesn't boot those: it boots the kernel and initramfs

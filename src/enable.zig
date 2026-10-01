@@ -207,8 +207,17 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
 }
 
 /// on a luks root, whether the initramfs unlocks it, which every
-/// generation boots through. null when the root isn't on luks.
+/// generation boots through. a root on another device-mapper volume, like
+/// lvm on luks, fails: grub and refind would look for it on disk, where
+/// they can't read it, and nothing checks what unlocks it. null when the
+/// root is on a plain partition.
 pub fn luksCheck(a: Allocator, b: *const facts.Boot) !?Check {
+    if (b.root_dm) |kind| return .{
+        .what = "root device",
+        .ok = false,
+        .found = try std.fmt.allocPrint(a, "{s}, on {s}", .{ b.root_device orelse "?", kind }),
+        .fix = "generations boot a btrfs root on a partition, or right inside luks on one. a root on lvm, or another device-mapper volume, isn't supported yet.",
+    };
     const uuid = b.luks_uuid orelse return null;
     const ok = b.unlocksLuks();
     const on = try std.fmt.allocPrint(a, "the root is /dev/mapper/{s}, from {s}", .{ b.luks_name orelse "?", b.luks_device orelse uuid });
@@ -484,6 +493,14 @@ test "a luks root converts when the initramfs unlocks it" {
     // and a root that isn't on luks has no such check.
     f.boot.luks_uuid = null;
     try testing.expectEqual(null, try luksCheck(a, &f.boot));
+    // lvm on luks isn't a luks root: grub would look for it on disk.
+    f.boot.root_device = "/dev/mapper/vg-root";
+    f.boot.root_dm = "LVM";
+    p = try plan(a, &f);
+    try testing.expect(!p.ready());
+    const dm = p.checks[p.checks.len - 2];
+    try testing.expectEqualStrings("root device", dm.what);
+    try testing.expectEqualStrings("/dev/mapper/vg-root, on LVM", dm.found);
 }
 
 test "limine and refind keep their own config, and refind gets the top level back" {

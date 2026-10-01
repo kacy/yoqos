@@ -259,7 +259,8 @@ const Reader = struct {
     }
 
     /// the luks volume under the root, when `source` is a dm-crypt
-    /// device opened from one: /dev/mapper/<name>, or /dev/dm-<n>.
+    /// device opened from one: /dev/mapper/<name>, or /dev/dm-<n>. a root
+    /// on another device-mapper volume, like lvm's, gets its kind.
     fn luks(r: Reader, b: *facts.Boot, source: []const u8) !void {
         if (!std.mem.startsWith(u8, source, "/dev/")) return;
         var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -267,7 +268,11 @@ const Reader = struct {
         const dm = std.fs.path.basename(if (n > 0) buf[0..n] else source);
         if (!std.mem.startsWith(u8, dm, "dm-")) return;
         const sys = try std.fmt.allocPrint(r.a, "sys/block/{s}", .{dm});
-        const crypt = cryptOf(try r.file(try std.fmt.allocPrint(r.a, "{s}/dm/uuid", .{sys})) orelse return) orelse return;
+        const dm_uuid = try r.file(try std.fmt.allocPrint(r.a, "{s}/dm/uuid", .{sys})) orelse "";
+        const crypt = cryptOf(dm_uuid) orelse {
+            b.root_dm = dmKind(dm_uuid);
+            return;
+        };
         b.luks_uuid = try dashedUuid(r.a, crypt.uuid);
         b.luks_name = crypt.name;
         const under = try r.names(try std.fmt.allocPrint(r.a, "{s}/slaves", .{sys}), null);
@@ -413,6 +418,17 @@ pub fn cryptOf(dm_uuid: []const u8) ?Crypt {
         if (!std.ascii.isHex(ch)) return null;
     }
     return .{ .uuid = rest[0..32], .name = rest[33..] };
+}
+
+/// what kind of device-mapper volume a dm uuid is: its subsystem, like
+/// "LVM", or "CRYPT-PLAIN" for dm-crypt, or "device-mapper" when it has
+/// no uuid to say.
+pub fn dmKind(dm_uuid: []const u8) []const u8 {
+    const text = std.mem.trim(u8, dm_uuid, " \n");
+    if (text.len == 0) return "device-mapper";
+    const skip = if (std.mem.startsWith(u8, text, "CRYPT-")) "CRYPT-".len else 0;
+    const end = std.mem.indexOfScalarPos(u8, text, skip, '-') orelse text.len;
+    return text[0..end];
 }
 
 /// a uuid of 32 hex digits in its usual form, 8-4-4-4-12.
@@ -862,6 +878,18 @@ test "the luks volume under the root" {
     var plain: facts.Boot = .{};
     try r.luks(&plain, "/dev/vda2");
     try testing.expectEqual(null, plain.luks_uuid);
+    try testing.expectEqual(null, plain.root_dm);
+    // lvm, even on luks, is a volume of its own, not a luks one.
+    try tmp.dir.symLink(io, "../dm-1", "dev/mapper/vg-root", .{});
+    try tmp.dir.createDirPath(io, "sys/block/dm-1/dm");
+    try tmp.dir.createDirPath(io, "sys/block/dm-1/slaves/dm-0");
+    try tmp.dir.writeFile(io, .{ .sub_path = "sys/block/dm-1/dm/uuid", .data = "LVM-Jd3k2l1m0n9o8p7q6r5s4t3u2v1w0x9yZa8b7c6d5e4f3g2h1i0j9k8l7m6n5\n" });
+    var lvm: facts.Boot = .{};
+    try r.luks(&lvm, "/dev/mapper/vg-root");
+    try testing.expectEqual(null, lvm.luks_uuid);
+    try testing.expectEqualStrings("LVM", lvm.root_dm.?);
+    try testing.expectEqualStrings("CRYPT-PLAIN", dmKind("CRYPT-PLAIN-root"));
+    try testing.expectEqualStrings("device-mapper", dmKind("\n"));
 }
 
 test "files in /etc a new root gets anyway" {

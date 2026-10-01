@@ -59,6 +59,10 @@
 - `os install` closes the luks volume an `--encrypt` run left open when it
   was cut off, with or without `--encrypt` this time. before, a run
   without it couldn't wipe the disk the volume held.
+- `os enable-rollback` refuses a root on lvm, or another device-mapper
+  volume that isn't luks, and `os doctor` flags one. lvm inside luks
+  looked like a plain partition, so grub's entries looked for the root on
+  a disk it can't read. facts carry the volume's kind as `root_dm`.
 
 ## 0.1.3
 

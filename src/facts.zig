@@ -107,6 +107,10 @@ pub const Boot = struct {
     luks_uuid: ?[]const u8 = null,
     luks_name: ?[]const u8 = null,
     luks_device: ?[]const u8 = null,
+    /// when the root's filesystem is on another device-mapper volume, like
+    /// lvm's, even one on luks: its kind, like "LVM". generations can't
+    /// boot from one yet.
+    root_dm: ?[]const u8 = null,
     /// the root's btrfs subvolume: "/@", or "/" for the top level.
     root_subvol: ?[]const u8 = null,
     /// /var is a subvolume of its own.
