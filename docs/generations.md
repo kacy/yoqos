@@ -221,6 +221,11 @@ esp, which isn't mounted there, so it would only fail. `os` turns it off
 for those transactions by linking `zz-sbctl.hook` to `/dev/null` in a hook
 directory libalpm reads after the root's own.
 
+when sbctl can't sign, say its keys are gone, `os apply` and `os update`
+stop, but a rollback, a fallback, or `os gc` goes on: the menu is written,
+new images go on the esp unsigned, images there stay as they are, and a
+warning names them.
+
 turning `secure_boot` on or off changes the file, so it waits for a
 reboot, with "secure boot" as the reason, and the next boot tries it once.
 the keys are in `/var`, which no generation holds, so a rollback keeps

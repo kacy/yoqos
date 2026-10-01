@@ -36,6 +36,10 @@ pub const Machine = struct {
     /// what signs an efi binary for secure boot, given "sign" and the
     /// file: sbctl, or a stand-in in tests.
     signer: []const []const u8 = &.{secureboot.package},
+    /// set on a way back, like a rollback, a fallback, or gc: a file the
+    /// menu can't sign goes on the esp unsigned, or stays as it is there,
+    /// and its path goes here, instead of the menu write stopping.
+    left_unsigned: ?*std.ArrayList([]const u8) = null,
 
     /// mounts the top level of the root's filesystem. `close` unmounts it.
     pub fn open(a: Allocator, io: std.Io, boot: facts.Boot, why: *[]const u8) !?Machine {
@@ -444,18 +448,43 @@ pub const Machine = struct {
         return try std.fmt.allocPrint(m.a, "can't sign {s} for secure boot: {s}", .{ path, why });
     }
 
-    /// signs `src`, a file in a work directory, then puts it at `dest` on
-    /// the esp, so the esp never has it unsigned.
-    fn signInto(m: *const Machine, src: []const u8, dest: []const u8) !?[]const u8 {
-        if (try m.signFile(src)) |w| return w;
-        return m.replaceFile(src, dest);
+    const Signing = union(enum) {
+        signed,
+        /// it couldn't be, and on a way back that's noted, not a stop.
+        unsigned,
+        failed: []const u8,
+    };
+
+    /// signs `src`, which goes to `dest` on the esp.
+    fn trySign(m: *const Machine, src: []const u8, dest: []const u8) !Signing {
+        const why = try m.signFile(src) orelse return .signed;
+        if (!secureboot.goesOnUnsigned(m.left_unsigned != null)) return .{ .failed = why };
+        // a rollback writes the menu more than once.
+        const left = m.left_unsigned.?;
+        if (!lists.contains(left.items, dest)) try left.append(m.a, dest);
+        return .unsigned;
     }
 
-    /// signs a file on the esp: a copy in `work`, signed, replaces it.
+    /// signs `src`, a file in a work directory, then puts it at `dest` on
+    /// the esp, so the esp never has it unsigned, unless a way back
+    /// couldn't sign it.
+    fn signInto(m: *const Machine, src: []const u8, dest: []const u8) !?[]const u8 {
+        return switch (try m.trySign(src, dest)) {
+            .failed => |w| w,
+            .signed, .unsigned => m.replaceFile(src, dest),
+        };
+    }
+
+    /// signs a file on the esp: a copy in `work`, signed, replaces it. one
+    /// a way back can't sign stays as it is.
     fn signCopy(m: *const Machine, dest: []const u8, work: []const u8) !?[]const u8 {
         const copy = try std.fs.path.join(m.a, &.{ work, std.fs.path.basename(dest) });
         if (try m.run(&.{ "cp", dest, copy })) |w| return w;
-        return m.signInto(copy, dest);
+        return switch (try m.trySign(copy, dest)) {
+            .failed => |w| w,
+            .signed => m.replaceFile(copy, dest),
+            .unsigned => null,
+        };
     }
 
     /// signs the loader files os puts on the esp itself, when they aren't
@@ -1273,6 +1302,54 @@ test "firmware that enforces secure boot has images signed without the config's 
     entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
     try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
     try std.testing.expectEqualStrings("image signed", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
+}
+
+test "a way back that can't sign writes the menu anyway" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "top/@roots/2/boot");
+    try tmp.dir.createDirPath(io, "top/@roots/2/etc/kernel");
+    try tmp.dir.createDirPath(io, "esp/yoq/boot");
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/" ++ uki.config_rel, .data = uki.config_content });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/" ++ secureboot.config_rel, .data = secureboot.config_content });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/vmlinuz-linux", .data = "kernel" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/initramfs-linux.img", .data = "initramfs" });
+    try writeTestStub(tmp.dir, io, "top/@roots/2", "stub");
+    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") });
+    const image = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{name});
+    try tmp.dir.writeFile(io, .{ .sub_path = image, .data = "image" });
+    // sbctl without its keys.
+    var m: Machine = .{
+        .a = a,
+        .io = io,
+        .boot = .{ .esp = try std.fmt.allocPrint(a, "{s}/esp", .{base}), .loader = "grub", .root_subvol = "/@roots/2" },
+        .loader = .grub,
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
+        .signer = &.{"false"},
+    };
+    var entries = [_]menu.Entry{
+        .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" },
+    };
+    // apply stops.
+    test_put = &.{};
+    try std.testing.expect(std.mem.startsWith(u8, (try m.writeOnEsp(&entries, &.{}, testPut)).?, "can't sign "));
+    try std.testing.expectEqual(0, test_put.len);
+    // a way back writes the menu, keeps the image as it is, and notes it.
+    var left: std.ArrayList([]const u8) = .empty;
+    m.left_unsigned = &left;
+    entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqualStrings(name, test_put[0].uki.?);
+    try std.testing.expectEqualStrings("image", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
+    try std.testing.expectEqual(1, left.items.len);
+    try std.testing.expect(std.mem.endsWith(u8, left.items[0], name));
 }
 
 test "an efi binary without a certificate table isn't signed" {

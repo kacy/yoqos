@@ -46,6 +46,10 @@
 
 ### fixes
 
+- `os rollback`, the fallback from a failed trial, and `os gc` write the
+  boot menu when sbctl can't sign, say without its keys, and warn about
+  the images left unsigned, instead of stopping. `os apply` and `os
+  update` still stop with E0134.
 - an image's name covers systemd's stub too, so a new stub builds new
   images instead of reusing ones with the old stub. `os plan` counts the
   room a systemd upgrade's images take.

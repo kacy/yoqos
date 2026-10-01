@@ -1141,7 +1141,12 @@ job, in this order:
 5. turn secure boot on in the firmware setup, if enrolling didn't, and
    reboot.
 
-without the keys, `os plan` and `os apply` stop with E0134.
+without the keys, `os plan` and `os apply` stop with E0134. a way back
+doesn't: `os rollback`, a fallback from a failed trial, and `os gc` write
+the boot menu even when they can't sign, keep the images that are signed
+already, and warn about the ones that aren't, which firmware enforcing
+secure boot won't start. put the keys back, or make and enroll new ones,
+and `os gc` signs them.
 
 what `os` signs: its images in `yoq/boot` on the esp, and refind's btrfs
 driver, which it installs. each image is signed in a work directory inside

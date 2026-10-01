@@ -133,14 +133,31 @@ fn rollbackGeneration(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, wan
     const source = if (to_booted) boot.root_subvol.? else try std.fmt.allocPrint(a, "/{s}/{d}", .{ generation.gens_dir, n });
     const reason = try std.fmt.allocPrint(a, "{s} {d}: {s}", .{ if (to_booted) "keep" else "rollback to", n, target.reason });
     try ctx.out.print("generation {d} ({s} · {s}) becomes generation {d}, and the next boot runs it.\n/var and /home stay as they are.\n", .{ n, try generation.dateOf(a, target.time), target.reason, generation.next(records) });
-    const m = try cli.openMachine(ctx, a, boot) orelse return 1;
+    var left: std.ArrayList([]const u8) = .empty;
+    const m = try openWayBack(ctx, a, boot, &left) orelse return 1;
     defer m.close();
     if (secureBootWarning(boot.secure_boot, try m.bootsImage(source))) |w| try ctx.err.print("os: {s}\n", .{w});
     if (try cli.approve(ctx, yes, "roll back", "roll back?")) |code| return code;
     const made = try startFrom(ctx, a, &m, boot, target, source, reason) orelse return 1;
+    try warnUnsigned(ctx, a, left.items);
     try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .rollback, .generation = n });
     try ctx.out.print("generation {d} is ready. reboot to start it.\n", .{made});
     return 0;
+}
+
+/// opens the machine for a way back: a rollback, a fallback, or gc. a
+/// menu write that can't sign goes on without the signature, noting what
+/// it left unsigned in `left`, since nothing should block going back.
+pub fn openWayBack(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, left: *std.ArrayList([]const u8)) !?gens.Machine {
+    var m = try cli.openMachine(ctx, a, boot) orelse return null;
+    m.left_unsigned = left;
+    return m;
+}
+
+/// warns about files a way back left without a signature, if any.
+pub fn warnUnsigned(ctx: *Context, a: std.mem.Allocator, left: []const []const u8) !void {
+    if (left.len == 0) return;
+    try ctx.err.print("os: warning: {s}\n", .{try secureboot.unsignedWarning(a, left)});
 }
 
 /// what to say before rolling back to a generation that boots its kernel
@@ -219,8 +236,10 @@ pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     // from a menu copy, collecting could take the record of the very
     // generation this boot runs.
     if (try cli.refused(ctx, applying.bootBlocker(ctx.io))) return 1;
-    const m = try cli.openMachine(ctx, a, boot) orelse return 1;
+    var left: std.ArrayList([]const u8) = .empty;
+    const m = try openWayBack(ctx, a, boot, &left) orelse return 1;
     defer m.close();
+    defer warnUnsigned(ctx, a, left.items) catch {};
     var removed: std.ArrayList(u32) = .empty;
     if (try m.collect(keep, &removed)) |problem| return cli.fail(ctx, "{s}", .{problem});
     // a menu another tool dropped os's entries from gets them back, and
@@ -234,7 +253,7 @@ pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             const head = try std.fmt.allocPrint(a, "/{s}", .{records[records.len - 1].root});
             if (try m.writeMenu(head, records)) |problem| return cli.fail(ctx, "{s}", .{problem});
             if (boot.menu_missing) |file| try ctx.out.print("wrote the boot menu's generations back into {s}.\n", .{file});
-            if (unsigned) try ctx.out.writeAll("signed the boot menu's images.\n");
+            if (unsigned and left.items.len == 0) try ctx.out.writeAll("signed the boot menu's images.\n");
         }
     }
     if (removed.items.len == 0) {

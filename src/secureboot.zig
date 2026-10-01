@@ -43,6 +43,19 @@ pub fn enforcedWithKeys(enforced: ?bool, keys: bool) bool {
     return keys and (enforced orelse false);
 }
 
+/// what a menu write does with a file it can't sign: stop, or, on a way
+/// back, like a rollback, a fallback, or gc, go on without the signature.
+/// a way back must never be blocked by signing; apply and update stop
+/// with E0134 before they get there when sbctl has no keys.
+pub fn goesOnUnsigned(way_back: bool) bool {
+    return way_back;
+}
+
+/// the warning for files a way back left without a signature.
+pub fn unsignedWarning(a: Allocator, files: []const []const u8) ![]const u8 {
+    return std.fmt.allocPrint(a, "couldn't sign {s} for secure boot, so the boot menu uses them unsigned, and firmware that enforces secure boot won't start them. put sbctl's keys back in /var/lib/sbctl, or make new ones with `sbctl create-keys` and enroll them, then run `os gc`, which signs them.", .{try std.mem.join(a, ", ", files)});
+}
+
 /// the command that signs `file` in place with sbctl's db key. `signer`
 /// is sbctl, or a stand-in in tests.
 pub fn signArgv(a: Allocator, signer: []const u8, file: []const u8) ![]const []const u8 {
@@ -129,6 +142,16 @@ test "signing while the firmware enforces secure boot" {
     try testing.expect(!enforcedWithKeys(true, false));
     try testing.expect(!enforcedWithKeys(false, true));
     try testing.expect(!enforcedWithKeys(null, true));
+}
+
+test "a way back goes on without signatures" {
+    try testing.expect(goesOnUnsigned(true));
+    try testing.expect(!goesOnUnsigned(false));
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const w = try unsignedWarning(arena.allocator(), &.{ "/boot/yoq/boot/a-yoq.efi", "/boot/yoq/boot/b-yoq.efi" });
+    try testing.expect(std.mem.startsWith(u8, w, "couldn't sign /boot/yoq/boot/a-yoq.efi, /boot/yoq/boot/b-yoq.efi for secure boot"));
+    try testing.expect(std.mem.indexOf(u8, w, "`os gc`") != null);
 }
 
 test "os's own unsigned files" {
