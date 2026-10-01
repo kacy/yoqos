@@ -50,6 +50,8 @@ ext4)
 limine | sdboot)
     tests/vm/rollback.sh
     tests/vm/trial.sh
+    # unified kernel images, on systemd-boot; limine's are a later add.
+    if [ "$VM_IMAGE" = sdboot ]; then tests/vm/uki.sh; fi
     # boot files live on the esp here, so it can run out of room.
     if [ "$VM_IMAGE" = sdboot ]; then tests/vm/failures.sh esp; fi
     tests/vm/leave.sh
