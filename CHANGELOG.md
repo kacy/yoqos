@@ -100,6 +100,10 @@
   secret set` again after secure boot changes.
 - `os install` checks the live system has every secret the config names
   before it erases the disk, where it used to stop at the build.
+- a quoted kernel argument, like `acpi_osi="!Windows 2012"`, goes into
+  every generation's entries as it was. it used to be split at its
+  spaces, which lost runs of spaces, and a word inside its quotes that
+  looked like `root=` was dropped.
 
 ## 0.1.3
 

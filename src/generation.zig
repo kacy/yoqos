@@ -136,6 +136,27 @@ pub fn subvolOption(o: []const u8) bool {
     return std.mem.startsWith(u8, o, "subvol=") or std.mem.startsWith(u8, o, "subvolid=");
 }
 
+/// the words of a kernel command line, split the way the kernel splits
+/// them: at spaces, but not inside double quotes, so a word like
+/// acpi_osi="!Windows 2012" stays one word, spacing and all.
+pub const Words = struct {
+    text: []const u8,
+    i: usize = 0,
+
+    pub fn next(w: *Words) ?[]const u8 {
+        while (w.i < w.text.len and std.ascii.isWhitespace(w.text[w.i])) w.i += 1;
+        if (w.i == w.text.len) return null;
+        const start = w.i;
+        var quoted = false;
+        while (w.i < w.text.len) : (w.i += 1) {
+            const ch = w.text[w.i];
+            if (ch == '"') quoted = !quoted;
+            if (!quoted and std.ascii.isWhitespace(ch)) break;
+        }
+        return w.text[start..w.i];
+    }
+};
+
 /// a generation's kernel command line, from the running one: the root is
 /// the btrfs filesystem by uuid, mounted from `subvol`; other rootflags
 /// and arguments stay as they are. on luks, that's the filesystem inside,
@@ -145,7 +166,7 @@ pub fn kernelArgs(a: Allocator, cmdline: []const u8, root_uuid: []const u8, subv
     var flags: std.ArrayList(u8) = .empty;
     try flags.print(a, "subvol={s}", .{subvol});
     var rest: std.ArrayList(u8) = .empty;
-    var words = std.mem.tokenizeAny(u8, cmdline, " \t\n");
+    var words: Words = .{ .text = cmdline };
     while (words.next()) |w| {
         if (std.mem.startsWith(u8, w, "BOOT_IMAGE=") or std.mem.startsWith(u8, w, "initrd=") or std.mem.startsWith(u8, w, "root=")) continue;
         // a trial boot adds this; it's never part of an entry.
@@ -401,6 +422,9 @@ test "a generation's kernel command line" {
     try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/2 rd.luks.name=0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b=root rd.luks.options=tpm2-device=auto rw panic=10", try kernelArgs(arena.allocator(), sd, "abc", "/@roots/2"));
     const busybox = "cryptdevice=PARTUUID=5e1f:root cryptkey=rootfs:/crypto_keyfile.bin root=/dev/mapper/root rw rootflags=subvol=@";
     try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/2 cryptdevice=PARTUUID=5e1f:root cryptkey=rootfs:/crypto_keyfile.bin rw panic=10", try kernelArgs(arena.allocator(), busybox, "abc", "/@roots/2"));
+    // a quoted argument stays as it was, spaces and all, and a word in
+    // its quotes isn't taken for one of the root's.
+    try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/2 rw acpi_osi=\"!Windows  2012\" dyndbg=\"file x.c root=y\" panic=10", try kernelArgs(arena.allocator(), "root=/dev/vda2 rw acpi_osi=\"!Windows  2012\" dyndbg=\"file x.c root=y\"\n", "abc", "/@roots/2"));
     try testing.expectEqualStrings("/@roots/boot-2", try bootCopy(arena.allocator(), 2));
     try testing.expectEqual(2, bootCopyOf("/@roots/boot-2"));
     try testing.expectEqual(null, bootCopyOf("/@roots/2"));
