@@ -23,6 +23,11 @@ required. the machine needs:
 - grub, limine, refind, or systemd-boot. `os` works with the one you have
   and never switches it
 
+a root on luks works too, with the esp outside it, as archinstall's
+encrypted layout has it. the initramfs has to unlock it, so mkinitcpio's
+hooks need `encrypt` or `sd-encrypt`, or the config `[boot] encrypt =
+true`; see [encrypted roots](#encrypted-roots).
+
 it takes one snapshot of the running root and builds generation 1 from it.
 `/var`, `/home`, `/root`, `/srv`, and `/usr/local` each become a subvolume
 of their own, unless they're mounted separately already. the pacman
@@ -105,6 +110,33 @@ the next boot with `BootNext`. refind's own default meanwhile moves to the
 generation before, so the boot after a failed trial lands there. when the
 trial ends, the firmware entry and the copy go. this needs `efibootmgr`,
 and firmware that honors `BootNext`, which most does.
+
+## encrypted roots
+
+generations work on a btrfs root inside luks, with the esp outside it,
+the way archinstall sets up an encrypted disk and `os install --encrypt`
+does.
+
+nothing reads btrfs inside luks before the initramfs unlocks it, so there
+every bootloader works the way limine does: each generation's kernel,
+microcode, and initramfs are copied into `yoq/boot` on the esp, named by
+content, and generations with the same kernel share them. grub and refind
+don't read the roots at all then. the copies take room on the esp, which
+`os plan` checks and `os gc` frees.
+
+every entry gets the arguments that unlock the root from the running
+kernel's command line, the same way it gets the rest: `rd.luks.name=`,
+`rd.luks.options=`, and the other `rd.luks.*` ones for sd-encrypt, or
+`cryptdevice=` and `cryptkey=` for busybox's encrypt hook. `root=` names
+the btrfs filesystem inside by its uuid, which shows up once the volume is
+open, so it's the same for every generation.
+
+the luks header, its passphrases, and a tpm key belong to the disk, not to
+a generation. a rollback doesn't change them, and a passphrase you change
+with cryptsetup works for every generation. a trial boot unlocks like any
+other boot: by itself with a tpm key, or with someone typing the
+passphrase. the watchdog's five minutes start once the root's systemd
+does, so the time at the prompt doesn't count.
 
 ## how they work
 

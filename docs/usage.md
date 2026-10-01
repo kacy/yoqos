@@ -520,7 +520,8 @@ that:
 - no apply stopped partway.
 
 it also checks that the esp has room for another kernel, and with
-generations, that the boot menu has them and that os's units are there. a sudo
+generations, that the boot menu has them and that os's units are there. with
+the root on luks, it checks that the initramfs can unlock it. a sudo
 rule without a password shows up too: anything running as that user could
 change the machine without asking. each check that fails says what to do,
 and the exit code is 1 when one does.
@@ -606,6 +607,10 @@ it stopped.
    config repository to install from, in the next step, and to push
    somewhere once the machine is up.
 
+   for a disk in luks2, add `--encrypt`, or `--tpm` for one the tpm
+   unlocks: the config then has `[boot] encrypt = true`, and `tpm2-tss`
+   with `--tpm`. see [an encrypted disk](#an-encrypted-disk).
+
 6. install from the config repository:
 
    ```
@@ -673,6 +678,50 @@ another live system, `pacman -S dosfstools btrfs-progs grub git` first.
 aur packages wait until the machine is running: install without them,
 then add them back and run `os update` there.
 
+### an encrypted disk
+
+```
+os install /root/machines --disk /dev/nvme0n1 --update --encrypt
+os install /root/machines --disk /dev/nvme0n1 --update --tpm
+```
+
+`--encrypt` puts luks2 on the btrfs partition, with btrfs inside it. the
+esp stays outside, since the firmware has to read it. the install plan
+shows it:
+
+```
+encrypt   luks2 under btrfs, opened at boot as /dev/mapper/root
+          the passphrase unlocks it, typed at every boot
+```
+
+cryptsetup asks for the passphrase itself, on the terminal: twice when it
+sets up the partition, once more with `--tpm` to add the tpm's key, and
+once more to open it for the install. `os` never sees it. for scripts and
+tests, `--passphrase-file <file>` reads it from a file instead, once. a
+newline at the end of the file isn't part of it. it goes to cryptsetup on
+its standard input, and never into the new machine, a log, or json.
+without a terminal, `--encrypt` needs `--passphrase-file`.
+
+`--tpm` also puts a key in the tpm, with `systemd-cryptenroll
+--tpm2-device=auto`, so the machine unlocks at boot without anyone typing.
+the passphrase still works for when the tpm can't unlock it, like after
+some firmware updates or with the disk in another machine, so keep it
+somewhere safe. `--tpm` means `--encrypt` too.
+
+the config has to say the root is encrypted, or the new machine's
+initramfs can't unlock it: `[boot] encrypt = true` (see [encrypted
+roots](#encrypted-roots)). with `--tpm`, it also needs `tpm2-tss` in
+`packages`, which the initramfs unlocks with. the install checks both
+before it changes anything, and `os init --new --encrypt`, or `--tpm`,
+writes them.
+
+the new machine's boot entries name the luks volume and the btrfs inside
+it, `rd.luks.name=<luks uuid>=root root=UUID=<btrfs uuid>`, with
+`rd.luks.options=tpm2-device=auto` for `--tpm`. there's no line for the
+root in `/etc/crypttab`; sd-encrypt reads the command line. on the live
+system, the install runs `cryptsetup`, and `systemd-cryptenroll` with
+`tpm2-tss` for `--tpm`. yoq os's iso has them all.
+
 ### a config for a new machine
 
 `os init --new` writes a small config for a machine with nothing on it
@@ -681,7 +730,8 @@ yet. it has what a new machine can't do without: a kernel and grub,
 driver from what the live system sees, networkmanager, a user in `wheel`,
 and sudo for them. `--hostname`, `--user`, `--timezone`, and `--ssh` answer
 its questions ahead of time, and without a terminal the first three are
-required.
+required. `--encrypt` and `--tpm` add what `os install --encrypt` and
+`--tpm` need: `[boot] encrypt = true`, and `tpm2-tss` for the tpm.
 
 a config written for another machine only has what it lists, and `os`
 doesn't add anything. the install plan notes what a new machine usually
@@ -770,7 +820,7 @@ bluetooth = false
 | `packages` | packages you want installed. dependencies come along on their own. |
 | `[providers]` | which package provides a virtual one, like `initramfs` |
 | `[system]` | `hostname` (a plain name or a dotted one like `atlas.lan`), `timezone`, `locale`, and `keymap` |
-| `[boot]` | `kernel`: `linux` unless you say otherwise. `none` for a machine without its own kernel, like a container. `modules`: kernel modules to load at every boot, like `i2c-dev`. |
+| `[boot]` | `kernel`: `linux` unless you say otherwise. `none` for a machine without its own kernel, like a container. `modules`: kernel modules to load at every boot, like `i2c-dev`. `encrypt`: `true` when the root is on luks, so the initramfs unlocks it. |
 | `[hardware]` | `cpu`: `amd` or `intel`. `gpu`: `amd`, `intel`, `nvidia`, or `none`. these bring in microcode and drivers. `nvidia` also loads its modules early, with a drop-in in `/etc/mkinitcpio.conf.d`, unless mkinitcpio.conf does already. |
 | `[desktop]` | `session`: `hyprland`. `audio`: `pipewire`. `login`: `greetd`, `sddm`, or `tty`. these bring in their packages; see [the desktop](#the-desktop). |
 | `[users.<name>]` | `shell`, and `groups`: the full list of groups beyond the user's own |
@@ -1008,6 +1058,27 @@ modules = ["i2c-dev", "nct6775"]
 
 `modules` becomes `/etc/modules-load.d/99-yoq.conf`, which systemd reads at
 every boot, and `apply` loads the list right away on a running machine.
+
+### encrypted roots
+
+```toml
+[boot]
+encrypt = true
+```
+
+a root on luks has to be unlocked by the initramfs before anything else
+runs. with `encrypt = true`, `os` makes sure mkinitcpio's hooks can do
+that. when they have neither `encrypt` nor `sd-encrypt`, it writes
+`/etc/mkinitcpio.conf.d/90-yoq-encrypt.conf`, which adds `sd-encrypt`
+before `filesystems` and swaps busybox's hooks, like `udev` and `keymap`,
+for systemd's, which sd-encrypt needs. like any change to the initramfs,
+it waits for a reboot.
+
+`os init` sets the key when the root is on luks. an encrypted archinstall
+machine has the hooks already, so no drop-in comes with it. `os install
+--encrypt` needs the key, since a new machine starts from mkinitcpio's own
+hooks. the key holds nothing secret and doesn't say how the disk unlocks:
+that's in the luks header and on the kernel's command line.
 
 ### repositories
 

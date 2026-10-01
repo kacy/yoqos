@@ -16,6 +16,26 @@
   as failing.
 - `os why <path>` names a file's secret, and `os schema secret` and `os
   schema secrets` describe the new `--json` documents.
+- `os install --encrypt` puts luks2 under btrfs. cryptsetup asks for the
+  passphrase, or `--passphrase-file` gives it, read once and never copied.
+  `--tpm` adds a tpm key with systemd-cryptenroll and keeps the passphrase
+  as a way in.
+- `[boot] encrypt = true` adds sd-encrypt to mkinitcpio's hooks, with a
+  drop-in, when they can't unlock luks already. `os init` sets it on a luks
+  root, and `os init --new --encrypt` (or `--tpm`) writes it.
+- facts name the luks volume under the root: its uuid, mapper name, and
+  partition.
+- `os enable-rollback` and `os doctor` check that the initramfs unlocks a
+  luks root.
+
+### fixes
+
+- on a luks root, grub and refind boot every generation from copies on the
+  esp, since they can't read btrfs inside luks, and grub.cfg no longer
+  looks for a root filesystem none of its entries use.
+- the trial watchdog's five minutes count from when it starts in the booted
+  root, so a passphrase typed slowly at a trial boot doesn't count against
+  it.
 
 ## 0.1.3
 
