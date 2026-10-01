@@ -34,12 +34,13 @@ pub const package = "systemd-ukify";
 pub const work_dir = "tmp/yoq-uki";
 
 /// the command that builds an image in the root at `root`, through
-/// chroot, so it's that root's ukify and stub. `kernel`, `initrds`, and
-/// `output` are paths inside the root; initrds go in the order given,
-/// microcode first.
-pub fn ukifyArgv(a: Allocator, root: []const u8, kernel: []const u8, initrds: []const []const u8, output: []const u8) ![]const []const u8 {
+/// `chroot` (chroot itself, or a stand-in in tests), so it's that root's
+/// ukify and stub. `kernel`, `initrds`, and `output` are paths inside the
+/// root; initrds go in the order given, microcode first.
+pub fn ukifyArgv(a: Allocator, chroot: []const []const u8, root: []const u8, kernel: []const u8, initrds: []const []const u8, output: []const u8) ![]const []const u8 {
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(a, &.{ "chroot", root, "ukify", "build", "--config=" ++ config_path });
+    try argv.appendSlice(a, chroot);
+    try argv.appendSlice(a, &.{ root, "ukify", "build", "--config=" ++ config_path });
     try argv.append(a, try std.fmt.allocPrint(a, "--linux={s}", .{kernel}));
     for (initrds) |i| try argv.append(a, try std.fmt.allocPrint(a, "--initrd={s}", .{i}));
     try argv.append(a, try std.fmt.allocPrint(a, "--output={s}", .{output}));
@@ -101,10 +102,10 @@ const testing = std.testing;
 test "ukify's arguments" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const argv = try ukifyArgv(arena.allocator(), "/run/yoq/top/@roots/4", "/tmp/yoq-uki/vmlinuz-linux", &.{ "/tmp/yoq-uki/amd-ucode.img", "/tmp/yoq-uki/initramfs-linux.img" }, "/tmp/yoq-uki/yoq.efi");
+    const argv = try ukifyArgv(arena.allocator(), &.{"chroot"}, "/run/yoq/private/top/@roots/4", "/tmp/yoq-uki/vmlinuz-linux", &.{ "/tmp/yoq-uki/amd-ucode.img", "/tmp/yoq-uki/initramfs-linux.img" }, "/tmp/yoq-uki/yoq.efi");
     const want = [_][]const u8{
         "chroot",
-        "/run/yoq/top/@roots/4",
+        "/run/yoq/private/top/@roots/4",
         "ukify",
         "build",
         "--config=/etc/kernel/yoq-uki.conf",

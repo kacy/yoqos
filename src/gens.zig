@@ -38,6 +38,12 @@ pub const Machine = struct {
     signer: []const []const u8 = &.{secureboot.package},
     /// sbctl's db certificate, which images os signs must be signed with.
     db_cert: []const u8 = "/" ++ secureboot.db_cert_rel,
+    /// what runs ukify in a root, given the root: chroot, or a stand-in
+    /// in tests.
+    chroot: []const []const u8 = &.{"chroot"},
+    /// refind's btrfs driver as its package installs it, which os copies
+    /// to the esp, and signs there for secure boot.
+    refind_driver_src: []const u8 = "/usr/share/refind/" ++ refind_driver,
     /// set on a way back, like a rollback, a fallback, or gc: a file the
     /// menu can't sign goes on the esp unsigned, or stays as it is there,
     /// and its path goes here, instead of the menu write stopping.
@@ -59,6 +65,7 @@ pub const Machine = struct {
             .root_uuid = try blkid(a, io, boot.root_device.?, "UUID", why) orelse return null,
             .esp_uuid = try blkid(a, io, boot.esp_device.?, "UUID", why) orelse return null,
         };
+        if (std.mem.startsWith(u8, m.top, rootfs.private_dir ++ "/") and !rootfs.makePrivateDir()) return fail(why, "can't make " ++ rootfs.private_dir ++ ", a directory only root can go into");
         if (try m.run(&.{ "mkdir", "-p", m.top })) |w| return fail(why, w);
         if (try m.run(&.{ "mount", "-o", "subvolid=5", boot.root_device.?, m.top })) |w| return fail(why, w);
         return m;
@@ -419,8 +426,10 @@ pub const Machine = struct {
     /// then copies and images no entry uses any more go.
     ///
     /// when `signs` says so, every image the menu uses is signed before it
-    /// goes on the esp, and an unsigned one there already is signed again,
-    /// so a fallback to an older generation boots too.
+    /// goes on the esp, and one there without sbctl's signature is built
+    /// again and signed, so a fallback to an older generation boots too.
+    /// what's on the esp is never signed as it is: whoever can write to
+    /// it, like another system on the disk, could have put it there.
     fn writeOnEsp(m: *const Machine, entries: []menu.Entry, records: []const generation.Record, put: MenuWriter, held: ?usize) !?[]const u8 {
         const dir = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir });
         const sign = entries.len > 0 and m.signs(entries[0].subvol);
@@ -428,8 +437,8 @@ pub const Machine = struct {
         var files: EspFiles = .{};
         if (menu.copiesOnEsp(m.boot) or try m.anyImage(entries)) {
             if (try m.run(&.{ "mkdir", "-p", dir })) |w| return w;
-            if (try m.espFiles(entries, &files)) |w| return w;
-            if (try m.fillEsp(dir, &files, records, sign, work)) |w| return w;
+            if (try m.espFiles(entries, &files, sign)) |w| return w;
+            if (try m.fillEsp(dir, &files, records, sign)) |w| return w;
         }
         if (try put(m, entries, held)) |w| return w;
         // with no entry using it, everything goes, like images from before
@@ -445,23 +454,29 @@ pub const Machine = struct {
         missing: std.ArrayList(EspCopy) = .empty,
         builds: std.ArrayList(UkiBuild) = .empty,
 
-        /// the room the ones it doesn't have take.
+        /// the room the ones it doesn't have take, and the largest image
+        /// built again, which needs room for its new copy beside the old
+        /// one while it replaces it.
         fn size(f: *const EspFiles) u64 {
             var n: u64 = 0;
+            var largest: u64 = 0;
             for (f.missing.items) |c| n += c.size;
-            for (f.builds.items) |b| n += b.size;
-            return n;
+            for (f.builds.items) |b| {
+                if (b.again) largest = @max(largest, b.size) else n += b.size;
+            }
+            return n + largest;
         }
     };
 
     /// points each entry at its files on the esp, and notes them in
     /// `files`: an image for an entry whose root boots one, and, for a
-    /// bootloader that can't read the roots, copies of the rest.
-    fn espFiles(m: *const Machine, entries: []menu.Entry, files: *EspFiles) !?[]const u8 {
+    /// bootloader that can't read the roots, copies of the rest. with
+    /// `sign`, an image there without sbctl's signature is built again.
+    fn espFiles(m: *const Machine, entries: []menu.Entry, files: *EspFiles, sign: bool) !?[]const u8 {
         const copies = menu.copiesOnEsp(m.boot);
         for (entries) |*e| {
             if (try m.bootsImage(e.subvol)) {
-                if (try m.ukiName(e, files)) |w| return w;
+                if (try m.ukiName(e, files, sign)) |w| return w;
                 continue;
             }
             if (!copies or e.esp_dir != null) continue;
@@ -477,26 +492,20 @@ pub const Machine = struct {
         return null;
     }
 
-    /// puts what `files` says the esp at `dir` lacks there: copies and new
-    /// images, and with `sign`, signatures on the images there without
-    /// one. if it doesn't all fit, nothing changes.
-    fn fillEsp(m: *const Machine, dir: []const u8, files: *const EspFiles, records: []const generation.Record, sign: bool, work: []const u8) !?[]const u8 {
-        var unsigned: std.ArrayList([]const u8) = .empty;
-        // each one is signed in a copy that goes in beside it, one at a
-        // time.
-        const largest = if (sign) try m.unsignedImages(dir, files, &unsigned) else 0;
-        if (try m.checkRoom(dir, files.size() + largest, records)) |w| return w;
+    /// puts what `files` says the esp at `dir` lacks there: copies and
+    /// images, signed with `sign`. if it doesn't all fit, nothing changes.
+    /// on a way back, an image that can't be built again stays as it is,
+    /// noted as unsigned.
+    fn fillEsp(m: *const Machine, dir: []const u8, files: *const EspFiles, records: []const generation.Record, sign: bool) !?[]const u8 {
+        if (try m.checkRoom(dir, files.size(), records)) |w| return w;
         for (files.missing.items) |c| {
             if (try m.replaceFile(c.src, c.dest)) |w| return w;
         }
         for (files.builds.items) |b| {
-            if (try m.buildUki(b, sign)) |w| return w;
-        }
-        if (unsigned.items.len == 0) return null;
-        if (try m.freshDir(work)) |w| return w;
-        defer m.removeDir(work);
-        for (unsigned.items) |dest| {
-            if (try m.signCopy(dest, work)) |w| return w;
+            const why = try m.buildUki(b, sign) orelse continue;
+            const left = m.left_unsigned orelse return why;
+            if (!b.again) return why;
+            if (!lists.contains(left.items, b.dest)) try left.append(m.a, b.dest);
         }
         return null;
     }
@@ -507,22 +516,6 @@ pub const Machine = struct {
         if (need == 0) return null;
         const room = rootfs.freeBytes(dir) orelse return null;
         return generation.espRoom(m.a, m.boot.esp.?, need, room, records, m.boot.root_subvol orelse "", true);
-    }
-
-    /// adds the images `files` uses that are in `dir` without a signature
-    /// to `out`, except the ones about to be built, which are signed as
-    /// they're made. returns the size of the largest.
-    fn unsignedImages(m: *const Machine, dir: []const u8, files: *const EspFiles, out: *std.ArrayList([]const u8)) !u64 {
-        var largest: u64 = 0;
-        for (files.used.items) |name| {
-            if (!std.mem.endsWith(u8, name, uki.suffix)) continue;
-            const dest = try std.fs.path.join(m.a, &.{ dir, name });
-            if (lists.find(files.builds.items, "dest", dest) != null or try m.signedNow(dest)) continue;
-            try out.append(m.a, dest);
-            const st = std.Io.Dir.cwd().statFile(m.io, dest, .{}) catch continue;
-            largest = @max(largest, st.size);
-        }
-        return largest;
     }
 
     /// whether the efi binary at `path` is signed with sbctl's db key, or
@@ -599,34 +592,42 @@ pub const Machine = struct {
         };
     }
 
-    /// signs a file on the esp: a copy in `work`, signed, replaces it. one
-    /// a way back can't sign stays as it is.
-    fn signCopy(m: *const Machine, dest: []const u8, work: []const u8) !?[]const u8 {
-        const copy = try std.fs.path.join(m.a, &.{ work, std.fs.path.basename(dest) });
-        if (try m.run(&.{ "cp", dest, copy })) |w| return w;
-        return switch (try m.trySign(copy, dest)) {
-            .failed => |w| w,
-            .signed => m.replaceFile(copy, dest),
-            .unsigned => null,
-        };
-    }
-
     /// signs the loader files os puts on the esp itself, when they aren't
-    /// signed yet: refind's btrfs driver. the bootloader's own binaries
-    /// come from its install, and `os doctor` says if they're unsigned.
+    /// signed yet: refind's btrfs driver. the one on the esp is replaced
+    /// by a signed copy of refind's own, never signed as it is, since
+    /// anyone who can write to the esp could have put it there. the
+    /// bootloader's own binaries come from its install, and `os doctor`
+    /// says if they're unsigned.
     fn signLoader(m: *const Machine, work: []const u8) !?[]const u8 {
         if (m.loader != .refind) return null;
         const conf = m.boot.loader_conf orelse return null;
         const driver = try std.fs.path.join(m.a, &.{ std.fs.path.dirnamePosix(conf).?, refind_driver });
         if (!rootfs.pathExists(m.io, driver) or try m.signedNow(driver)) return null;
+        if (!rootfs.pathExists(m.io, m.refind_driver_src)) {
+            const why = try std.fmt.allocPrint(m.a, "can't sign {s} for secure boot: refind's own copy, {s}, isn't there to sign", .{ driver, m.refind_driver_src });
+            const left = m.left_unsigned orelse return why;
+            if (!lists.contains(left.items, driver)) try left.append(m.a, driver);
+            return null;
+        }
         if (try m.freshDir(work)) |w| return w;
         defer m.removeDir(work);
-        return m.signCopy(driver, work);
+        const copy = try std.fs.path.join(m.a, &.{ work, std.fs.path.basename(driver) });
+        if (try m.run(&.{ "cp", m.refind_driver_src, copy })) |w| return w;
+        return m.signInto(copy, driver);
     }
 
-    /// empties the directory at `path`, making it if it isn't there.
+    /// makes the directory at `path` again, empty and root's alone. it's
+    /// in a root's /tmp, which anyone can write to through the top level's
+    /// mount, so one that shows up again after the old one goes is a
+    /// failure, never used: its owner could swap an image before it's
+    /// signed.
     fn freshDir(m: *const Machine, path: []const u8) !?[]const u8 {
-        return exec.runAll(m.a, m.io, &.{ &.{ "rm", "-rf", path }, &.{ "mkdir", "-p", path } });
+        if (try m.run(&.{ "rm", "-rf", path })) |w| return w;
+        if (std.fs.path.dirnamePosix(path)) |parent| std.Io.Dir.cwd().createDirPath(m.io, parent) catch {};
+        return switch (std.os.linux.errno(std.os.linux.mkdir(try m.a.dupeZ(u8, path), 0o700))) {
+            .SUCCESS => null,
+            else => |e| try std.fmt.allocPrint(m.a, "can't make {s}: {s}", .{ path, @tagName(e) }),
+        };
     }
 
     fn removeDir(m: *const Machine, path: []const u8) void {
@@ -634,14 +635,16 @@ pub const Machine = struct {
     }
 
     /// a unified kernel image the esp doesn't have yet: the root whose
-    /// tools build it, its files, kernel first, and where it goes.
-    const UkiBuild = struct { root: []const u8, files: []const []const u8, dest: []const u8, size: u64 };
+    /// tools build it, its files, kernel first, and where it goes. `again`
+    /// when the esp has one by that name, but without sbctl's signature.
+    const UkiBuild = struct { root: []const u8, files: []const []const u8, dest: []const u8, size: u64, again: bool = false };
 
     /// makes `e` start a unified kernel image of its kernel and initrds,
     /// named by their content and the stub of the root that builds it,
     /// and notes the name in `files`, along with the build if the esp
-    /// doesn't have it yet.
-    fn ukiName(m: *const Machine, e: *menu.Entry, files: *EspFiles) !?[]const u8 {
+    /// doesn't have it yet, or with `sign`, has it without sbctl's
+    /// signature.
+    fn ukiName(m: *const Machine, e: *menu.Entry, files: *EspFiles, sign: bool) !?[]const u8 {
         // the newest entry's files may be the esp's own, with /boot there.
         const from = if (e.esp_dir) |d| try std.fs.path.join(m.a, &.{ m.boot.esp.?, d }) else try m.at(&.{ e.subvol, "boot" });
         var inputs: std.ArrayList([]const u8) = .empty;
@@ -660,7 +663,13 @@ pub const Machine = struct {
         const name = try uki.name(m.a, sums.items);
         e.uki = name;
         e.esp_dir = esp_boot_dir;
-        const dest = try m.newOnEsp(name, files) orelse return null;
+        if (lists.contains(files.used.items, name)) return null;
+        const dest = try m.newOnEsp(name, files) orelse {
+            const there = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir, name });
+            if (!sign or try m.signedNow(there)) return null;
+            try files.builds.append(m.a, .{ .root = try m.at(&.{e.subvol}), .files = inputs.items, .dest = there, .size = size, .again = true });
+            return null;
+        };
         try files.builds.append(m.a, .{ .root = try m.at(&.{e.subvol}), .files = inputs.items, .dest = dest, .size = size });
         return null;
     }
@@ -682,7 +691,7 @@ pub const Machine = struct {
             try inside.append(m.a, try std.fmt.allocPrint(m.a, "/{s}/{s}", .{ uki.work_dir, base }));
         }
         const out = "/" ++ uki.work_dir ++ "/yoq.efi";
-        if (try m.run(try uki.ukifyArgv(m.a, b.root, inside.items[0], inside.items[1..], out))) |w| {
+        if (try m.run(try uki.ukifyArgv(m.a, m.chroot, b.root, inside.items[0], inside.items[1..], out))) |w| {
             return try std.fmt.allocPrint(m.a, "can't build a unified kernel image in {s}: {s}", .{ b.root, w });
         }
         const image = try std.fs.path.join(m.a, &.{ work, "yoq.efi" });
@@ -829,7 +838,7 @@ pub const Machine = struct {
         const dir = std.fs.path.dirnamePosix(m.boot.loader_conf.?).?;
         const driver = try std.fs.path.join(m.a, &.{ dir, refind_driver });
         if (!rootfs.pathExists(m.io, driver)) {
-            if (try m.run(&.{ "install", "-D", "-m", "0644", "/usr/share/refind/drivers_x64/btrfs_x64.efi", driver })) |w| return w;
+            if (try m.run(&.{ "install", "-D", "-m", "0644", m.refind_driver_src, driver })) |w| return w;
         }
         var why: []const u8 = "";
         // a device mapper root, as on luks, has no partition guid, and
@@ -1607,6 +1616,7 @@ test "with secure boot, images are signed in the root before they replace the es
         .esp_uuid = "e",
         .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
         .signer = &.{ "sh", try std.fmt.allocPrint(a, "{s}/sign.sh", .{base}) },
+        .chroot = try testChroot(tmp.dir, io, a, base),
     };
     var entries = [_]menu.Entry{
         .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" },
@@ -1620,16 +1630,17 @@ test "with secure boot, images are signed in the root before they replace the es
     entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
     try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     try std.testing.expectEqualStrings(name, test_put[0].uki.?);
-    try std.testing.expectEqualStrings("image signed", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
-    // the copy in the root was signed, never the esp's own file, and the
-    // work directory is gone again.
+    // the unsigned image on the esp, which anyone who can write there
+    // could have put there, wasn't signed: one built again in the root
+    // was, and replaced it. the work directory is gone again.
+    try std.testing.expectEqualStrings("built signed", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
     const log = try tmp.dir.readFileAlloc(io, "signed.log", a, .limited(1024));
-    try std.testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}/top/@roots/2/{s}/{s}\n", .{ base, sign_dir, name }), log);
-    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "top/@roots/2/" ++ sign_dir, .{}));
+    try std.testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}/top/@roots/2/{s}/yoq.efi\n", .{ base, uki.work_dir }), log);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "top/@roots/2/" ++ uki.work_dir, .{}));
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, try std.fmt.allocPrint(a, "{s}.yoq-new", .{image}), .{}));
 
     // a signer that fails leaves the esp's image as it was.
-    const failing: Machine = .{ .a = a, .io = io, .boot = m.boot, .loader = .grub, .root_uuid = "r", .esp_uuid = "e", .top = m.top, .signer = &.{"false"} };
+    const failing: Machine = .{ .a = a, .io = io, .boot = m.boot, .loader = .grub, .root_uuid = "r", .esp_uuid = "e", .top = m.top, .signer = &.{"false"}, .chroot = m.chroot };
     try tmp.dir.writeFile(io, .{ .sub_path = image, .data = "image" });
     entries[0] = .{ .id = "head", .title = "yoq 4", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
     const why = (try failing.writeOnEsp(&entries, &.{}, testPut, null)).?;
@@ -1666,6 +1677,7 @@ test "firmware that enforces secure boot has images signed without the config's 
         .esp_uuid = "e",
         .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
         .signer = &.{ "sh", try std.fmt.allocPrint(a, "{s}/sign.sh", .{base}) },
+        .chroot = try testChroot(tmp.dir, io, a, base),
     };
     var entries = [_]menu.Entry{
         .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" },
@@ -1678,7 +1690,7 @@ test "firmware that enforces secure boot has images signed without the config's 
     m.boot.secure_boot = true;
     entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
     try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
-    try std.testing.expectEqualStrings("image signed", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
+    try std.testing.expectEqualStrings("built signed", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
 }
 
 test "a way back that can't sign writes the menu anyway" {
@@ -1710,6 +1722,7 @@ test "a way back that can't sign writes the menu anyway" {
         .esp_uuid = "e",
         .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
         .signer = &.{"false"},
+        .chroot = try testChroot(tmp.dir, io, a, base),
     };
     var entries = [_]menu.Entry{
         .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" },
@@ -1718,13 +1731,14 @@ test "a way back that can't sign writes the menu anyway" {
     test_put = &.{};
     try std.testing.expect(std.mem.startsWith(u8, (try m.writeOnEsp(&entries, &.{}, testPut, null)).?, "can't sign "));
     try std.testing.expectEqual(0, test_put.len);
-    // a way back writes the menu, keeps the image as it is, and notes it.
+    // a way back writes the menu, with the image built again but
+    // unsigned, and notes it.
     var left: std.ArrayList([]const u8) = .empty;
     m.left_unsigned = &left;
     entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
     try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     try std.testing.expectEqualStrings(name, test_put[0].uki.?);
-    try std.testing.expectEqualStrings("image", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
+    try std.testing.expectEqualStrings("built", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
     try std.testing.expectEqual(1, left.items.len);
     try std.testing.expect(std.mem.endsWith(u8, left.items[0], name));
 }
@@ -1774,6 +1788,7 @@ test "images signed with another key are signed again" {
         .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
         .signer = &.{ "sh", try std.fmt.allocPrint(a, "{s}/sign.sh", .{base}) },
         .db_cert = try std.fmt.allocPrint(a, "{s}/db.pem", .{base}),
+        .chroot = try testChroot(tmp.dir, io, a, base),
     };
     var entries = [_]menu.Entry{
         .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" },
@@ -1784,14 +1799,69 @@ test "images signed with another key are signed again" {
     try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "signed.log", .{}));
     // signed with the key from before: signed, but not by this one, so it's
-    // signed again.
+    // built again and signed.
     try tmp.dir.writeFile(io, .{ .sub_path = image, .data = try testSignedEfi(a, old.key) });
     try std.testing.expect(fileSigned(io, image_path, null));
     try std.testing.expect(!fileSigned(io, image_path, key));
     entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
     try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     const log = try tmp.dir.readFileAlloc(io, "signed.log", a, .limited(1024));
-    try std.testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}/top/@roots/2/{s}/{s}\n", .{ base, sign_dir, name }), log);
+    try std.testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}/top/@roots/2/{s}/yoq.efi\n", .{ base, uki.work_dir }), log);
+}
+
+test "refind's driver on the esp is replaced by a signed copy of refind's own" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "top/@roots/2/etc/kernel");
+    try tmp.dir.createDirPath(io, "esp/EFI/refind/drivers_x64");
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/" ++ secureboot.config_rel, .data = secureboot.config_content });
+    // a driver someone else put on the esp, and refind's own.
+    try tmp.dir.writeFile(io, .{ .sub_path = "esp/EFI/refind/" ++ refind_driver, .data = "planted" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "refind-driver.efi", .data = "driver" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "sign.sh", .data = "[ \"$1\" = sign ] && printf ' signed' >> \"$2\"\n" });
+    var m: Machine = .{
+        .a = a,
+        .io = io,
+        .boot = .{ .esp = try std.fmt.allocPrint(a, "{s}/esp", .{base}), .loader = "refind", .loader_conf = try std.fmt.allocPrint(a, "{s}/esp/EFI/refind/refind.conf", .{base}), .root_subvol = "/@roots/2" },
+        .loader = .refind,
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
+        .signer = &.{ "sh", try std.fmt.allocPrint(a, "{s}/sign.sh", .{base}) },
+        .refind_driver_src = try std.fmt.allocPrint(a, "{s}/refind-driver.efi", .{base}),
+    };
+    var entries = [_]menu.Entry{
+        .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" },
+    };
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
+    try std.testing.expectEqualStrings("driver signed", try tmp.dir.readFileAlloc(io, "esp/EFI/refind/" ++ refind_driver, a, .limited(64)));
+
+    // without refind's own, an apply stops, and a way back goes on.
+    try tmp.dir.writeFile(io, .{ .sub_path = "esp/EFI/refind/" ++ refind_driver, .data = "planted" });
+    m.refind_driver_src = try std.fmt.allocPrint(a, "{s}/missing.efi", .{base});
+    try std.testing.expect(std.mem.startsWith(u8, (try m.writeOnEsp(&entries, &.{}, testPut, null)).?, "can't sign "));
+    var left: std.ArrayList([]const u8) = .empty;
+    m.left_unsigned = &left;
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
+    try std.testing.expectEqual(1, left.items.len);
+    try std.testing.expectEqualStrings("planted", try tmp.dir.readFileAlloc(io, "esp/EFI/refind/" ++ refind_driver, a, .limited(64)));
+}
+
+/// a stand-in for chroot running ukify in a test's root: the image it
+/// builds holds "built".
+fn testChroot(dir: std.Io.Dir, io: std.Io, a: Allocator, base: []const u8) ![]const []const u8 {
+    try dir.writeFile(io, .{ .sub_path = "chroot.sh", .data =
+        \\root=$1; shift
+        \\for arg; do case $arg in --output=*) out=${arg#--output=} ;; esac; done
+        \\printf built > "$root$out"
+        \\
+    });
+    return a.dupe([]const u8, &.{ "sh", try std.fmt.allocPrint(a, "{s}/chroot.sh", .{base}) });
 }
 
 test "an efi binary without a certificate table isn't signed" {
@@ -1805,4 +1875,26 @@ test "an efi binary without a certificate table isn't signed" {
     try tmp.dir.writeFile(io, .{ .sub_path = "plain.efi", .data = "not an efi binary" });
     try std.testing.expect(!fileSigned(io, try std.fmt.allocPrint(a, "{s}/plain.efi", .{base}), null));
     try std.testing.expect(!fileSigned(io, try std.fmt.allocPrint(a, "{s}/missing.efi", .{base}), null));
+}
+
+test "a work directory in a root's /tmp is made fresh, and root's alone" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    // someone else's directory, and a link to it where os works.
+    try tmp.dir.createDirPath(io, "theirs");
+    try tmp.dir.writeFile(io, .{ .sub_path = "theirs/yoq.efi", .data = "theirs" });
+    try tmp.dir.createDirPath(io, "top/@roots/2/tmp");
+    try tmp.dir.symLink(io, try std.fmt.allocPrint(a, "{s}/theirs", .{try std.Io.Dir.cwd().realPathFileAlloc(io, base, a)}), "top/@roots/2/" ++ sign_dir, .{});
+    const m: Machine = .{ .a = a, .io = io, .boot = .{}, .loader = .grub, .root_uuid = "r", .esp_uuid = "e", .top = try std.fmt.allocPrint(a, "{s}/top", .{base}) };
+    const work = try m.at(&.{ "/@roots/2", sign_dir });
+    try std.testing.expectEqual(null, try m.freshDir(work));
+    const st = try tmp.dir.statFile(io, "top/@roots/2/" ++ sign_dir, .{ .follow_symlinks = false });
+    try std.testing.expectEqual(.directory, st.kind);
+    try std.testing.expectEqual(0o700, @intFromEnum(st.permissions) & 0o777);
+    try std.testing.expectEqualStrings("theirs", try tmp.dir.readFileAlloc(io, "theirs/yoq.efi", a, .limited(64)));
 }

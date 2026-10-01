@@ -200,11 +200,11 @@ const testing = std.testing;
 test "sbctl's arguments" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const argv = try signArgv(arena.allocator(), "sbctl", "/run/yoq/top/@roots/4/tmp/yoq-uki/yoq.efi");
+    const argv = try signArgv(arena.allocator(), "sbctl", "/run/yoq/private/top/@roots/4/tmp/yoq-uki/yoq.efi");
     try testing.expectEqual(3, argv.len);
     try testing.expectEqualStrings("sbctl", argv[0]);
     try testing.expectEqualStrings("sign", argv[1]);
-    try testing.expectEqualStrings("/run/yoq/top/@roots/4/tmp/yoq-uki/yoq.efi", argv[2]);
+    try testing.expectEqualStrings("/run/yoq/private/top/@roots/4/tmp/yoq-uki/yoq.efi", argv[2]);
 }
 
 test "secure boot and setup mode from efivarfs" {

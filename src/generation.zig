@@ -28,7 +28,7 @@ pub const data_dirs = [_]DataDir{
 };
 
 /// where the btrfs top level is mounted while os works on it.
-pub const top_mount = "/run/yoq/top";
+pub const top_mount = @import("rootfs.zig").private_dir ++ "/top";
 
 /// generation records, one json file each, under /var so they outlive
 /// every rollback. relative to a var directory.

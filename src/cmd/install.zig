@@ -83,6 +83,7 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var secret_buf: [install.max_passphrase + 1]u8 = undefined;
     defer std.crypto.secureZero(u8, &secret_buf);
     if (passphrase_file) |path| {
+        secrets.keepPrivate();
         const text = readSecret(ctx.io, path, &secret_buf) catch |e|
             return cli.fail(ctx, "can't read the passphrase from {s}: {s}", .{ path, @errorName(e) });
         in.secret = switch (install.passphrase(text)) {

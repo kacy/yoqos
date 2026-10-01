@@ -209,11 +209,16 @@ back to, still starts then. signing covers:
   root being built has sbctl yet.
 - each image the menu boots that's on the esp already without a
   signature from sbctl's db key, like the ones from before the key, or
-  ones signed with keys sbctl made before: a copy goes into
-  `/tmp/yoq-sign` in the newest root, gets signed, and replaces it. `os`
-  tells whose signature an image has by the issuer and serial number of
-  `/var/lib/sbctl/keys/db/db.pem`, which every signature names.
-- refind's btrfs driver, which `os` installs beside refind.conf.
+  ones signed with keys sbctl made before: it's built again from its
+  root's files, signed, and replaces the one there. `os` never signs a
+  file as it finds it on the esp, since anything that can write to the
+  esp could have put it there. `os` tells whose signature an image has
+  by the issuer and serial number of `/var/lib/sbctl/keys/db/db.pem`,
+  which every signature names.
+- refind's btrfs driver, which `os` installs beside refind.conf. an
+  unsigned one there is replaced by a signed copy of
+  `/usr/share/refind/drivers_x64/btrfs_x64.efi`, signed in
+  `/tmp/yoq-sign` in the newest root.
 
 a signature only adds a few KiB. signing an image that's on the esp
 already takes more, since its signed copy goes in beside it before it
@@ -228,8 +233,8 @@ directory libalpm reads after the root's own.
 
 when sbctl can't sign, say its keys are gone, `os apply` and `os update`
 stop, but a rollback, a fallback, or `os gc` goes on: the menu is written,
-new images go on the esp unsigned, images there stay as they are, and a
-warning names them.
+new images go on the esp unsigned, and so do images built again, while
+ones that can't be built again stay as they are. a warning names them.
 
 turning `secure_boot` on or off changes the file, so it waits for a
 reboot, with "secure boot" as the reason, and the next boot tries it once.

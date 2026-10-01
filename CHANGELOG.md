@@ -164,6 +164,36 @@
   and the directory after. a power cut right after a first `set` could
   leave an empty file under the secret's name, which then failed to
   decrypt at every apply.
+- the directories in a root's /tmp where os builds and signs images are
+  made fresh and root's alone, and the top level is mounted at
+  /run/yoq/private/top, in a directory only root can go into. another user
+  could reach that /tmp through the mount at /run/yoq/top, make the
+  directory first, and swap an image before sbctl signed it.
+- with secure boot, an image on the esp without sbctl's signature is built
+  again from its root's files and signed, and an unsigned refind driver is
+  replaced by a signed copy of refind's own. before, `os` signed whatever
+  file sat there, so anything that could write to the esp could get its
+  own efi binary signed with the machine's key.
+- `os secret set`, anything that decrypts a secret, and `os install
+  --passphrase-file` mark the process as not dumpable before they hold
+  the value, so it stays out of core dumps and out of /proc/<pid>/mem.
+- a build or install that stops the processes in its root signals each
+  one through a pidfd, after checking it's still in there, so a pid freed
+  since the scan and taken by another process isn't killed instead.
+- commit subjects from the config's history lose their control characters,
+  like news titles, before `os history`, `os rollback`, or anything else
+  prints them. a repository `os install` cloned could otherwise move the
+  cursor or rewrite the terminal.
+- `[files]` writes and removals walk down to the file one directory at a
+  time and write in the directory they opened. they follow root's
+  symlinks, inside the root being written, but stop with the path and the
+  reason at a directory another user owns or can write to (unless it's
+  sticky) and at a symlink another user owns. before, a user who owned a
+  directory on the way, like their home, could point the write, a secret's
+  value included, at any file on the machine.
+- a checked `[files]` write no longer leaves a directory on the way open.
+  in an install, one in the target kept it busy, so its luks volume
+  couldn't close until os exited.
 
 ## 0.1.3
 

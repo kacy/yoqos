@@ -331,9 +331,35 @@ fn stopProcessesIn(a: Allocator, io: std.Io, dir: []const u8) void {
     for ([_]std.posix.SIG{ .TERM, .KILL }) |sig| {
         const pids = processesIn(a, io, "/proc", dir) catch return;
         if (pids.len == 0) return;
-        for (pids) |pid| std.posix.kill(pid, sig) catch {};
+        for (pids) |pid| signal(a, io, "/proc", pid, dir, sig);
         io.sleep(.fromMilliseconds(500), .awake) catch {};
     }
+}
+
+/// sends `sig` to `pid` through a pidfd, once the process the pidfd holds
+/// is checked to use something inside `dir` still. a pid that was freed
+/// since the scan, and taken by another process, is never signalled:
+/// while the pidfd is open, /proc/<pid> is its process's, and once that
+/// exits, the signal goes nowhere.
+fn signal(a: Allocator, io: std.Io, proc_path: []const u8, pid: std.posix.pid_t, dir: []const u8, sig: std.posix.SIG) void {
+    const linux = std.os.linux;
+    const opened = linux.pidfd_open(pid, 0);
+    if (linux.errno(opened) != .SUCCESS) return;
+    const fd: linux.fd_t = @intCast(opened);
+    defer _ = linux.close(fd);
+    var proc = std.Io.Dir.cwd().openDir(io, proc_path, .{}) catch return;
+    defer proc.close(io);
+    var ns_buf: [64]u8 = undefined;
+    const ns_len = proc.readLink(io, "self/ns/mnt", &ns_buf) catch return;
+    const name = std.fmt.allocPrint(a, "{d}", .{pid}) catch return;
+    if (!(insideNow(a, io, proc_path, proc, name, ns_buf[0..ns_len], dir) catch false)) return;
+    _ = linux.pidfd_send_signal(fd, sig, null, 0);
+}
+
+/// whether process `pid` (its /proc name) is in the mount namespace `ns`
+/// and uses something inside `dir`.
+fn insideNow(a: Allocator, io: std.Io, proc_path: []const u8, proc: std.Io.Dir, pid: []const u8, ns: []const u8, dir: []const u8) !bool {
+    return try inNamespace(a, io, proc, pid, ns) and try usesInside(a, io, proc_path, proc, pid, dir);
 }
 
 /// the processes in `proc_path` (/proc, or a test's stand-in) that use
@@ -355,8 +381,7 @@ fn processesIn(a: Allocator, io: std.Io, proc_path: []const u8, dir: []const u8)
     while (it.next(io) catch null) |e| {
         const pid = std.fmt.parseInt(std.posix.pid_t, e.name, 10) catch continue;
         if (std.mem.indexOfScalar(std.posix.pid_t, ours, pid) != null) continue;
-        if (!try inNamespace(a, io, proc, e.name, ns_buf[0..ns_len])) continue;
-        if (try usesInside(a, io, proc_path, proc, e.name, dir)) try out.append(a, pid);
+        if (try insideNow(a, io, proc_path, proc, e.name, ns_buf[0..ns_len], dir)) try out.append(a, pid);
     }
     return out.items;
 }
@@ -570,6 +595,49 @@ test "only processes in os's own mount namespace are stopped" {
     const got = try processesIn(a, io, try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}), "/mnt/yoq");
     std.mem.sort(std.posix.pid_t, @constCast(got), {}, std.sort.asc(std.posix.pid_t));
     try std.testing.expectEqualSlices(std.posix.pid_t, &.{ 100, 300 }, got);
+}
+
+test "a process is signalled only while it's still inside the build" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "build");
+    const dir = try std.Io.Dir.cwd().realPathFileAlloc(io, try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/build", .{tmp.sub_path}), a);
+    var child = try std.process.spawn(io, .{ .argv = &.{ "sleep", "30" }, .cwd = .{ .path = dir }, .stdin = .ignore });
+    defer child.kill(io);
+    const pid = child.id.?;
+    // a directory it doesn't use: no signal.
+    signal(a, io, "/proc", pid, try std.fmt.allocPrint(a, "{s}-other", .{dir}), .KILL);
+    try std.Io.Dir.cwd().access(io, try std.fmt.allocPrint(a, "/proc/{d}/cwd", .{pid}), .{});
+    // the one it sits in: a term ends it.
+    signal(a, io, "/proc", pid, dir, .TERM);
+    const term = try child.wait(io);
+    try std.testing.expect(term == .signal);
+}
+
+test "processes working inside a build are stopped" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "build/etc/pacman.d/gnupg");
+    const dir = try std.Io.Dir.cwd().realPathFileAlloc(io, try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/build", .{tmp.sub_path}), a);
+    // one sitting in it, and one named by its arguments, like gpg-agent
+    // with its --homedir there, from /.
+    var in_cwd = try std.process.spawn(io, .{ .argv = &.{ "sleep", "30" }, .cwd = .{ .path = dir }, .stdin = .ignore });
+    var by_arg = try std.process.spawn(io, .{ .argv = &.{ "sh", "-c", "while :; do sleep 1; done", try std.fmt.allocPrint(a, "--homedir={s}/etc/pacman.d/gnupg", .{dir}) }, .cwd = .{ .path = "/" }, .stdin = .ignore });
+    // and one outside it, which stays.
+    var outside = try std.process.spawn(io, .{ .argv = &.{ "sleep", "30" }, .cwd = .{ .path = "/" }, .stdin = .ignore });
+    defer outside.kill(io);
+    stopProcessesIn(a, io, dir);
+    try std.testing.expect((try in_cwd.wait(io)) == .signal);
+    try std.testing.expect((try by_arg.wait(io)) == .signal);
+    try std.Io.Dir.cwd().access(io, try std.fmt.allocPrint(a, "/proc/{d}/cwd", .{outside.id.?}), .{});
 }
 
 test "the parent pid from a stat line, past a name with spaces and parentheses" {

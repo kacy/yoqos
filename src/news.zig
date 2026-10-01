@@ -75,8 +75,9 @@ fn unescape(a: Allocator, text: []const u8) ![]const u8 {
 
 /// `text` without control characters, so a title can't move the cursor or
 /// change colors when it's printed: escape sequences go whole, and other
-/// controls become spaces.
-fn plain(a: Allocator, text: []const u8) ![]const u8 {
+/// controls become spaces. commit subjects from a config's history go
+/// through it too, since a cloned repository can hold anything.
+pub fn plain(a: Allocator, text: []const u8) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     var i: usize = 0;
     while (i < text.len) : (i += 1) {
