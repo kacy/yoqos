@@ -68,6 +68,9 @@ pub const Found = struct {
     /// the config has `[boot] secure_boot = true`, which needs keys the
     /// new machine doesn't have yet.
     secure_boot: bool = false,
+    /// secrets the config names that the live system has no value for.
+    /// the build writes each file from this system's own.
+    secrets_unset: []const []const u8 = &.{},
     /// the live system has a tpm 2.0, and the lock has tpm2-tss, which the new
     /// machine's initramfs uses to unlock with it.
     has_tpm: bool = false,
@@ -147,6 +150,12 @@ pub fn plan(a: Allocator, f: Found) !Plan {
         .ok = f.has_btrfs_progs,
         .found = if (f.has_btrfs_progs) "in the lock" else "no btrfs-progs in the lock",
         .fix = "the new machine's root is btrfs: os keeps its generations with btrfs-progs, and the initramfs checks the root with its fsck.btrfs. add btrfs-progs to packages.",
+    });
+    if (f.secrets_unset.len > 0) try checks.append(a, .{
+        .what = "secrets",
+        .ok = false,
+        .found = try std.fmt.allocPrint(a, "not set here: {s}", .{try std.mem.join(a, ", ", f.secrets_unset)}),
+        .fix = "the build writes them from this live system's values. set each with `os secret set <name>` here first; the new machine needs them set again once it runs.",
     });
     if (f.secure_boot) try checks.append(a, .{
         .what = "secure boot",
@@ -454,6 +463,36 @@ test "secure boot waits for the installed machine" {
     const p = try plan(a, f);
     try testing.expect(!p.ready());
     try testing.expectEqualStrings("secure boot", p.checks[p.checks.len - 1].what);
+}
+
+test "secrets the live system doesn't have stop the install before the disk" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const f: Found = .{
+        .disk = "/dev/vdb",
+        .size = 20 << 30,
+        .whole = true,
+        .mounted = false,
+        .has_btrfs_progs = true,
+        .uefi = true,
+        .host = "atlas",
+        .packages = 412,
+        .users = &.{},
+        .services = 1,
+        .aur = 0,
+        .lock_date = "2026-09-29",
+        .today = "2026-09-29",
+        .update = true,
+        .has_kernel = true,
+        .has_grub = true,
+        .secrets_unset = &.{ "vpn", "wifi/home" },
+    };
+    const p = try plan(a, f);
+    try testing.expect(!p.ready());
+    const last = p.checks[p.checks.len - 1];
+    try testing.expectEqualStrings("secrets", last.what);
+    try testing.expectEqualStrings("not set here: vpn, wifi/home", last.found);
 }
 
 fn notes(lines: []const []const u8) usize {

@@ -106,7 +106,14 @@ pub fn capture(a: Allocator, io: std.Io, argv: []const []const u8, out: []u8) er
     var child = std.process.spawn(io, .{ .argv = argv, .stdin = .ignore, .stdout = .pipe, .stderr = .pipe }) catch |e| return .{ .failed = try spawnFailed(a, argv, e) };
     var n: usize = 0;
     while (n < out.len) {
-        const got = child.stdout.?.readStreaming(io, &.{out[n..]}) catch break;
+        // a read that fails isn't the end: what came so far is cut short.
+        const got = child.stdout.?.readStreaming(io, &.{out[n..]}) catch |e| switch (e) {
+            error.EndOfStream => break,
+            else => {
+                child.kill(io);
+                return .{ .failed = try std.fmt.allocPrint(a, "can't read what {s} printed", .{argv[0]}) };
+            },
+        };
         if (got == 0) break;
         n += got;
     }

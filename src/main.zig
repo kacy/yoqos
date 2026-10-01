@@ -18,7 +18,8 @@ pub fn main(init: std.process.Init) !void {
     var in_buf: [1024]u8 = undefined;
     const stdin = std.Io.File.stdin();
     var in = stdin.reader(init.io, &in_buf);
-    const tty = (stdout.isTty(init.io) catch false) and (stdin.isTty(init.io) catch false);
+    const in_tty = stdin.isTty(init.io) catch false;
+    const tty = (stdout.isTty(init.io) catch false) and in_tty;
     const err_tty = std.Io.File.stderr().isTty(init.io) catch false;
 
     var disk_files: disk.Files = .{ .io = init.io };
@@ -38,6 +39,7 @@ pub fn main(init: std.process.Init) !void {
         .files = disk_files.files(),
         .in = &in.interface,
         .interactive = tty,
+        .in_tty = in_tty,
         .in_own_transaction = env.get(alpm.own_env) != null,
         .aur_url = env.get("YOQ_AUR") orelse aur.default_url,
         .editor = env.get("VISUAL") orelse env.get("EDITOR") orelse "vi",
@@ -55,13 +57,40 @@ pub fn main(init: std.process.Init) !void {
     std.process.exit(code);
 }
 
+/// the terminal as it was before echo went off, while it's off.
+var echo_saved: ?std.os.linux.termios = null;
+/// the signals that end os while it waits on a typed value. each puts
+/// the terminal back first, so ctrl-c doesn't leave it without echo.
+const echo_signals = [_]std.posix.SIG{ .INT, .TERM, .HUP, .QUIT };
+
 /// turns the terminal's echo on stdin off or on again.
 fn setEcho(on: bool) void {
     const linux = std.os.linux;
+    if (on) {
+        const saved = echo_saved orelse return;
+        _ = linux.tcsetattr(0, .NOW, &saved);
+        echo_saved = null;
+        onEchoSignals(linux.SIG.DFL);
+        return;
+    }
     var t: linux.termios = undefined;
     if (linux.errno(linux.tcgetattr(0, &t)) != .SUCCESS) return;
-    t.lflag.ECHO = on;
+    echo_saved = t;
+    onEchoSignals(restoreAndDie);
+    t.lflag.ECHO = false;
     _ = linux.tcsetattr(0, .NOW, &t);
+}
+
+fn onEchoSignals(handler: ?std.posix.Sigaction.handler_fn) void {
+    const act: std.posix.Sigaction = .{ .handler = .{ .handler = handler }, .mask = std.posix.sigemptyset(), .flags = 0 };
+    for (echo_signals) |sig| std.posix.sigaction(sig, &act, null);
+}
+
+/// puts the terminal back, then lets the signal end os as it would have.
+fn restoreAndDie(sig: std.posix.SIG) callconv(.c) void {
+    if (echo_saved) |saved| _ = std.os.linux.tcsetattr(0, .NOW, &saved);
+    onEchoSignals(std.os.linux.SIG.DFL);
+    std.posix.raise(sig) catch {};
 }
 
 /// the config this machine reads unless --config says otherwise:

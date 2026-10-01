@@ -958,9 +958,17 @@ might push somewhere. a `secret` key names the value instead, and the value
 lives on the machine: `os secret set` encrypts it with `systemd-creds`, with
 its default keys (the tpm2 and the host's credential key when there's a
 tpm2, else the host key alone), into `/var/lib/yoq/secrets/<name>.cred`.
-that directory is root's alone, so every `os secret` command needs root.
-`apply` decrypts a value right before it writes the file, and wipes it from
-memory once it's written.
+the tpm2 part isn't bound to any pcrs, so a value stays readable when what
+the machine boots changes, like turning secure boot on. that directory is
+root's alone, so every `os secret` command needs root. `apply` decrypts a
+value right before it writes the file, and wipes it from memory once it's
+written.
+
+`os secret set` on a name that's already set encrypts the value again. values
+set with an earlier build of `os` were bound to pcr 7, the secure boot
+state, so on a machine with a tpm2 they stop decrypting once secure boot is
+turned on or off: `os plan` stops with E0133, and setting each one again
+fixes it.
 
 a name is letters, digits, `-`, `_`, and `.`, with `/` to group them, like
 `wifi/home`; no part of it starts with a dot. a value comes from stdin byte
@@ -976,18 +984,24 @@ rollback keeps today's values, and they don't move with the config: another
 machine can't decrypt them, so a new machine, or one `os install` puts on a
 disk, needs each one set again. until then, `os plan` and `os apply` stop
 with E0133 and the `os secret set` to run, and `os status` lists the secret
-as failing.
+as failing. `os install` writes the files from the live system's values,
+so it checks that each one is set there before it touches the disk.
 
-no value ever shows up in what `os` prints or keeps: not in the plan, facts,
-status, events, the journal, error messages, the lock, or generation
-records. to tell whether a file needs rewriting, the observer hashes the
-file and the value with hmac-sha256, under a random key made on the first
-`os secret set` and kept beside the values in `/var/lib/yoq/secrets/.key`,
-and the plan compares those. anyone can check guesses against a plain
-sha-256 of a short password, but not against an hmac without the key, so a
-plan or facts document is still safe to share. the plan's hash covers the keyed
-hash, so `os apply <file>` won't write a value other than the one the plan
-was made for.
+no value ever shows up in what `os` prints or records: not in the config,
+the lock, the plan, facts, status, events, the journal, error messages, or
+a generation's json record. to tell whether a file needs rewriting, the
+observer hashes the file and the value with hmac-sha256, under a random key
+made on the first `os secret set` and kept beside the values in
+`/var/lib/yoq/secrets/.key`, and the plan compares those. anyone can check
+guesses against a plain sha-256 of a short password, but not against an
+hmac without the key, so a plan or facts document is still safe to share.
+the plan's hash covers the keyed hash, so `os apply <file>` won't write a
+value other than the one the plan was made for.
+
+the file itself is another matter: a generation's root holds it as it was
+written, readable by root only. so a rollback brings that file back until
+the next apply writes the current value, and `os secret rm` doesn't remove
+the copies in older generations. `os gc` does, when it removes them.
 
 reading values needs root, so `os plan` without root can't tell whether a
 file holds the current value, and only shows it when it's missing or its

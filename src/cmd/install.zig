@@ -23,6 +23,8 @@ const building = @import("build.zig");
 const locking = @import("lock.zig");
 const updating = @import("update.zig");
 const health = @import("health.zig");
+const planner = @import("../planner.zig");
+const secrets = @import("../secrets.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
@@ -150,6 +152,20 @@ test "a passphrase file is read into one buffer, and only so much" {
     try std.testing.expectEqual(@intFromPtr(&buf), @intFromPtr(got.ptr));
     const long = try std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}/long", .{tmp.sub_path});
     try std.testing.expectError(error.FileTooBig, readSecret(io, long, &buf));
+}
+
+/// the secrets among `names` that `store` has no value for, checked
+/// before the disk is erased rather than when the build gets to them.
+fn unsetSecrets(a: Allocator, store: ?secrets.Store, names: []const []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    for (names) |name| {
+        const found = if (store) |s| try s.get(a, name) else .unknown;
+        switch (found) {
+            .value => |v| secrets.wipe(v),
+            else => try out.append(a, name),
+        }
+    }
+    return out.items;
 }
 
 fn fail(ctx: *Context, why: []const u8) !u8 {
@@ -289,6 +305,7 @@ const Installer = struct {
             .config_encrypt = if (c.boot.encrypt) |e| e.v else false,
             .has_tpm = install.isTpm2(rootfs.readHead(ctx.io, "/sys/class/tpm/tpm0/tpm_version_major", &tpm_version)),
             .has_tpm2_tss = l.package("tpm2-tss") != null,
+            .secrets_unset = try unsetSecrets(in.a, ctx.secrets, (try planner.wanted(in.a, c)).secrets),
         };
     }
 
@@ -627,4 +644,17 @@ test "a url's credentials stay out" {
 
 test {
     _ = lock;
+}
+
+test "the secrets an install would stop at" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var mem: secrets.Memory = .init(std.testing.allocator);
+    defer mem.deinit();
+    _ = try mem.store().set(a, "wifi/home", "hunter2");
+    const unset = try unsetSecrets(a, mem.store(), &.{ "vpn", "wifi/home" });
+    try std.testing.expectEqual(1, unset.len);
+    try std.testing.expectEqualStrings("vpn", unset[0]);
+    try std.testing.expectEqual(2, (try unsetSecrets(a, null, &.{ "vpn", "wifi/home" })).len);
 }

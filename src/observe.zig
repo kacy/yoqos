@@ -53,7 +53,7 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
     const history = try accounts.parseHistory(a, try r.file(accounts.history_path) orelse "");
     f.id_changes = try accounts.changes(a, history, try accounts.systemIds(a, passwd orelse "", group));
     f.pacman_changes = try drift.since(a, io, opts.root);
-    const key = if (opts.secrets) |s| try s.key(a) else null;
+    const key = if (opts.wanted.secrets.len == 0) null else if (opts.secrets) |s| try s.key(a) else null;
     f.files = try files(a, io, opts.root, opts.wanted, key);
     f.secrets = try secretFacts(a, opts.secrets, opts.wanted.secrets, key);
     f.pacman = try pacmanSetup(a, io, r, opts.wanted.keys);
@@ -536,15 +536,18 @@ fn files(a: Allocator, io: std.Io, root: []const u8, wanted: facts.Wanted, key: 
 }
 
 /// the keyed hash of the file at `path`, or "" without the key or when it
-/// can't be read. what it read is wiped: it's a secret.
+/// can't be read. what it read is wiped: it's a secret. no value is
+/// longer than `secrets.max_len`, so a byte past that already differs,
+/// and the rest of a bigger file isn't read.
 fn keyedFile(a: Allocator, io: std.Io, path: []const u8, key: ?secrets.Key) ![]const u8 {
     const k = key orelse return "";
-    const content = std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(64 << 20)) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return "",
-    };
-    defer secrets.wipe(content);
-    return a.dupe(u8, &secrets.keyedHex(&k, content));
+    const f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return "";
+    defer f.close(io);
+    const buf = try a.alloc(u8, secrets.max_len + 1);
+    defer secrets.wipe(buf);
+    var r = f.readerStreaming(io, &.{});
+    const n = r.interface.readSliceShort(buf) catch return "";
+    return a.dupe(u8, &secrets.keyedHex(&k, buf[0..n]));
 }
 
 /// each secret the config names: whether this machine has it, and its
@@ -822,6 +825,24 @@ test "mkinitcpio's modules" {
     , "MODULES", &out);
     try testing.expectEqual(4, out.items.len);
     try testing.expectEqualStrings("nvidia_modeset", out.items[1]);
+}
+
+test "a secret's file bigger than any value differs from it" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+    // sparse, so it takes no room.
+    const big = try tmp.dir.createFile(io, "big", .{});
+    try big.setLength(io, (64 << 20) + 1);
+    big.close(io);
+    const key: secrets.Key = @splat(3);
+    const path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/big", .{tmp.sub_path});
+    const got = try keyedFile(a, io, path, key);
+    const zeros: [secrets.max_len + 1]u8 = @splat(0);
+    try testing.expectEqualStrings(&secrets.keyedHex(&key, &zeros), got);
 }
 
 test "mkinitcpio drop-ins read in name order, past os's own" {

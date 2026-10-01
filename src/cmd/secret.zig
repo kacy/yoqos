@@ -28,7 +28,9 @@ pub fn secretCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (!takes_name) return list(ctx, &w, store);
     const name = words[1];
     if (secrets.nameProblem(name)) |hint| return cli.fail(ctx, "\"{s}\" isn't a secret's name: {s}.", .{ name, hint });
-    if (try cli.refused(ctx, cli.lockForEdit(ctx))) return 1;
+    // the store is the machine's whatever --root says, so the machine's
+    // lock is taken whatever it says too.
+    if (std.os.linux.geteuid() == 0 and try cli.refused(ctx, cli.lockMachine())) return 1;
     return if (eql(verb, "set")) set(ctx, &w, store, name) else remove(ctx, &w, store, name);
 }
 
@@ -40,26 +42,32 @@ fn set(ctx: *Context, w: *cli.Work, store: secrets.Store, name: []const u8) !u8 
     if (value.len == 0) return cli.fail(ctx, "the value is empty, so nothing was kept.", .{});
     if (value.len > secrets.max_len) return cli.fail(ctx, "the value is longer than {d} bytes, so nothing was kept.", .{secrets.max_len});
     if (try store.set(a, name, value)) |why| return cli.fail(ctx, "can't keep the secret {s}: {s}", .{ name, why });
-    const entry: secrets.Entry = .{ .name = name, .set = true, .files = try filesUsing(w, name) };
-    if (ctx.json) {
-        try output.writeDoc(ctx.out, secrets.entry_schema, entry);
-    } else if (entry.files.len == 0) {
+    const files = try filesUsing(w, name);
+    if (ctx.json) return writeEntry(ctx, .{ .name = name, .set = true, .files = files });
+    if (files.len == 0) {
         try ctx.out.print("kept {s}. the config doesn't use it yet; `[files.\"<path>\"] secret = \"{s}\"` writes it to a file.\n", .{ name, name });
-    } else {
-        try ctx.out.print("kept {s}. `os apply` writes it to {s}.\n", .{ name, try std.mem.join(a, ", ", entry.files) });
-    }
+    } else try ctx.out.print("kept {s}. `os apply` writes it to {s}.\n", .{ name, try joined(a, files) });
     return 0;
 }
 
-/// the value, into `buf`: typed twice at a terminal, without echo, or
-/// else everything on stdin, byte for byte. null after saying why there's
-/// none.
+fn writeEntry(ctx: *Context, entry: secrets.Entry) !u8 {
+    try output.writeDoc(ctx.out, secrets.entry_schema, entry);
+    return 0;
+}
+
+fn joined(a: Allocator, paths: []const []const u8) ![]const u8 {
+    return std.mem.join(a, ", ", paths);
+}
+
+/// the value, into `buf`: typed twice when stdin is a terminal, without
+/// echo, even with --json or stdout elsewhere, or else everything on
+/// stdin, byte for byte. null after saying why there's none.
 fn readValue(ctx: *Context, name: []const u8, buf: []u8) !?[]u8 {
     const in = ctx.in orelse {
         try ctx.err.writeAll("os: there's no input to read the value from.\n");
         return null;
     };
-    if (!ctx.interactive) {
+    if (!ctx.in_tty) {
         const n = in.readSliceShort(buf) catch {
             try ctx.err.writeAll("os: can't read the value from stdin.\n");
             return null;
@@ -67,9 +75,10 @@ fn readValue(ctx: *Context, name: []const u8, buf: []u8) !?[]u8 {
         return buf[0..n];
     }
     const half = buf.len / 2;
-    try ctx.out.print("value for {s}: ", .{name});
+    // the questions go to stderr, so --json output stays one document.
+    try ctx.err.print("value for {s}: ", .{name});
     const first = try prompt(ctx, buf[0..half]) orelse return null;
-    try ctx.out.writeAll("again: ");
+    try ctx.err.writeAll("again: ");
     const again = try prompt(ctx, buf[half..]) orelse return null;
     if (!std.mem.eql(u8, first, again)) {
         try ctx.err.writeAll("os: the two didn't match, so nothing was kept.\n");
@@ -82,15 +91,22 @@ fn readValue(ctx: *Context, name: []const u8, buf: []u8) !?[]u8 {
 /// reads the answer to the question just printed, with echo off, and
 /// copies it into `into`. null at the end of input.
 fn prompt(ctx: *Context, into: []u8) !?[]u8 {
-    try ctx.out.flush();
+    try ctx.err.flush();
     if (ctx.set_echo) |echo| echo(false);
-    const line = ctx.in.?.takeDelimiter('\n') catch null;
+    const line = ctx.in.?.takeDelimiter('\n');
     if (ctx.set_echo) |echo| {
         echo(true);
         // the newline typed wasn't echoed.
-        try ctx.out.writeByte('\n');
+        try ctx.err.writeByte('\n');
     }
-    const got = std.mem.trimEnd(u8, line orelse {
+    const typed = line catch |e| {
+        try ctx.err.writeAll(switch (e) {
+            error.StreamTooLong => "os: the value is longer than a typed line can be, so nothing was kept. pipe it in on stdin instead.\n",
+            error.ReadFailed => "os: can't read the value, so nothing was kept.\n",
+        });
+        return null;
+    };
+    const got = std.mem.trimEnd(u8, typed orelse {
         try ctx.err.writeAll("os: no value was typed, so nothing was kept.\n");
         return null;
     }, "\r");
@@ -105,14 +121,11 @@ fn prompt(ctx: *Context, into: []u8) !?[]u8 {
 fn remove(ctx: *Context, w: *cli.Work, store: secrets.Store, name: []const u8) !u8 {
     const a = w.allocator();
     if (try store.remove(a, name)) |why| return cli.fail(ctx, "{s}.", .{why});
-    const entry: secrets.Entry = .{ .name = name, .set = false, .files = try filesUsing(w, name) };
-    if (ctx.json) {
-        try output.writeDoc(ctx.out, secrets.entry_schema, entry);
-    } else if (entry.files.len == 0) {
+    const files = try filesUsing(w, name);
+    if (ctx.json) return writeEntry(ctx, .{ .name = name, .set = false, .files = files });
+    if (files.len == 0) {
         try ctx.out.print("removed {s}.\n", .{name});
-    } else {
-        try ctx.out.print("removed {s}. the config still writes it to {s}, so plans fail until it's set again or those entries go. the files stay as they are.\n", .{ name, try std.mem.join(a, ", ", entry.files) });
-    }
+    } else try ctx.out.print("removed {s}. the config still writes it to {s}, so plans fail until it's set again or those entries go. the files stay as they are.\n", .{ name, try joined(a, files) });
     return 0;
 }
 
@@ -120,13 +133,10 @@ fn list(ctx: *Context, w: *cli.Work, store: secrets.Store) !u8 {
     const a = w.allocator();
     var entries: std.ArrayList(secrets.Entry) = .empty;
     for (try store.names(a)) |n| try entries.append(a, .{ .name = n, .set = true });
-    const uses = try configUses(w);
-    for (uses) |u| {
-        const i = lists.indexOf(entries.items, "name", u.name) orelse blk: {
-            try entries.append(a, .{ .name = u.name, .set = false });
-            break :blk entries.items.len - 1;
-        };
-        const e = &entries.items[i];
+    for (try configUses(w)) |u| {
+        // a name the config uses but this machine doesn't keep is missing.
+        if (lists.indexOf(entries.items, "name", u.name) == null) try entries.append(a, .{ .name = u.name, .set = false });
+        const e = &entries.items[lists.indexOf(entries.items, "name", u.name).?];
         e.files = try std.mem.concat(a, []const u8, &.{ e.files, &.{u.path} });
     }
     lists.sortByField(secrets.Entry, "name", entries.items);
@@ -138,10 +148,10 @@ fn list(ctx: *Context, w: *cli.Work, store: secrets.Store) !u8 {
     for (entries.items) |e| {
         try ctx.out.print("{s: <24} ", .{e.name});
         if (!e.set) {
-            try ctx.out.print("missing: `os secret set {s}`, for {s}\n", .{ e.name, try std.mem.join(a, ", ", e.files) });
+            try ctx.out.print("missing: `os secret set {s}`, for {s}\n", .{ e.name, try joined(a, e.files) });
         } else if (e.files.len == 0) {
             try ctx.out.writeAll("not in the config\n");
-        } else try ctx.out.print("{s}\n", .{try std.mem.join(a, ", ", e.files)});
+        } else try ctx.out.print("{s}\n", .{try joined(a, e.files)});
     }
     return 0;
 }
@@ -220,11 +230,39 @@ test "set at a terminal asks twice" {
     try testing.expectEqualStrings("hunter2", mem.values.get("wifi/home").?);
     try testing.expect(std.mem.indexOf(u8, t.out.buffered(), "hunter2") == null);
 
+    // with --json, the questions stay off stdout, and the value is still
+    // typed without echo.
+    t.input = "hunter4\nhunter4\n";
+    try run(&t, &mem, &.{ "--json", "secret", "set", "wifi/home" });
+    try testing.expectEqual(0, t.code);
+    try testing.expectEqualStrings("hunter4", mem.values.get("wifi/home").?);
+    const doc = try std.json.parseFromSlice(std.json.Value, testing.allocator, t.out.buffered(), .{});
+    doc.deinit();
+    try testing.expectEqualStrings("value for wifi/home: again: ", t.err.buffered());
+
     t.input = "hunter2\nhunter3\n";
     try run(&t, &mem, &.{ "secret", "set", "wifi/home" });
     try testing.expectEqual(1, t.code);
-    try testing.expectEqualStrings("os: the two didn't match, so nothing was kept.\n", t.err.buffered());
-    try testing.expectEqualStrings("hunter2", mem.values.get("wifi/home").?);
+    try testing.expectEqualStrings("value for wifi/home: again: os: the two didn't match, so nothing was kept.\n", t.err.buffered());
+    try testing.expectEqualStrings("hunter4", mem.values.get("wifi/home").?);
+}
+
+test "a typed line longer than stdin's buffer says so" {
+    var mem: secrets.Memory = .init(testing.allocator);
+    defer mem.deinit();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "typed", .data = "a" ** 40 ++ "\n" });
+    const file = try tmp.dir.openFile(testing.io, "typed", .{});
+    defer file.close(testing.io);
+    var small: [16]u8 = undefined;
+    var in = file.reader(testing.io, &small);
+    var t: cli.TestRun = .{ .in = &in.interface };
+    defer t.deinit();
+    try run(&t, &mem, &.{ "secret", "set", "wifi/home" });
+    try testing.expectEqual(1, t.code);
+    try testing.expect(std.mem.endsWith(u8, t.err.buffered(), "os: the value is longer than a typed line can be, so nothing was kept. pipe it in on stdin instead.\n"));
+    try testing.expectEqual(null, mem.values.get("wifi/home"));
 }
 
 test "plan, status, why, and list never show a secret's value" {

@@ -96,6 +96,8 @@ pub const Store = struct {
         remove: *const fn (ptr: *anyopaque, a: Allocator, name: []const u8) error{OutOfMemory}!?[]const u8,
         names: *const fn (ptr: *anyopaque, a: Allocator) error{OutOfMemory}![]const []const u8,
         key: *const fn (ptr: *anyopaque, a: Allocator) error{OutOfMemory}!?Key,
+        /// makes a new key, over any there is. false when it can't.
+        make_key: *const fn (ptr: *anyopaque, a: Allocator) error{OutOfMemory}!bool,
     };
 
     /// why this process can't read or change secrets, or null if it can.
@@ -125,8 +127,13 @@ pub const Store = struct {
     }
 
     /// the machine's key, or null when there's none yet or it can't be
-    /// read.
+    /// read. values kept without one, like a directory restored without
+    /// its dotfiles, get a new one: with no key, a file that doesn't hold
+    /// its value would look like it does.
     pub fn key(s: Store, a: Allocator) !?Key {
+        if (try s.vtable.key(s.ptr, a)) |k| return k;
+        if (s.problem() != null or (try s.names(a)).len == 0) return null;
+        if (!try s.vtable.make_key(s.ptr, a)) return null;
         return s.vtable.key(s.ptr, a);
     }
 };
@@ -137,13 +144,15 @@ fn noSecret(a: Allocator, name: []const u8) ![]const u8 {
 
 /// the real store: one systemd-creds file per secret under `dir`, made
 /// with systemd-creds' default keys (the host's credential key, and the
-/// tpm2 too when the machine has one).
+/// tpm2 too when the machine has one), but bound to no pcrs. its default,
+/// pcr 7, is the secure boot state, and turning secure boot on would
+/// leave every value unreadable.
 pub const System = struct {
     io: std.Io,
     dir: []const u8 = default_dir,
 
     pub fn store(s: *System) Store {
-        return .{ .ptr = s, .vtable = &.{ .problem = problem, .get = get, .set = set, .remove = remove, .names = names, .key = key } };
+        return .{ .ptr = s, .vtable = &.{ .problem = problem, .get = get, .set = set, .remove = remove, .names = names, .key = key, .make_key = makeKey } };
     }
 
     fn of(ptr: *anyopaque) *System {
@@ -154,6 +163,10 @@ pub const System = struct {
         return std.fmt.allocPrintSentinel(a, "{s}/{s}" ++ ext, .{ s.dir, name }, 0);
     }
 
+    fn keyPath(s: *const System, a: Allocator) ![]const u8 {
+        return std.fs.path.join(a, &.{ s.dir, key_file });
+    }
+
     /// the name sealed into the credential, which decrypting checks, so a
     /// file renamed to another secret's name won't decrypt. systemd's
     /// names can't hold a /, and @ can't be in os's names.
@@ -161,6 +174,18 @@ pub const System = struct {
         const flag = try std.fmt.allocPrint(a, "--name={s}", .{name});
         std.mem.replaceScalar(u8, flag, '/', '@');
         return flag;
+    }
+
+    /// encrypts stdin into `out`. the empty pcr list ties the credential
+    /// to the machine's tpm2 and host key, not to what it booted.
+    fn encryptArgv(a: Allocator, name: []const u8, out: []const u8) ![]const []const u8 {
+        return a.dupe([]const u8, &.{ "systemd-creds", "encrypt", try nameFlag(a, name), "--tpm2-pcrs=", "-", out });
+    }
+
+    /// decrypts `path` to stdout. the credential carries its own policy,
+    /// so this needs no key or pcr flags.
+    fn decryptArgv(a: Allocator, name: []const u8, path: []const u8) ![]const []const u8 {
+        return a.dupe([]const u8, &.{ "systemd-creds", "decrypt", "--newline=no", try nameFlag(a, name), path, "-" });
     }
 
     fn problem(_: *anyopaque) ?[]const u8 {
@@ -173,13 +198,13 @@ pub const System = struct {
         const path = try s.credPath(a, name);
         if (!rootfs.pathExists(s.io, path)) return .missing;
         const buf = try a.alloc(u8, max_len + 1);
-        return switch (try exec.capture(a, s.io, &.{ "systemd-creds", "decrypt", "--newline=no", try nameFlag(a, name), path, "-" }, buf)) {
-            .ok => |v| .{ .value = v },
-            .failed => |why| blk: {
+        switch (try exec.capture(a, s.io, try decryptArgv(a, name, path), buf)) {
+            .ok => |v| return .{ .value = v },
+            .failed => |why| {
                 wipe(buf);
-                break :blk .{ .unreadable = why };
+                return .{ .unreadable = why };
             },
-        };
+        }
     }
 
     fn set(ptr: *anyopaque, a: Allocator, name: []const u8, value: []const u8) error{OutOfMemory}!?[]const u8 {
@@ -187,18 +212,15 @@ pub const System = struct {
         if (problem(ptr)) |why| return why;
         const path = try s.credPath(a, name);
         if (!try s.makeDirs(a, std.fs.path.dirnamePosix(path).?)) return try std.fmt.allocPrint(a, "can't make {s}", .{s.dir});
-        if (try key(ptr, a) == null and !try s.makeKey(a)) return try std.fmt.allocPrint(a, "can't write {s}/" ++ key_file, .{s.dir});
+        if (try key(ptr, a) == null and !try makeKey(ptr, a)) return try std.fmt.allocPrint(a, "can't write {s}", .{try s.keyPath(a)});
         const tmp = try std.fmt.allocPrintSentinel(a, "{s}.os-tmp", .{path}, 0);
+        // one left by a crash goes first, and one left by a failure here
+        // goes after. once renamed, there's nothing left to remove.
         _ = linux.unlink(tmp);
-        if (try exec.feed(a, s.io, &.{ "systemd-creds", "encrypt", try nameFlag(a, name), "-", tmp }, value)) |why| {
-            _ = linux.unlink(tmp);
-            return why;
-        }
+        defer _ = linux.unlink(tmp);
+        if (try exec.feed(a, s.io, try encryptArgv(a, name, tmp), value)) |why| return why;
         _ = linux.chmod(tmp, 0o600);
-        if (linux.errno(linux.rename(tmp, path)) != .SUCCESS) {
-            _ = linux.unlink(tmp);
-            return try std.fmt.allocPrint(a, "can't write {s}", .{path});
-        }
+        if (linux.errno(linux.rename(tmp, path)) != .SUCCESS) return try std.fmt.allocPrint(a, "can't write {s}", .{path});
         return null;
     }
 
@@ -219,18 +241,19 @@ pub const System = struct {
         }
     }
 
-    fn makeKey(s: *const System, a: Allocator) !bool {
+    fn makeKey(ptr: *anyopaque, a: Allocator) error{OutOfMemory}!bool {
+        const s = of(ptr);
         var k: Key = undefined;
         defer wipe(&k);
         s.io.randomSecure(&k) catch return false;
-        rootfs.writeAtomic(s.io, try std.fs.path.join(a, &.{ s.dir, key_file }), &k, 0o600) catch return false;
+        rootfs.writeAtomic(s.io, try s.keyPath(a), &k, 0o600) catch return false;
         return true;
     }
 
     fn key(ptr: *anyopaque, a: Allocator) error{OutOfMemory}!?Key {
         const s = of(ptr);
         var k: Key = undefined;
-        const f = std.Io.Dir.cwd().openFile(s.io, try std.fs.path.join(a, &.{ s.dir, key_file }), .{}) catch return null;
+        const f = std.Io.Dir.cwd().openFile(s.io, try s.keyPath(a), .{}) catch return null;
         defer f.close(s.io);
         const n = f.readPositionalAll(s.io, &k, 0) catch return null;
         return if (n == k.len) k else null;
@@ -289,7 +312,7 @@ pub const Memory = struct {
     }
 
     pub fn store(m: *Memory) Store {
-        return .{ .ptr = m, .vtable = &.{ .problem = problem, .get = get, .set = set, .remove = remove, .names = names, .key = key } };
+        return .{ .ptr = m, .vtable = &.{ .problem = problem, .get = get, .set = set, .remove = remove, .names = names, .key = key, .make_key = makeKey } };
     }
 
     fn of(ptr: *anyopaque) *Memory {
@@ -331,6 +354,11 @@ pub const Memory = struct {
     fn key(ptr: *anyopaque, _: Allocator) error{OutOfMemory}!?Key {
         return of(ptr).machine_key;
     }
+
+    fn makeKey(ptr: *anyopaque, _: Allocator) error{OutOfMemory}!bool {
+        of(ptr).machine_key = @splat(0xa5);
+        return true;
+    }
 };
 
 const testing = std.testing;
@@ -367,6 +395,21 @@ test "the memory store" {
     try testing.expectEqualStrings("wifi/home", (try s.names(a))[0]);
     try testing.expectEqual(null, try s.remove(a, "wifi/home"));
     try testing.expect(try s.remove(a, "wifi/home") != null);
+}
+
+test "systemd-creds runs bound to no pcrs, with its default keys" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const enc = try System.encryptArgv(a, "wifi/home", "/s/wifi/home.cred.os-tmp");
+    const want_enc = [_][]const u8{ "systemd-creds", "encrypt", "--name=wifi@home", "--tpm2-pcrs=", "-", "/s/wifi/home.cred.os-tmp" };
+    try testing.expectEqual(want_enc.len, enc.len);
+    for (want_enc, enc) |w, g| try testing.expectEqualStrings(w, g);
+    for (enc) |arg| try testing.expect(!std.mem.startsWith(u8, arg, "--with-key"));
+    const dec = try System.decryptArgv(a, "wifi/home", "/s/wifi/home.cred");
+    const want_dec = [_][]const u8{ "systemd-creds", "decrypt", "--newline=no", "--name=wifi@home", "/s/wifi/home.cred", "-" };
+    try testing.expectEqual(want_dec.len, dec.len);
+    for (want_dec, dec) |w, g| try testing.expectEqualStrings(w, g);
 }
 
 test "the systemd-creds store, as root" {

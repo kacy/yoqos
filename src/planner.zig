@@ -123,6 +123,19 @@ pub const Plan = struct {
         return out.items;
     }
 
+    /// the hash `content` gives the file at `path`, or null when the plan
+    /// doesn't write it or couldn't take one.
+    pub fn plannedHash(p: *const Plan, path: []const u8) ?[]const u8 {
+        var rows = std.mem.splitScalar(u8, p.content, '\n');
+        while (rows.next()) |row| {
+            const space = std.mem.lastIndexOfScalar(u8, row, ' ') orelse continue;
+            if (!std.mem.eql(u8, row[0..space], path)) continue;
+            const got = row[space + 1 ..];
+            return if (std.mem.eql(u8, got, unknown_hash)) null else got;
+        }
+        return null;
+    }
+
     /// sha-256 of the changes as compact json. approving a plan means
     /// approving this hash.
     pub fn hash(p: *const Plan) ![64]u8 {
@@ -409,8 +422,7 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
     var files: std.ArrayList(Change) = .empty;
     for (want) |d| {
         const mode = try normalMode(a, d.mode);
-        // a secret others can read is allowed, but the plan says so.
-        const exposed = if (d.secret != null and (std.fmt.parseInt(u32, mode, 8) catch 0) & 0o044 != 0) ", which lets others read the secret" else "";
+        const exposed = exposure(d, mode);
         var ch: Change = .{
             .op = .change,
             .kind = .file,
@@ -438,7 +450,7 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
     }
     for (files.items) |ch| {
         const d = lists.find(want, "path", ch.subject).?;
-        try content.print(a, "{s} {s}\n", .{ d.path, try contentHash(a, d.*, f) orelse "unknown" });
+        try content.print(a, "{s} {s}\n", .{ d.path, try contentHash(a, d.*, f) orelse unknown_hash });
     }
     for (generated_paths) |p| {
         if (lists.indexOf(want, "path", p) != null) continue;
@@ -455,6 +467,17 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
     lists.sortByField(Change, "subject", files.items);
     try changes.appendSlice(a, files.items);
 }
+
+/// a secret others can read is allowed, but the plan says so after its
+/// mode.
+fn exposure(d: DesiredFile, mode: []const u8) []const u8 {
+    if (d.secret == null) return "";
+    const bits = std.fmt.parseInt(u32, mode, 8) catch 0;
+    return if (bits & 0o044 != 0) ", which lets others read the secret" else "";
+}
+
+/// what a plan's `content` says for a file whose hash couldn't be taken.
+const unknown_hash = "unknown";
 
 /// the hash a file os writes should have: the sha-256 of its content, or
 /// for a secret, the keyed hash of its value the facts carry, which is

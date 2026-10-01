@@ -87,6 +87,19 @@
 - `os install --tpm` checks for a tpm 2.0, not just any tpm, and for
   tpm2-tss on the live system, which systemd-cryptenroll needs. either one
   missing used to stop the install halfway, after the disk was erased.
+- ctrl-c at `os secret set`'s prompt puts the terminal's echo back before
+  `os` quits.
+- `os secret set` asks for the value without echo whenever stdin is a
+  terminal, with `--json` or stdout redirected too, where it used to read
+  it with echo on. its questions go to stderr, and a typed line too long
+  to read says so, not that nothing was typed.
+- `os apply` writes a secret only if it still has the value the plan was
+  made for, so an `os secret set` in between stops it instead.
+- secrets are encrypted bound to no tpm2 pcrs, so turning secure boot on
+  doesn't leave them unreadable. values set before this may need `os
+  secret set` again after secure boot changes.
+- `os install` checks the live system has every secret the config names
+  before it erases the disk, where it used to stop at the build.
 
 ## 0.1.3
 
