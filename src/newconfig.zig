@@ -18,6 +18,10 @@ pub const Answers = struct {
     /// real hardware wants linux-firmware; a virtual machine doesn't.
     firmware: bool = true,
     ssh: bool = false,
+    /// for `os install --encrypt`: an initramfs that unlocks a luks root,
+    /// and with `--tpm`, what unlocks it with the tpm.
+    encrypt: bool = false,
+    tpm: bool = false,
 };
 
 pub fn machineToml(a: Allocator, x: Answers) ![]const u8 {
@@ -37,10 +41,12 @@ pub fn machineToml(a: Allocator, x: Answers) ![]const u8 {
         \\  "efibootmgr",
         \\  "btrfs-progs",
         \\  "sudo",
-        \\]
         \\
     );
+    if (x.tpm) try out.appendSlice(a, "  \"tpm2-tss\",\n");
+    try out.appendSlice(a, "]\n");
     try out.print(a, "\n[system]\nhostname = \"{s}\"\ntimezone = \"{s}\"\n", .{ x.hostname, x.timezone });
+    if (x.encrypt or x.tpm) try out.appendSlice(a, "\n[boot]\nencrypt = true\n");
     if (x.cpu != null or x.gpu != null) {
         try out.appendSlice(a, "\n[hardware]\n");
         if (x.cpu) |c| try out.print(a, "cpu = \"{s}\"\n", .{c});
@@ -91,7 +97,13 @@ test "a new machine's config loads, with what a new machine needs" {
     const vm = try machineToml(a, .{ .hostname = "box", .user = "me", .firmware = false });
     try std.testing.expect(std.mem.indexOf(u8, vm, "linux-firmware") == null);
     try std.testing.expect(std.mem.indexOf(u8, vm, "[hardware]") == null);
-    _ = try test_helpers.configFrom(a, vm);
+    const plain = try test_helpers.configFrom(a, vm);
+    try std.testing.expectEqual(null, plain.boot.encrypt);
+    // an encrypted install with the tpm: the initramfs unlocks the root,
+    // with tpm2-tss for the tpm.
+    const sealed = try test_helpers.configFrom(a, try machineToml(a, .{ .hostname = "box", .user = "me", .encrypt = true, .tpm = true }));
+    try std.testing.expect(sealed.boot.encrypt.?.v);
+    try std.testing.expect(sealed.packages.contains("tpm2-tss"));
     try std.testing.expectEqualStrings("nvidia", gpuChoice(&.{ "intel", "nvidia" }).?);
     try std.testing.expectEqual(null, gpuChoice(&.{"vmware"}));
 }

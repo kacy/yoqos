@@ -15,18 +15,25 @@
 #
 #   vm.sh image              make the base image, once
 #   vm.sh start              boot a fresh overlay and wait for ssh; with
-#                            VM_DISK2=1, a blank second disk too
+#                            VM_DISK2=1, a blank second disk too, and with
+#                            VM_DISK3=1, a third
 #   vm.sh start-iso <iso>    boot a live iso with a blank disk, as a new
 #                            machine would
-#   vm.sh start-installed    power off and boot the second disk alone, with
-#                            blank firmware variables, like a new machine
+#   vm.sh start-installed [disk3]
+#                            power off and boot the second disk alone, or
+#                            the third, with blank firmware variables, like
+#                            a new machine
 #   vm.sh ssh <command>      run a command in the vm as root
 #   vm.sh copy <file> <dest> copy a file into the vm
 #   vm.sh reboot             reboot and wait for ssh
 #   vm.sh stop               power off and throw the overlay away
 #
-# needs qemu, edk2-ovmf, xorriso, and openssh. VM_DIR sets where the images
-# and the running vm's files live.
+# VM_TPM=1 gives the vm a tpm 2.0, from swtpm. a start or start-iso begins
+# with a blank one, and start-installed keeps it, so a key the vm put there
+# is still there for the disk it boots.
+#
+# needs qemu, edk2-ovmf, xorriso, and openssh, and swtpm for VM_TPM. VM_DIR
+# sets where the images and the running vm's files live.
 set -eu
 
 dir=${VM_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/yoq-vm}
@@ -75,11 +82,33 @@ running() {
     [ -f "$dir/qemu.pid" ] && kill -0 "$(cat "$dir/qemu.pid")" 2>/dev/null
 }
 
+# starts swtpm for the next qemu, on the tpm state in $dir/tpm. it stops
+# when qemu lets go of it.
+start_tpm() {
+    stop_tpm
+    mkdir -p "$dir/tpm"
+    rm -f "$dir/tpm.sock"
+    swtpm socket --tpm2 --tpmstate dir="$dir/tpm" --ctrl type=unixio,path="$dir/tpm.sock" \
+        --terminate --daemon --pid file="$dir/swtpm.pid" --log file="$dir/swtpm.log"
+    for _ in $(seq 50); do [ -S "$dir/tpm.sock" ] && return 0; sleep 0.1; done
+    echo "vm: swtpm didn't start; its log is $dir/swtpm.log" >&2
+    exit 1
+}
+
+stop_tpm() {
+    if [ -f "$dir/swtpm.pid" ]; then kill "$(cat "$dir/swtpm.pid")" 2>/dev/null || true; fi
+    rm -f "$dir/swtpm.pid"
+}
+
 # boots <disk> with the firmware variables in <vars>, plus any extra qemu
 # arguments, and waits for ssh.
 boot() {
     disk=$1 vars=$2
     shift 2
+    if [ -n "${VM_TPM:-}" ]; then
+        start_tpm
+        set -- "$@" -chardev socket,id=chrtpm,path="$dir/tpm.sock" -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0
+    fi
     seed
     qemu-system-x86_64 -enable-kvm -cpu host -machine q35 -smp 2 -m 2048 \
         -drive if=pflash,format=raw,readonly=on,file="$ovmf/OVMF_CODE.4m.fd" \
@@ -147,15 +176,21 @@ image)
 start)
     [ -f "$dir/$image.qcow2" ] || { echo "vm: no $image image; run vm.sh image" >&2; exit 1; }
     fresh "$image"
+    rm -rf "$dir/tpm"
+    set --
     if [ -n "${VM_DISK2:-}" ]; then
         qemu-img create -q -f qcow2 "$dir/disk2.qcow2" 20G
-        boot "$dir/overlay.qcow2" "$dir/vars.fd" -drive if=virtio,file="$dir/disk2.qcow2"
-    else
-        boot "$dir/overlay.qcow2" "$dir/vars.fd"
+        set -- "$@" -drive if=virtio,file="$dir/disk2.qcow2"
     fi
+    if [ -n "${VM_DISK3:-}" ]; then
+        qemu-img create -q -f qcow2 "$dir/disk3.qcow2" 20G
+        set -- "$@" -drive if=virtio,file="$dir/disk3.qcow2"
+    fi
+    boot "$dir/overlay.qcow2" "$dir/vars.fd" "$@"
     ;;
 start-iso)
     mkdir -p "$dir"
+    rm -rf "$dir/tpm"
     qemu-img create -q -f qcow2 "$dir/disk2.qcow2" 20G
     cp "$ovmf/OVMF_VARS.4m.fd" "$dir/vars.fd"
     boot "$dir/disk2.qcow2" "$dir/vars.fd" -drive media=cdrom,readonly=on,file="$2"
@@ -164,7 +199,7 @@ start-installed)
     if running; then kill "$(cat "$dir/qemu.pid")"; fi
     for _ in $(seq 60); do running || break; sleep 1; done
     cp "$ovmf/OVMF_VARS.4m.fd" "$dir/vars.fd"
-    boot "$dir/disk2.qcow2" "$dir/vars.fd"
+    boot "$dir/${2:-disk2}.qcow2" "$dir/vars.fd"
     ;;
 ssh)
     shift
@@ -181,10 +216,11 @@ reboot)
     ;;
 stop)
     if [ -f "$dir/qemu.pid" ]; then kill "$(cat "$dir/qemu.pid")" 2>/dev/null || true; fi
-    rm -f "$dir/qemu.pid" "$dir/overlay.qcow2" "$dir/vars.fd" "$dir/disk2.qcow2"
+    stop_tpm
+    rm -rf "$dir/qemu.pid" "$dir/overlay.qcow2" "$dir/vars.fd" "$dir/disk2.qcow2" "$dir/disk3.qcow2" "$dir/tpm"
     ;;
 *)
-    sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac

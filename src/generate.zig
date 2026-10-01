@@ -33,6 +33,10 @@ pub fn fromFacts(a: Allocator, f: *const facts.Facts) !config.Config {
         c.boot.kernel = if (std.mem.eql(u8, k, catalog.default_kernel)) null else .{ .v = k, .src = at };
         break;
     }
+    // here mkinitcpio's hooks unlock the root already, so the key adds no
+    // drop-in. it keeps one in a clean build, which starts from
+    // mkinitcpio's own hooks.
+    if (f.boot.luks_uuid != null) c.boot.encrypt = .{ .v = true, .src = at };
     // hardware is written only when its packages are already installed:
     // init describes the machine, and mustn't plan a driver install.
     if (f.cpu) |cpu| {
@@ -217,6 +221,23 @@ test "a config from facts" {
         \\]
         \\
     , try importedToml(a, imported, "2026-09-25", null));
+}
+
+test "a luks root sets [boot] encrypt" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var pkgs = [_]facts.Package{.{ .name = "linux", .version = "6.16.8-1" }};
+    const f: facts.Facts = .{
+        .packages = &pkgs,
+        .boot = .{ .luks_uuid = "0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b", .luks_name = "root", .initramfs_hooks = &.{ "base", "udev", "keyboard", "encrypt", "filesystems" } },
+    };
+    const c = try fromFacts(a, &f);
+    try testing.expect(c.boot.encrypt.?.v);
+    try testing.expect(std.mem.endsWith(u8, try machineToml(a, &c, "2026-10-01"), "\n[boot]\nencrypt = true\n"));
+    // the hooks unlock it already, so the plan stays empty.
+    try testing.expectEqual(0, (try planner.desiredFiles(a, &c, &f)).len);
+    try testing.expectEqual(null, (try fromFacts(a, &.{ .packages = &pkgs })).boot.encrypt);
 }
 
 test "hardware without its packages installed stays out of the config" {

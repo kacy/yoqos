@@ -257,12 +257,21 @@ pub const Machine = struct {
             const from = r.from orelse continue;
             try entries.append(m.a, try m.entry("before", "the system before generations", from, cmdline));
         }
-        return switch (m.loader) {
-            .grub => m.write(try std.fs.path.join(m.a, &.{ m.boot.esp.?, "grub/grub.cfg" }), try menu.grub(m.a, .{ .esp_uuid = m.esp_uuid, .root_uuid = m.root_uuid, .default = "head", .entries = entries.items })),
-            .limine => m.writeOnEsp(entries.items, records, writeLimine),
-            .@"systemd-boot" => m.writeOnEsp(entries.items, records, writeSdboot),
-            .refind => m.writeRefind(entries.items),
+        const put: MenuWriter = switch (m.loader) {
+            .grub => writeGrub,
+            .limine => writeLimine,
+            .@"systemd-boot" => writeSdboot,
+            .refind => writeRefind,
         };
+        if (menu.copiesOnEsp(m.boot)) return m.writeOnEsp(entries.items, records, put);
+        return put(m, entries.items);
+    }
+
+    /// puts the menu in place, for entries whose files are where it says.
+    const MenuWriter = *const fn (*const Machine, []menu.Entry) anyerror!?[]const u8;
+
+    fn writeGrub(m: *const Machine, entries: []menu.Entry) anyerror!?[]const u8 {
+        return m.write(try std.fs.path.join(m.a, &.{ m.boot.esp.?, "grub/grub.cfg" }), try menu.grub(m.a, .{ .esp_uuid = m.esp_uuid, .root_uuid = m.root_uuid, .default = "head", .entries = entries }));
     }
 
     fn write(m: *const Machine, path: []const u8, text: []const u8) !?[]const u8 {
@@ -275,12 +284,13 @@ pub const Machine = struct {
         return std.Io.Dir.cwd().readFileAlloc(m.io, path, m.a, .limited(1 << 20)) catch null;
     }
 
-    /// limine and systemd-boot read only fat, so entries whose files are
-    /// in a root's /boot get copies on the esp, named by content so
-    /// generations share them. copies that don't fit leave everything as
-    /// it was, and say which of `records` to remove to make room. `put`
-    /// puts the menu in place; then copies no entry uses any more go.
-    fn writeOnEsp(m: *const Machine, entries: []menu.Entry, records: []const generation.Record, comptime put: fn (*const Machine, []menu.Entry) anyerror!?[]const u8) !?[]const u8 {
+    /// for a bootloader that can't read the roots (see menu.copiesOnEsp),
+    /// entries whose files are in a root's /boot get copies on the esp,
+    /// named by content so generations share them. copies that don't fit
+    /// leave everything as it was, and say which of `records` to remove to
+    /// make room. `put` puts the menu in place; then copies no entry uses
+    /// any more go.
+    fn writeOnEsp(m: *const Machine, entries: []menu.Entry, records: []const generation.Record, put: MenuWriter) !?[]const u8 {
         const dir = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir });
         if (try m.run(&.{ "mkdir", "-p", dir })) |w| return w;
         var used: std.ArrayList([]const u8) = .empty;
@@ -386,9 +396,10 @@ pub const Machine = struct {
     }
 
     /// refind reads btrfs through its driver, so entries boot from each
-    /// root's own /boot. os's entries go in yoq.conf beside refind.conf,
-    /// which includes it, and the driver goes in if it's missing.
-    fn writeRefind(m: *const Machine, entries: []const menu.Entry) !?[]const u8 {
+    /// root's own /boot, unless the root is on luks. os's entries go in
+    /// yoq.conf beside refind.conf, which includes it, and the driver goes
+    /// in if it's missing.
+    fn writeRefind(m: *const Machine, entries: []menu.Entry) anyerror!?[]const u8 {
         const conf = try m.loaderConf() orelse return "can't read refind.conf";
         for (entries) |e| {
             if (try menu.refindArgsProblem(m.a, e.args)) |w| return w;
@@ -399,9 +410,14 @@ pub const Machine = struct {
             if (try m.run(&.{ "install", "-D", "-m", "0644", "/usr/share/refind/drivers_x64/btrfs_x64.efi", driver })) |w| return w;
         }
         var why: []const u8 = "";
+        // a device mapper root, as on luks, has no partition guid, and
+        // every entry is on the esp then.
+        const root_part = for (entries) |e| {
+            if (e.esp_dir == null) break try blkid(m.a, m.io, m.boot.root_device.?, "PARTUUID", &why) orelse return why;
+        } else "";
         const text = try menu.refind(m.a, .{
             .esp_part = try blkid(m.a, m.io, m.boot.esp_device.?, "PARTUUID", &why) orelse return why,
-            .root_part = try blkid(m.a, m.io, m.boot.root_device.?, "PARTUUID", &why) orelse return why,
+            .root_part = root_part,
             .entries = entries,
         });
         // with a trial waiting, refind's own default stays the generation
@@ -517,9 +533,9 @@ pub const Machine = struct {
         const esp = m.boot.esp.?;
         const s = try m.bootSync(from, esp, &why) orelse return .{ .failed = why };
         if (rootfs.freeBytes(esp)) |room| {
-            // limine and systemd-boot keep older generations' copies there
-            // too, which `os gc` frees.
-            const collectable = m.loader == .limine or m.loader == .@"systemd-boot";
+            // older generations' copies may be there too, which `os gc`
+            // frees.
+            const collectable = menu.copiesOnEsp(m.boot);
             const records = try readRecords(m.a, m.io, "/var");
             if (try generation.espRoom(m.a, esp, generation.copyPeak(s.sizes.items), room, records, m.boot.root_subvol orelse "", collectable)) |w| return .{ .full = w };
         }

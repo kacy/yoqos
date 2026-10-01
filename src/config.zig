@@ -137,6 +137,9 @@ pub const Boot = struct {
     kernel: ?Str = null,
     /// kernel modules loaded at every boot, like i2c-dev.
     modules: Set = .{},
+    /// the root is on luks, so the initramfs has to unlock it. os adds
+    /// sd-encrypt to mkinitcpio's hooks when they can't already.
+    encrypt: ?Val(bool) = null,
 };
 
 pub const Hardware = struct {

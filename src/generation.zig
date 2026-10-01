@@ -138,7 +138,9 @@ pub fn subvolOption(o: []const u8) bool {
 
 /// a generation's kernel command line, from the running one: the root is
 /// the btrfs filesystem by uuid, mounted from `subvol`; other rootflags
-/// and arguments stay as they are.
+/// and arguments stay as they are. on luks, that's the filesystem inside,
+/// and the arguments that unlock it, like rd.luks.name= or cryptdevice=,
+/// come along with the rest.
 pub fn kernelArgs(a: Allocator, cmdline: []const u8, root_uuid: []const u8, subvol: []const u8) ![]const u8 {
     var flags: std.ArrayList(u8) = .empty;
     try flags.print(a, "subvol={s}", .{subvol});
@@ -393,6 +395,12 @@ test "a generation's kernel command line" {
     const cmdline = "BOOT_IMAGE=/boot/vmlinuz-linux root=UUID=abc rw net.ifnames=0 rootflags=compress=zstd:1,subvol=/@ console=ttyS0,115200 yoq.trial\n";
     try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/1,compress=zstd:1 rw net.ifnames=0 console=ttyS0,115200 panic=10", try kernelArgs(arena.allocator(), cmdline, "abc", "/@roots/1"));
     try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/ rw panic=30", try kernelArgs(arena.allocator(), "rw panic=30", "abc", "/"));
+    // on luks, what unlocks the root comes along, for sd-encrypt and for
+    // busybox's encrypt hook, and the root is the btrfs inside it.
+    const sd = "root=/dev/mapper/root rootflags=subvol=/@ rd.luks.name=0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b=root rd.luks.options=tpm2-device=auto rw";
+    try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/2 rd.luks.name=0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b=root rd.luks.options=tpm2-device=auto rw panic=10", try kernelArgs(arena.allocator(), sd, "abc", "/@roots/2"));
+    const busybox = "cryptdevice=PARTUUID=5e1f:root cryptkey=rootfs:/crypto_keyfile.bin root=/dev/mapper/root rw rootflags=subvol=@";
+    try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/2 cryptdevice=PARTUUID=5e1f:root cryptkey=rootfs:/crypto_keyfile.bin rw panic=10", try kernelArgs(arena.allocator(), busybox, "abc", "/@roots/2"));
     try testing.expectEqualStrings("/@roots/boot-2", try bootCopy(arena.allocator(), 2));
     try testing.expectEqual(2, bootCopyOf("/@roots/boot-2"));
     try testing.expectEqual(null, bootCopyOf("/@roots/2"));

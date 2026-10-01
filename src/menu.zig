@@ -17,6 +17,15 @@ pub const Loader = enum {
     }
 };
 
+/// whether every entry boots copies of its files on the esp, since the
+/// bootloader can't read the roots: limine and systemd-boot read only
+/// fat, and nothing reads btrfs inside luks before the initramfs unlocks
+/// it.
+pub fn copiesOnEsp(boot: facts.Boot) bool {
+    const loader = Loader.of(boot) orelse return false;
+    return loader == .limine or loader == .@"systemd-boot" or boot.luks_uuid != null;
+}
+
 /// one boot menu entry: a kernel and its initrds, from a root subvolume.
 pub const Entry = struct {
     id: []const u8,
@@ -83,6 +92,7 @@ pub fn plainTitle(a: Allocator, title: []const u8) ![]u8 {
 
 pub const Grub = struct {
     esp_uuid: []const u8,
+    /// the root's filesystem, which entries without esp_dir read from.
     root_uuid: []const u8,
     default: []const u8,
     timeout: u32 = 3,
@@ -118,9 +128,16 @@ pub fn grub(a: Allocator, c: Grub) ![]const u8 {
         \\    save_env -f (${{yoq_esp}})/yoq/grubenv yoq_next
         \\  fi
         \\fi
-        \\search --no-floppy --fs-uuid --set=root {s}
         \\
-    , .{ c.timeout, c.default, c.esp_uuid, c.root_uuid });
+    , .{ c.timeout, c.default, c.esp_uuid });
+    // with every entry's files on the esp, as on a luks root, grub never
+    // looks for the root's filesystem; it couldn't find it there anyway.
+    for (c.entries) |e| {
+        if (e.esp_dir == null) {
+            try out.print(a, "search --no-floppy --fs-uuid --set=root {s}\n", .{c.root_uuid});
+            break;
+        }
+    }
     for (c.entries) |e| {
         const dir = if (e.esp_dir) |d| (if (d.len == 0) "(${yoq_esp})" else try std.fmt.allocPrint(a, "(${{yoq_esp}})/{s}", .{d})) else try e.rootDir(a);
         // a title is a quoted grub string: quotes, backslashes, and $ would
@@ -259,7 +276,8 @@ pub fn sdbootEntry(a: Allocator, e: Entry, sort_key: []const u8, version: usize)
 }
 
 pub const Refind = struct {
-    /// partition guids: the esp's, and the root's.
+    /// partition guids: the esp's, and the root's, which only entries
+    /// without esp_dir use.
     esp_part: []const u8,
     root_part: []const u8,
     entries: []const Entry,
@@ -399,6 +417,45 @@ test "grub's config on the esp" {
         \\}
         \\
     ));
+}
+
+test "which bootloaders boot copies on the esp" {
+    try testing.expect(!copiesOnEsp(.{ .loader = "grub" }));
+    try testing.expect(!copiesOnEsp(.{ .loader = "refind" }));
+    try testing.expect(copiesOnEsp(.{ .loader = "limine" }));
+    try testing.expect(copiesOnEsp(.{ .loader = "systemd-boot" }));
+    try testing.expect(copiesOnEsp(.{ .loader = "grub", .luks_uuid = "u" }));
+    try testing.expect(copiesOnEsp(.{ .loader = "refind", .luks_uuid = "u" }));
+    try testing.expect(!copiesOnEsp(.{ .luks_uuid = "u" }));
+}
+
+/// entries on a luks root: every one's files on the esp, and the
+/// arguments that unlock the root in each.
+const luks_args = "root=UUID=b rootflags=subvol=/@roots/1 rw rd.luks.name=0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b=root rd.luks.options=tpm2-device=auto panic=10";
+const luks_entries = [_]Entry{
+    .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/1", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = luks_args, .esp_dir = "" },
+    .{ .id = "gen-1", .title = "yoq 1", .subvol = "/@roots/boot-1", .kernel = "ab12-vmlinuz-linux", .initrds = &.{"cd34-initramfs-linux.img"}, .args = luks_args, .esp_dir = "yoq/boot" },
+};
+
+test "entries on a luks root, for each bootloader" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const g = try grub(a, .{ .esp_uuid = "41B2-0FB5", .root_uuid = "b", .default = "head", .entries = &luks_entries });
+    // grub can't read the root, so it never looks for it.
+    try testing.expect(std.mem.indexOf(u8, g, "--set=root") == null);
+    try testing.expect(std.mem.indexOf(u8, g, "  linux (${yoq_esp})/yoq/boot/ab12-vmlinuz-linux " ++ luks_args ++ " ${yoq_trial_arg}\n  initrd (${yoq_esp})/yoq/boot/cd34-initramfs-linux.img\n") != null);
+    try testing.expect(std.mem.indexOf(u8, g, "  linux (${yoq_esp})/vmlinuz-linux " ++ luks_args ++ " ${yoq_trial_arg}\n") != null);
+    const l = try limine(a, &luks_entries);
+    try testing.expectEqual(3, std.mem.count(u8, l, "    cmdline: " ++ luks_args));
+    try testing.expect(std.mem.indexOf(u8, l, "    cmdline: " ++ luks_args ++ " yoq.trial\n") != null);
+    const sd = try sdboot(a, &luks_entries);
+    for (sd) |f| try testing.expect(std.mem.indexOf(u8, f.text, "options " ++ luks_args) != null);
+    try testing.expectEqualStrings("# written by os. edits here are overwritten.\ntitle yoq 1\nsort-key yoq\nversion 1\nlinux /yoq/boot/ab12-vmlinuz-linux\ninitrd /yoq/boot/cd34-initramfs-linux.img\noptions " ++ luks_args ++ "\n", sd[1].text);
+    // refind needs no partition guid for the root.
+    const r = try refind(a, .{ .esp_part = "esp-guid", .root_part = "", .entries = &luks_entries });
+    try testing.expectEqual(3, std.mem.count(u8, r, "    volume esp-guid\n"));
+    try testing.expect(std.mem.indexOf(u8, r, "    loader /yoq/boot/ab12-vmlinuz-linux\n    options \"" ++ luks_args ++ " initrd=\\yoq\\boot\\cd34-initramfs-linux.img\"\n") != null);
 }
 
 test "a menu title can't end its quotes or expand" {

@@ -94,6 +94,7 @@ pub fn buildCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.err.print("os: {s} can't have spaces or backslashes in it.\n", .{real});
         return 1;
     }
+    if (rootfs.privateMounts(ctx.io)) |why| return cli.fail(ctx, "{s}", .{why});
     var b: Builder = .{ .ctx = ctx, .a = a, .dir = real };
     // on every way out: a bind of /dev left behind would take the host's
     // device nodes with it when someone removes the directory.
@@ -202,16 +203,9 @@ pub const Builder = struct {
     }
 
     /// unmounts everything under the new root, deepest first, including
-    /// what package scripts mounted there. a mount something still holds
-    /// is detached lazily, so it goes once that lets go.
+    /// what package scripts mounted there.
     pub fn unmount(b: *Builder) void {
-        const text = rootfs.readProc(b.a, b.ctx.io, "/proc/self/mountinfo") catch return;
-        const points = mountsUnder(b.a, text, b.dir) catch return;
-        for (points) |p| {
-            if (lists.contains(b.keep, p)) continue;
-            const failed = exec.run(b.a, b.ctx.io, &.{ "umount", p }) catch return;
-            if (failed != null) _ = exec.run(b.a, b.ctx.io, &.{ "umount", "-l", p }) catch return;
-        }
+        _ = unmountTree(b.a, b.ctx.io, b.dir, b.keep, false) catch {};
     }
 
     /// the config applied to the new root, then its units turned on
@@ -296,17 +290,134 @@ pub const Builder = struct {
     }
 };
 
-/// the mount points under `dir` in mountinfo's `text`, deepest first.
-/// mountinfo escapes spaces and the like as octal, which build paths
-/// don't have.
-fn mountsUnder(a: Allocator, text: []const u8, dir: []const u8) ![]const []const u8 {
+/// unmounts the mounts under `dir`, and `dir` itself `with_dir`, deepest
+/// first, past the ones in `keep`. processes running inside it are
+/// stopped first: a gpg-agent that pacman-key started in a build keeps
+/// every mount it's on busy. a mount still busy after a few tries is
+/// detached lazily, which leaves its device in use until the last user
+/// lets go; those are the result.
+pub fn unmountTree(a: Allocator, io: std.Io, dir: []const u8, keep: []const []const u8, with_dir: bool) ![]const []const u8 {
+    // libalpm checks signatures against the root's keyring, so gpg's
+    // daemons for it run on this machine, with their home in the root.
+    // asked first, they clean up after themselves.
+    const gnupg = try std.fs.path.join(a, &.{ dir, "etc/pacman.d/gnupg" });
+    if (rootfs.pathExists(io, gnupg)) _ = exec.run(a, io, &.{ "gpgconf", "--homedir", gnupg, "--kill", "all" }) catch {};
+    stopProcessesIn(a, io, dir);
+    const text = try rootfs.readProc(a, io, "/proc/self/mountinfo");
+    var lazy: std.ArrayList([]const u8) = .empty;
+    for (try mountsUnder(a, text, dir, with_dir)) |p| {
+        if (lists.contains(keep, p)) continue;
+        for (0..umount_tries) |i| {
+            if (try exec.run(a, io, &.{ "umount", p }) == null) break;
+            if (i + 1 < umount_tries) {
+                io.sleep(.fromMilliseconds(500), .awake) catch {};
+                continue;
+            }
+            if (try exec.run(a, io, &.{ "umount", "-l", p }) == null) try lazy.append(a, p);
+        }
+    }
+    return lazy.items;
+}
+
+const umount_tries = 3;
+
+/// stops the processes that use something inside `dir`: as their root or
+/// working directory, an open file, or a path they were started with,
+/// like gpg-agent's --homedir, whose watch on it holds the mount. a term
+/// first, then a kill for any still there.
+fn stopProcessesIn(a: Allocator, io: std.Io, dir: []const u8) void {
+    for ([_]std.posix.SIG{ .TERM, .KILL }) |sig| {
+        const pids = processesIn(a, io, dir) catch return;
+        if (pids.len == 0) return;
+        for (pids) |pid| std.posix.kill(pid, sig) catch {};
+        io.sleep(.fromMilliseconds(500), .awake) catch {};
+    }
+}
+
+fn processesIn(a: Allocator, io: std.Io, dir: []const u8) ![]const std.posix.pid_t {
+    var out: std.ArrayList(std.posix.pid_t) = .empty;
+    var proc = std.Io.Dir.cwd().openDir(io, "/proc", .{ .iterate = true }) catch return out.items;
+    defer proc.close(io);
+    // os and the shells that started it are never stopped, even when
+    // they sit inside `dir`, like a build run from its own directory.
+    const ours = try ancestors(a, io);
+    var it = proc.iterate();
+    while (it.next(io) catch null) |e| {
+        const pid = std.fmt.parseInt(std.posix.pid_t, e.name, 10) catch continue;
+        if (std.mem.indexOfScalar(std.posix.pid_t, ours, pid) != null) continue;
+        if (try usesInside(a, io, proc, e.name, dir)) try out.append(a, pid);
+    }
+    return out.items;
+}
+
+/// this process and every parent above it, by /proc/<pid>/stat's ppid.
+fn ancestors(a: Allocator, io: std.Io) ![]const std.posix.pid_t {
+    var out: std.ArrayList(std.posix.pid_t) = .empty;
+    var pid: std.posix.pid_t = std.os.linux.getpid();
+    while (pid > 1 and out.items.len < 64) {
+        try out.append(a, pid);
+        const stat = try rootfs.readStreaming(a, io, try std.fmt.allocPrint(a, "/proc/{d}/stat", .{pid})) orelse break;
+        pid = parentOf(stat) orelse break;
+    }
+    return out.items;
+}
+
+/// the ppid in a /proc/<pid>/stat line. the command name sits in
+/// parentheses and may hold spaces or ')', so fields count from the last ')'.
+fn parentOf(stat: []const u8) ?std.posix.pid_t {
+    const close = std.mem.lastIndexOfScalar(u8, stat, ')') orelse return null;
+    var fields = std.mem.tokenizeScalar(u8, stat[close + 1 ..], ' ');
+    _ = fields.next() orelse return null; // state
+    return std.fmt.parseInt(std.posix.pid_t, fields.next() orelse return null, 10) catch null;
+}
+
+/// whether process `pid` (its /proc name) uses something inside `dir`.
+fn usesInside(a: Allocator, io: std.Io, proc: std.Io.Dir, pid: []const u8, dir: []const u8) !bool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var links: std.ArrayList([]const u8) = .empty;
+    try links.appendSlice(a, &.{ try std.fmt.allocPrint(a, "{s}/root", .{pid}), try std.fmt.allocPrint(a, "{s}/cwd", .{pid}) });
+    const fd_dir = try std.fmt.allocPrint(a, "{s}/fd", .{pid});
+    if (proc.openDir(io, fd_dir, .{ .iterate = true })) |fds_const| {
+        var fds = fds_const;
+        defer fds.close(io);
+        var it = fds.iterate();
+        while (it.next(io) catch null) |f| try links.append(a, try std.fmt.allocPrint(a, "{s}/{s}", .{ fd_dir, f.name }));
+    } else |_| {}
+    for (links.items) |link| {
+        const n = proc.readLink(io, link, &buf) catch continue;
+        if (inside(buf[0..n], dir)) return true;
+    }
+    const cmdline = try rootfs.readStreaming(a, io, try std.fmt.allocPrint(a, "/proc/{s}/cmdline", .{pid})) orelse return false;
+    return argsInside(cmdline, dir);
+}
+
+/// whether a /proc cmdline, its arguments split by nuls, names a path
+/// inside `dir`, alone or after an option's "=".
+fn argsInside(cmdline: []const u8, dir: []const u8) bool {
+    var args = std.mem.tokenizeScalar(u8, cmdline, 0);
+    while (args.next()) |arg| {
+        const value = if (std.mem.indexOfScalar(u8, arg, '=')) |i| arg[i + 1 ..] else arg;
+        if (inside(arg, dir) or inside(value, dir)) return true;
+    }
+    return false;
+}
+
+/// whether `path` is `dir` or under it.
+fn inside(path: []const u8, dir: []const u8) bool {
+    return std.mem.startsWith(u8, path, dir) and (path.len == dir.len or path[dir.len] == '/');
+}
+
+/// the mount points under `dir` in mountinfo's `text`, and `dir` too
+/// `with_dir`, deepest first. mountinfo escapes spaces and the like as
+/// octal, which build paths don't have.
+fn mountsUnder(a: Allocator, text: []const u8, dir: []const u8, with_dir: bool) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     var lines = std.mem.tokenizeScalar(u8, text, '\n');
     while (lines.next()) |line| {
         var fields = std.mem.tokenizeScalar(u8, line, ' ');
         for (0..4) |_| _ = fields.next();
         const point = fields.next() orelse continue;
-        if (point.len > dir.len and std.mem.startsWith(u8, point, dir) and point[dir.len] == '/') try out.append(a, point);
+        if (inside(point, dir) and (with_dir or point.len > dir.len)) try out.append(a, point);
     }
     // a mount under another sorts after it, so reversed, it comes first.
     lists.sortStrings(out.items);
@@ -362,11 +473,39 @@ test "mounts under a build, deepest first" {
         \\92 1 0:30 / /var/tmp/clean/proc rw - proc proc rw
         \\93 1 0:31 / /var/tmp/cleaner rw - tmpfs t rw
     ;
-    const got = try mountsUnder(arena.allocator(), info, "/var/tmp/clean");
+    const got = try mountsUnder(arena.allocator(), info, "/var/tmp/clean", false);
     try std.testing.expectEqual(3, got.len);
     try std.testing.expectEqualStrings("/var/tmp/clean/proc", got[0]);
     try std.testing.expectEqualStrings("/var/tmp/clean/dev/pts", got[1]);
     try std.testing.expectEqualStrings("/var/tmp/clean/dev", got[2]);
+
+    // an install's target goes too, after everything on it, and a mount
+    // over a mount comes off first.
+    const target =
+        \\40 1 0:40 /@roots/1 /mnt/yoq rw - btrfs /dev/mapper/yoq-install rw
+        \\41 40 0:40 /@var /mnt/yoq/var rw - btrfs /dev/mapper/yoq-install rw
+        \\42 41 0:5 / /mnt/yoq/var/lib/x rw - tmpfs t rw
+        \\43 40 254:1 / /mnt/yoq/boot rw - vfat /dev/vdc1 rw
+        \\44 1 0:41 / /mnt/yoqother rw - tmpfs t rw
+    ;
+    const all = try mountsUnder(arena.allocator(), target, "/mnt/yoq", true);
+    try std.testing.expectEqual(4, all.len);
+    try std.testing.expectEqualStrings("/mnt/yoq/var/lib/x", all[0]);
+    try std.testing.expectEqualStrings("/mnt/yoq/var", all[1]);
+    try std.testing.expectEqualStrings("/mnt/yoq/boot", all[2]);
+    try std.testing.expectEqualStrings("/mnt/yoq", all[3]);
+}
+
+test "a process inside a build, by its root or working directory" {
+    try std.testing.expect(inside("/mnt/yoq", "/mnt/yoq"));
+    try std.testing.expect(inside("/mnt/yoq/etc/pacman.d/gnupg", "/mnt/yoq"));
+    try std.testing.expect(!inside("/mnt/yoqother", "/mnt/yoq"));
+    try std.testing.expect(!inside("/", "/mnt/yoq"));
+    // gpg's daemons for a root's keyring run here, named by their home.
+    try std.testing.expect(argsInside("gpg-agent\x00--homedir\x00/mnt/yoq/etc/pacman.d/gnupg\x00--use-standard-socket\x00--daemon\x00", "/mnt/yoq"));
+    try std.testing.expect(argsInside("keyboxd\x00--homedir=/mnt/yoq/etc/pacman.d/gnupg\x00", "/mnt/yoq"));
+    try std.testing.expect(!argsInside("gpg-agent\x00--homedir\x00/root/.gnupg\x00", "/mnt/yoq"));
+    try std.testing.expect(!argsInside("sshd: root@pts/0\x00", "/mnt/yoq"));
 }
 
 test "a build's pacman.conf leaves out os's repositories" {
@@ -381,4 +520,10 @@ test "paths a build can't explain or be explained by" {
     try std.testing.expect(ignoredPath("usr/local/bin/os"));
     try std.testing.expect(!ignoredPath("etc/hostname"));
     try std.testing.expect(!ignoredPath("usr/local"));
+}
+
+test "the parent pid from a stat line, past a name with spaces and parentheses" {
+    try std.testing.expectEqual(@as(?std.posix.pid_t, 812), parentOf("4242 (bash) S 812 4242 812 0 -1 4194560"));
+    try std.testing.expectEqual(@as(?std.posix.pid_t, 1), parentOf("77 (a (b) c) S 1 77 77 0 -1"));
+    try std.testing.expectEqual(@as(?std.posix.pid_t, null), parentOf("garbage"));
 }

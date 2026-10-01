@@ -129,6 +129,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .found = layout,
         .fix = "enable-rollback converts a root in the btrfs top level, archinstall's @ subvolume, or a snapshot snapper rolled back to. other layouts come later.",
     });
+    if (try luksCheck(a, &b)) |c| try checks.append(a, c);
     try checks.append(a, .{
         .what = "generations",
         .ok = !running_gen,
@@ -176,9 +177,9 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
     });
     // grub and refind find files on btrfs from the default subvolume, and
     // os's menu names each root from the top level. limine and
-    // systemd-boot only read the esp, and their own entries may count on
-    // the default, so it stays.
-    if (!b.top_is_default and (known == .grub or known == .refind)) try steps.append(a, .{
+    // systemd-boot only read the esp, as every bootloader does on luks,
+    // and their own entries may count on the default, so it stays.
+    if (!b.top_is_default and known != null and !menu.copiesOnEsp(b)) try steps.append(a, .{
         .kind = .default_subvol,
         .what = "make the btrfs top level the default subvolume again",
         .why = try std.fmt.allocPrint(a, "{s} reads each generation's files from the top level. snapper's rollback moved the default to the root it made", .{loader}),
@@ -203,6 +204,20 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .why = "the boot menu has to live outside every generation",
     });
     return .{ .checks = checks.items, .steps = steps.items };
+}
+
+/// on a luks root, whether the initramfs unlocks it, which every
+/// generation boots through. null when the root isn't on luks.
+pub fn luksCheck(a: Allocator, b: *const facts.Boot) !?Check {
+    const uuid = b.luks_uuid orelse return null;
+    const ok = b.unlocksLuks();
+    const on = try std.fmt.allocPrint(a, "the root is /dev/mapper/{s}, from {s}", .{ b.luks_name orelse "?", b.luks_device orelse uuid });
+    return .{
+        .what = "luks",
+        .ok = ok,
+        .found = if (ok) on else try std.fmt.allocPrint(a, "{s}, and mkinitcpio's hooks have no encrypt or sd-encrypt", .{on}),
+        .fix = "the initramfs has to unlock the root. put `encrypt = true` under [boot] in the config and run `os apply`, which adds sd-encrypt to the hooks, or add encrypt or sd-encrypt to HOOKS in /etc/mkinitcpio.conf.",
+    };
 }
 
 /// a unit enable-rollback writes into generation 1, which uninstall takes
@@ -245,13 +260,16 @@ pub fn units(a: Allocator, os_path: []const u8) ![4]Unit {
         },
         .{
             .name = "yoq-watchdog.timer",
+            // from when this timer starts in the booted root, not from the
+            // kernel or the initramfs's systemd: time spent typing a luks
+            // passphrase in the initramfs doesn't count.
             .text =
             \\[Unit]
             \\Description=Reboot a generation on trial that doesn't finish booting
             \\ConditionKernelCommandLine=yoq.trial
             \\
             \\[Timer]
-            \\OnBootSec=5min
+            \\OnActiveSec=5min
             \\AccuracySec=10s
             \\
             \\[Install]
@@ -424,6 +442,48 @@ test "a machine on btrfs and grub is ready, with every step" {
     try testing.expectEqual(Kind.config_dir, p.steps[4].kind);
     try testing.expectEqual(Kind.boot_entry, p.steps[5].kind);
     try testing.expectEqualStrings("install grub's boot files on the esp (/efi), reading that menu", p.steps[6].what);
+}
+
+test "a luks root converts when the initramfs unlocks it" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f: facts.Facts = .{ .boot = .{
+        .uefi = true,
+        .esp = "/boot",
+        .loader = "grub",
+        .root_fs = "btrfs",
+        .root_device = "/dev/mapper/root",
+        .root_subvol = "/@",
+        .top_is_default = false,
+        .luks_uuid = "0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b",
+        .luks_name = "root",
+        .luks_device = "/dev/vda2",
+        .initramfs_hooks = &.{ "base", "systemd", "keyboard", "sd-encrypt", "filesystems" },
+    } };
+    var p = try plan(a, &f);
+    try testing.expect(p.ready());
+    const luks = p.checks[p.checks.len - 2];
+    try testing.expectEqualStrings("luks", luks.what);
+    try testing.expectEqualStrings("the root is /dev/mapper/root, from /dev/vda2", luks.found);
+    // grub reads only the esp there, so the default subvolume stays.
+    for (p.steps) |s| try testing.expect(s.kind != .default_subvol);
+
+    f.boot.initramfs_hooks = &.{ "base", "systemd", "filesystems" };
+    p = try plan(a, &f);
+    try testing.expect(!p.ready());
+    var out: std.Io.Writer.Allocating = .init(a);
+    try writeChecks(&out.writer, p.checks);
+    try testing.expect(std.mem.indexOf(u8, out.written(),
+        \\  no  luks: the root is /dev/mapper/root, from /dev/vda2, and mkinitcpio's hooks have no encrypt or sd-encrypt
+        \\        the initramfs has to unlock the root. put `encrypt = true` under [boot]
+    ) != null);
+    // os's own drop-in counts.
+    f.boot.encrypt_dropin = true;
+    try testing.expect((try plan(a, &f)).ready());
+    // and a root that isn't on luks has no such check.
+    f.boot.luks_uuid = null;
+    try testing.expectEqual(null, try luksCheck(a, &f.boot));
 }
 
 test "limine and refind keep their own config, and refind gets the top level back" {

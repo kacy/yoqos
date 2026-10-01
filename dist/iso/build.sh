@@ -21,7 +21,7 @@ install -Dm755 "$os" "$profile/airootfs/usr/local/bin/os"
 sed -i 's|^file_permissions=(|file_permissions=(\n  ["/usr/local/bin/os"]="0:0:755"|' "$profile/profiledef.sh"
 # what os install runs. releng has most of it already; pacman skips the
 # ones it has.
-printf '%s\n' btrfs-progs dosfstools git grub efibootmgr >> "$profile/packages.x86_64"
+printf '%s\n' btrfs-progs dosfstools git grub efibootmgr cryptsetup tpm2-tss >> "$profile/packages.x86_64"
 sort -u -o "$profile/packages.x86_64" "$profile/packages.x86_64"
 mkarchiso -v -w "$work/work" -o "$out" "$profile"
 rm -rf "$work"

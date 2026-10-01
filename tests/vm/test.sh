@@ -18,8 +18,9 @@ sdboot) VM_ESP=/boot VM_ROOT=/@ VM_LOADER=systemd-boot ;;
 esac
 export VM_ESP VM_ROOT VM_LOADER
 
-# the ext4 machine installs a new one on a second disk.
-[ "${VM_IMAGE:-cloud}" = ext4 ] && export VM_DISK2=1
+# the ext4 machine installs new ones on a second disk, and on luks on a
+# third, which its tpm unlocks.
+[ "${VM_IMAGE:-cloud}" = ext4 ] && export VM_DISK2=1 VM_DISK3=1 VM_TPM=1
 "$vm" start
 trap '"$vm" stop' EXIT
 

@@ -27,6 +27,7 @@ pub fn build(ctx: *Context, boot: facts.Boot, in: pipeline.Inputs) anyerror!?[]c
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
+    if (rootfs.privateMounts(ctx.io)) |why| return fail(ctx, why);
     const m = try cli.openMachine(ctx, a, boot) orelse return null;
     defer m.close();
     const n = try m.free(try gens.readRecords(a, ctx.io, "/var"));

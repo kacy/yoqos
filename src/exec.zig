@@ -57,6 +57,19 @@ pub fn interactive(a: Allocator, io: std.Io, argv: []const []const u8) error{Out
     return wait(a, io, &child, argv);
 }
 
+/// runs `argv` with `input` written to its standard input, for a secret
+/// that mustn't go on its command line or into a file. what it prints
+/// goes nowhere, and what it says when it fails goes to os's standard
+/// error.
+pub fn runInput(a: Allocator, io: std.Io, argv: []const []const u8, input: []const u8) error{OutOfMemory}!?[]const u8 {
+    var child = std.process.spawn(io, .{ .argv = argv, .stdin = .pipe, .stdout = .ignore }) catch |e| return try spawnFailed(a, argv, e);
+    const sent = if (child.stdin.?.writeStreamingAll(io, input)) true else |_| false;
+    child.stdin.?.close(io);
+    child.stdin = null;
+    const why = try wait(a, io, &child, argv);
+    return why orelse if (sent) null else try failed(a, argv);
+}
+
 /// runs `argv` with the file at `input` as its standard input, for a
 /// program that reads a script there, like sfdisk. what it prints goes
 /// nowhere; a failure says it failed.
@@ -142,6 +155,14 @@ fn spawnFailed(a: Allocator, argv: []const []const u8, e: anyerror) error{OutOfM
         error.FileNotFound => try std.fmt.allocPrint(a, "can't run {s}: it isn't installed", .{argv[0]}),
         else => try std.fmt.allocPrint(a, "can't run {s}: {s}", .{ argv[0], @errorName(e) }),
     };
+}
+
+test "a program reads what's written to its standard input" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const io = std.testing.io;
+    try std.testing.expectEqual(null, try runInput(arena.allocator(), io, &.{ "grep", "-qx", "secret" }, "secret"));
+    try std.testing.expect(try runInput(arena.allocator(), io, &.{ "grep", "-qx", "other" }, "secret") != null);
 }
 
 /// the last `n` lines of `text`.
