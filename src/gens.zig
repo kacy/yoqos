@@ -645,8 +645,7 @@ pub const Machine = struct {
     /// doesn't have it yet, or with `sign`, has it without sbctl's
     /// signature.
     fn ukiName(m: *const Machine, e: *menu.Entry, files: *EspFiles, sign: bool) !?[]const u8 {
-        // the newest entry's files may be the esp's own, with /boot there.
-        const from = if (e.esp_dir) |d| try std.fs.path.join(m.a, &.{ m.boot.esp.?, d }) else try m.at(&.{ e.subvol, "boot" });
+        const from = try m.imageSource(e.subvol);
         var inputs: std.ArrayList([]const u8) = .empty;
         var sums: std.ArrayList([]const u8) = .empty;
         var size: u64 = uki.stub_size;
@@ -672,6 +671,18 @@ pub const Machine = struct {
         };
         try files.builds.append(m.a, .{ .root = try m.at(&.{e.subvol}), .files = inputs.items, .dest = dest, .size = size });
         return null;
+    }
+
+    /// where an image's kernel and initrds come from: the root's own /boot
+    /// directory, never the esp, even for the newest entry with /boot as
+    /// the esp. anything with the esp mounted, or another system on the
+    /// disk, can write the esp, and what's there would be signed into the
+    /// image. every root os records has its own copies there: the root's
+    /// real /boot without the esp at /boot, and with it the copies
+    /// keepBoot makes as the generation is recorded, which snapshots and
+    /// boot copies keep. usr/lib/modules has the kernel, but no initramfs.
+    fn imageSource(m: *const Machine, subvol: []const u8) ![]const u8 {
+        return m.at(&.{ subvol, "boot" });
     }
 
     /// builds a unified kernel image with ukify, chrooted into the root
@@ -1572,6 +1583,53 @@ test "entries for a root with os's ukify config start its image, and unused imag
     try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
     try std.testing.expectEqual(null, test_put[0].uki);
     try std.testing.expectError(error.FileNotFound, esp.access(io, renamed, .{}));
+}
+
+test "with the esp at /boot, an image is built from the root's copies, not the esp's files" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "top/@roots/2/boot");
+    try tmp.dir.createDirPath(io, "top/@roots/2/etc/kernel");
+    try tmp.dir.createDirPath(io, "esp/yoq/boot");
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/" ++ uki.config_rel, .data = uki.config_content });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/vmlinuz-linux", .data = "kernel" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/initramfs-linux.img", .data = "initramfs" });
+    // what someone who could write the esp put there.
+    try tmp.dir.writeFile(io, .{ .sub_path = "esp/vmlinuz-linux", .data = "planted" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "esp/initramfs-linux.img", .data = "planted" });
+    try writeTestStub(tmp.dir, io, "top/@roots/2", "stub");
+    // a stand-in for ukify whose image holds the kernel it was given.
+    try tmp.dir.writeFile(io, .{ .sub_path = "chroot.sh", .data =
+        \\root=$1; shift
+        \\for arg; do case $arg in --output=*) out=${arg#--output=} ;; --linux=*) linux=${arg#--linux=} ;; esac; done
+        \\cat "$root$linux" > "$root$out"
+        \\
+    });
+    const m: Machine = .{
+        .a = a,
+        .io = io,
+        .boot = .{ .esp = try std.fmt.allocPrint(a, "{s}/esp", .{base}), .loader = "systemd-boot", .root_subvol = "/@roots/2" },
+        .loader = .@"systemd-boot",
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
+        .esp_is_boot = true,
+        .unsettled_note = try std.fmt.allocPrint(a, "{s}/unsettled", .{base}),
+        .chroot = &.{ "sh", try std.fmt.allocPrint(a, "{s}/chroot.sh", .{base}) },
+    };
+    // the newest entry, with its files on the esp, as entry() makes it.
+    var entries = [_]menu.Entry{
+        .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw", .esp_dir = "" },
+    };
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut, null));
+    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs"), &facts.sha256Hex("stub") });
+    try std.testing.expectEqualStrings(name, test_put[0].uki.?);
+    try std.testing.expectEqualStrings("kernel", try tmp.dir.readFileAlloc(io, try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{name}), a, .limited(64)));
 }
 
 /// systemd's stub in the test root at `root`, holding `text`.
