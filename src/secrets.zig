@@ -371,6 +371,8 @@ test "the memory store" {
 
 test "the systemd-creds store, as root" {
     if (linux.geteuid() != 0) return error.SkipZigTest;
+    // systemd-creds needs a running systemd: a container's root has none.
+    std.Io.Dir.cwd().access(testing.io, "/run/systemd/system", .{}) catch return error.SkipZigTest;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
