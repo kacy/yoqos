@@ -34,6 +34,7 @@ running system instead of into it; see [generations.md](generations.md).
 | `os doctor` | checks how `os` is set up on the machine |
 | `os enable`, `os disable` | turn services on or off in the config |
 | `os adopt` | puts packages installed outside the config into it, or a file from `/etc` |
+| `os secret` | keeps, lists, or removes the values `[files]` entries name with `secret` |
 | `os why` | which config line brings a package, file, or unit in |
 | `os config show` | the config with all its includes merged |
 | `os facts` | what `os` sees on this machine |
@@ -161,7 +162,9 @@ with generations, a `note:` line when `os` fell back from a generation
 that didn't come up healthy.
 
 `os status` warns when the lock is more than 14 days old, since an old lock
-holds back security fixes. it exits with 1 when something is failing.
+holds back security fixes. a secret the config names that this machine
+doesn't have, or can't decrypt, is failing, with the `os secret set` that
+fixes it. it exits with 1 when something is failing.
 
 ### plan
 
@@ -430,6 +433,10 @@ $ os why /etc/ssh/sshd_config
 $ os why sshd.service
 sshd.service: enabled by services.ssh  (/etc/yoq/machine.toml:12)
 ```
+
+a file that holds a secret names the secret, never its value:
+`/etc/wifi.psk: os writes it for files."/etc/wifi.psk" secret =
+"wifi/home"`.
 
 with `--json`, files print `yoq.why-file/1` and units `yoq.why-unit/1`.
 
@@ -852,8 +859,10 @@ text = "welcome to atlas\n"
 
 a `[files]` entry is a file `os` writes whole. `text` is the content itself;
 `source` names a file next to the config, relative to the config file that
-names it, so a repository can keep them together. `mode` is octal, and
-`0644` unless you say otherwise. `os plan` shows a file that's missing, has
+names it, so a repository can keep them together; and `secret` names a
+value that stays out of the config (see secrets, below). an entry has
+exactly one of the three. `mode` is octal, and `0644` unless you say
+otherwise, or `0600` for a secret. `os plan` shows a file that's missing, has
 different content, or has a different mode. files the config doesn't name
 are left alone, and so is a file you take out of the config. `os adopt
 <path>` writes an entry for a file that's already there.
@@ -872,6 +881,60 @@ can't be a file another key writes, like the sysctl file below.
 
 `[sysctl]` becomes one file, `/etc/sysctl.d/99-yoq.conf`, and `apply` loads
 it right away when systemd runs the machine.
+
+### secrets
+
+```toml
+[files."/etc/NetworkManager/system-connections/home.nmconnection"]
+secret = "wifi/home"
+```
+
+```
+sudo os secret set wifi/home     # asks for the value twice, without echo
+printf '%s' "$psk" | sudo os secret set wifi/home   # or reads it from stdin
+sudo os secret list              # the names, and the files that use each
+sudo os secret rm wifi/home
+```
+
+some files hold a password or a key, and those don't belong in a config you
+might push somewhere. a `secret` key names the value instead, and the value
+lives on the machine: `os secret set` encrypts it with `systemd-creds`, with
+its default keys (the tpm2 and the host's credential key when there's a
+tpm2, else the host key alone), into `/var/lib/yoq/secrets/<name>.cred`.
+that directory is root's alone, so every `os secret` command needs root.
+`apply` decrypts a value right before it writes the file, and wipes it from
+memory once it's written.
+
+a name is letters, digits, `-`, `_`, and `.`, with `/` to group them, like
+`wifi/home`; no part of it starts with a dot. a value comes from stdin byte
+for byte when stdin isn't a terminal, so `echo` would add a newline to it and
+`printf '%s'` doesn't. at a terminal, it's one line, typed twice. values are
+up to 64 KiB.
+
+the file gets mode `0600` unless the entry gives a `mode`. one that lets
+others read it is allowed, but the plan says so next to the file.
+
+values are machine state, not config. `/var` never rolls back, so a
+rollback keeps today's values, and they don't move with the config: another
+machine can't decrypt them, so a new machine, or one `os install` puts on a
+disk, needs each one set again. until then, `os plan` and `os apply` stop
+with E0133 and the `os secret set` to run, and `os status` lists the secret
+as failing.
+
+no value ever shows up in what `os` prints or keeps: not in the plan, facts,
+status, events, the journal, error messages, the lock, or generation
+records. to tell whether a file needs rewriting, the observer hashes the
+file and the value with hmac-sha256, under a random key made on the first
+`os secret set` and kept beside the values in `/var/lib/yoq/secrets/.key`,
+and the plan compares those. anyone can check guesses against a plain
+sha-256 of a short password, but not against an hmac without the key, so a
+plan or facts document is still safe to share. the plan's hash covers the keyed
+hash, so `os apply <file>` won't write a value other than the one the plan
+was made for.
+
+reading values needs root, so `os plan` without root can't tell whether a
+file holds the current value, and only shows it when it's missing or its
+mode differs. `apply` runs as root and sees all of it.
 
 files `os` makes from other keys (the sysctl file, the module list, the
 greetd and tty login files, and nvidia's initramfs drop-in) start with a
@@ -1068,7 +1131,7 @@ code. E0127 is a step of an apply that failed, like a file that couldn't be
 written or a tool that didn't work; the message has the details. E0128 is a
 saved plan that's out of date, and E0129 a plan that changed between being
 shown and the yes. E0131 is a change whose new boot files won't fit on the
-esp.
+esp, and E0133 a secret the config names that this machine doesn't have.
 
 ## scripting
 
@@ -1079,7 +1142,8 @@ document on stdout under `--json`; other problems, like a file that can't
 be written, are an `os: ...` line on stderr either way.
 
 `os schema <name>` prints the json schema for a document: `plan`, `facts`,
-`status`, `errors`, or `events`. `os schema config` describes
+`status`, `errors`, `events`, `secret` (what `os secret set` and `rm`
+print), or `secrets` (`os secret list`). `os schema config` describes
 `machine.toml`, which editors that check toml against a json schema, like
 taplo, can use, and `os schema lock` describes `machine.lock`. `os schema`
 alone lists them. the schemas come from the same code that writes and reads
