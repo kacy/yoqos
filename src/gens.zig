@@ -15,6 +15,7 @@ const enable = @import("enable.zig");
 const accounts = @import("accounts.zig");
 const trial = @import("trial.zig");
 const uki = @import("uki.zig");
+const secureboot = @import("secureboot.zig");
 const Allocator = std.mem.Allocator;
 
 /// a machine on the rollback rung, with its btrfs top level mounted.
@@ -32,6 +33,9 @@ pub const Machine = struct {
     /// the esp is the root's /boot, when the esp is mounted somewhere
     /// else for now: an install's, under its target.
     esp_is_boot: ?bool = null,
+    /// what signs an efi binary for secure boot, given "sign" and the
+    /// file: sbctl, or a stand-in in tests.
+    signer: []const []const u8 = &.{secureboot.package},
 
     /// mounts the top level of the root's filesystem. `close` unmounts it.
     pub fn open(a: Allocator, io: std.Io, boot: facts.Boot, why: *[]const u8) !?Machine {
@@ -293,9 +297,16 @@ pub const Machine = struct {
     /// way. files that don't fit leave everything as it was, and say which
     /// of `records` to remove to make room. `put` puts the menu in place;
     /// then copies and images no entry uses any more go.
+    ///
+    /// with `[boot] secure_boot` in the root at the top of the menu, or in
+    /// the running one, every image the menu uses is signed before it
+    /// goes on the esp, and an unsigned one there already is signed again,
+    /// so a fallback to an older generation boots too.
     fn writeOnEsp(m: *const Machine, entries: []menu.Entry, records: []const generation.Record, put: MenuWriter) !?[]const u8 {
         const dir = try std.fs.path.join(m.a, &.{ m.boot.esp.?, esp_boot_dir });
         const copies = menu.copiesOnEsp(m.boot);
+        const sign = entries.len > 0 and m.signs(entries[0].subvol);
+        const work = if (entries.len > 0) try m.at(&.{ entries[0].subvol, sign_dir }) else "";
         const images = try m.a.alloc(bool, entries.len);
         var any_image = false;
         for (entries, images) |e, *u| {
@@ -306,7 +317,7 @@ pub const Machine = struct {
             if (try put(m, entries)) |w| return w;
             // images from before `[boot] uki` went off.
             m.removeUnused(dir, &.{}, "", "");
-            return null;
+            return if (sign) m.signLoader(work) else null;
         }
         if (try m.run(&.{ "mkdir", "-p", dir })) |w| return w;
         var used: std.ArrayList([]const u8) = .empty;
@@ -327,7 +338,19 @@ pub const Machine = struct {
             e.initrds = initrds;
             e.esp_dir = esp_boot_dir;
         }
-        var need: u64 = 0;
+        // images on the esp that need signing, each copied in beside the
+        // one it replaces.
+        var unsigned: std.ArrayList([]const u8) = .empty;
+        var largest: u64 = 0;
+        if (sign) for (used.items) |name| {
+            if (!std.mem.endsWith(u8, name, uki.suffix)) continue;
+            const dest = try std.fs.path.join(m.a, &.{ dir, name });
+            if (lists.find(builds.items, "dest", dest) != null or fileSigned(m.io, dest)) continue;
+            try unsigned.append(m.a, dest);
+            const st = std.Io.Dir.cwd().statFile(m.io, dest, .{}) catch continue;
+            largest = @max(largest, st.size);
+        };
+        var need: u64 = largest;
         for (missing.items) |c| need += c.size;
         for (builds.items) |b| need += b.size;
         if (need > 0) {
@@ -339,11 +362,64 @@ pub const Machine = struct {
             if (try m.replaceFile(c.src, c.dest)) |w| return w;
         }
         for (builds.items) |b| {
-            if (try m.buildUki(b)) |w| return w;
+            if (try m.buildUki(b, sign)) |w| return w;
+        }
+        if (unsigned.items.len > 0) {
+            if (try exec.runAll(m.a, m.io, &.{ &.{ "rm", "-rf", work }, &.{ "mkdir", "-p", work } })) |w| return w;
+            defer _ = exec.run(m.a, m.io, &.{ "rm", "-rf", work }) catch null;
+            for (unsigned.items) |dest| {
+                if (try m.signCopy(dest, work)) |w| return w;
+            }
         }
         if (try put(m, entries)) |w| return w;
         m.removeUnused(dir, used.items, "", "");
-        return null;
+        return if (sign) m.signLoader(work) else null;
+    }
+
+    /// whether menus written now sign what they boot: the root at the top,
+    /// `head`, or the running one has os's file from `[boot] secure_boot`.
+    /// the running one counts since its firmware may enforce secure boot
+    /// already, whatever generation goes on top.
+    fn signs(m: *const Machine, head: []const u8) bool {
+        if (rootfs.pathExists(m.io, m.at(&.{ head, secureboot.config_rel }) catch return false)) return true;
+        const running = m.boot.root_subvol orelse return false;
+        return rootfs.pathExists(m.io, m.at(&.{ running, secureboot.config_rel }) catch return false);
+    }
+
+    /// signs the efi binary at `path` in place, with sbctl's keys.
+    fn signFile(m: *const Machine, path: []const u8) !?[]const u8 {
+        var argv: std.ArrayList([]const u8) = .empty;
+        try argv.appendSlice(m.a, m.signer);
+        try argv.appendSlice(m.a, &.{ "sign", path });
+        const why = try m.run(argv.items) orelse return null;
+        return try std.fmt.allocPrint(m.a, "can't sign {s} for secure boot: {s}", .{ path, why });
+    }
+
+    /// signs `src`, a file in a work directory, then puts it at `dest` on
+    /// the esp, so the esp never has it unsigned.
+    fn signInto(m: *const Machine, src: []const u8, dest: []const u8) !?[]const u8 {
+        if (try m.signFile(src)) |w| return w;
+        return m.replaceFile(src, dest);
+    }
+
+    /// signs a file on the esp: a copy in `work`, signed, replaces it.
+    fn signCopy(m: *const Machine, dest: []const u8, work: []const u8) !?[]const u8 {
+        const copy = try std.fs.path.join(m.a, &.{ work, std.fs.path.basename(dest) });
+        if (try m.run(&.{ "cp", dest, copy })) |w| return w;
+        return m.signInto(copy, dest);
+    }
+
+    /// signs the loader files os puts on the esp itself, when they aren't
+    /// signed yet: refind's btrfs driver. the bootloader's own binaries
+    /// come from its install, and `os doctor` says if they're unsigned.
+    fn signLoader(m: *const Machine, work: []const u8) !?[]const u8 {
+        if (m.loader != .refind) return null;
+        const conf = m.boot.loader_conf orelse return null;
+        const driver = try std.fs.path.join(m.a, &.{ std.fs.path.dirnamePosix(conf).?, refind_driver });
+        if (!rootfs.pathExists(m.io, driver) or fileSigned(m.io, driver)) return null;
+        if (try exec.runAll(m.a, m.io, &.{ &.{ "rm", "-rf", work }, &.{ "mkdir", "-p", work } })) |w| return w;
+        defer _ = exec.run(m.a, m.io, &.{ "rm", "-rf", work }) catch null;
+        return m.signCopy(driver, work);
     }
 
     /// a unified kernel image the esp doesn't have yet: the root whose
@@ -388,7 +464,7 @@ pub const Machine = struct {
     /// go into a directory in the root first, since the esp isn't in
     /// there, and nothing has to be mounted for this. reflinks keep that
     /// cheap for files from the root's own /boot.
-    fn buildUki(m: *const Machine, b: UkiBuild) !?[]const u8 {
+    fn buildUki(m: *const Machine, b: UkiBuild, signed: bool) !?[]const u8 {
         const work = try std.fs.path.join(m.a, &.{ b.root, uki.work_dir });
         if (try exec.runAll(m.a, m.io, &.{ &.{ "rm", "-rf", work }, &.{ "mkdir", "-p", work } })) |w| return w;
         defer _ = exec.run(m.a, m.io, &.{ "rm", "-rf", work }) catch null;
@@ -402,7 +478,10 @@ pub const Machine = struct {
         if (try m.run(try uki.ukifyArgv(m.a, b.root, inside.items[0], inside.items[1..], out))) |w| {
             return try std.fmt.allocPrint(m.a, "can't build a unified kernel image in {s}: {s}", .{ b.root, w });
         }
-        return m.replaceFile(try std.fs.path.join(m.a, &.{ work, "yoq.efi" }), b.dest);
+        const image = try std.fs.path.join(m.a, &.{ work, "yoq.efi" });
+        // signed from here, with the running system's sbctl and keys: the
+        // keys live in /var, which no root holds.
+        return if (signed) m.signInto(image, b.dest) else m.replaceFile(image, b.dest);
     }
 
     /// a boot file the esp doesn't have yet, and where it goes.
@@ -489,7 +568,7 @@ pub const Machine = struct {
             if (try menu.refindArgsProblem(m.a, e.args)) |w| return w;
         }
         const dir = std.fs.path.dirnamePosix(m.boot.loader_conf.?).?;
-        const driver = try std.fs.path.join(m.a, &.{ dir, "drivers_x64/btrfs_x64.efi" });
+        const driver = try std.fs.path.join(m.a, &.{ dir, refind_driver });
         if (!rootfs.pathExists(m.io, driver)) {
             if (try m.run(&.{ "install", "-D", "-m", "0644", "/usr/share/refind/drivers_x64/btrfs_x64.efi", driver })) |w| return w;
         }
@@ -833,6 +912,19 @@ pub fn blockHibernation(io: std.Io) void {
 /// where copies of boot files, and unified kernel images, go on the esp.
 pub const esp_boot_dir = "yoq/boot";
 
+/// where images are signed, inside the root at the top of the menu.
+const sign_dir = "tmp/yoq-sign";
+
+/// refind's btrfs driver, beside refind.conf, which os installs.
+const refind_driver = "drivers_x64/btrfs_x64.efi";
+
+/// whether the efi binary at `path` has a signature. one that can't be
+/// read, or isn't an efi binary, hasn't.
+pub fn fileSigned(io: std.Io, path: []const u8) bool {
+    var head: [secureboot.header_bytes]u8 = undefined;
+    return secureboot.signed(rootfs.readHead(io, path, &head) orelse return false) orelse false;
+}
+
 /// grub-install's arguments for grub on `esp`, reading its menu from
 /// `boot_dir`, on the efi path grub boots from now: its own directory
 /// under EFI/, or the removable path, EFI/BOOT.
@@ -974,4 +1066,80 @@ test "entries for a root with os's ukify config start its image, and unused imag
     try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
     try std.testing.expectEqual(null, test_put[0].uki);
     try std.testing.expectError(error.FileNotFound, esp.access(io, name, .{}));
+}
+
+test "with secure boot, images are signed in the root before they replace the esp's" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "top/@roots/2/boot");
+    try tmp.dir.createDirPath(io, "top/@roots/2/etc/kernel");
+    try tmp.dir.createDirPath(io, "esp/yoq/boot");
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/" ++ uki.config_rel, .data = uki.config_content });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/vmlinuz-linux", .data = "kernel" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/boot/initramfs-linux.img", .data = "initramfs" });
+    const name = try uki.name(a, &.{ &facts.sha256Hex("kernel"), &facts.sha256Hex("initramfs") });
+    const image = try std.fmt.allocPrint(a, "esp/yoq/boot/{s}", .{name});
+    try tmp.dir.writeFile(io, .{ .sub_path = image, .data = "image" });
+    // a stand-in for sbctl, which notes what it signed.
+    try tmp.dir.writeFile(io, .{ .sub_path = "sign.sh", .data =
+        \\[ "$1" = sign ] || exit 1
+        \\printf ' signed' >> "$2"
+        \\echo "$2" >> "$(dirname "$0")/signed.log"
+        \\
+    });
+    const m: Machine = .{
+        .a = a,
+        .io = io,
+        .boot = .{ .esp = try std.fmt.allocPrint(a, "{s}/esp", .{base}), .loader = "grub", .root_subvol = "/@roots/2" },
+        .loader = .grub,
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
+        .signer = &.{ "sh", try std.fmt.allocPrint(a, "{s}/sign.sh", .{base}) },
+    };
+    var entries = [_]menu.Entry{
+        .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" },
+    };
+    // without the key, nothing's signed.
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqualStrings("image", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "signed.log", .{}));
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/" ++ secureboot.config_rel, .data = secureboot.config_content });
+    entries[0] = .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
+    try std.testing.expectEqual(null, try m.writeOnEsp(&entries, &.{}, testPut));
+    try std.testing.expectEqualStrings(name, test_put[0].uki.?);
+    try std.testing.expectEqualStrings("image signed", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
+    // the copy in the root was signed, never the esp's own file, and the
+    // work directory is gone again.
+    const log = try tmp.dir.readFileAlloc(io, "signed.log", a, .limited(1024));
+    try std.testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}/top/@roots/2/{s}/{s}\n", .{ base, sign_dir, name }), log);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "top/@roots/2/" ++ sign_dir, .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, try std.fmt.allocPrint(a, "{s}.yoq-new", .{image}), .{}));
+
+    // a signer that fails leaves the esp's image as it was.
+    const failing: Machine = .{ .a = a, .io = io, .boot = m.boot, .loader = .grub, .root_uuid = "r", .esp_uuid = "e", .top = m.top, .signer = &.{"false"} };
+    try tmp.dir.writeFile(io, .{ .sub_path = image, .data = "image" });
+    entries[0] = .{ .id = "head", .title = "yoq 4", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" };
+    const why = (try failing.writeOnEsp(&entries, &.{}, testPut)).?;
+    try std.testing.expect(std.mem.startsWith(u8, why, "can't sign "));
+    try std.testing.expectEqualStrings("image", try tmp.dir.readFileAlloc(io, image, a, .limited(64)));
+}
+
+test "an efi binary without a certificate table isn't signed" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.writeFile(io, .{ .sub_path = "plain.efi", .data = "not an efi binary" });
+    try std.testing.expect(!fileSigned(io, try std.fmt.allocPrint(a, "{s}/plain.efi", .{base})));
+    try std.testing.expect(!fileSigned(io, try std.fmt.allocPrint(a, "{s}/missing.efi", .{base})));
 }
