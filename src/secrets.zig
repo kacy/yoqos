@@ -219,9 +219,27 @@ pub const System = struct {
         _ = linux.unlink(tmp);
         defer _ = linux.unlink(tmp);
         if (try exec.feed(a, s.io, try encryptArgv(a, name, tmp), value)) |why| return why;
-        _ = linux.chmod(tmp, 0o600);
-        if (linux.errno(linux.rename(tmp, path)) != .SUCCESS) return try std.fmt.allocPrint(a, "can't write {s}", .{path});
+        if (!commit(tmp, path)) return try std.fmt.allocPrint(a, "can't write {s}", .{path});
         return null;
+    }
+
+    /// puts the credential systemd-creds wrote at `tmp` in place at
+    /// `path`, readable by root alone: synced first, renamed, and the
+    /// directory synced, so a power cut leaves the old value or the new
+    /// one, never an empty file under the secret's name.
+    fn commit(tmp: [:0]const u8, path: [:0]const u8) bool {
+        const opened = linux.open(tmp, .{ .ACCMODE = .RDONLY, .NOFOLLOW = true, .CLOEXEC = true }, 0);
+        if (linux.errno(opened) != .SUCCESS) return false;
+        const fd: linux.fd_t = @intCast(opened);
+        const synced = linux.errno(linux.fchmod(fd, 0o600)) == .SUCCESS and linux.errno(linux.fsync(fd)) == .SUCCESS;
+        _ = linux.close(fd);
+        if (!synced or linux.errno(linux.rename(tmp, path)) != .SUCCESS) return false;
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const dir = std.fmt.bufPrintZ(&buf, "{s}", .{std.fs.path.dirnamePosix(path) orelse "."}) catch return true;
+        const dfd = linux.open(dir, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
+        if (linux.errno(dfd) != .SUCCESS) return true;
+        defer _ = linux.close(@intCast(dfd));
+        return linux.errno(linux.fsync(@intCast(dfd))) == .SUCCESS;
     }
 
     /// makes the secrets directory and the ones under it down to `to`,
@@ -362,6 +380,26 @@ pub const Memory = struct {
 };
 
 const testing = std.testing;
+
+test "a new credential goes in place synced, readable by root alone" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    var a_buf: [256]u8 = undefined;
+    var b_buf: [256]u8 = undefined;
+    const from = try std.fmt.bufPrintZ(&a_buf, ".zig-cache/tmp/{s}/home.cred.os-tmp", .{tmp.sub_path});
+    const to = try std.fmt.bufPrintZ(&b_buf, ".zig-cache/tmp/{s}/home.cred", .{tmp.sub_path});
+    try tmp.dir.writeFile(io, .{ .sub_path = "home.cred.os-tmp", .data = "sealed" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "home.cred", .data = "older" });
+    try std.testing.expect(System.commit(from, to));
+    var buf: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("sealed", try tmp.dir.readFile(io, "home.cred", &buf));
+    try std.testing.expectEqual(0o600, @intFromEnum((try tmp.dir.statFile(io, "home.cred", .{})).permissions) & 0o777);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "home.cred.os-tmp", .{}));
+    // nothing there to put in place leaves the old value.
+    try std.testing.expect(!System.commit(from, to));
+    try std.testing.expectEqualStrings("sealed", try tmp.dir.readFile(io, "home.cred", &buf));
+}
 
 test "secret names" {
     for ([_][]const u8{ "wifi", "wifi/home", "a.b-c_d/e1", "x/y/z" }) |n| try testing.expectEqual(null, nameProblem(n));

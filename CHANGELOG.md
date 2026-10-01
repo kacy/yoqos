@@ -151,6 +151,10 @@
   when the menu after it signs and one there has no signature from
   sbctl's db key. the signed copy goes in beside the image, so a plan
   that fit could still stop at the menu write with the esp full.
+- `os secret set` syncs the new value before it renames it into place,
+  and the directory after. a power cut right after a first `set` could
+  leave an empty file under the secret's name, which then failed to
+  decrypt at every apply.
 
 ## 0.1.3
 
