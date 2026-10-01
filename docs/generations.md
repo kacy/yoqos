@@ -215,8 +215,10 @@ back to, still starts then. signing covers:
   `/var/lib/sbctl/keys/db/db.pem`, which every signature names.
 - refind's btrfs driver, which `os` installs beside refind.conf.
 
-a signature only adds a few KiB, so `os plan`'s esp estimate leaves it
-out. `os` doesn't rely on sbctl's own pacman hook: a staged generation's
+a signature only adds a few KiB. signing an image that's on the esp
+already takes more, since its signed copy goes in beside it before it
+replaces it, so when there's one without a signature, `os plan` counts
+room for an image that size. `os` doesn't rely on sbctl's own pacman hook: a staged generation's
 image is signed before its trial boot. the hook still runs when packages
 change on the running system, but not in a root `os` builds, like a staged
 one, a clean build, or an install. it signs files at their paths on the

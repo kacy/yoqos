@@ -147,6 +147,10 @@
 - a machine that turned generations on before the watchdog fix gets the
   new `yoq-watchdog.timer` in its next generation. its old one still
   counted five minutes from the kernel's start, passphrase and all.
+- `os plan` counts the room it takes to sign an image already on the esp,
+  when the menu after it signs and one there has no signature from
+  sbctl's db key. the signed copy goes in beside the image, so a plan
+  that fit could still stop at the menu write with the esp full.
 
 ## 0.1.3
 
