@@ -144,7 +144,9 @@ fn noSecret(a: Allocator, name: []const u8) ![]const u8 {
 
 /// the real store: one systemd-creds file per secret under `dir`, made
 /// with systemd-creds' default keys (the host's credential key, and the
-/// tpm2 too when the machine has one).
+/// tpm2 too when the machine has one), but bound to no pcrs. its default,
+/// pcr 7, is the secure boot state, and turning secure boot on would
+/// leave every value unreadable.
 pub const System = struct {
     io: std.Io,
     dir: []const u8 = default_dir,
@@ -174,6 +176,18 @@ pub const System = struct {
         return flag;
     }
 
+    /// encrypts stdin into `out`. the empty pcr list ties the credential
+    /// to the machine's tpm2 and host key, not to what it booted.
+    fn encryptArgv(a: Allocator, name: []const u8, out: []const u8) ![]const []const u8 {
+        return a.dupe([]const u8, &.{ "systemd-creds", "encrypt", try nameFlag(a, name), "--tpm2-pcrs=", "-", out });
+    }
+
+    /// decrypts `path` to stdout. the credential carries its own policy,
+    /// so this needs no key or pcr flags.
+    fn decryptArgv(a: Allocator, name: []const u8, path: []const u8) ![]const []const u8 {
+        return a.dupe([]const u8, &.{ "systemd-creds", "decrypt", "--newline=no", try nameFlag(a, name), path, "-" });
+    }
+
     fn problem(_: *anyopaque) ?[]const u8 {
         return if (linux.geteuid() == 0) null else "secrets are root's, so this needs root";
     }
@@ -184,7 +198,7 @@ pub const System = struct {
         const path = try s.credPath(a, name);
         if (!rootfs.pathExists(s.io, path)) return .missing;
         const buf = try a.alloc(u8, max_len + 1);
-        switch (try exec.capture(a, s.io, &.{ "systemd-creds", "decrypt", "--newline=no", try nameFlag(a, name), path, "-" }, buf)) {
+        switch (try exec.capture(a, s.io, try decryptArgv(a, name, path), buf)) {
             .ok => |v| return .{ .value = v },
             .failed => |why| {
                 wipe(buf);
@@ -204,7 +218,7 @@ pub const System = struct {
         // goes after. once renamed, there's nothing left to remove.
         _ = linux.unlink(tmp);
         defer _ = linux.unlink(tmp);
-        if (try exec.feed(a, s.io, &.{ "systemd-creds", "encrypt", try nameFlag(a, name), "-", tmp }, value)) |why| return why;
+        if (try exec.feed(a, s.io, try encryptArgv(a, name, tmp), value)) |why| return why;
         _ = linux.chmod(tmp, 0o600);
         if (linux.errno(linux.rename(tmp, path)) != .SUCCESS) return try std.fmt.allocPrint(a, "can't write {s}", .{path});
         return null;
@@ -381,6 +395,21 @@ test "the memory store" {
     try testing.expectEqualStrings("wifi/home", (try s.names(a))[0]);
     try testing.expectEqual(null, try s.remove(a, "wifi/home"));
     try testing.expect(try s.remove(a, "wifi/home") != null);
+}
+
+test "systemd-creds runs bound to no pcrs, with its default keys" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const enc = try System.encryptArgv(a, "wifi/home", "/s/wifi/home.cred.os-tmp");
+    const want_enc = [_][]const u8{ "systemd-creds", "encrypt", "--name=wifi@home", "--tpm2-pcrs=", "-", "/s/wifi/home.cred.os-tmp" };
+    try testing.expectEqual(want_enc.len, enc.len);
+    for (want_enc, enc) |w, g| try testing.expectEqualStrings(w, g);
+    for (enc) |arg| try testing.expect(!std.mem.startsWith(u8, arg, "--with-key"));
+    const dec = try System.decryptArgv(a, "wifi/home", "/s/wifi/home.cred");
+    const want_dec = [_][]const u8{ "systemd-creds", "decrypt", "--newline=no", "--name=wifi@home", "/s/wifi/home.cred", "-" };
+    try testing.expectEqual(want_dec.len, dec.len);
+    for (want_dec, dec) |w, g| try testing.expectEqualStrings(w, g);
 }
 
 test "the systemd-creds store, as root" {

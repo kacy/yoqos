@@ -95,6 +95,9 @@
   to read says so, not that nothing was typed.
 - `os apply` writes a secret only if it still has the value the plan was
   made for, so an `os secret set` in between stops it instead.
+- secrets are encrypted bound to no tpm2 pcrs, so turning secure boot on
+  doesn't leave them unreadable. values set before this may need `os
+  secret set` again after secure boot changes.
 - `os install` checks the live system has every secret the config names
   before it erases the disk, where it used to stop at the build.
 

@@ -958,9 +958,17 @@ might push somewhere. a `secret` key names the value instead, and the value
 lives on the machine: `os secret set` encrypts it with `systemd-creds`, with
 its default keys (the tpm2 and the host's credential key when there's a
 tpm2, else the host key alone), into `/var/lib/yoq/secrets/<name>.cred`.
-that directory is root's alone, so every `os secret` command needs root.
-`apply` decrypts a value right before it writes the file, and wipes it from
-memory once it's written.
+the tpm2 part isn't bound to any pcrs, so a value stays readable when what
+the machine boots changes, like turning secure boot on. that directory is
+root's alone, so every `os secret` command needs root. `apply` decrypts a
+value right before it writes the file, and wipes it from memory once it's
+written.
+
+`os secret set` on a name that's already set encrypts the value again. values
+set with an earlier build of `os` were bound to pcr 7, the secure boot
+state, so on a machine with a tpm2 they stop decrypting once secure boot is
+turned on or off: `os plan` stops with E0133, and setting each one again
+fixes it.
 
 a name is letters, digits, `-`, `_`, and `.`, with `/` to group them, like
 `wifi/home`; no part of it starts with a dot. a value comes from stdin byte
