@@ -64,6 +64,26 @@ pub const File = struct {
     mode: []const u8,
     /// os wrote it: its first line says so.
     ours: bool = false,
+    /// it holds a secret, so `sha256` is the keyed hash instead, or ""
+    /// when that couldn't be taken.
+    keyed: bool = false,
+};
+
+/// a secret the config names, as this machine has it. never the value.
+pub const Secret = struct {
+    name: []const u8,
+    state: State = .unknown,
+    /// the value's keyed hash, when it could be read.
+    keyed: ?[]const u8 = null,
+
+    pub const State = enum {
+        set,
+        missing,
+        /// there, but it can't be decrypted here.
+        unreadable,
+        /// the observer couldn't look, not running as root.
+        unknown,
+    };
 };
 
 /// how the machine boots, for the rollback rung's checks.
@@ -137,6 +157,10 @@ pub const Pacman = struct {
 pub const Wanted = struct {
     files: []const []const u8 = &.{},
     keys: []const []const u8 = &.{},
+    /// secrets to look for, by name, and the files among `files` that
+    /// hold one, which get a keyed hash.
+    secrets: []const []const u8 = &.{},
+    secret_files: []const []const u8 = &.{},
 };
 
 /// the hash files are compared by.
@@ -181,6 +205,8 @@ pub const Facts = struct {
     id_changes: []const []const u8 = &.{},
     /// the files the config manages that exist.
     files: []File = &.{},
+    /// the secrets the config names.
+    secrets: []Secret = &.{},
     /// modules mkinitcpio puts in the initramfs, from mkinitcpio.conf and
     /// its drop-ins, leaving out the ones os writes.
     initramfs_modules: []const []const u8 = &.{},
@@ -202,6 +228,10 @@ pub const Facts = struct {
         return lists.find(f.units, "name", name);
     }
 
+    pub fn secret(f: *const Facts, name: []const u8) ?*const Secret {
+        return lists.find(f.secrets, "name", name);
+    }
+
     /// sorts every list by name so output and hashes don't depend on the
     /// order things were observed in.
     pub fn normalize(f: *Facts) void {
@@ -209,6 +239,7 @@ pub const Facts = struct {
         lists.sortByField(Unit, "name", f.units);
         lists.sortByField(User, "name", f.users);
         lists.sortByField(File, "path", f.files);
+        lists.sortByField(Secret, "name", f.secrets);
     }
 };
 

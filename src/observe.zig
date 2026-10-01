@@ -17,6 +17,7 @@ const rootfs = @import("rootfs.zig");
 const systemd = @import("systemd.zig");
 const diag = @import("diag.zig");
 const lists = @import("lists.zig");
+const secrets = @import("secrets.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Options = struct {
@@ -29,6 +30,9 @@ pub const Options = struct {
     units: bool = systemd.available,
     /// the files to hash and keys to look for, from the config.
     wanted: facts.Wanted = .{},
+    /// where the secrets the config names are kept. without one, they're
+    /// unknown.
+    secrets: ?secrets.Store = null,
 };
 
 pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error{OutOfMemory}!facts.Facts {
@@ -47,7 +51,9 @@ pub fn observe(a: Allocator, io: std.Io, opts: Options, diags: *diag.List) error
     const history = try accounts.parseHistory(a, try r.file(accounts.history_path) orelse "");
     f.id_changes = try accounts.changes(a, history, try accounts.systemIds(a, passwd orelse "", group));
     f.pacman_changes = try drift.since(a, io, opts.root);
-    f.files = try files(a, io, opts.root, opts.wanted.files);
+    const key = if (opts.secrets) |s| try s.key(a) else null;
+    f.files = try files(a, io, opts.root, opts.wanted, key);
+    f.secrets = try secretFacts(a, opts.secrets, opts.wanted.secrets, key);
     f.pacman = try pacmanSetup(a, io, r, opts.wanted.keys);
     f.initramfs_modules = try r.mkinitcpio("MODULES");
     const dbpath = try pacmanDb(a, io, opts.root);
@@ -399,21 +405,60 @@ fn mapsReplaced(maps: []const u8) bool {
     return false;
 }
 
-/// the managed files that exist, with their hash and mode.
-fn files(a: Allocator, io: std.Io, root: []const u8, paths: []const []const u8) ![]facts.File {
+/// the managed files that exist, with their hash and mode. a file that
+/// holds a secret gets the keyed hash instead, with `key`.
+fn files(a: Allocator, io: std.Io, root: []const u8, wanted: facts.Wanted, key: ?secrets.Key) ![]facts.File {
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
     var out: std.ArrayList(facts.File) = .empty;
-    for (paths) |p| {
+    for (wanted.files) |p| {
         const rel = std.mem.trimStart(u8, p, "/");
         const m = try fs.mode(rel) orelse continue;
+        const mode = try std.fmt.allocPrint(a, "{o:0>4}", .{m});
+        if (lists.contains(wanted.secret_files, p)) {
+            try out.append(a, .{ .path = p, .sha256 = try keyedFile(a, io, try fs.path(rel), key), .mode = mode, .keyed = true });
+            continue;
+        }
         const content = try fs.read(rel);
         const hex = facts.sha256Hex(content);
         try out.append(a, .{
             .path = p,
             .sha256 = try a.dupe(u8, &hex),
-            .mode = try std.fmt.allocPrint(a, "{o:0>4}", .{m}),
+            .mode = mode,
             .ours = std.mem.startsWith(u8, content, "# written by os"),
         });
+    }
+    return out.items;
+}
+
+/// the keyed hash of the file at `path`, or "" without the key or when it
+/// can't be read. what it read is wiped: it's a secret.
+fn keyedFile(a: Allocator, io: std.Io, path: []const u8, key: ?secrets.Key) ![]const u8 {
+    const k = key orelse return "";
+    const content = std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(64 << 20)) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return "",
+    };
+    defer secrets.wipe(content);
+    return a.dupe(u8, &secrets.keyedHex(&k, content));
+}
+
+/// each secret the config names: whether this machine has it, and its
+/// value's keyed hash. the value itself is wiped as soon as it's hashed.
+fn secretFacts(a: Allocator, store: ?secrets.Store, names: []const []const u8, key: ?secrets.Key) ![]facts.Secret {
+    var out: std.ArrayList(facts.Secret) = .empty;
+    for (names) |name| {
+        var s: facts.Secret = .{ .name = name };
+        if (store) |st| switch (try st.get(a, name)) {
+            .value => |v| {
+                defer secrets.wipe(v);
+                s.state = .set;
+                if (key) |k| s.keyed = try a.dupe(u8, &secrets.keyedHex(&k, v));
+            },
+            .missing => s.state = .missing,
+            .unreadable => s.state = .unreadable,
+            .unknown => {},
+        };
+        try out.append(a, s);
     }
     return out.items;
 }

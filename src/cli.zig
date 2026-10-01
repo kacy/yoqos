@@ -34,6 +34,7 @@ const docs = @import("cmd/docs.zig");
 const update = @import("cmd/update.zig");
 const events_cmd = @import("cmd/events.zig");
 const schemas = @import("schema.zig");
+const secrets = @import("secrets.zig");
 
 pub const default_config = "/etc/yoq/machine.toml";
 
@@ -77,6 +78,9 @@ pub const Context = struct {
     /// how package transactions show progress on `err`, unless --json is
     /// set. tests leave it off.
     progress: progress.Mode = .off,
+    /// where secrets are kept: the machine's own, always, whatever --root
+    /// says, since a root os builds is for this machine too.
+    secrets: ?secrets.Store = null,
 };
 
 const Handler = *const fn (ctx: *Context, args: []const [:0]const u8) anyerror!u8;
@@ -378,7 +382,7 @@ pub const Work = struct {
     /// observer problems are in `diags`.
     pub fn facts(w: *Work) !?facts_mod.Facts {
         const ctx = w.ctx;
-        const f = pipeline.getFacts(ctx.files, ctx.io, w.allocator(), ctx.facts_path, ctx.root, .{}, &w.diags) catch |e| {
+        const f = pipeline.getFacts(ctx.files, ctx.io, w.allocator(), ctx.facts_path, .{ .root = ctx.root }, &w.diags) catch |e| {
             try factsError(ctx, e, ctx.facts_path);
             return null;
         };
@@ -514,7 +518,7 @@ fn factsError(ctx: *Context, e: pipeline.Error, path: ?[]const u8) !void {
 /// the planner inputs for a command, from the global flags: the config
 /// path, the machine root, and the facts file if there is one.
 pub fn inputs(ctx: *const Context) pipeline.Inputs {
-    return .{ .config_path = ctx.config_path, .root = ctx.root, .facts_path = ctx.facts_path };
+    return .{ .config_path = ctx.config_path, .root = ctx.root, .facts_path = ctx.facts_path, .secrets = ctx.secrets };
 }
 
 /// a path under the machine's root, like /etc/pacman.conf.
@@ -645,6 +649,8 @@ pub const TestRun = struct {
     recorder: history.Recorder = .{ .gpa = std.testing.allocator },
     /// run as if under one of os's own transactions.
     in_own_transaction: bool = false,
+    /// the secrets commands see, if any.
+    secrets: ?*secrets.Memory = null,
     reader: std.Io.Reader = undefined,
     code: u8 = 0,
 
@@ -665,6 +671,7 @@ pub const TestRun = struct {
             .fetcher = t.fetcher orelse offline,
             .history = t.recorder.history(),
             .in_own_transaction = t.in_own_transaction,
+            .secrets = if (t.secrets) |m| m.store() else null,
         };
         t.recorder.fs = &t.fs;
         if (t.input) |text| {

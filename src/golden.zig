@@ -64,8 +64,8 @@ fn runCase(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8
     var outputs: std.ArrayList(struct { []const u8, []const u8 }) = .empty;
     var built = try pipeline.buildPlan(gpa, io, files.files(), in, &diags);
     defer if (built) |*r| r.deinit();
-    // the esp check runs where os plan and os apply run it.
-    const planned = if (built) |*r| try planner.checkEsp(a, &r.plan, &r.facts, &diags) else false;
+    // the esp and secret checks run where os plan and os apply run them.
+    const planned = if (built) |*r| try planner.checkEsp(a, &r.plan, &r.facts, &diags) and try planner.checkSecrets(r.state.config(), &r.facts, &diags) else false;
     if (planned) {
         const result = &built.?;
         var text: std.Io.Writer.Allocating = .init(a);

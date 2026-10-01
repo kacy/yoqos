@@ -15,6 +15,7 @@ const users = @import("users.zig");
 const rootfs = @import("rootfs.zig");
 const exec = @import("exec.zig");
 const lists = @import("lists.zig");
+const secrets = @import("secrets.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Target = alpm.Target;
@@ -61,7 +62,7 @@ fn transaction(a: Allocator, p: *const planner.Plan, l: *const lock.Lock, t: Tar
 /// machine. units going away stop before their packages are removed, and
 /// new ones start after theirs are installed. returns null, with reasons
 /// in `diags`, if a step failed; steps before it stay done.
-pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock, files: []const planner.DesiredFile, t: Target, units: bool, diags: *diag.List) !?Result {
+pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock, files: []const planner.DesiredFile, store: ?secrets.Store, t: Target, units: bool, diags: *diag.List) !?Result {
     var skipped: std.ArrayList(planner.Change) = .empty;
     for (p.changes) |c| {
         if (!applies(c.kind, units)) try skipped.append(a, c);
@@ -85,7 +86,7 @@ pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock
         const ok = switch (c.kind) {
             .setting => try settings.apply(a, io, t.root, c.subject, c.to.?, diags),
             .user => try users.apply(a, io, t.root, c, diags),
-            .file => if (c.op == .remove) try removeFile(a, io, t.root, c.subject, diags) else try writeFile(a, io, t.root, files, c.subject, units, diags),
+            .file => if (c.op == .remove) try removeFile(a, io, t.root, c.subject, diags) else try writeFile(a, io, t.root, files, store, c.subject, units, diags),
             else => true,
         };
         if (!ok) return null;
@@ -131,12 +132,30 @@ fn rebuildInitramfs(a: Allocator, io: std.Io, root: []const u8, diags: *diag.Lis
 
 /// writes a managed file whole, with its mode. on a running machine
 /// (`live`, as for units) the sysctl file and the module list are loaded
-/// right away.
-fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.DesiredFile, path: []const u8, live: bool, diags: *diag.List) !bool {
+/// right away. a secret's value is read from `store` just for the write,
+/// and wiped after it.
+fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.DesiredFile, store: ?secrets.Store, path: []const u8, live: bool, diags: *diag.List) !bool {
     const d = lists.find(files, "path", path).?; // the plan came from these files.
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
     const mode = std.fmt.parseInt(u32, d.mode, 8) catch unreachable; // validated with the config.
-    fs.writeMode(std.mem.trimStart(u8, path, "/"), d.content, mode) catch |e| switch (e) {
+    var value: ?[]u8 = null;
+    defer if (value) |v| secrets.wipe(v);
+    if (d.secret) |name| {
+        const why: []const u8 = switch (if (store) |s| try s.get(a, name) else .unknown) {
+            .value => |v| blk: {
+                value = v;
+                break :blk "";
+            },
+            .missing => "this machine doesn't have it",
+            .unreadable => |why| why,
+            .unknown => "secrets need root",
+        };
+        if (value == null) {
+            try diags.addHint(.apply_failed, null, "can't write {s}: can't read the secret \"{s}\": {s}", .{ path, name, why }, "`os secret set {s}` sets it", .{name});
+            return false;
+        }
+    }
+    fs.writeMode(std.mem.trimStart(u8, path, "/"), value orelse d.content, mode) catch |e| switch (e) {
         error.OutOfMemory => return e,
         error.WriteFailed => {
             try diags.add(.apply_failed, null, "can't write {s}", .{try fs.path(path)}, null);
@@ -268,12 +287,68 @@ test "files are written with their mode, and the plan comes back empty" {
     const p = (try planner.plan(a, &c, &l, &f, &diags)).?;
     try testing.expectEqual(2, p.changes.len);
     const t: Target = .{ .root = root, .dbpath = "", .dbs = &.{}, .cachedir = "", .gpgdir = null };
-    _ = (try run(a, io, &p, &l, files, t, false, &diags)).?;
+    _ = (try run(a, io, &p, &l, files, null, t, false, &diags)).?;
 
     f = try observe.observe(a, io, .{ .root = root, .packages = false, .units = false, .wanted = want }, &diags);
     try testing.expect((try planner.plan(a, &c, &l, &f, &diags)).?.empty());
     try testing.expectEqualStrings("0600", f.file("/etc/ssh/sshd_config.d/10-local.conf").?.mode);
     try testing.expectEqualStrings("0644", f.file(planner.sysctl_path).?.mode);
+}
+
+test "a secret's file is written from the store, and the facts only hold its keyed hash" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+    var diags: diag.List = .init(testing.allocator);
+    defer diags.deinit();
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var mem: secrets.Memory = .init(testing.allocator);
+    defer mem.deinit();
+    const store = mem.store();
+    const observe = @import("observe.zig");
+
+    const c = try helpers.configFrom(a, "[boot]\nkernel = \"none\"\n[files.\"/etc/wifi.psk\"]\nsecret = \"wifi/home\"\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
+    const files = try planner.desiredFiles(a, &c, &.{});
+    const want = try planner.wanted(a, &c);
+    const opts: observe.Options = .{ .root = root, .packages = false, .units = false, .wanted = want, .secrets = store };
+    const t: Target = .{ .root = root, .dbpath = "", .dbs = &.{}, .cachedir = "", .gpgdir = null };
+
+    var f = try observe.observe(a, io, opts, &diags);
+    try testing.expectEqual(.missing, f.secret("wifi/home").?.state);
+    try testing.expect(!try planner.checkSecrets(&c, &f, &diags));
+    // apply refuses too, should it get that far.
+    var p = (try planner.plan(a, &c, &l, &f, &diags)).?;
+    try testing.expectEqual(null, try run(a, io, &p, &l, files, store, t, false, &diags));
+
+    _ = try store.set(a, "wifi/home", "hunter2");
+    f = try observe.observe(a, io, opts, &diags);
+    p = (try planner.plan(a, &c, &l, &f, &diags)).?;
+    try testing.expectEqual(1, p.changes.len);
+    _ = (try run(a, io, &p, &l, files, store, t, false, &diags)).?;
+    try testing.expectEqualStrings("hunter2", try tmp.dir.readFileAlloc(io, "etc/wifi.psk", a, .limited(64)));
+
+    f = try observe.observe(a, io, opts, &diags);
+    try testing.expect((try planner.plan(a, &c, &l, &f, &diags)).?.empty());
+    try testing.expectEqualStrings("0600", f.file("/etc/wifi.psk").?.mode);
+    var out: std.Io.Writer.Allocating = .init(a);
+    try facts.write(&out.writer, &f);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "hunter2") == null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), &facts.sha256Hex("hunter2")) == null);
+    try testing.expect(f.file("/etc/wifi.psk").?.keyed);
+
+    _ = try store.set(a, "wifi/home", "hunter3");
+    f = try observe.observe(a, io, opts, &diags);
+    p = (try planner.plan(a, &c, &l, &f, &diags)).?;
+    try testing.expectEqualStrings("rewrite, mode 0600", p.changes[0].to.?);
+    _ = (try run(a, io, &p, &l, files, store, t, false, &diags)).?;
+    try testing.expectEqualStrings("hunter3", try tmp.dir.readFileAlloc(io, "etc/wifi.psk", a, .limited(64)));
+    // the refusal earlier is the only problem, and it doesn't hold the value.
+    try testing.expectEqual(2, diags.items.items.len);
+    for (diags.items.items) |d| try testing.expect(std.mem.indexOf(u8, d.message, "hunter") == null);
 }
 
 test "mkinitcpio drop-ins rebuild the initramfs once" {

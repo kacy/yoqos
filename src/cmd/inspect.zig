@@ -81,6 +81,7 @@ pub fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer w.deinit();
     const result = try w.plan(in) orelse return w.fail();
     if (!try planner.checkEsp(result.allocator(), &result.plan, &result.facts, &w.diags)) return w.fail();
+    if (!try planner.checkSecrets(result.state.config(), &result.facts, &w.diags)) return w.fail();
 
     if (ctx.json) {
         try planner.writeJson(ctx.out, result.allocator(), &result.plan);

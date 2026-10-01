@@ -10,6 +10,7 @@ const facts = @import("facts.zig");
 const planner = @import("planner.zig");
 const diag = @import("diag.zig");
 const observe = @import("observe.zig");
+const secrets = @import("secrets.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Error = error{ OutOfMemory, BadFacts, FactsUnreadable };
@@ -60,10 +61,9 @@ pub fn load(gpa: Allocator, files: compose.Files, config_path: []const u8, lock_
 }
 
 /// facts read from the file at `path` if given, else observed from the
-/// machine under `root`, looking at what the config wants. observer
-/// problems go to `diags`.
-pub fn getFacts(files: compose.Files, io: std.Io, a: Allocator, path: ?[]const u8, root: []const u8, wanted: facts.Wanted, diags: *diag.List) Error!facts.Facts {
-    const p = path orelse return observe.observe(a, io, .{ .root = root, .wanted = wanted }, diags);
+/// machine as `opts` says. observer problems go to `diags`.
+pub fn getFacts(files: compose.Files, io: std.Io, a: Allocator, path: ?[]const u8, opts: observe.Options, diags: *diag.List) Error!facts.Facts {
+    const p = path orelse return observe.observe(a, io, opts, diags);
     const bytes = files.read(a, p) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.FactsUnreadable,
@@ -78,6 +78,8 @@ pub const Inputs = struct {
     facts_path: ?[]const u8 = null,
     /// the machine to observe when there's no facts file.
     root: []const u8 = "/",
+    /// where the observer looks for the config's secrets.
+    secrets: ?secrets.Store = null,
 };
 
 pub const Result = struct {
@@ -99,7 +101,7 @@ pub fn buildPlan(gpa: Allocator, io: std.Io, files: compose.Files, in: Inputs, d
     var state = try load(gpa, files, in.config_path, in.lock_path, diags) orelse return null;
     errdefer state.deinit();
     const a = state.arena.allocator();
-    const f = try getFacts(files, io, a, in.facts_path, in.root, try planner.wanted(a, state.config()), diags);
+    const f = try getFacts(files, io, a, in.facts_path, .{ .root = in.root, .wanted = try planner.wanted(a, state.config()), .secrets = in.secrets }, diags);
     if (diags.items.items.len == 0) {
         if (try planner.plan(a, state.config(), &state.lock, &f, diags)) |p| return .{ .state = state, .facts = f, .plan = p };
     }
