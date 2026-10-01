@@ -1,5 +1,22 @@
 # changelog
 
+## unreleased
+
+### new
+
+- `[files."<path>"] secret = "<name>"` writes a value that never goes into
+  the config or the lock. `os secret set <name>` keeps it, encrypted with
+  systemd-creds under `/var/lib/yoq/secrets`, and `os secret list` and
+  `os secret rm` go with it. a secret's file is `0600` unless the entry
+  says otherwise, and the plan points out a mode that lets others read it.
+- plans and facts compare a secret's file by an hmac-sha256 under a key
+  only the machine has, so neither shows the value or a plain hash of it.
+- a secret this machine doesn't have stops `os plan` and `os apply` with
+  E0133, which names the `os secret set` to run, and `os status` lists it
+  as failing.
+- `os why <path>` names a file's secret, and `os schema secret` and `os
+  schema secrets` describe the new `--json` documents.
+
 ## 0.1.3
 
 os can now tell you what it did, as json events, and why a file or unit is

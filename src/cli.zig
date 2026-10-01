@@ -33,7 +33,9 @@ const doctor = @import("cmd/doctor.zig");
 const docs = @import("cmd/docs.zig");
 const update = @import("cmd/update.zig");
 const events_cmd = @import("cmd/events.zig");
+const secret_cmd = @import("cmd/secret.zig");
 const schemas = @import("schema.zig");
+const secrets = @import("secrets.zig");
 
 pub const default_config = "/etc/yoq/machine.toml";
 
@@ -77,6 +79,12 @@ pub const Context = struct {
     /// how package transactions show progress on `err`, unless --json is
     /// set. tests leave it off.
     progress: progress.Mode = .off,
+    /// where secrets are kept: the machine's own, always, whatever --root
+    /// says, since a root os builds is for this machine too.
+    secrets: ?secrets.Store = null,
+    /// turns echo on the terminal off and on again, while a secret's
+    /// value is typed.
+    set_echo: ?*const fn (on: bool) void = null,
 };
 
 const Handler = *const fn (ctx: *Context, args: []const [:0]const u8) anyerror!u8;
@@ -103,6 +111,7 @@ const commands = [_]Command{
     .{ .name = "disable", .summary = "turn services off in the config", .handler = edit.disableCmd },
     .{ .name = "edit", .summary = "open the config in $EDITOR, check it, and apply it", .handler = edit.editCmd },
     .{ .name = "adopt", .summary = "put packages installed outside os into the config", .handler = edit.adoptCmd },
+    .{ .name = "secret", .summary = "keep, list, or remove the values files name with secret", .handler = secret_cmd.secretCmd },
     .{ .name = "rollback", .summary = "go back to an earlier generation", .handler = rollback.rollbackCmd },
     .{ .name = "enable-rollback", .summary = "turn on generations of the whole system (btrfs)", .handler = enable_rollback.enableRollbackCmd },
     .{ .name = "install", .summary = "put the machine a config describes on a blank disk, from a live system", .handler = install_cmd.installCmd },
@@ -378,7 +387,7 @@ pub const Work = struct {
     /// observer problems are in `diags`.
     pub fn facts(w: *Work) !?facts_mod.Facts {
         const ctx = w.ctx;
-        const f = pipeline.getFacts(ctx.files, ctx.io, w.allocator(), ctx.facts_path, ctx.root, .{}, &w.diags) catch |e| {
+        const f = pipeline.getFacts(ctx.files, ctx.io, w.allocator(), ctx.facts_path, .{ .root = ctx.root }, &w.diags) catch |e| {
             try factsError(ctx, e, ctx.facts_path);
             return null;
         };
@@ -514,7 +523,7 @@ fn factsError(ctx: *Context, e: pipeline.Error, path: ?[]const u8) !void {
 /// the planner inputs for a command, from the global flags: the config
 /// path, the machine root, and the facts file if there is one.
 pub fn inputs(ctx: *const Context) pipeline.Inputs {
-    return .{ .config_path = ctx.config_path, .root = ctx.root, .facts_path = ctx.facts_path };
+    return .{ .config_path = ctx.config_path, .root = ctx.root, .facts_path = ctx.facts_path, .secrets = ctx.secrets };
 }
 
 /// a path under the machine's root, like /etc/pacman.conf.
@@ -638,6 +647,8 @@ pub const TestRun = struct {
     input: ?[]const u8 = null,
     /// or a reader of the test's own for them, which does the same.
     in: ?*std.Io.Reader = null,
+    /// stdin from a pipe rather than a terminal: no questions get asked.
+    piped: ?[]const u8 = null,
     /// answers downloads. by default every download fails, so no test
     /// touches the network by accident.
     fetcher: ?sync.Fetcher = null,
@@ -645,6 +656,8 @@ pub const TestRun = struct {
     recorder: history.Recorder = .{ .gpa = std.testing.allocator },
     /// run as if under one of os's own transactions.
     in_own_transaction: bool = false,
+    /// the secrets commands see, if any.
+    secrets: ?*secrets.Memory = null,
     reader: std.Io.Reader = undefined,
     code: u8 = 0,
 
@@ -665,6 +678,7 @@ pub const TestRun = struct {
             .fetcher = t.fetcher orelse offline,
             .history = t.recorder.history(),
             .in_own_transaction = t.in_own_transaction,
+            .secrets = if (t.secrets) |m| m.store() else null,
         };
         t.recorder.fs = &t.fs;
         if (t.input) |text| {
@@ -675,6 +689,10 @@ pub const TestRun = struct {
         if (t.in) |r| {
             t.ctx.in = r;
             t.ctx.interactive = true;
+        }
+        if (t.piped) |text| {
+            t.reader = .fixed(text);
+            t.ctx.in = &t.reader;
         }
         t.code = try run(&t.ctx, args);
     }
@@ -720,6 +738,7 @@ test {
     _ = docs;
     _ = update;
     _ = events_cmd;
+    _ = secret_cmd;
     _ = @import("cmd/lock.zig");
     _ = @import("cmd/stage.zig");
 }

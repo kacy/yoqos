@@ -63,6 +63,15 @@ pub const Status = struct {
     },
     /// configured services whose units failed.
     failing: []const []const u8,
+    /// secrets the config names that this machine doesn't have, or can't
+    /// decrypt. never their values.
+    secrets: []const Secret = &.{},
+
+    pub const Secret = struct { name: []const u8, state: facts.Secret.State };
+
+    pub fn failed(s: *const Status) bool {
+        return s.failing.len > 0 or s.secrets.len > 0;
+    }
 };
 
 pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *const facts.Facts, p: *const planner.Plan) !Status {
@@ -142,7 +151,17 @@ pub fn summarize(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: 
             .static = static.items,
         },
         .failing = failing.items,
+        .secrets = try secretProblems(a, f),
     };
+}
+
+/// the secrets this machine doesn't have, or can't decrypt.
+fn secretProblems(a: Allocator, f: *const facts.Facts) ![]const Status.Secret {
+    var out: std.ArrayList(Status.Secret) = .empty;
+    for (f.secrets) |s| {
+        if (s.state == .missing or s.state == .unreadable) try out.append(a, .{ .name = s.name, .state = s.state });
+    }
+    return out.items;
 }
 
 /// every package the recorded pacman transactions touched, once each.
@@ -209,8 +228,15 @@ pub fn writeText(w: *std.Io.Writer, s: *const Status) !void {
     if (rows.first) try w.writeAll("changed   none\n");
 
     try w.writeAll("failing   ");
-    if (s.failing.len == 0) try w.writeAll("none") else try joined(w, s.failing);
-    try w.writeByte('\n');
+    if (s.failing.len > 0) {
+        try joined(w, s.failing);
+        try w.writeByte('\n');
+    } else if (s.secrets.len == 0) try w.writeAll("none\n");
+    for (s.secrets, 0..) |secret, i| {
+        if (i > 0 or s.failing.len > 0) try w.writeAll(" " ** 10);
+        const what = if (secret.state == .missing) "isn't set here" else "can't be decrypted here";
+        try w.print("secret {s} {s}  -> os secret set {s}\n", .{ secret.name, what, secret.name });
+    }
 }
 
 /// the "changed" rows: the label on the first one only, and the command
@@ -290,6 +316,28 @@ test "status text" {
         \\failing   tailscaled.service
         \\
     , out.written());
+}
+
+test "a secret this machine doesn't have is failing" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const c = try @import("test_helpers.zig").configFrom(a, "[boot]\nkernel = \"none\"\n[files.\"/etc/wifi.psk\"]\nsecret = \"wifi/home\"\n[files.\"/etc/vpn.key\"]\nsecret = \"vpn\"\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
+    var known = [_]facts.Secret{ .{ .name = "vpn", .state = .unreadable }, .{ .name = "wifi/home", .state = .missing } };
+    const f: facts.Facts = .{ .secrets = &known };
+    var diags: @import("diag.zig").List = .init(testing.allocator);
+    defer diags.deinit();
+    const p = (try planner.plan(a, &c, &l, &f, &diags)).?;
+    const s = try summarize(a, &c, &l, &f, &p);
+    try testing.expect(s.failed());
+    var out: std.Io.Writer.Allocating = .init(a);
+    try writeText(&out.writer, &s);
+    try testing.expect(std.mem.endsWith(u8, out.written(),
+        \\failing   secret vpn can't be decrypted here  -> os secret set vpn
+        \\          secret wifi/home isn't set here  -> os secret set wifi/home
+        \\
+    ));
 }
 
 test "a package differing in version and reason counts once" {

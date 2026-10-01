@@ -33,6 +33,7 @@ pub const Code = enum {
     plan_moved,
     aur_missing,
     esp_full,
+    secret_missing,
 };
 
 pub const Entry = struct {
@@ -226,6 +227,16 @@ pub const table = [_]Entry{
             "`os gc --keep 1` would remove. with grub or refind, the esp holds only the running " ++
             "system's files, so make room by hand, for example by removing the fallback initramfs " ++
             "images, which os's menu doesn't boot. then plan again.",
+    },
+    .{
+        .code = .secret_missing,
+        .id = "E0133",
+        .title = "a secret isn't set on this machine",
+        .explanation = "a `[files]` entry says `secret = \"<name>\"`, and this machine has no value for that " ++
+            "name, or has one it can't decrypt. values never go into the config or the lock: each machine " ++
+            "keeps its own, encrypted with systemd-creds under /var/lib/yoq/secrets, so a config copied to " ++
+            "a new machine needs its secrets set again there. `os secret set <name>` asks for the value, or " ++
+            "reads it from stdin, as in `printf '%s' \"$value\" | sudo os secret set <name>`. then plan again.",
     },
 };
 

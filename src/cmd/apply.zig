@@ -183,6 +183,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     // before anything is built: a staged root whose boot files can't go
     // on the esp would only be thrown away.
     if (!try planner.checkEsp(a, p, &result.facts, &w.diags)) return Outcome.failed(&w);
+    if (!try planner.checkSecrets(result.state.config(), &result.facts, &w.diags)) return Outcome.failed(&w);
     const cut = try journal.unfinished(a, ctx.io, ctx.root);
     var settled_generation = false;
     if (cut) |begin| {
@@ -235,7 +236,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "begin", &hash);
     const files = try planner.desiredFiles(a, result.state.config(), &result.facts);
     const problems = w.diags.items.items.len;
-    const done = try apply.run(a, ctx.io, p, &result.state.lock, files, target, units, &w.diags) orelse {
+    const done = try apply.run(a, ctx.io, p, &result.state.lock, files, ctx.secrets, target, units, &w.diags) orelse {
         try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "failed", &hash);
         return Outcome.failed(&w);
     };

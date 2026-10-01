@@ -167,7 +167,10 @@ pub fn explainFile(a: Allocator, c: *const config.Config, path: []const u8) !Fil
     // `[files]` entries are checked by name: one whose source can't be
     // read is still os's.
     if (c.files.get(path)) |f| {
-        ans.cause = .{ .key = try std.fmt.allocPrint(a, "files.\"{s}\"", .{path}), .src = f.src };
+        // a secret's name, never its value: the config doesn't have one.
+        if (f.secret) |s| {
+            ans.cause = .{ .key = try std.fmt.allocPrint(a, "files.\"{s}\" secret = \"{s}\"", .{ path, s.v }), .src = f.src };
+        } else ans.cause = .{ .key = try std.fmt.allocPrint(a, "files.\"{s}\"", .{path}), .src = f.src };
     } else if (lists.find(try planner.desiredFiles(a, c, &.{}), "path", path)) |d| {
         ans.cause = .{ .key = d.cause.?, .src = d.src };
     } else if (std.mem.eql(u8, path, "/etc/pacman.conf") and planner.ownRepos(c)) {
@@ -395,6 +398,7 @@ test "files os writes name the key behind them" {
     try expectFile(files_cfg, "/etc/pacman.d/yoq-repos.conf", null, "/etc/pacman.d/yoq-repos.conf: os writes it for repos  (machine.toml:10)\n");
     try expectFile(files_cfg, "/etc/pacman.conf", null, "/etc/pacman.conf: os adds a line to it for repos  (machine.toml:10)\n");
     try expectFile("[desktop]\nsession = \"hyprland\"\nlogin = \"greetd\"\n", "/etc/greetd/config.toml", null, "/etc/greetd/config.toml: os writes it for desktop.login  (machine.toml:3)\n");
+    try expectFile("[files.\"/etc/wifi.psk\"]\nsecret = \"wifi/home\"\n", "/etc/wifi.psk", null, "/etc/wifi.psk: os writes it for files.\"/etc/wifi.psk\" secret = \"wifi/home\"  (machine.toml:1)\n");
 }
 
 test "files os leaves alone say where they come from" {

@@ -79,9 +79,10 @@ pub const Summary = struct {
 
 pub const Plan = struct {
     changes: []const Change,
-    /// each file the plan writes, by path and the sha-256 of its content.
-    /// changes don't show content, so this goes into the hash instead: a
-    /// saved plan can't write something other than what was reviewed.
+    /// each file the plan writes, by path and the sha-256 of its content,
+    /// or a secret's keyed hash. changes don't show content, so this goes
+    /// into the hash instead: a saved plan can't write something other
+    /// than what was reviewed.
     content: []const u8 = "",
 
     /// how many changes of each op the whole plan has.
@@ -400,6 +401,8 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
     var files: std.ArrayList(Change) = .empty;
     for (want) |d| {
         const mode = try normalMode(a, d.mode);
+        // a secret others can read is allowed, but the plan says so.
+        const exposed = if (d.secret != null and (std.fmt.parseInt(u32, mode, 8) catch 0) & 0o044 != 0) ", which lets others read the secret" else "";
         var ch: Change = .{
             .op = .change,
             .kind = .file,
@@ -407,24 +410,27 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
             .cause = d.cause orelse try std.fmt.allocPrint(a, "files.\"{s}\"", .{d.path}),
             .reboot = d.reboot orelse dropInReboot(d.path),
         };
+        const hash = try contentHash(a, d, f);
         if (f.file(d.path)) |have| {
-            if (!std.mem.eql(u8, have.sha256, &facts.sha256Hex(d.content))) {
-                ch.to = try std.fmt.allocPrint(a, "rewrite, mode {s}", .{mode});
+            // a hash that couldn't be taken, like a secret's without root,
+            // isn't a difference.
+            if (hash != null and have.sha256.len > 0 and !std.mem.eql(u8, have.sha256, hash.?)) {
+                ch.to = try std.fmt.allocPrint(a, "rewrite, mode {s}{s}", .{ mode, exposed });
             } else if (!std.mem.eql(u8, have.mode, mode)) {
                 // only the mode: nothing the reboot was for changes.
                 ch.from = have.mode;
-                ch.to = try std.fmt.allocPrint(a, "mode {s}", .{mode});
+                ch.to = try std.fmt.allocPrint(a, "mode {s}{s}", .{ mode, exposed });
                 ch.reboot = null;
             } else continue;
         } else {
             ch.op = .add;
-            ch.to = try std.fmt.allocPrint(a, "write, mode {s}", .{mode});
+            ch.to = try std.fmt.allocPrint(a, "write, mode {s}{s}", .{ mode, exposed });
         }
         try files.append(a, ch);
     }
     for (files.items) |ch| {
         const d = lists.find(want, "path", ch.subject).?;
-        try content.print(a, "{s} {s}\n", .{ d.path, facts.sha256Hex(d.content) });
+        try content.print(a, "{s} {s}\n", .{ d.path, try contentHash(a, d.*, f) orelse "unknown" });
     }
     for (generated_paths) |p| {
         if (lists.indexOf(want, "path", p) != null) continue;
@@ -440,6 +446,34 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
     }
     lists.sortByField(Change, "subject", files.items);
     try changes.appendSlice(a, files.items);
+}
+
+/// the hash a file os writes should have: the sha-256 of its content, or
+/// for a secret, the keyed hash of its value the facts carry, which is
+/// null when the observer couldn't read it. the planner never sees a
+/// secret's value.
+fn contentHash(a: Allocator, d: DesiredFile, f: *const facts.Facts) !?[]const u8 {
+    const name = d.secret orelse return try a.dupe(u8, &facts.sha256Hex(d.content));
+    const s = f.secret(name) orelse return null;
+    return s.keyed;
+}
+
+/// refuses, with a diagnostic, a plan for a config whose secrets this
+/// machine doesn't have. secrets the observer couldn't look at pass: apply
+/// runs as root and looks again.
+pub fn checkSecrets(c: *const config.Config, f: *const facts.Facts, diags: *diag.List) !bool {
+    var ok = true;
+    for (c.files.entries.items) |e| {
+        const ref = e.value.secret orelse continue;
+        const s = f.secret(ref.v) orelse continue;
+        switch (s.state) {
+            .set, .unknown => continue,
+            .missing => try diags.addHint(.secret_missing, ref.src, "files.\"{s}\" needs the secret \"{s}\", and this machine doesn't have it", .{ e.name, ref.v }, "set it with `os secret set {s}`", .{ref.v}),
+            .unreadable => try diags.addHint(.secret_missing, ref.src, "the secret \"{s}\" for files.\"{s}\" can't be decrypted on this machine", .{ ref.v, e.name }, "values don't move between machines; set it again here with `os secret set {s}`", .{ref.v}),
+        }
+        ok = false;
+    }
+    return ok;
 }
 
 /// "644" and "0644" are the same mode; facts write four digits.
@@ -479,6 +513,9 @@ fn planRepos(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
 pub const DesiredFile = struct {
     path: []const u8,
     content: []const u8,
+    /// for a file that holds a secret: its name, and `content` is empty.
+    /// apply reads the value only as it writes the file.
+    secret: ?[]const u8 = null,
     mode: []const u8 = config.File.default_mode,
     /// the key that makes the file, for ones `[files]` doesn't name.
     cause: ?[]const u8 = null,
@@ -557,6 +594,10 @@ const nvidia_initramfs_content = blk: {
 pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts) ![]const DesiredFile {
     var out: std.ArrayList(DesiredFile) = .empty;
     for (c.files.entries.items) |e| {
+        if (e.value.secret) |s| {
+            try out.append(a, .{ .path = e.name, .content = "", .secret = s.v, .mode = e.value.modeOf() });
+            continue;
+        }
         // a source that couldn't be read was reported when loading.
         const content = e.value.content orelse continue;
         try out.append(a, .{ .path = e.name, .content = content, .mode = e.value.modeOf() });
@@ -675,7 +716,14 @@ pub fn wanted(a: Allocator, c: *const config.Config) !facts.Wanted {
     for (c.repos.entries.items) |e| {
         if (e.value.key) |k| try keys.append(a, k.v);
     }
-    return .{ .files = try filePaths(a, c), .keys = keys.items };
+    var names: std.ArrayList([]const u8) = .empty;
+    var secret_files: std.ArrayList([]const u8) = .empty;
+    for (c.files.entries.items) |e| {
+        const s = e.value.secret orelse continue;
+        try secret_files.append(a, e.name);
+        if (!lists.contains(names.items, s.v)) try names.append(a, s.v);
+    }
+    return .{ .files = try filePaths(a, c), .keys = keys.items, .secrets = names.items, .secret_files = secret_files.items };
 }
 
 fn filePaths(a: Allocator, c: *const config.Config) ![]const []const u8 {
@@ -1565,4 +1613,69 @@ test "a plan whose boot files don't fit on the esp stops before anything is buil
     f.boot.esp_free = null;
     try testing.expect(try checkEsp(a, &upgrade, &f, &t.diags));
     try testing.expectEqual(2, t.diags.items.items.len);
+}
+
+test "a secret's file is planned by its keyed hash, never its value" {
+    var t: T = .{};
+    defer t.deinit();
+    const a = t.a();
+    const secrets = @import("secrets.zig");
+    const c = try t.cfg("[boot]\nkernel = \"none\"\n[files.\"/etc/wifi.psk\"]\nsecret = \"wifi/home\"\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
+    const key: secrets.Key = @splat(7);
+    const now = secrets.keyedHex(&key, "hunter2");
+    var have = [_]facts.File{.{ .path = "/etc/wifi.psk", .sha256 = &now, .mode = "0600", .keyed = true }};
+    var known = [_]facts.Secret{.{ .name = "wifi/home", .state = .set, .keyed = &now }};
+    var f: facts.Facts = .{ .files = &have, .secrets = &known };
+
+    const want = try wanted(a, &c);
+    try testing.expectEqualStrings("wifi/home", want.secrets[0]);
+    try testing.expectEqualStrings("/etc/wifi.psk", want.secret_files[0]);
+    try testing.expect((try plan(a, &c, &l, &f, &t.diags)).?.empty());
+    try testing.expect(try checkSecrets(&c, &f, &t.diags));
+
+    // a new value: the file is rewritten, and the hash follows the value.
+    const next = secrets.keyedHex(&key, "hunter3");
+    known[0].keyed = &next;
+    const p = (try plan(a, &c, &l, &f, &t.diags)).?;
+    try testing.expectEqual(1, p.changes.len);
+    try testing.expectEqualStrings("rewrite, mode 0600", p.changes[0].to.?);
+    const third = secrets.keyedHex(&key, "hunter4");
+    known[0].keyed = &third;
+    const p2 = (try plan(a, &c, &l, &f, &t.diags)).?;
+    try testing.expect(!std.mem.eql(u8, &try p.hash(), &try p2.hash()));
+    var out: std.Io.Writer.Allocating = .init(a);
+    try writeJson(&out.writer, a, &p);
+    try writeText(&out.writer, a, &p, .{ .verbose = true });
+    for ([_][]const u8{ "hunter2", "hunter3", &facts.sha256Hex("hunter2"), &facts.sha256Hex("hunter3"), &next }) |leak| {
+        try testing.expect(std.mem.indexOf(u8, out.written(), leak) == null);
+    }
+
+    // without root, nothing can be compared, so nothing differs.
+    known[0] = .{ .name = "wifi/home" };
+    have[0].sha256 = "";
+    try testing.expect((try plan(a, &c, &l, &f, &t.diags)).?.empty());
+    try testing.expect(try checkSecrets(&c, &f, &t.diags));
+
+    // not set here: a plan error that says how to set it.
+    known[0].state = .missing;
+    try testing.expect(!try checkSecrets(&c, &f, &t.diags));
+    const d = t.diags.items.items[0];
+    try testing.expectEqual(diag.Code.secret_missing, d.code);
+    try testing.expectEqualStrings("files.\"/etc/wifi.psk\" needs the secret \"wifi/home\", and this machine doesn't have it", d.message);
+    try testing.expectEqualStrings("set it with `os secret set wifi/home`", d.hint.?);
+    try testing.expectEqualStrings("E0133", diag.entry(d.code).id);
+}
+
+test "a secret others can read is written, with a warning" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("[boot]\nkernel = \"none\"\n[files.\"/etc/shared\"]\nsecret = \"shared\"\nmode = \"0644\"\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
+    var f: facts.Facts = .{};
+    const p = (try plan(t.a(), &c, &l, &f, &t.diags)).?;
+    try testing.expectEqualStrings("write, mode 0644, which lets others read the secret", p.changes[0].to.?);
+    var have = [_]facts.File{.{ .path = "/etc/shared", .sha256 = "", .mode = "0600", .keyed = true }};
+    f.files = &have;
+    try testing.expectEqualStrings("mode 0644, which lets others read the secret", (try plan(t.a(), &c, &l, &f, &t.diags)).?.changes[0].to.?);
 }

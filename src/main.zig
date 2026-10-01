@@ -5,6 +5,7 @@ const aur = @import("aur.zig");
 const disk = @import("disk.zig");
 const sync = @import("sync.zig");
 const history = @import("history.zig");
+const secrets = @import("secrets.zig");
 
 pub fn main(init: std.process.Init) !void {
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
@@ -23,6 +24,7 @@ pub fn main(init: std.process.Init) !void {
     var disk_files: disk.Files = .{ .io = init.io };
     var git: history.Git = .{ .io = init.io };
     var http: sync.HttpFetcher = .init(init.gpa, init.io);
+    var secret_store: secrets.System = .{ .io = init.io };
     defer http.deinit();
     const env = init.environ_map;
     var ctx: cli.Context = .{
@@ -40,6 +42,8 @@ pub fn main(init: std.process.Init) !void {
         .aur_url = env.get("YOQ_AUR") orelse aur.default_url,
         .editor = env.get("VISUAL") orelse env.get("EDITOR") orelse "vi",
         .progress = if (err_tty) .terminal else .log,
+        .secrets = secret_store.store(),
+        .set_echo = setEcho,
     };
     const code = cli.run(&ctx, argv[1..]) catch |e| blk: {
         err.interface.print("os: {s}\n", .{@errorName(e)}) catch {};
@@ -49,6 +53,15 @@ pub fn main(init: std.process.Init) !void {
     out.interface.flush() catch {};
     err.interface.flush() catch {};
     std.process.exit(code);
+}
+
+/// turns the terminal's echo on stdin off or on again.
+fn setEcho(on: bool) void {
+    const linux = std.os.linux;
+    var t: linux.termios = undefined;
+    if (linux.errno(linux.tcgetattr(0, &t)) != .SUCCESS) return;
+    t.lflag.ECHO = on;
+    _ = linux.tcsetattr(0, .NOW, &t);
 }
 
 /// the config this machine reads unless --config says otherwise:
@@ -76,6 +89,7 @@ test {
     _ = @import("lock.zig");
     _ = @import("users.zig");
     _ = @import("rootfs.zig");
+    _ = secrets;
     _ = aur;
     _ = @import("exec.zig");
     _ = @import("news.zig");
