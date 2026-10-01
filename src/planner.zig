@@ -537,6 +537,9 @@ const tty_session_path = "/etc/profile.d/yoq-session.sh";
 /// mkinitcpio's drop-in that loads nvidia's modules early.
 const nvidia_initramfs_path = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf";
 
+/// mkinitcpio's drop-in that unlocks a luks root.
+pub const encrypt_initramfs_path = facts.initramfs_dropins ++ "/" ++ facts.encrypt_dropin;
+
 /// whether a file os writes is a mkinitcpio drop-in. changing one changes
 /// the initramfs, so it waits for a reboot like a kernel does, and apply
 /// rebuilds the initramfs in the root it builds.
@@ -551,7 +554,7 @@ fn dropInReboot(path: []const u8) ?[]const u8 {
 /// files os writes from other keys, each starting with a "written by os"
 /// line. one still there that nothing asks for any more is removed. the
 /// session's own config isn't here: it's the user's file.
-const generated_paths = [_][]const u8{ sysctl_path, modules_path, greetd_config_path, tty_session_path, nvidia_initramfs_path };
+const generated_paths = [_][]const u8{ sysctl_path, modules_path, greetd_config_path, tty_session_path, nvidia_initramfs_path, encrypt_initramfs_path };
 
 /// the first line of a file os makes from `key`.
 fn header(comptime key: []const u8) []const u8 {
@@ -588,6 +591,32 @@ const nvidia_initramfs_content = blk: {
     break :blk s ++ ")\n";
 };
 
+/// sd-encrypt unlocks the root with what the kernel's command line names,
+/// and it needs systemd in the initramfs: busybox's hooks (udev, keymap,
+/// consolefont, and resume and usr, which systemd does itself) become
+/// systemd's, sd-encrypt goes before filesystems, and keyboard before
+/// that, to type the passphrase with. mkinitcpio sources drop-ins as
+/// bash, after its own config, so this works on whatever hooks are set.
+pub const encrypt_initramfs_content =
+    \\# written by os from [boot] encrypt in the config. edits here are overwritten.
+    \\_yoq_hooks=()
+    \\for _yoq_hook in "${HOOKS[@]}"; do
+    \\    case $_yoq_hook in
+    \\    udev) _yoq_hook=systemd ;;
+    \\    keymap | consolefont) _yoq_hook=sd-vconsole ;;
+    \\    encrypt | sd-encrypt | resume | usr) continue ;;
+    \\    filesystems)
+    \\        [[ " ${_yoq_hooks[*]} " == *" keyboard "* ]] || _yoq_hooks+=(keyboard)
+    \\        _yoq_hooks+=(sd-encrypt)
+    \\        ;;
+    \\    esac
+    \\    [[ " ${_yoq_hooks[*]} " == *" $_yoq_hook "* ]] || _yoq_hooks+=("$_yoq_hook")
+    \\done
+    \\HOOKS=("${_yoq_hooks[@]}")
+    \\unset _yoq_hooks _yoq_hook
+    \\
+;
+
 /// every file the config wants: `[files]`, then the ones other keys make.
 /// nvidia's initramfs drop-in is left out when the machine loads those
 /// modules already, as `f` shows.
@@ -609,6 +638,7 @@ pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts
         try sessionFile(a, c),
         try modulesFile(a, c),
         nvidiaFile(c, f),
+        encryptFile(c, f),
     };
     for (made) |m| {
         if (m) |d| try out.append(a, d);
@@ -707,6 +737,19 @@ fn nvidiaFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
         if (!lists.contains(f.initramfs_modules, m)) break;
     } else return null;
     return .{ .path = nvidia_initramfs_path, .content = nvidia_initramfs_content, .cause = "hardware.gpu", .src = gpu.src, .reboot = "initramfs" };
+}
+
+/// the drop-in for `[boot] encrypt`, unless mkinitcpio's hooks unlock
+/// luks already, as an encrypted archinstall's do, or another initramfs
+/// generator builds it.
+fn encryptFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
+    const encrypt = c.boot.encrypt orelse return null;
+    if (!encrypt.v) return null;
+    if (c.providers.get("initramfs")) |p| {
+        if (!std.mem.eql(u8, p.v, "mkinitcpio")) return null;
+    }
+    if (facts.hasEncryptHook(f.boot.initramfs_hooks)) return null;
+    return .{ .path = encrypt_initramfs_path, .content = encrypt_initramfs_content, .cause = "boot.encrypt", .src = encrypt.src, .reboot = "initramfs" };
 }
 
 /// what the observer should look at for this config: every file it might
@@ -1330,6 +1373,33 @@ test "nvidia's initramfs drop-in, unless the machine loads the modules already" 
 
     const booster = try t.cfg("[boot]\nkernel = \"none\"\n[hardware]\ngpu = \"nvidia\"\n[providers]\ninitramfs = \"booster\"\n");
     try testing.expectEqual(0, (try desiredFiles(t.a(), &booster, &without)).len);
+}
+
+test "the drop-in that unlocks a luks root, unless the hooks do already" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("[boot]\nkernel = \"none\"\nencrypt = true\n");
+    // mkinitcpio's own hooks, as a clean build starts with.
+    const plain: facts.Facts = .{ .boot = .{ .initramfs_hooks = &.{ "base", "systemd", "autodetect", "microcode", "modconf", "kms", "keyboard", "sd-vconsole", "block", "filesystems", "fsck" } } };
+    const want = try desiredFiles(t.a(), &c, &plain);
+    try testing.expectEqual(1, want.len);
+    try testing.expectEqualStrings("/etc/mkinitcpio.conf.d/90-yoq-encrypt.conf", want[0].path);
+    try testing.expectEqualStrings("initramfs", want[0].reboot.?);
+    try testing.expectEqualStrings("boot.encrypt", want[0].cause.?);
+    try testing.expect(std.mem.startsWith(u8, want[0].content, "# written by os from [boot] encrypt in the config."));
+    try testing.expect(std.mem.indexOf(u8, want[0].content, "    filesystems)\n") != null);
+    try testing.expect(std.mem.indexOf(u8, want[0].content, "_yoq_hooks+=(sd-encrypt)\n") != null);
+
+    // busybox's encrypt, as an older archinstall sets up, or sd-encrypt.
+    const unlocking = [_][]const []const u8{ &.{ "base", "udev", "encrypt", "filesystems" }, &.{ "base", "systemd", "sd-encrypt", "filesystems" } };
+    for (unlocking) |hooks| {
+        const ready: facts.Facts = .{ .boot = .{ .initramfs_hooks = hooks } };
+        try testing.expectEqual(0, (try desiredFiles(t.a(), &c, &ready)).len);
+    }
+    const off = try t.cfg("[boot]\nkernel = \"none\"\nencrypt = false\n");
+    try testing.expectEqual(0, (try desiredFiles(t.a(), &off, &plain)).len);
+    const booster = try t.cfg("[boot]\nkernel = \"none\"\nencrypt = true\n[providers]\ninitramfs = \"booster\"\n");
+    try testing.expectEqual(0, (try desiredFiles(t.a(), &booster, &plain)).len);
 }
 
 test "a package from a service keeps its install reason" {
