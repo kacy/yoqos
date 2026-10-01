@@ -133,35 +133,14 @@ fn rebuildInitramfs(a: Allocator, io: std.Io, root: []const u8, diags: *diag.Lis
 /// writes a managed file whole, with its mode. on a running machine
 /// (`live`, as for units) the sysctl file and the module list are loaded
 /// right away. a secret's value is read from `store` just for the write,
-/// and wiped after it. it has to be the value `p` was made for, since
-/// `os secret set` may have run since.
+/// and wiped after it.
 fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.DesiredFile, store: ?secrets.Store, p: *const planner.Plan, path: []const u8, live: bool, diags: *diag.List) !bool {
     const d = lists.find(files, "path", path).?; // the plan came from these files.
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
     const mode = std.fmt.parseInt(u32, d.mode, 8) catch unreachable; // validated with the config.
     var value: ?[]u8 = null;
     defer if (value) |v| secrets.wipe(v);
-    if (d.secret) |name| {
-        const why: []const u8 = switch (if (store) |s| try s.get(a, name) else .unknown) {
-            .value => |v| blk: {
-                value = v;
-                break :blk "";
-            },
-            .missing => "this machine doesn't have it",
-            .unreadable => |why| why,
-            .unknown => "secrets need root",
-        };
-        if (value == null) {
-            try diags.addHint(.apply_failed, null, "can't write {s}: can't read the secret \"{s}\": {s}", .{ path, name, why }, "`os secret set {s}` sets it", .{name});
-            return false;
-        }
-        const key = try store.?.key(a);
-        const planned = p.plannedHash(path);
-        if (key == null or planned == null or !std.mem.eql(u8, planned.?, &secrets.keyedHex(&key.?, value.?))) {
-            try diags.add(.plan_moved, null, "the secret \"{s}\" isn't the value the plan was made for, so {s} wasn't written", .{ name, path }, "run it again and look over the new plan");
-            return false;
-        }
-    }
+    if (d.secret) |name| value = try secretValue(a, store, p, path, name, diags) orelse return false;
     fs.writeMode(std.mem.trimStart(u8, path, "/"), value orelse d.content, mode) catch |e| switch (e) {
         error.OutOfMemory => return e,
         error.WriteFailed => {
@@ -181,6 +160,30 @@ fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.
         return false;
     }
     return true;
+}
+
+/// the value of the secret `name` for the file at `path`, as long as it's
+/// the one `p` was made for: `os secret set` may have run since. null
+/// after saying why not. the caller wipes it.
+fn secretValue(a: Allocator, store: ?secrets.Store, p: *const planner.Plan, path: []const u8, name: []const u8, diags: *diag.List) !?[]u8 {
+    const s = store orelse return secretUnread(diags, path, name, "secrets need root");
+    const value = switch (try s.get(a, name)) {
+        .value => |v| v,
+        .missing => return secretUnread(diags, path, name, "this machine doesn't have it"),
+        .unreadable => |why| return secretUnread(diags, path, name, why),
+        .unknown => return secretUnread(diags, path, name, "secrets need root"),
+    };
+    const key = try s.key(a);
+    const planned = p.plannedHash(path);
+    if (key != null and planned != null and std.mem.eql(u8, planned.?, &secrets.keyedHex(&key.?, value))) return value;
+    secrets.wipe(value);
+    try diags.add(.plan_moved, null, "the secret \"{s}\" isn't the value the plan was made for, so {s} wasn't written", .{ name, path }, "run it again and look over the new plan");
+    return null;
+}
+
+fn secretUnread(diags: *diag.List, path: []const u8, name: []const u8, why: []const u8) !?[]u8 {
+    try diags.addHint(.apply_failed, null, "can't write {s}: can't read the secret \"{s}\": {s}", .{ path, name, why }, "`os secret set {s}` sets it", .{name});
+    return null;
 }
 
 /// fetches a signing key into pacman's keyring and signs it locally, the
