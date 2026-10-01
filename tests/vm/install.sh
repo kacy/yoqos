@@ -88,11 +88,18 @@ check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 "$vm" reboot
 check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in use."
 settled
+# mkinitcpio counts some failures as errors without printing them. when
+# a build fails here, a trace shows which call it counted.
+on_failure='bash -x /usr/bin/mkinitcpio -k $(uname -r) -g /tmp/yoq-diag.img 2>&1 | grep -B12 -e "++_builderrors" | tail -n 60'
+# with autodetect, which a running machine's builds use, sd-encrypt's
+# initramfs builds without errors.
+check "mkinitcpio -P >/tmp/yoq-mkinitcpio.log 2>&1 && echo built || tail -n 20 /tmp/yoq-mkinitcpio.log" built
 # a change that needs a reboot: generation 2 is built beside the running
 # one and boots once, on trial, from copies on the esp, since grub can't
 # read the root. it unlocks on its own too, and passes.
-"$vm" ssh "/usr/local/bin/os add --yes intel-ucode" | tail -n 3
+"$vm" ssh "/usr/local/bin/os add --yes intel-ucode" | tail -n 25
 check "ls /var/lib/yoq/generations | tr '\\n' ' '" "1.json 2.json "
+on_failure=
 check "grep -c -- '--set=root' /boot/grub/grub.cfg" 0
 "$vm" reboot
 settled
