@@ -521,7 +521,11 @@ that:
 
 it also checks that the esp has room for another kernel, and with
 generations, that the boot menu has them and that os's units are there. with
-the root on luks, it checks that the initramfs can unlock it. a sudo
+the root on luks, it checks that the initramfs can unlock it. with
+`secure_boot` in the config, or firmware that enforces secure boot, it
+checks that sbctl and its keys are there, says whether the firmware
+enforces secure boot or is in setup mode, and lists the efi files on the
+esp without a signature. a sudo
 rule without a password shows up too: anything running as that user could
 change the machine without asking. each check that fails says what to do,
 and the exit code is 1 when one does.
@@ -821,7 +825,7 @@ bluetooth = false
 | `packages` | packages you want installed. dependencies come along on their own. |
 | `[providers]` | which package provides a virtual one, like `initramfs` |
 | `[system]` | `hostname` (a plain name or a dotted one like `atlas.lan`), `timezone`, `locale`, and `keymap` |
-| `[boot]` | `kernel`: `linux` unless you say otherwise. `none` for a machine without its own kernel, like a container. `modules`: kernel modules to load at every boot, like `i2c-dev`. `encrypt`: `true` when the root is on luks, so the initramfs unlocks it. `uki`: `true` to boot generations from unified kernel images. |
+| `[boot]` | `kernel`: `linux` unless you say otherwise. `none` for a machine without its own kernel, like a container. `modules`: kernel modules to load at every boot, like `i2c-dev`. `encrypt`: `true` when the root is on luks, so the initramfs unlocks it. `uki`: `true` to boot generations from unified kernel images. `secure_boot`: `true` to sign those images with sbctl's keys. |
 | `[hardware]` | `cpu`: `amd` or `intel`. `gpu`: `amd`, `intel`, `nvidia`, or `none`. these bring in microcode and drivers. `nvidia` also loads its modules early, with a drop-in in `/etc/mkinitcpio.conf.d`, unless mkinitcpio.conf does already. |
 | `[desktop]` | `session`: `hyprland`. `audio`: `pipewire`. `login`: `greetd`, `sddm`, or `tty`. these bring in their packages; see [the desktop](#the-desktop). |
 | `[users.<name>]` | `shell`, and `groups`: the full list of groups beyond the user's own |
@@ -1104,6 +1108,63 @@ the next boot tries it once, like a new kernel. see
 without generations, `os` doesn't write the boot menu, so the key only
 installs ukify. `os init` sets it on a machine that boots unified kernel
 images already, like omarchy, when ukify is installed there.
+
+### secure boot
+
+```toml
+[boot]
+uki = true
+secure_boot = true
+```
+
+with `secure_boot = true`, `os` signs every unified kernel image it puts
+on the esp, so firmware that enforces secure boot will start them. it
+needs `uki = true`: a kernel and a separate initramfs can't be signed as
+one. it signs only on a machine with generations, where `os` writes the
+boot menu. it brings `sbctl` and signs with sbctl's keys.
+
+the keys are yours to make and enroll; `os` does neither. it's a one-time
+job, in this order:
+
+1. install sbctl and make the keys: `pacman -S sbctl`, then
+   `sbctl create-keys`. they go in `/var/lib/sbctl`.
+2. set `uki = true` and `secure_boot = true` under `[boot]`, and run
+   `os apply`. like a new kernel, the change waits for a reboot. the next
+   generation's images are signed, and so is every image the menu boots.
+3. sign the bootloader. `os doctor` lists the efi files on the esp that
+   have no signature. `sbctl sign -s <file>` signs one, and the `-s` has
+   sbctl's pacman hook sign it again whenever its package updates it.
+4. in the firmware setup, clear the secure boot keys, which puts it in
+   setup mode. boot, and run `sbctl enroll-keys -m`. the `-m` keeps
+   microsoft's keys next to yours: graphics cards and other devices carry
+   firmware signed with them, and some machines won't start without it.
+5. turn secure boot on in the firmware setup, if enrolling didn't, and
+   reboot.
+
+without the keys, `os plan` and `os apply` stop with E0134.
+
+what `os` signs: its images in `yoq/boot` on the esp, and refind's btrfs
+driver, which it installs. each image is signed in a work directory inside
+the generation's root, then copied onto the esp, so the esp never has it
+unsigned. the bootloader itself comes from the bootloader's own install
+(`bootctl install`, limine's, `refind-install`), so its signature is yours
+to add, as in step 3, and `os doctor` flags it until then. the vm tests
+cover systemd-boot. grub won't boot under secure boot the way `os`
+installs it: it needs its modules built in and shim's check turned off,
+so keep secure boot off with grub for now.
+
+the keys live in `/var`, outside every generation, so a rollback keeps
+them. an image is signed when it's written, and while the running
+generation or the new one has `secure_boot`, every menu write signs
+whatever images the menu boots, so the generation a failed trial falls
+back to starts too. a generation from before `uki` boots a plain kernel,
+which firmware enforcing secure boot refuses; turn secure boot off in the
+firmware before you boot one. the same goes for turning `secure_boot`
+off: once it's off, images aren't signed any more.
+
+`os install` won't install a config with `secure_boot = true`: a new
+machine has no keys yet. install without it, then follow the steps above
+there.
 
 ### repositories
 
