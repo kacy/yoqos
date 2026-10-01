@@ -12,9 +12,12 @@ env:
     Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
     Server = https://mirrors.mit.edu/archlinux/$repo/os/$arch
 
+# each job has a time limit about twice its usual length, so a step that
+# hangs, like a stuck download, fails in minutes and can be run again.
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -27,6 +30,7 @@ jobs:
     # debian trixie ships libalpm 15, the same as arch, and libsystemd.
     # the container has no running systemd, so the bus test skips.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     container: debian:trixie
     steps:
       - run: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl xz-utils git libalpm-dev libarchive-dev libsystemd-dev
@@ -41,6 +45,7 @@ jobs:
     # no running systemd, so the bus test skips. privileged, so the btrfs
     # tests can loop-mount a scratch filesystem.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     container:
       image: archlinux:latest
       options: --privileged
@@ -58,7 +63,7 @@ jobs:
   vm:
     # a booted arch vm under kvm: systemd running and a real bootloader.
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -108,7 +113,7 @@ jobs:
     # blank disk that it installs a machine on. privileged, since mkarchiso
     # mounts the root it builds.
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
     container:
       image: archlinux:latest
       options: --privileged --device /dev/kvm
@@ -128,6 +133,7 @@ jobs:
     # the pkgbuild in dist/, built from this checkout and installed the way
     # a user would.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     container: archlinux:latest
     steps:
       - run: printf %s "$MIRRORLIST" > /etc/pacman.d/mirrorlist && pacman -Syu --noconfirm --needed base-devel git zig
