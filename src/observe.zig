@@ -18,6 +18,7 @@ const systemd = @import("systemd.zig");
 const diag = @import("diag.zig");
 const lists = @import("lists.zig");
 const secrets = @import("secrets.zig");
+const uki = @import("uki.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Options = struct {
@@ -164,6 +165,7 @@ const Reader = struct {
             .pacman_moved = std.mem.endsWith(u8, dbpath, "sysimage/pacman"),
             .snapper_root = r.exists("etc/snapper/configs/root"),
             .encrypt_dropin = r.exists(facts.initramfs_dropins[1..] ++ "/" ++ facts.encrypt_dropin),
+            .uki = r.exists(uki.config_rel) or try r.presetsBuildUki(),
         };
         if (!std.mem.eql(u8, r.root, "/")) return b;
         b.uefi = r.exists("sys/firmware/efi");
@@ -200,6 +202,7 @@ const Reader = struct {
                 b.esp_size = s.size;
             }
             b.boot_files = try r.bootFiles();
+            if (!b.uki) b.uki = uki.anyImage(try r.names(try std.fs.path.join(r.a, &.{ esp[1..], "EFI/Linux" }), .file));
         }
         if (generation.running(b.root_subvol)) {
             b.menu_missing = try r.menuMissing(b);
@@ -216,6 +219,16 @@ const Reader = struct {
             };
         }
         return b;
+    }
+
+    /// whether one of mkinitcpio's presets builds unified kernel images.
+    fn presetsBuildUki(r: Reader) !bool {
+        for (try r.names("etc/mkinitcpio.d", .file)) |name| {
+            if (!std.mem.endsWith(u8, name, ".preset")) continue;
+            const text = try r.file(try std.fmt.allocPrint(r.a, "etc/mkinitcpio.d/{s}", .{name})) orelse continue;
+            if (uki.presetBuildsUki(text)) return true;
+        }
+        return false;
     }
 
     /// the luks volume under the root, when `source` is a dm-crypt

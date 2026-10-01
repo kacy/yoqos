@@ -100,6 +100,7 @@ test {
     _ = @import("enable.zig");
     _ = @import("generation.zig");
     _ = @import("menu.zig");
+    _ = @import("uki.zig");
     _ = @import("trial.zig");
     _ = @import("uninstall.zig");
     _ = @import("install.zig");

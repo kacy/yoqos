@@ -13,6 +13,7 @@ const show = @import("show.zig");
 const toml = @import("toml.zig");
 const lock = @import("lock.zig");
 const sync = @import("sync.zig");
+const uki = @import("uki.zig");
 const Allocator = std.mem.Allocator;
 
 /// the config for what `f` describes, without its packages. values the
@@ -37,6 +38,9 @@ pub fn fromFacts(a: Allocator, f: *const facts.Facts) !config.Config {
     // drop-in. it keeps one in a clean build, which starts from
     // mkinitcpio's own hooks.
     if (f.boot.luks_uuid != null) c.boot.encrypt = .{ .v = true, .src = at };
+    // only with ukify there to build os's own: the key would plan its
+    // install otherwise, and init mustn't plan anything.
+    if (f.boot.uki and f.package(uki.package) != null) c.boot.uki = .{ .v = true, .src = at };
     // hardware is written only when its packages are already installed:
     // init describes the machine, and mustn't plan a driver install.
     if (f.cpu) |cpu| {
@@ -238,6 +242,20 @@ test "a luks root sets [boot] encrypt" {
     // the hooks unlock it already, so the plan stays empty.
     try testing.expectEqual(0, (try planner.desiredFiles(a, &c, &f)).len);
     try testing.expectEqual(null, (try fromFacts(a, &.{ .packages = &pkgs })).boot.encrypt);
+}
+
+test "unified kernel images set [boot] uki, when ukify is there" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var pkgs = [_]facts.Package{ .{ .name = "linux", .version = "6.16.8-1" }, .{ .name = "systemd-ukify", .version = "258-1" } };
+    const f: facts.Facts = .{ .packages = &pkgs, .boot = .{ .uki = true } };
+    const c = try fromFacts(a, &f);
+    try testing.expect(c.boot.uki.?.v);
+    try testing.expect(std.mem.endsWith(u8, try machineToml(a, &c, "2026-10-01"), "\n[boot]\nuki = true\n"));
+    // with no ukify to build them, the key would plan an install.
+    try testing.expectEqual(null, (try fromFacts(a, &.{ .packages = pkgs[0..1], .boot = .{ .uki = true } })).boot.uki);
+    try testing.expectEqual(null, (try fromFacts(a, &.{ .packages = &pkgs })).boot.uki);
 }
 
 test "hardware without its packages installed stays out of the config" {

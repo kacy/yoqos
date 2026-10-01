@@ -118,6 +118,10 @@ pub const Boot = struct {
     initramfs_hooks: []const []const u8 = &.{},
     /// os's drop-in that adds sd-encrypt to them is there.
     encrypt_dropin: bool = false,
+    /// the machine boots unified kernel images already: mkinitcpio's
+    /// presets build them, the esp has some in EFI/Linux, or the root has
+    /// os's ukify config from `[boot] uki`.
+    uki: bool = false,
     /// the pacman database lives in /usr/lib/sysimage/pacman.
     pacman_moved: bool = false,
     /// snapper has a config for the root, which snap-pac snapshots.
