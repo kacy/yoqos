@@ -162,9 +162,15 @@ next menu builds every image again, and `os plan` counts the room for
 them. `os gc`, and every menu write, removes the images no entry uses any
 more.
 
-an image has no command line built in. each entry passes its own, with
-the root, `rootflags=subvol=`, the console and luks arguments, and
-`yoq.trial` on a trial boot, and the stub hands it to the kernel:
+the files come from the root's own `/boot`, never from the esp. with the
+esp at `/boot`, that's the copies `os` keeps in each root's `/boot`
+directory under the mount, which it makes as the generation is recorded,
+so the newest generation's image doesn't come from files on the esp that
+anything able to write there could have changed.
+
+without secure boot, an image has no command line built in. each entry
+passes its own, with the root, `rootflags=subvol=`, the console and luks
+arguments, and `yoq.trial` on a trial boot, and the stub hands it to the kernel:
 
 | bootloader | entry |
 | --- | --- |
@@ -219,6 +225,21 @@ back to, still starts then. signing covers:
   unsigned one there is replaced by a signed copy of
   `/usr/share/refind/drivers_x64/btrfs_x64.efi`, signed in
   `/tmp/yoq-sign` in the newest root.
+
+while a menu signs, images are per entry. each one is built with ukify's
+`--cmdline=` set to its entry's command line, and its name covers that
+command line too, so entries with different ones get different images and
+identical ones share. the entries pass no command line: no `options` line
+on systemd-boot or refind, no `cmdline:` on limine, nothing after grub's
+`chainloader`. with secure boot on, systemd's stub ignores what the
+bootloader passes to an image that has a command line, so a line added to
+an entry on the esp never reaches the kernel. a trial needs `yoq.trial`,
+so the newest entry gets a twin with it built in: limine, systemd-boot,
+and refind's trial entries start the twin, and grub's newest entry
+chainloads it when `yoq_trial_arg` is set. each recorded generation moves
+the one before to an entry with a command line of its own, so it gets a
+new image, and `os plan` counts that room, the twin's, and, when signing
+starts, a new image for every entry.
 
 a signature only adds a few KiB. signing an image that's on the esp
 already takes more, since its signed copy goes in beside it before it
