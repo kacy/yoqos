@@ -78,11 +78,25 @@ const Loader = struct {
     diags: *diag.List,
     out: *std.ArrayList([]const u8),
     stack: std.ArrayList([]const u8) = .empty,
+    /// the config has read `max_reads` files already, and said so.
+    too_many: bool = false,
+
+    /// the most files a config reads, counting one read again for each
+    /// include of it. a file may be included more than once, so a few
+    /// files that each include the next twice would be read millions of
+    /// times, and a plan, say of a config `os install` cloned, would
+    /// never come.
+    const max_reads = 256;
 
     fn loadFile(l: *Loader, path: []const u8, from: ?Src) error{OutOfMemory}!?Config {
         for (l.stack.items, 0..) |p, i| {
             if (!std.mem.eql(u8, p, path)) continue;
             try l.cycle(i, path, from.?);
+            return null;
+        }
+        if (l.out.items.len >= max_reads) {
+            if (!l.too_many) try l.diags.add(.bad_value, from, "the config's includes read more than {d} files", .{max_reads}, "include each file once, from one place");
+            l.too_many = true;
             return null;
         }
         const part = try l.readPart(path, from) orelse return null;
@@ -513,6 +527,23 @@ test "the same file included twice is fine" {
     const c = try r.load("machine.toml");
     try r.expectClean();
     try testing.expectEqual(1, c.packages.items.items.len);
+}
+
+test "includes that read too many files stop" {
+    var r: Run = .{};
+    defer r.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // each includes the next twice: 2^40 reads, without a limit.
+    for (0..40) |i| {
+        const text = try std.fmt.allocPrint(a, "include = [\"f{d}.toml\", \"f{d}.toml\"]\n", .{ i + 1, i + 1 });
+        try r.fs.put(try std.fmt.allocPrint(a, "f{d}.toml", .{i}), text);
+    }
+    try r.fs.put("f40.toml", "packages = [\"git\"]\n");
+    _ = try r.load("f0.toml");
+    try testing.expectEqual(1, r.diags.items.items.len);
+    try testing.expectEqualStrings("the config's includes read more than 256 files", r.diags.items.items[0].message);
 }
 
 test "unset reaches every kind of key" {

@@ -30,8 +30,10 @@ const Allocator = std.mem.Allocator;
 
 const usage_text = "os install <config repository or directory> --disk <device> [--host <name>] [--update] [--encrypt] [--tpm] [--passphrase-file <file>] [--yes]";
 
-/// where the config is fetched to before the disk is ready for it.
-const staging = "/run/yoq/install/config";
+/// where the config is fetched to before the disk is ready for it: in
+/// the directory only root can go into, since git writes a url's password
+/// or token into the clone's .git/config before os takes it out again.
+const staging = rootfs.private_dir ++ "/install/config";
 /// the kernels arch ships, one of which the lock has to name.
 const kernels = [_][]const u8{ "linux", "linux-lts", "linux-zen", "linux-hardened", "linux-rt", "linux-rt-lts" };
 
@@ -223,6 +225,7 @@ const Installer = struct {
     /// if it's a plain directory. the host's machine.toml becomes the
     /// config this run reads.
     fn fetch(in: *Installer, source: []const u8, host: ?[]const u8) !?[]const u8 {
+        if (!rootfs.makePrivateDir()) return "can't make " ++ rootfs.private_dir;
         if (try in.run(&.{ "rm", "-rf", staging })) |w| return w;
         if (try in.run(&.{ "mkdir", "-p", std.fs.path.dirnamePosix(staging).? })) |w| return w;
         const local = rootfs.pathExists(in.ctx.io, source);
@@ -231,8 +234,12 @@ const Installer = struct {
         // config repository, which anyone there can read, and out of
         // messages.
         const shown = try withoutCredentials(in.a, source);
+        if (!local and plainTransport(source)) {
+            return try std.fmt.allocPrint(in.a, "{s} comes over a connection anything on the way could change, and a config says what runs as root. fetch it with https or ssh", .{shown});
+        }
+        // the same goes for a redirect from an https url to one of them.
         const why = if (git)
-            try in.run(&.{ "git", "clone", "-q", "--", source, staging }) orelse
+            try in.run(&.{ "git", "-c", "protocol.http.allow=never", "-c", "protocol.git.allow=never", "-c", "protocol.ftp.allow=never", "clone", "-q", "--", source, staging }) orelse
                 if (shown.len != source.len) try in.run(&.{ "git", "-C", staging, "remote", "set-url", "origin", shown }) else null
         else
             try exec.runAll(in.a, in.ctx.io, &.{ &.{ "mkdir", "-p", staging }, &.{ "cp", "-a", try std.fmt.allocPrint(in.a, "{s}/.", .{source}), staging } });
@@ -634,6 +641,28 @@ fn withoutCredentials(a: std.mem.Allocator, url: []const u8) ![]const u8 {
     const end = std.mem.indexOfScalarPos(u8, url, host, '/') orelse url.len;
     const at = std.mem.lastIndexOfScalar(u8, url[host..end], '@') orelse return url;
     return std.mem.concat(a, u8, &.{ url[0..host], url[host + at + 1 ..] });
+}
+
+/// whether git fetches `url` without checking who sent it: http, git's
+/// own protocol, and ftp.
+fn plainTransport(url: []const u8) bool {
+    for ([_][]const u8{ "http://", "git://", "ftp://" }) |scheme| {
+        if (std.ascii.startsWithIgnoreCase(url, scheme)) return true;
+    }
+    return false;
+}
+
+test "a config only comes over a connection that's checked" {
+    try std.testing.expect(plainTransport("http://example.com/config.git"));
+    try std.testing.expect(plainTransport("git://example.com/config.git"));
+    try std.testing.expect(plainTransport("FTP://example.com/config.git"));
+    try std.testing.expect(!plainTransport("https://example.com/config.git"));
+    try std.testing.expect(!plainTransport("ssh://git@example.com/config.git"));
+    try std.testing.expect(!plainTransport("git@example.com:config.git"));
+}
+
+test "a cloned config waits where only root can read it" {
+    try std.testing.expect(std.mem.startsWith(u8, staging, rootfs.private_dir ++ "/"));
 }
 
 test "a url's credentials stay out" {

@@ -218,6 +218,70 @@
   messages that send you to it say. it only did when the menu had lost
   os's entries or had unsigned images, so copies on the esp that went
   missing, or went stale after `mkinitcpio` by hand, stayed that way.
+- os sets its umask to 022 when it starts, as pacman does. run from a
+  root shell with umask 0, the directories it and its tools made, like
+  the ones under /var/lib/yoq and the config's .git, were writable by
+  anyone, who could then plant a generation's record, or a git setting
+  that runs a command as root.
+- `os install` won't fetch a config over plain http, git's own protocol,
+  or ftp, or follow a redirect to one. anything on the way could change
+  the config, and with it what runs as root on the new machine.
+- a `[files]` path can't have a control character in it. one with a nul,
+  written as `\u0000` in the toml, showed in the plan as one path, like
+  `/etc/sudoers.d.off/x`, while os wrote the part before the nul,
+  `/etc/sudoers.d/x`. checked writes refuse a nul in a path too.
+- `[system] locale` and `keymap` take letters, digits, and `_.@+-`
+  only. they go unquoted into /etc/locale.conf and /etc/vconsole.conf,
+  which are shell: every login shell sources the first, and mkinitcpio's
+  hooks source the second as root. a value like `C.UTF-8$(id)` ran there
+  as a command, though the plan showed only a locale.
+- everything os prints goes out with control characters as escapes, like
+  `\x1b`, except newlines and tabs, and so do the c1 controls in utf-8.
+  plans, errors, `os status`, `os diff`, and the aur review print text
+  that others control: a cloned config and its lock, a recipe's
+  .SRCINFO and what its build prints, file names on the esp. an escape
+  sequence in any of them could move the cursor to hide a line of a plan
+  before the yes, or set the clipboard. progress keeps its own escape
+  for redrawing its line.
+- an aur review shows a file whose name git quotes, like `é.install`.
+  it was listed but its content was left out, though it can be the
+  install script that runs as root. a symlink shows as one, and a file
+  git can't show says so.
+- an aur review shows a recipe's changes as text whatever its own
+  .gitattributes says. one that marked its files `-diff` showed a
+  changed PKGBUILD as "Binary files differ". the review also escapes the
+  c1 controls in utf-8 and the marks that reverse the direction text
+  shows in.
+- a package file an aur recipe commits is removed before the build. one
+  that sorted first, like `foo-0-0-any.pkg.tar.zst`, went into the local
+  repository instead of what the build made, though the review only
+  named it as a binary file.
+- the copy of a recipe an aur build runs in is removed when the build
+  ends. its files belonged to the build user, so a build could leave a
+  program there, set-uid to that user, for anyone to run, and with it
+  change the next recipe after its review.
+- on grub, os notes a trial in /var when it arms one, as it does on the
+  other bootloaders, and a trial only grub's env file on the esp names
+  never makes the machine fall back. anything that could write the esp
+  could plant one that booted an older generation once, and the health
+  check then made that generation the newest, with its config, for good.
+- a kernel, initramfs, or microcode file whose name has anything but
+  letters, digits, and `._+-` is left out of the boot menu. names went
+  unquoted into grub.cfg, so a file on the esp called
+  `x;set root=(hd9);-ucode.img` became grub commands in every menu os
+  wrote after, and went into each root's /boot with the rest.
+- a config's includes stop at 256 files read, counting a file again for
+  each include of it. a few files that each included the next twice were
+  read millions of times, so a cloned config could keep `os install`
+  from ever showing its plan.
+- `os adopt` checks the file it reads: it opens it once, without
+  following a symlink, and looks at what it opened. it used to check the
+  path and then read it again, so a user who could write the file's
+  directory, like a service's own under /etc, could swap in a symlink to
+  /etc/shadow in between and have it copied into the config.
+- `os install` clones a config into a directory only root can go into.
+  git writes a url's password or token into the clone's .git/config,
+  which anyone on the live system could read until os took it out.
 
 ## 0.1.3
 

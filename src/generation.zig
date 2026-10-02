@@ -189,8 +189,14 @@ pub const Config = struct { dir: []const u8, rev: []const u8 };
 
 /// a file in /boot that belongs to the root beside it: a kernel, a
 /// microcode image, or an initramfs. fallback images are left out; they're
-/// large and no menu entry uses them.
+/// large and no menu entry uses them. so is a name with anything but
+/// letters, digits, and ._+-: the names go into menus, unquoted in
+/// grub.cfg, and the esp's files can be named anything fat allows, like
+/// "x;set root=...;-ucode.img".
 pub fn bootFile(name: []const u8) bool {
+    for (name) |ch| {
+        if (!std.ascii.isAlphanumeric(ch) and std.mem.indexOfScalar(u8, "._+-", ch) == null) return false;
+    }
     if (std.mem.startsWith(u8, name, "vmlinuz-") or std.mem.endsWith(u8, name, "-ucode.img")) return true;
     return std.mem.startsWith(u8, name, "initramfs-") and std.mem.endsWith(u8, name, ".img") and !std.mem.endsWith(u8, name, "-fallback.img");
 }
@@ -541,6 +547,7 @@ test "the newest generation's copy is spare, unless it's running" {
 test "which files in /boot a root keeps" {
     for ([_][]const u8{ "vmlinuz-linux", "vmlinuz-linux-lts", "amd-ucode.img", "initramfs-linux.img" }) |f| try testing.expect(bootFile(f));
     for ([_][]const u8{ "initramfs-linux-fallback.img", "grub", "EFI", "loader.conf" }) |f| try testing.expect(!bootFile(f));
+    for ([_][]const u8{ "x;set root=(hd9);-ucode.img", "vmlinuz-a b", "vmlinuz-\x1b[2J", "initramfs-$x.img" }) |f| try testing.expect(!bootFile(f));
 }
 
 test "passwords carry over, users don't" {

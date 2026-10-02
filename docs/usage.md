@@ -641,7 +641,8 @@ it stopped.
 
    the first argument is the repository, as a url or a directory. a
    directory with a git repository in it is cloned, so only what's
-   committed comes along.
+   committed comes along. a url has to be https or ssh: over plain http
+   or git's own protocol, anything on the way could change the config.
    `--host atlas` picks `hosts/atlas/machine.toml` in a repository for
    several machines; without it, `os` uses the repository's own
    `machine.toml`. for a private repository, git asks for your name and a

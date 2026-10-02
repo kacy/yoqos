@@ -2,9 +2,10 @@
 //! on the generation before, and `os health` ends the trial one way or the
 //! other. grub reads these choices from an env file on the esp, since it
 //! can write fat but not btrfs. limine and systemd-boot read them from
-//! efi variables, which bootctl sets, and os keeps the trial itself in
-//! /var. refind has no one-shot boot, so the firmware's own, BootNext,
-//! starts it with a config of os's.
+//! efi variables, which bootctl sets. refind has no one-shot boot, so the
+//! firmware's own, BootNext, starts it with a config of os's. whatever
+//! the loader, os keeps the trial itself in /var, where only root can
+//! write it.
 
 const std = @import("std");
 const exec = @import("exec.zig");
@@ -21,6 +22,11 @@ pub const Trial = struct {
     fallback: u32,
     /// the boot that tries it has started.
     tried: bool,
+    /// os noted the trial in /var when it armed it. one only grub's env
+    /// file names, which anything that can write the esp can set, may
+    /// pass, as one armed before os noted grub's there did, but never
+    /// makes the machine fall back.
+    noted: bool = true,
 };
 
 /// where a machine keeps its trial.
@@ -47,14 +53,7 @@ pub const Store = struct {
 
     /// the trial waiting for its boot, or running, if there is one.
     pub fn current(s: Store) !?Trial {
-        if (s.loader == .grub) {
-            const n = try s.number("yoq_trial") orelse return null;
-            return .{
-                .n = n,
-                .fallback = try s.number("yoq_default") orelse 0,
-                .tried = try s.value("yoq_tried") != null,
-            };
-        }
+        if (s.loader == .grub) return grubTrial(try s.state(), try s.number("yoq_trial"), try s.number("yoq_default"), try s.value("yoq_tried") != null);
         const words = try s.state() orelse return null;
         return .{
             .n = std.fmt.parseInt(u32, words[0], 10) catch return null,
@@ -69,13 +68,14 @@ pub const Store = struct {
     /// fall back to `fallback` if it doesn't come up.
     pub fn arm(s: Store, n: u32, fallback: generation.Record) !?[]const u8 {
         const why = switch (s.loader) {
-            .grub => {
+            .grub => blk: {
                 _ = try s.edit("unset", &.{"yoq_tried"});
-                return s.edit("set", &.{
+                if (try s.edit("set", &.{
                     "yoq_next=head",
                     try std.fmt.allocPrint(s.a, "yoq_default={s}", .{try menu.genId(s.a, fallback.n)}),
                     try std.fmt.allocPrint(s.a, "yoq_trial={d}", .{n}),
-                });
+                })) |w| break :blk w;
+                break :blk try s.write(state_path, try std.fmt.allocPrint(s.a, "{d} {d}\n", .{ n, fallback.n }));
             },
             .limine, .@"systemd-boot" => try s.armBootctl(n, fallback),
             .refind => try s.armRefind(n, fallback),
@@ -194,7 +194,7 @@ pub const Store = struct {
     /// default again.
     pub fn end(s: Store) !?[]const u8 {
         switch (s.loader) {
-            .grub => return s.edit("unset", &.{ "yoq_default", "yoq_trial", "yoq_tried" }),
+            .grub => if (try s.edit("unset", &.{ "yoq_default", "yoq_trial", "yoq_tried" })) |w| return w,
             .limine, .@"systemd-boot" => {
                 // empty removes the one-shot. limine's first entry is the
                 // newest generation, so it needs no default; systemd-boot
@@ -237,8 +237,8 @@ pub const Store = struct {
         return exec.run(s.a, s.io, &.{ "bootctl", verb, id });
     }
 
-    /// where os keeps a trial on limine, systemd-boot, and refind: its
-    /// generation, the one before it, and refind's firmware entry.
+    /// where os keeps a trial: its generation, the one before it, and
+    /// refind's firmware entry.
     const state_path = "/var/lib/yoq/trial";
     /// the variable limine and systemd-boot boot once from, under the
     /// boot loader interface's vendor guid.
@@ -279,6 +279,30 @@ pub const Store = struct {
         return exec.run(s.a, s.io, argv.items);
     }
 };
+
+/// grub's trial, from os's note of it, `noted`, or without one, from the
+/// env file's `env_trial` and `env_default`. whether the boot has started
+/// is the env file's either way: grub sets it.
+fn grubTrial(noted: ?[3][]const u8, env_trial: ?u32, env_default: ?u32, tried: bool) ?Trial {
+    const words = noted orelse return .{ .n = env_trial orelse return null, .fallback = env_default orelse 0, .tried = tried, .noted = false };
+    return .{
+        .n = std.fmt.parseInt(u32, words[0], 10) catch return null,
+        .fallback = std.fmt.parseInt(u32, words[1], 10) catch 0,
+        .tried = tried,
+    };
+}
+
+test "grub's trial is os's note of it, not the esp's" {
+    const t = grubTrial(.{ "7", "6", "" }, 9, 2, true).?;
+    try std.testing.expectEqual(7, t.n);
+    try std.testing.expectEqual(6, t.fallback);
+    try std.testing.expect(t.tried and t.noted);
+    // one only the env file names can't make the machine fall back.
+    const planted = grubTrial(null, 9, 2, true).?;
+    try std.testing.expectEqual(9, planted.n);
+    try std.testing.expect(!planted.noted);
+    try std.testing.expectEqual(null, grubTrial(null, null, 2, true));
+}
 
 /// refind's efi binary in `dir`, like refind_x64.efi.
 fn refindBinary(a: Allocator, io: std.Io, dir: []const u8) !?[]const u8 {

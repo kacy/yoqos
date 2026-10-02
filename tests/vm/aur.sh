@@ -43,6 +43,8 @@ check "pacman -Q yoq-hello >/dev/null 2>&1 || echo none" none
 aur_os "update --yes --trust-aur"
 check "pacman -Q yoq-hello" "yoq-hello 1-1"
 check "test -e /usr/share/yoq-hello/v1 && echo built" built
+# the build user's copy of the recipe goes with the build.
+check "test -e /var/cache/yoq/aur/build/yoq-hello && echo left || echo gone" gone
 # the chroot names its servers itself, since arch-nspawn rewrites its
 # mirrorlist from the host's.
 check "grep -c '^Include' /var/cache/yoq/aur/chroot/root/etc/pacman.conf || true" 0

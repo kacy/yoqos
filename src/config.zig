@@ -584,6 +584,10 @@ pub fn unknownService(diags: *diag.List, name: []const u8, at: ?diag.Span) !void
 /// absolute path, outside os's own state.
 pub fn filePathProblem(p: []const u8) ?[]const u8 {
     if (p.len < 2 or p[0] != '/' or p[p.len - 1] == '/') return "files are keyed by their full path, like \"/etc/motd\"";
+    // a nul ends the path where the kernel reads it, so the plan would
+    // show one file and os write another, and other controls can hide
+    // what the plan shows.
+    if (hasControl(p)) return "control characters like newlines can't be in a path";
     if (hasOddSegment(p[1..])) return "write the path without //, . or .. in it";
     for ([_][]const u8{ "/etc/yoq", "/var/lib/yoq" }) |own| {
         if (std.mem.startsWith(u8, p, own) and (p.len == own.len or p[own.len] == '/')) return "os keeps its own state there";
@@ -663,6 +667,12 @@ pub fn systemProblem(key: []const u8, v: []const u8) ?[]const u8 {
     if (v.len == 0) return "leave it out instead";
     if (hasControl(v)) return "control characters like newlines can't be in it";
     if (std.mem.eql(u8, key, "timezone") and hasOddSegment(v)) return "zone names look like America/New_York";
+    // /etc/locale.conf and /etc/vconsole.conf are shell: profile.d sources
+    // the one in every login shell, and mkinitcpio's hooks the other, as
+    // root. a quote, $, or ; there would run as a command.
+    if ((std.mem.eql(u8, key, "locale") or std.mem.eql(u8, key, "keymap")) and !onlyAlnumOr(v, "_.@+-")) {
+        return "use letters, digits, and _.@+-, like en_US.UTF-8 or de-latin1";
+    }
     return null;
 }
 
@@ -939,7 +949,7 @@ test "[files] can't name a file os writes itself" {
 }
 
 test "[files] paths are plain and stay out of os's own state" {
-    for ([_][]const u8{ "etc/motd", "/", "/etc/../../tmp/x", "/etc/./motd", "/etc//motd", "/etc/motd/", "/etc/yoq/machine.toml", "/var/lib/yoq", "/var/lib/yoq/ids" }) |p| {
+    for ([_][]const u8{ "etc/motd", "/", "/etc/sudoers.d\x00.off/x", "/etc/motd\x1b[2K", "/etc/a\nb", "/etc/../../tmp/x", "/etc/./motd", "/etc//motd", "/etc/motd/", "/etc/yoq/machine.toml", "/var/lib/yoq", "/var/lib/yoq/ids" }) |p| {
         try testing.expect(filePathProblem(p) != null);
     }
     for ([_][]const u8{ "/etc/motd", "/etc/yoqx", "/var/lib/yoq-other/x", "/etc/..hidden" }) |p| {
@@ -1002,6 +1012,10 @@ test "[system] values" {
     try testing.expect(systemProblem("hostname", "a..b") != null);
     try testing.expect(systemProblem("hostname", "a.-b") != null);
     try testing.expectEqual(null, systemProblem("timezone", "America/New_York"));
+    for ([_][]const u8{ "en_US.UTF-8", "sr_RS@latin", "C.UTF-8" }) |v| try testing.expectEqual(null, systemProblem("locale", v));
+    for ([_][]const u8{ "de-latin1", "us", "fr_CH-latin1" }) |v| try testing.expectEqual(null, systemProblem("keymap", v));
+    for ([_][]const u8{ "C.UTF-8$(touch /tmp/p)", "en_US.UTF-8 x", "`id`", "a'b" }) |v| try testing.expect(systemProblem("locale", v) != null);
+    try testing.expect(systemProblem("keymap", "us;id>/tmp/p") != null);
     try testing.expect(systemProblem("timezone", "/etc/passwd") != null);
     try testing.expect(systemProblem("timezone", "../../etc/passwd") != null);
     try testing.expectEqual(null, systemProblem("locale", "en_US.UTF-8"));

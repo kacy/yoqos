@@ -255,6 +255,26 @@ test "the run directory stays open, and the private one in it is root's alone" {
     try std.testing.expect(@intFromEnum((try tmp.dir.statFile(io, "theirs", .{})).permissions) & 0o777 != 0o700);
 }
 
+/// sets the mask on the modes of new files and directories to 022, as
+/// pacman does, whatever os was started with. a root shell with umask 0
+/// would otherwise make every directory os and its tools create, like
+/// those under /var/lib/yoq or the config's .git, writable by anyone.
+/// returns the mask there was.
+pub fn standardUmask() u32 {
+    return @intCast(std.os.linux.syscall1(.umask, 0o022));
+}
+
+test "os makes directories others can't write to, whatever its umask" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const before: u32 = @intCast(std.os.linux.syscall1(.umask, 0));
+    defer _ = std.os.linux.syscall1(.umask, before);
+    try std.testing.expectEqual(0, standardUmask());
+    try tmp.dir.createDirPath(io, "var/lib/yoq");
+    try std.testing.expectEqual(0o755, @intFromEnum((try tmp.dir.statFile(io, "var/lib/yoq", .{})).permissions) & 0o7777);
+}
+
 pub fn pathExists(io: std.Io, path: []const u8) bool {
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
@@ -283,6 +303,8 @@ pub fn writeAtomic(io: std.Io, path: []const u8, bytes: []const u8, bits: ?u32) 
 /// nothing can swap the path in between.
 fn replaceAt(dfd: std.os.linux.fd_t, name: []const u8, bytes: []const u8, bits: ?u32) error{WriteFailed}!void {
     const linux = std.os.linux;
+    // the kernel would read a name with a nul in it only up to there.
+    if (std.mem.indexOfScalar(u8, name, 0) != null) return error.WriteFailed;
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const tmp = std.fmt.bufPrintZ(&buf, "{s}.os-tmp", .{name}) catch return error.WriteFailed;
     var dest_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -367,6 +389,7 @@ const max_links = 40;
 /// followed, inside the root.
 fn openParent(a: Allocator, root: []const u8, rel: []const u8, make: bool) error{OutOfMemory}!Parent {
     const linux = std.os.linux;
+    if (std.mem.indexOfScalar(u8, rel, 0) != null) return .{ .refused = "the path has a nul in it" };
     var stack: std.ArrayList(linux.fd_t) = .empty;
     // every directory still on the stack closes. the one returned is
     // popped off first, since a return's value comes before its defers.
@@ -521,6 +544,12 @@ test "a checked write follows root's symlinks, and refuses others' and open dire
     try std.testing.expectEqual(null, try removeChecked(a, root, "lib/x.conf"));
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "root/usr/lib/x.conf", .{}));
     try std.testing.expectEqual(null, try removeChecked(a, root, "no/such/dir/f"));
+    // a nul would cut the path short, so a write meant for one file
+    // landed in another.
+    try std.testing.expect(std.mem.endsWith(u8, (try writeChecked(a, root, "etc/motd\x00.off", "x", null)).?, "the path has a nul in it"));
+    try std.testing.expect((try writeChecked(a, root, "etc\x00.off/motd", "x", null)) != null);
+    try std.testing.expect((try removeChecked(a, root, "etc/motd\x00.off")) != null);
+    try std.testing.expectEqualStrings("hi", try tmp.dir.readFileAlloc(io, "root/etc/motd", a, .limited(64)));
 }
 
 /// how many files this process has open.
