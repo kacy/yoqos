@@ -256,6 +256,10 @@
   that sorted first, like `foo-0-0-any.pkg.tar.zst`, went into the local
   repository instead of what the build made, though the review only
   named it as a binary file.
+- the copy of a recipe an aur build runs in is removed when the build
+  ends. its files belonged to the build user, so a build could leave a
+  program there, set-uid to that user, for anyone to run, and with it
+  change the next recipe after its review.
 
 ## 0.1.3
 

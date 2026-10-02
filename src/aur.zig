@@ -358,6 +358,10 @@ pub const Builder = struct {
         if (try b.run(&.{ "rm", "-rf", work })) |w| return w;
         if (try b.createDir(b.dirs.build)) |w| return w;
         if (try b.run(&.{ "cp", "-a", dir, work })) |w| return w;
+        // gone once the build ends: its files are the build user's, who
+        // could leave a program there, set-uid to it, for anyone to run,
+        // and with it change the next build's files before it starts.
+        defer _ = b.run(&.{ "rm", "-rf", work }) catch {};
         // a package file the recipe commits would be taken for the one
         // it builds, and the review only named it.
         if (try b.dropPackages(work)) |w| return w;
