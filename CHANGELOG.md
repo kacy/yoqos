@@ -177,6 +177,10 @@
   went unnoticed, every pacman run ever showed as drift, and `os events`
   printed nothing. os now reads the end of a log for what happened last,
   and `os events` reads a long one a window at a time.
+- pacman runs after an apply show as changed outside os even when the
+  clock went back in between, like ntp fixing a clock that ran ahead.
+  an apply's done line notes where the drift log ended, and the runs past
+  that count, where before only runs stamped later than the apply did.
 
 ## 0.1.3
 

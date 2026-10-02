@@ -241,7 +241,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
         try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "failed", &hash);
         return Outcome.failed(&w);
     };
-    try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "done", &hash);
+    try journal.recordDone(a, ctx.io, ctx.root, journal.now(ctx.io), &hash);
     try recordIds(ctx, a);
     var code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units);
     if (w.diags.items.items.len > problems) code = try scriptsFailed(ctx, w.diags.items.items[problems..]);
