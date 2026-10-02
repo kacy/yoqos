@@ -279,6 +279,9 @@
   path and then read it again, so a user who could write the file's
   directory, like a service's own under /etc, could swap in a symlink to
   /etc/shadow in between and have it copied into the config.
+- `os install` clones a config into a directory only root can go into.
+  git writes a url's password or token into the clone's .git/config,
+  which anyone on the live system could read until os took it out.
 
 ## 0.1.3
 

@@ -30,8 +30,10 @@ const Allocator = std.mem.Allocator;
 
 const usage_text = "os install <config repository or directory> --disk <device> [--host <name>] [--update] [--encrypt] [--tpm] [--passphrase-file <file>] [--yes]";
 
-/// where the config is fetched to before the disk is ready for it.
-const staging = "/run/yoq/install/config";
+/// where the config is fetched to before the disk is ready for it: in
+/// the directory only root can go into, since git writes a url's password
+/// or token into the clone's .git/config before os takes it out again.
+const staging = rootfs.private_dir ++ "/install/config";
 /// the kernels arch ships, one of which the lock has to name.
 const kernels = [_][]const u8{ "linux", "linux-lts", "linux-zen", "linux-hardened", "linux-rt", "linux-rt-lts" };
 
@@ -223,6 +225,7 @@ const Installer = struct {
     /// if it's a plain directory. the host's machine.toml becomes the
     /// config this run reads.
     fn fetch(in: *Installer, source: []const u8, host: ?[]const u8) !?[]const u8 {
+        if (!rootfs.makePrivateDir()) return "can't make " ++ rootfs.private_dir;
         if (try in.run(&.{ "rm", "-rf", staging })) |w| return w;
         if (try in.run(&.{ "mkdir", "-p", std.fs.path.dirnamePosix(staging).? })) |w| return w;
         const local = rootfs.pathExists(in.ctx.io, source);
@@ -656,6 +659,10 @@ test "a config only comes over a connection that's checked" {
     try std.testing.expect(!plainTransport("https://example.com/config.git"));
     try std.testing.expect(!plainTransport("ssh://git@example.com/config.git"));
     try std.testing.expect(!plainTransport("git@example.com:config.git"));
+}
+
+test "a cloned config waits where only root can read it" {
+    try std.testing.expect(std.mem.startsWith(u8, staging, rootfs.private_dir ++ "/"));
 }
 
 test "a url's credentials stay out" {
