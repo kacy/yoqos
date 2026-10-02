@@ -92,16 +92,16 @@ pub const Machine = struct {
 
     /// records the running root as the next generation: a read-only
     /// snapshot, its record in /var, and the boot menu with it at the top.
-    pub fn record(m: *const Machine, reason: []const u8, time: i64, config: ?generation.Config) !?[]const u8 {
+    pub fn record(m: *const Machine, stamp: generation.Stamp) !?[]const u8 {
         std.Io.Dir.cwd().deleteFile(m.io, notice_path) catch {};
         const records = try readRecords(m.a, m.io, "/var");
         if (try m.keepBoot(m.boot.root_subvol.?)) |w| return w;
-        return m.add(records, try m.free(records), m.boot.root_subvol.?, reason, time, config, false);
+        return m.add(records, try m.free(records), m.boot.root_subvol.?, stamp, false);
     }
 
     /// records the root at `root`, a staged one built beside the running
     /// root, as the next generation, with the menu booting it first.
-    pub fn recordStaged(m: *const Machine, root: []const u8, reason: []const u8, time: i64, config: ?generation.Config) !?[]const u8 {
+    pub fn recordStaged(m: *const Machine, root: []const u8, stamp: generation.Stamp) !?[]const u8 {
         std.Io.Dir.cwd().deleteFile(m.io, notice_path) catch {};
         const records = try readRecords(m.a, m.io, "/var");
         const prefix = "/" ++ generation.roots_dir ++ "/";
@@ -114,7 +114,7 @@ pub const Machine = struct {
         // older kernel for it, and copy that into its /boot.
         const before = try m.note();
         if (try m.setNote(root)) |w| return w;
-        const why = try m.add(records, n, root, reason, time, config, true) orelse return null;
+        const why = try m.add(records, n, root, stamp, true) orelse return null;
         // unrecorded, nothing boots the staged root: it goes, and the note
         // says what it said before, rather than wait forever.
         _ = try m.forget(n);
@@ -130,14 +130,14 @@ pub const Machine = struct {
     /// step fails, the new generation goes, and the menu is as it was.
     /// if its boot files don't fit on the esp, it's started all the same,
     /// booting the kernel in its own root, and `later` says why.
-    pub fn start(m: *const Machine, source: []const u8, reason: []const u8, time: i64, config: ?generation.Config, made: *u32, later: *?[]const u8) !?[]const u8 {
+    pub fn start(m: *const Machine, source: []const u8, stamp: generation.Stamp, made: *u32, later: *?[]const u8) !?[]const u8 {
         const records = try readRecords(m.a, m.io, "/var");
         const n = try m.free(records);
         const root = try std.fmt.allocPrint(m.a, "/{s}/{d}", .{ generation.roots_dir, n });
         btrfs.snapshot(try m.at(&.{source}), try m.at(&.{root}), false) catch |e| return try std.fmt.allocPrint(m.a, "can't copy {s}: {s}", .{ source, @errorName(e) });
         const before = try m.note();
         // the esp's boot files change last, once the new root is recorded.
-        const why = try m.carry(root) orelse try m.add(records, n, root, reason, time, config, false) orelse try m.startBoot(root, before, later) orelse {
+        const why = try m.carry(root) orelse try m.add(records, n, root, stamp, false) orelse try m.startBoot(root, before, later) orelse {
             made.* = n;
             return null;
         };
@@ -204,16 +204,16 @@ pub const Machine = struct {
     /// `on_trial` next leaves the default on the generation its trial
     /// falls back to (see writeMenuHolding), so a power cut before the
     /// trial is armed boots that one, not a generation nothing has tried.
-    fn add(m: *const Machine, records: []const generation.Record, n: u32, root: []const u8, reason: []const u8, time: i64, config: ?generation.Config, on_trial: bool) !?[]const u8 {
+    fn add(m: *const Machine, records: []const generation.Record, n: u32, root: []const u8, stamp: generation.Stamp, on_trial: bool) !?[]const u8 {
         try m.refreshUnits(root);
         btrfs.snapshot(try m.at(&.{root}), try m.numbered(generation.gens_dir, n), true) catch |e| return try std.fmt.allocPrint(m.a, "can't snapshot {s}: {s}", .{ root, @errorName(e) });
         const rec: generation.Record = .{
             .n = n,
-            .time = time,
+            .time = stamp.time,
             .root = root[1..],
-            .reason = reason,
-            .config_dir = if (config) |c| c.dir else null,
-            .config_rev = if (config) |c| c.rev else null,
+            .reason = stamp.reason,
+            .config_dir = if (stamp.config) |c| c.dir else null,
+            .config_rev = if (stamp.config) |c| c.rev else null,
         };
         if (try writeRecord(m.a, m.io, "/var", rec)) |w| return w;
         const all = try std.mem.concat(m.a, generation.Record, &.{ records, &.{rec} });

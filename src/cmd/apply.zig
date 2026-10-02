@@ -356,9 +356,8 @@ pub fn recordGeneration(ctx: *Context, done: Outcome, caller_reason: []const u8)
         return lost;
     };
     defer m.close();
-    const now = std.Io.Timestamp.now(ctx.io, .real).toSeconds();
-    const commit = try configNow(ctx, a);
-    const recorded = if (done.staged_root) |root| try m.recordStaged(root, reason, now, commit) else try m.record(reason, now, commit);
+    const stamp: generation.Stamp = .{ .reason = reason, .time = std.Io.Timestamp.now(ctx.io, .real).toSeconds(), .config = try configNow(ctx, a) };
+    const recorded = if (done.staged_root) |root| try m.recordStaged(root, stamp) else try m.record(stamp);
     if (recorded) |problem| {
         if (done.staged_root != null) {
             try ctx.err.print("os: the change was built, but couldn't be recorded, so it's gone again: {s}. the running system is as it was; `os apply` tries again.\n", .{problem});
