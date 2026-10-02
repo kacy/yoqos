@@ -114,7 +114,7 @@ const commands = [_]Command{
     .{ .name = "enable", .summary = "turn services on in the config", .handler = edit.enableCmd },
     .{ .name = "disable", .summary = "turn services off in the config", .handler = edit.disableCmd },
     .{ .name = "edit", .summary = "open the config in $EDITOR, check it, and apply it", .handler = edit.editCmd },
-    .{ .name = "adopt", .summary = "put packages installed outside os into the config", .handler = edit.adoptCmd },
+    .{ .name = "adopt", .summary = "put packages installed outside os, or a file in /etc, into the config", .handler = edit.adoptCmd },
     .{ .name = "secret", .summary = "keep, list, or remove the values files name with secret", .handler = secret_cmd.secretCmd },
     .{ .name = "rollback", .summary = "go back to an earlier generation", .handler = rollback.rollbackCmd },
     .{ .name = "enable-rollback", .summary = "turn on generations of the whole system (btrfs)", .handler = enable_rollback.enableRollbackCmd },
