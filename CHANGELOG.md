@@ -223,6 +223,9 @@
   the ones under /var/lib/yoq and the config's .git, were writable by
   anyone, who could then plant a generation's record, or a git setting
   that runs a command as root.
+- `os install` won't fetch a config over plain http, git's own protocol,
+  or ftp, or follow a redirect to one. anything on the way could change
+  the config, and with it what runs as root on the new machine.
 
 ## 0.1.3
 

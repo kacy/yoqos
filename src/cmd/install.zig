@@ -231,8 +231,12 @@ const Installer = struct {
         // config repository, which anyone there can read, and out of
         // messages.
         const shown = try withoutCredentials(in.a, source);
+        if (!local and plainTransport(source)) {
+            return try std.fmt.allocPrint(in.a, "{s} comes over a connection anything on the way could change, and a config says what runs as root. fetch it with https or ssh", .{shown});
+        }
+        // the same goes for a redirect from an https url to one of them.
         const why = if (git)
-            try in.run(&.{ "git", "clone", "-q", "--", source, staging }) orelse
+            try in.run(&.{ "git", "-c", "protocol.http.allow=never", "-c", "protocol.git.allow=never", "-c", "protocol.ftp.allow=never", "clone", "-q", "--", source, staging }) orelse
                 if (shown.len != source.len) try in.run(&.{ "git", "-C", staging, "remote", "set-url", "origin", shown }) else null
         else
             try exec.runAll(in.a, in.ctx.io, &.{ &.{ "mkdir", "-p", staging }, &.{ "cp", "-a", try std.fmt.allocPrint(in.a, "{s}/.", .{source}), staging } });
@@ -634,6 +638,24 @@ fn withoutCredentials(a: std.mem.Allocator, url: []const u8) ![]const u8 {
     const end = std.mem.indexOfScalarPos(u8, url, host, '/') orelse url.len;
     const at = std.mem.lastIndexOfScalar(u8, url[host..end], '@') orelse return url;
     return std.mem.concat(a, u8, &.{ url[0..host], url[host + at + 1 ..] });
+}
+
+/// whether git fetches `url` without checking who sent it: http, git's
+/// own protocol, and ftp.
+fn plainTransport(url: []const u8) bool {
+    for ([_][]const u8{ "http://", "git://", "ftp://" }) |scheme| {
+        if (std.ascii.startsWithIgnoreCase(url, scheme)) return true;
+    }
+    return false;
+}
+
+test "a config only comes over a connection that's checked" {
+    try std.testing.expect(plainTransport("http://example.com/config.git"));
+    try std.testing.expect(plainTransport("git://example.com/config.git"));
+    try std.testing.expect(plainTransport("FTP://example.com/config.git"));
+    try std.testing.expect(!plainTransport("https://example.com/config.git"));
+    try std.testing.expect(!plainTransport("ssh://git@example.com/config.git"));
+    try std.testing.expect(!plainTransport("git@example.com:config.git"));
 }
 
 test "a url's credentials stay out" {
