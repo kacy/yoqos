@@ -10,10 +10,12 @@ to use it today.
 up to date, tells you what's different, and applies the difference. `os
 apply` installs and removes packages, sets the `[system]` settings, turns
 services on and off, creates users and sets their shells and groups, and
-writes files and sysctl settings. on a btrfs root with grub, limine,
-refind, or systemd-boot, `os enable-rollback` adds whole-system
+writes files, secrets, and sysctl settings. on a btrfs root with grub,
+limine, refind, or systemd-boot, `os enable-rollback` adds whole-system
 generations, and a change that needs a reboot is then built beside the
 running system instead of into it; see [generations.md](generations.md).
+generations can also boot unified kernel images, signed for secure boot,
+and `os install` can put a new machine on an encrypted disk.
 
 | command | what it does |
 | --- | --- |
@@ -41,10 +43,13 @@ running system instead of into it; see [generations.md](generations.md).
 | `os explain` | the long explanation of an error code |
 | `os help`, `os version` | the command list, and the version |
 | `os schema` | json schemas for the config and for what `--json` prints |
+| `os events` | what `os` did on this machine, as json lines |
 | `os docs` | this page, the readme, and generations.md, as one document |
 | `os build --clean` | builds a root from the config and the lock alone |
 
-`os help` doesn't list the last three.
+`os help` doesn't list the last four. `os carry`, `os health`, and `os
+record-pacman` don't show up either: `os`'s own units and its pacman hook
+run them, and you don't need to.
 
 ## installing
 
@@ -203,10 +208,10 @@ esp, and stops with E0131 if they don't (see
 [generations](generations.md)). `os apply` checks the same before it
 builds anything.
 
-`-o <file>` also saves the plan, as the same json `--json` prints. `os apply
-<file>` then applies that plan and nothing else: if the config, the lock,
-or the machine changed since, so that the plan would be different, it
-refuses with E0128 and changes nothing. that's useful when one person or
+`-o <file>` (or `--output <file>`) also saves the plan, as the same json
+`--json` prints. `os apply <file>` then applies that plan and nothing
+else: if the config, the lock, or the machine changed since, so that the
+plan would be different, it refuses with E0128 and changes nothing. that's useful when one person or
 script writes the plan and another looks it over before it runs.
 
 ### apply
@@ -448,7 +453,8 @@ rollback work on whole copies of the system instead; see
 
 `/etc/yoq` is a git repository. every change `os` makes there, from `init`,
 `add`, `remove`, `enable`, `disable`, `adopt`, `edit`, `update`, and
-`rollback`, is a commit with a short message, like `add fd` (`adopt` commits as `add`). if
+`rollback`, is a commit with a short message, like `add fd`. adopting
+packages commits as `add`, and adopting a file as `adopt <path>`. if
 the config lives inside another repository, like a dotfiles one, `os`
 commits there, and only what's in the config's own directory. each commit
 is a generation of the machine's config, numbered from the first, and `*`
@@ -563,8 +569,10 @@ the other generations stay as btrfs subvolumes unless you say yes when it
 asks, or pass `--delete-generations`. the running root stays where it is,
 in `@roots/<n>`, and so do `@var`, `@home`, and the other data subvolumes.
 
-last, it removes the `yoq-os` package if pacman installed it, and `os`'s
-own state in `/var/lib/yoq`. the config and its git history stay in
+last, it removes the `yoq-os` package if pacman installed it, `os`'s own
+state in `/var/lib/yoq`, and its files on the esp. that state includes the
+values `os secret set` kept, though the files `os` wrote them to stay. the
+config and its git history stay in
 `/etc/yoq`. if a step fails, running `os uninstall` again picks up where
 it stopped.
 
@@ -578,7 +586,8 @@ it stopped.
 - a usb drive of 2 gb or more.
 - a disk of 16 gib or more for the new machine.
 - a machine that boots in uefi mode. secure boot has to be off: the iso
-  isn't signed for it, and `os` doesn't support it yet.
+  isn't signed for it, and a new machine has no keys to sign with yet.
+  [secure boot](#secure-boot) covers turning it on once the machine runs.
 - a config repository that describes the machine, or nothing at all:
   `os init --new` writes one on the live system. see [a config for a new
   machine](#a-config-for-a-new-machine).
@@ -691,10 +700,18 @@ you give them a password with `passwd -R /mnt/yoq <user>` before
 rebooting.
 
 it checks first that the firmware is uefi and that the disk is a whole
-disk of 16 gib or more that nothing has mounted. it also checks that the tools it runs are
-there, and that the lock has a kernel, grub, and btrfs-progs. arch's own iso works too,
-with `os` added: `pacman -U` the release package, or copy the binary. on
-another live system, `pacman -S dosfstools btrfs-progs grub git` first.
+disk of 16 gib or more that nothing has mounted. it also checks that the
+tools it runs are there, that the lock has a kernel, grub, and
+btrfs-progs, that the config has no aur packages and no `secure_boot`,
+and that every secret it names is set on the live system. with
+`--encrypt`, it checks the config's `[boot] encrypt` and that there's a
+way to give the passphrase, and with `--tpm`, the tpm and `tpm2-tss`.
+nothing on the disk changes until all of that passes.
+
+arch's own iso works too, with `os` added: `pacman -U` the release
+package, or copy the binary. on another live system, `pacman -S dosfstools
+btrfs-progs grub git` first, plus `cryptsetup` for `--encrypt` and
+`tpm2-tss` for `--tpm`.
 
 aur packages wait until the machine is running: install without them,
 then add them back and run `os update` there.
@@ -906,6 +923,9 @@ unit = "syncthing@kacy.service"
 package = "syncthing"
 ```
 
+`ssh = true` is short for `[services.ssh] enabled = true`. a table without
+`enabled` turns the service on, and `enabled = false` turns it off.
+
 services the config doesn't mention are left alone, and so are users.
 
 ### users
@@ -976,6 +996,13 @@ root's, or the write stops with the path and the reason.
 `[sysctl]` becomes one file, `/etc/sysctl.d/99-yoq.conf`, and `apply` loads
 it right away when systemd runs the machine.
 
+files `os` makes from other keys (the sysctl file, the module list, the
+greetd and tty login files, the initramfs drop-ins for nvidia and for
+encrypted roots, and the `uki` and `secure_boot` files in `/etc/kernel`)
+start with a "written by os" line. once nothing asks for one, `apply`
+removes it. a file without that line, one you wrote yourself, is never
+removed.
+
 ### secrets
 
 ```toml
@@ -1001,11 +1028,7 @@ root's alone, so every `os secret` command needs root. `apply` decrypts a
 value right before it writes the file, and wipes it from memory once it's
 written.
 
-`os secret set` on a name that's already set encrypts the value again. values
-set with an earlier build of `os` were bound to pcr 7, the secure boot
-state, so on a machine with a tpm2 they stop decrypting once secure boot is
-turned on or off: `os plan` stops with E0133, and setting each one again
-fixes it.
+`os secret set` on a name that's already set encrypts the value again.
 
 a name is letters, digits, `-`, `_`, and `.`, with `/` to group them, like
 `wifi/home`; no part of it starts with a dot. a value comes from stdin byte
@@ -1043,11 +1066,6 @@ the copies in older generations. `os gc` does, when it removes them.
 reading values needs root, so `os plan` without root can't tell whether a
 file holds the current value, and only shows it when it's missing or its
 mode differs. `apply` runs as root and sees all of it.
-
-files `os` makes from other keys (the sysctl file, the module list, the
-greetd and tty login files, and nvidia's initramfs drop-in) start with a
-"written by os" line. once nothing asks for one, `apply` removes it. a file
-without that line, one you wrote yourself, is never removed.
 
 ### the desktop
 
@@ -1369,11 +1387,35 @@ error[E0213]: unknown service "sshd"
 ```
 
 `os explain E0213` prints the long explanation, and `os explain` lists every
-code. E0127 is a step of an apply that failed, like a file that couldn't be
-written or a tool that didn't work; the message has the details. E0128 is a
-saved plan that's out of date, and E0129 a plan that changed between being
-shown and the yes. E0131 is a change whose new boot files won't fit on the
-esp, and E0133 a secret the config names that this machine doesn't have.
+code:
+
+| code | what's wrong |
+| --- | --- |
+| E0001 | the toml doesn't parse |
+| E0002 | a toml feature `os` doesn't read yet, like a date; write it as a string |
+| E0003 | a key set twice in one file |
+| E0100 | no config file where `--config` points, `/etc/yoq/machine.toml` by default |
+| E0101 | a key the config format doesn't have |
+| E0102 | a value of the wrong type |
+| E0103 | a value of the right type that isn't allowed, like an empty hostname |
+| E0110 | an include that isn't there |
+| E0111 | includes that include each other |
+| E0112 | a `[files]` `source` that doesn't exist or can't be read |
+| E0120 | a `machine.lock` that doesn't match its format, like one edited by hand |
+| E0121 | a package the config asks for that the lock doesn't have |
+| E0122 | packages that don't resolve: one doesn't exist, needs something nothing has, or conflicts |
+| E0123 | several packages provide something, and `[providers]` doesn't say which |
+| E0124 | libalpm can't open or read a package database |
+| E0125 | systemd can't be asked about units, like in a container |
+| E0126 | the plan would remove a core package `[remove]` doesn't name |
+| E0127 | a step of an apply failed, like a file that couldn't be written; the message has the details |
+| E0128 | a saved plan that's out of date |
+| E0129 | the plan changed between being shown and the yes |
+| E0130 | an aur recipe needs a package that's in neither arch's repositories nor `aur` |
+| E0131 | a change whose new boot files won't fit on the esp |
+| E0133 | a secret the config names that this machine doesn't have, or can't decrypt |
+| E0134 | `secure_boot` is on, but sbctl has no keys to sign with |
+| E0213 | a service name `[services]` doesn't know |
 
 ## scripting
 
@@ -1406,7 +1448,7 @@ the kind; `os schema events` has them all.
 `--since <when>` leaves out events from before a time, with or without
 `--follow`. it takes unix milliseconds, a date (`2026-09-30`), or a date and
 time (`2026-09-30T14:00` or `2026-09-30T14:00:05`), all in utc, with an
-optional trailing `Z`.
+optional trailing `Z`. `-f` is short for `--follow`.
 
 ```
 $ os events --follow

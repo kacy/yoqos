@@ -53,6 +53,8 @@ fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
 
 const Then = applying.Then;
 
+const adopt_usage = "os adopt [<package>...] | os adopt <path> [--yes] [--no-apply]";
+
 /// `os adopt [package...]`: puts packages installed outside the config into
 /// it, all of them or the ones named. `os adopt <path>` takes a file.
 pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
@@ -63,7 +65,7 @@ pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer w.deinit();
     const a = w.allocator();
     var it: cli.ArgIter = .{ .args = args };
-    const wanted = it.names(try a.alloc([]const u8, args.len)) orelse return cli.usageError(ctx, "os adopt [package...]");
+    const wanted = it.names(try a.alloc([]const u8, args.len)) orelse return cli.usageError(ctx, adopt_usage);
     const state = try w.state() orelse return w.fail();
     const f = try w.facts() orelse return w.fail();
 
@@ -145,7 +147,7 @@ fn applyAfter(ctx: *Context, then: Then, message: []const u8) !u8 {
 /// `os adopt <path>`: copies a file from /etc next to the config and adds
 /// a `[files]` entry for it, so os keeps it as it is now.
 fn adoptFile(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os adopt <path> [--yes] [--no-apply]";
+    const usage_text = adopt_usage;
     var then: Then = .{ .apply = true };
     var path: ?[]const u8 = null;
     var it: cli.ArgIter = .{ .args = args };

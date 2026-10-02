@@ -4,155 +4,114 @@
 
 ### new
 
-- `os install` shows a url source in its plan, with a line saying its
-  packages' scripts run as root on the live system and the new machine.
-  treat a config repository like code.
 - `[files."<path>"] secret = "<name>"` writes a value that never goes into
-  the config or the lock. `os secret set <name>` keeps it, encrypted with
-  systemd-creds under `/var/lib/yoq/secrets`, and `os secret list` and
-  `os secret rm` go with it. a secret's file is `0600` unless the entry
-  says otherwise, and the plan points out a mode that lets others read it.
-- plans and facts compare a secret's file by an hmac-sha256 under a key
-  only the machine has, so neither shows the value or a plain hash of it.
+  the config or the lock. `os secret set <name>` keeps it on the machine,
+  encrypted with systemd-creds under `/var/lib/yoq/secrets` and bound to
+  no tpm pcrs, so turning secure boot on doesn't make it unreadable. `os
+  secret list` and `os secret rm` go with it. at a terminal, the value is
+  typed twice without echo, whatever `--json` and stdout are; otherwise
+  it's read from stdin byte for byte.
+- a secret's file is `0600` unless the entry says otherwise, and the plan
+  points out a mode that lets others read it. plans and facts compare the
+  file by an hmac-sha256 under a key only the machine has, so neither
+  shows the value or a plain hash of it, and `os apply` writes a secret
+  only if it still has the value the plan was made for.
 - a secret this machine doesn't have stops `os plan` and `os apply` with
   E0133, which names the `os secret set` to run, and `os status` lists it
-  as failing.
+  as failing. `os install` checks the live system has every secret the
+  config names before it erases the disk.
+- `os secret set`, anything that decrypts a secret, and `os install
+  --passphrase-file` mark the process as not dumpable before they hold
+  the value, so it stays out of core dumps and out of /proc/<pid>/mem.
 - `os why <path>` names a file's secret, and `os schema secret` and `os
   schema secrets` describe the new `--json` documents.
 - `os install --encrypt` puts luks2 under btrfs. cryptsetup asks for the
-  passphrase, or `--passphrase-file` gives it, read once and never copied.
-  `--tpm` adds a tpm key with systemd-cryptenroll and keeps the passphrase
-  as a way in.
+  passphrase, or `--passphrase-file` gives it: one line, read once into a
+  buffer that's wiped after. `--tpm` adds a key for a tpm 2.0 with
+  systemd-cryptenroll and keeps the passphrase as a way in. the plan
+  notes that without secure boot, the tpm keeps a powered-off disk safe,
+  not a machine left alone. a run that was cut off with its luks volume
+  open has it closed by the next one.
 - `[boot] encrypt = true` adds sd-encrypt to mkinitcpio's hooks, with a
   drop-in, when they can't unlock luks already. `os init` sets it on a luks
   root, and `os init --new --encrypt` (or `--tpm`) writes it.
-- facts name the luks volume under the root: its uuid, mapper name, and
-  partition.
-- `os enable-rollback` and `os doctor` check that the initramfs unlocks a
-  luks root.
+- generations work on a btrfs root inside luks. every bootloader boots
+  them from copies on the esp, since none of them reads btrfs inside luks,
+  with the arguments that unlock the root. facts name the luks volume
+  under the root: its uuid, mapper name, and partition. `os
+  enable-rollback` and `os doctor` check that the initramfs unlocks it,
+  and `os uninstall` on grub adds those arguments, and the consoles, to
+  `/etc/default/grub` when it lacks them.
 - `[boot] uki = true` boots generations from unified kernel images, which
-  `os` builds with each generation's own ukify, without a command line in
-  them, and shares on the esp by content. every bootloader's entries pass
-  the command line to the image. `os plan` counts the images against the
-  esp's room, and `os gc` removes the ones no entry uses.
+  `os` builds with each generation's own ukify from the kernel and
+  initramfs copies in its root, never from the esp's files. images are
+  named by their content and systemd's stub, and shared on the esp. every
+  bootloader's entries pass the command line to the image, quoted
+  arguments included. `os plan` counts the images against the esp's room,
+  and `os gc` removes the ones no entry uses.
 - facts note a machine that boots unified kernel images already, from
   mkinitcpio's presets or `EFI/Linux` on the esp, and `os init` sets
   `[boot] uki` there when ukify is installed.
 - `[boot] secure_boot = true`, with `uki`, signs every image `os` puts on
-  the esp with sbctl's keys, before it gets there, along with refind's
+  the esp with sbctl's db key, before it gets there, along with refind's
   btrfs driver. it brings sbctl, waits for a reboot like a new kernel, and
-  stops with E0134 when sbctl has no keys. `os` never makes or enrolls
-  keys; usage.md has the one-time steps.
-- `os doctor` checks sbctl, its keys, the firmware's secure boot and setup
-  mode, and lists efi files on the esp without a signature. facts carry
-  the same, and `os gc` signs images left unsigned.
+  stops `os apply` and `os update` with E0134 when sbctl has no keys. `os`
+  never makes or enrolls keys; usage.md has the one-time steps.
 - with secure boot, each entry's image has its command line built in, and
   the entries pass none. the stub ignores a command line from the
   bootloader then, so one added to an entry on the esp, like
-  `init=/bin/sh`, never reaches the kernel. images are per entry, shared
-  by entries with the same command line, and a trial boots a twin with
-  `yoq.trial` in it. `os plan` counts the room they take.
-- `os install --tpm` notes in its plan that without secure boot, the tpm
-  keeps a powered-off disk safe, not a machine left alone.
+  `init=/bin/sh`, never reaches the kernel. a signed image takes its
+  kernel from the root's package in `/usr/lib/modules` and builds its
+  initramfs in the root with mkinitcpio. images are per entry, shared by
+  entries with the same command line, and a trial boots a twin with
+  `yoq.trial` in it. `os plan` counts the room they take, and the room
+  signing an unsigned image takes.
+- an image on the esp without a signature from sbctl's db key, say from
+  before `sbctl create-keys` made new ones, is built again from its
+  root's files and signed. `os` never signs a file as it finds it on the
+  esp. while the firmware enforces secure boot and sbctl has keys, every
+  menu write signs, even for a generation without `[boot] secure_boot`.
+  `os rollback`, a trial's fallback, and `os gc` still write the menu when
+  sbctl can't sign, and warn about the images left unsigned.
+- `os rollback` warns, before it asks, when the generation it goes back to
+  is from before `[boot] uki` and the firmware enforces secure boot,
+  except on limine, which starts that kernel itself. `os uninstall` on
+  systemd-boot or refind won't start while the firmware enforces secure
+  boot and arch's kernel in `/boot` has no signature.
+- `os doctor` checks sbctl, its keys, the firmware's secure boot and setup
+  mode, and lists efi files on the esp without a signature. facts carry
+  the same, and `os gc` signs images left unsigned.
 - `os doctor` warns when the tpm unlocks the root and secure boot is off.
   a warning shows as `warn` and fails nothing; its json check has
   `"warn": true`.
+- `os install` shows a url source in its plan, with a line saying its
+  packages' scripts run as root on the live system and the new machine.
+  treat a config repository like code.
+- a build or install that ends stops gpg's agents and any other process
+  still using the root it built, and only those: processes in its own
+  mount namespace, each signaled through a pidfd after a check that it's
+  still in there.
 
 ### fixes
 
-- images are built from the kernel and initramfs copies in each root's
-  own `/boot`, never from the esp's files, which anything that can write
-  the esp could have changed. with the esp at `/boot`, the newest
-  generation's image used to come from the esp.
-- a signed image takes its kernel from the root's package in
-  `/usr/lib/modules`, and builds its initramfs in the root with mkinitcpio,
-  since the copies in `/boot` came from the esp when the generation was
-  recorded. an initramfs planted on the esp while the machine was off used
-  to be signed into the next image. autodetect stays on, since a signed
-  image is only built on the machine that boots it.
-
-- an image signed with a key other than sbctl's db key, say from before
-  `sbctl create-keys` made new ones, counts as unsigned: the next menu
-  write signs it again, and `os doctor` lists it until then.
-- `os rollback`, the fallback from a failed trial, and `os gc` write the
-  boot menu when sbctl can't sign, say without its keys, and warn about
-  the images left unsigned, instead of stopping. `os apply` and `os
-  update` still stop with E0134.
-- an image's name covers systemd's stub too, so a new stub builds new
-  images instead of reusing ones with the old stub. `os plan` counts the
-  room a systemd upgrade's images take.
-- while the firmware enforces secure boot and sbctl has keys, `os` signs
-  every image it puts on the esp, even for a generation without
-  `[boot] secure_boot`. after a rollback past turning it on, the next
-  kernel's image was left unsigned, and its trial couldn't start.
-- `os rollback` warns, before it asks, when the generation it goes back to
-  is from before `[boot] uki` and the firmware enforces secure boot, which
-  refuses that generation's unsigned kernel.
-- on a luks root, grub and refind boot every generation from copies on the
-  esp, since they can't read btrfs inside luks, and grub.cfg no longer
-  looks for a root filesystem none of its entries use.
-- the trial watchdog's five minutes count from when it starts in the booted
-  root, so a passphrase typed slowly at a trial boot doesn't count against
-  it.
-- a build or install that ends only stops processes in its own mount
-  namespace that use the root it built. a shell in another terminal whose
-  working directory was `/mnt/yoq`, or a command that named a path there,
-  was killed too.
-- `os install` closes the luks volume an `--encrypt` run left open when it
-  was cut off, with or without `--encrypt` this time. before, a run
-  without it couldn't wipe the disk the volume held.
-- `os enable-rollback` refuses a root on lvm, or another device-mapper
-  volume that isn't luks, and `os doctor` flags one. lvm inside luks
-  looked like a plain partition, so grub's entries looked for the root on
-  a disk it can't read. facts carry the volume's kind as `root_dm`.
-- `--passphrase-file` reads the file straight into one buffer that's
-  wiped after, so a file that's too long, or a read that grew its buffer,
-  leaves no copy in memory, and it refuses a file of more than one line,
-  whose passphrase nobody could type at boot.
-- `os install --tpm` checks for a tpm 2.0, not just any tpm, and for
-  tpm2-tss on the live system, which systemd-cryptenroll needs. either one
-  missing used to stop the install halfway, after the disk was erased.
-- ctrl-c at `os secret set`'s prompt puts the terminal's echo back before
-  `os` quits.
-- `os secret set` asks for the value without echo whenever stdin is a
-  terminal, with `--json` or stdout redirected too, where it used to read
-  it with echo on. its questions go to stderr, and a typed line too long
-  to read says so, not that nothing was typed.
-- `os apply` writes a secret only if it still has the value the plan was
-  made for, so an `os secret set` in between stops it instead.
-- secrets are encrypted bound to no tpm2 pcrs, so turning secure boot on
-  doesn't leave them unreadable. values set before this may need `os
-  secret set` again after secure boot changes.
-- `os install` checks the live system has every secret the config names
-  before it erases the disk, where it used to stop at the build.
 - a quoted kernel argument, like `acpi_osi="!Windows 2012"`, goes into
   every generation's entries as it was. it used to be split at its
   spaces, which lost runs of spaces, and a word inside its quotes that
   looked like `root=` was dropped.
-- grub passes a unified kernel image a quoted kernel argument with its
-  quotes. its chainloader joins the words as it read them, without
-  quotes, so the image got `acpi_osi=!Windows 2012` as two arguments.
-- `os uninstall` on grub adds what unlocks a luks root, and the consoles,
-  to `/etc/default/grub` when it lacks them, before grub-mkconfig writes
-  the menu. after `os install --encrypt`, only os's entries had them, so
-  the machine it left couldn't open its root.
-- `os uninstall` on systemd-boot or refind won't start while the firmware
-  enforces secure boot and arch's kernel in `/boot` has no signature. the
-  entry it left boots that kernel instead of `os`'s signed images, which
-  the firmware refused.
-- `os rollback` on limine no longer warns that secure boot refuses a
-  generation from before `[boot] uki`. limine loads that kernel itself,
-  without the firmware's check, so it starts.
-- the journal's lines go on the end of the file in place, so an event
-  another os records at the same moment, like the health check at boot,
-  can't drop an apply's `done` line, and a nearly full disk only needs
-  room for the line. a line a power cut left half written stays on its
-  own.
-- `os gc`, `os pin`, and `os carry` take the machine lock, and the health
-  check at boot waits for it. a gc could remove an image an apply had just
-  put on the esp for its menu, a pin could write back the record of a
-  generation gc had just removed, and a fallback at boot could take the
-  same generation number as an `os apply` run right after login.
+- the trial watchdog's five minutes count from when it starts in the
+  booted root, not from the kernel's start, so a passphrase typed slowly
+  at a trial boot doesn't count against it. a machine that turned
+  generations on earlier gets the new `yoq-watchdog.timer` in its next
+  generation.
+- the menu that records a generation going on trial keeps the default on
+  the generation it falls back to, and the trial's one-shot boot comes
+  after: grub.cfg's default, limine's and systemd-boot's default entry,
+  and refind's `default_selection`. the default moves when the health
+  check passes it. a power cut between the menu write and the trial used
+  to leave the new generation as the default with no trial and no
+  fallback. the trial is now set up before old generations are removed,
+  and if it can't be, the new generation becomes the default as the
+  message says.
 - a kernel, initramfs, or image os puts on the esp has its directory
   synced once it's renamed into place, before the menu that boots it is
   written. fat kept the rename in memory, so a power cut right after a
@@ -169,56 +128,37 @@
   next gc, which runs after every new generation. a staged build stopped
   with ctrl-c or a power cut left its whole root behind for good, and so
   did a rollback or gc cut off between a snapshot and its record.
-- a machine that turned generations on before the watchdog fix gets the
-  new `yoq-watchdog.timer` in its next generation. its old one still
-  counted five minutes from the kernel's start, passphrase and all.
-- `os plan` counts the room it takes to sign an image already on the esp,
-  when the menu after it signs and one there has no signature from
-  sbctl's db key. the signed copy goes in beside the image, so a plan
-  that fit could still stop at the menu write with the esp full.
-- the menu that records a generation going on trial keeps the default on
-  the generation it falls back to, and the trial's one-shot boot comes
-  after: grub.cfg's default, limine's and systemd-boot's default entry,
-  and refind's `default_selection`. the default moves when the health
-  check passes it. a power cut between the menu write and the trial used
-  to leave the new generation as the default with no trial and no
-  fallback. the trial is now set up before old generations are removed,
-  and if it can't be, the new generation becomes the default as the
-  message says.
-- `os secret set` syncs the new value before it renames it into place,
-  and the directory after. a power cut right after a first `set` could
-  leave an empty file under the secret's name, which then failed to
-  decrypt at every apply.
-- the directories in a root's /tmp where os builds and signs images are
-  made fresh and root's alone, and the top level is mounted at
-  /run/yoq/private/top, in a directory only root can go into. another user
-  could reach that /tmp through the mount at /run/yoq/top, make the
-  directory first, and swap an image before sbctl signed it.
-- with secure boot, an image on the esp without sbctl's signature is built
-  again from its root's files and signed, and an unsigned refind driver is
-  replaced by a signed copy of refind's own. before, `os` signed whatever
-  file sat there, so anything that could write to the esp could get its
-  own efi binary signed with the machine's key.
-- `os secret set`, anything that decrypts a secret, and `os install
-  --passphrase-file` mark the process as not dumpable before they hold
-  the value, so it stays out of core dumps and out of /proc/<pid>/mem.
-- a build or install that stops the processes in its root signals each
-  one through a pidfd, after checking it's still in there, so a pid freed
-  since the scan and taken by another process isn't killed instead.
-- commit subjects from the config's history lose their control characters,
-  like news titles, before `os history`, `os rollback`, or anything else
-  prints them. a repository `os install` cloned could otherwise move the
-  cursor or rewrite the terminal.
+- the journal's lines go on the end of the file in place, so an event
+  another os records at the same moment, like the health check at boot,
+  can't drop an apply's `done` line, and a nearly full disk only needs
+  room for the line. a line a power cut left half written stays on its
+  own.
+- `os gc`, `os pin`, and `os carry` take the machine lock, and the health
+  check at boot waits for it. a gc could remove an image an apply had just
+  put on the esp for its menu, a pin could write back the record of a
+  generation gc had just removed, and a fallback at boot could take the
+  same generation number as an `os apply` run right after login.
+- `os enable-rollback` refuses a root on lvm, or on another device-mapper
+  volume that isn't luks, and `os doctor` flags one. lvm looked like a
+  plain partition, so grub's entries looked for the root on a disk it
+  can't read. facts carry the volume's kind as `root_dm`.
 - `[files]` writes and removals walk down to the file one directory at a
   time and write in the directory they opened. they follow root's
   symlinks, inside the root being written, but stop with the path and the
   reason at a directory another user owns or can write to (unless it's
   sticky) and at a symlink another user owns. before, a user who owned a
-  directory on the way, like their home, could point the write, a secret's
-  value included, at any file on the machine.
-- a checked `[files]` write no longer leaves a directory on the way open.
-  in an install, one in the target kept it busy, so its luks volume
-  couldn't close until os exited.
+  directory on the way, like their home, could point the write at any
+  file on the machine.
+- the btrfs top level os works in is mounted at `/run/yoq/private/top`, in
+  a directory only root can go into, and the directories in a root's
+  `/tmp` where os builds and signs images are made fresh and root's
+  alone. another user could reach a root's `/tmp` through the old mount
+  at `/run/yoq/top`, make that directory first, and swap an image before
+  it was signed.
+- commit subjects from the config's history lose their control characters,
+  like news titles, before `os history`, `os rollback`, or anything else
+  prints them. a repository `os install` cloned could otherwise move the
+  cursor or rewrite the terminal.
 
 ## 0.1.3
 

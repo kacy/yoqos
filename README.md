@@ -31,16 +31,19 @@ os why perl   # which config line brings a package in
 ```
 
 it's early. on any arch install, `os` manages packages, system settings,
-services, users, files, and sysctl, and rolls packages and config back. on a
-btrfs root with grub, limine, refind, or systemd-boot, `os enable-rollback`
-turns on whole-system generations: every change is a snapshot in the boot
-menu, and an update that needs a reboot is built beside the running system
-and boots once on trial, then falls back by itself if it doesn't come up
-healthy. the vm tests run that on arch's cloud image and on archinstall's
-layouts. `os install` puts a machine straight from its config repository
-on a blank disk, from the live iso each release comes with, and `os
-uninstall` takes it all back off, leaving plain arch running the system
-you have.
+services, users, files, secrets, and sysctl, and rolls packages and config
+back. on a btrfs root with grub, limine, refind, or systemd-boot, `os
+enable-rollback` turns on whole-system generations: every change is a
+snapshot in the boot menu, and an update that needs a reboot is built
+beside the running system and boots once on trial, then falls back by
+itself if it doesn't come up healthy. generations work on a root inside
+luks too, and can boot unified kernel images, signed for secure boot. the
+vm tests run that on arch's cloud image and on archinstall's layouts.
+
+`os install` puts a machine straight from its config repository on a
+blank disk, encrypted if you like, from the live iso each release comes
+with. `os uninstall` takes it all back off, leaving plain arch running the
+system you have.
 
 every command also takes `--json`, for scripts. `os schema` prints the
 schemas for those documents, and errors have stable codes that `os
@@ -74,10 +77,12 @@ zig build test -Dalpm -Dsystemd
 ```
 
 `tests/vm/test.sh zig-out/bin/os` boots an arch vm under kvm and runs the
-whole loop in it: the manage rung, enable-rollback, rollback, trial boots,
-a clean build, installing on a blank disk, and uninstalling. `VM_IMAGE`
-picks the machine: arch's cloud image (the default), or one archinstall installs, with its default btrfs
-layout (`archinstall`), an ext4 root (`ext4`), limine and snapper, like
+whole loop in it: the manage rung, secrets, enable-rollback, rollback,
+trial boots, unified kernel images, secure boot, a clean build, installing
+on a blank disk (plain and encrypted), and uninstalling. `VM_IMAGE` picks
+the machine: arch's cloud image (the default), or one archinstall
+installs, with its default btrfs layout (`archinstall`), an ext4 root
+(`ext4`), limine and snapper, like
 omarchy's boot setup (`limine`), refind (`refind`), systemd-boot
 (`sdboot`), or grub and snapper, booted into a root snapper rolled back to
 (`snapper`). the ext4 one stays on the manage rung. ci runs all seven on
