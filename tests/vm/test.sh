@@ -21,9 +21,11 @@ export VM_ESP VM_ROOT VM_LOADER
 # the ext4 machine installs new ones on a second disk, and on luks on a
 # third, which its tpm unlocks.
 [ "${VM_IMAGE:-cloud}" = ext4 ] && export VM_DISK2=1 VM_DISK3=1 VM_TPM=1
-# systemd-boot runs on firmware that can enforce secure boot, in setup
-# mode until secureboot.sh enrolls keys.
-[ "${VM_IMAGE:-cloud}" = sdboot ] && export VM_SECBOOT=1
+# systemd-boot and archinstall's grub run on firmware that can enforce
+# secure boot, in setup mode until secureboot.sh or secureboot-grub.sh
+# enrolls keys. grub needs a tpm to start under secure boot.
+case ${VM_IMAGE:-cloud} in sdboot | archinstall) export VM_SECBOOT=1 ;; esac
+[ "${VM_IMAGE:-cloud}" = archinstall ] && export VM_TPM=1
 "$vm" start
 trap '"$vm" stop' EXIT
 
@@ -86,6 +88,8 @@ refind)
     if [ "${VM_IMAGE:-cloud}" = cloud ]; then tests/vm/failures.sh crash committed download disk; fi
     # the esp is /boot here, so a rollback puts a kernel on it.
     if [ "${VM_IMAGE:-cloud}" = archinstall ]; then tests/vm/failures.sh restore; fi
+    # grub under secure boot, with the keys left enrolled for leave.sh.
+    if [ "${VM_IMAGE:-cloud}" = archinstall ]; then tests/vm/secureboot-grub.sh; fi
     tests/vm/leave.sh
     ;;
 esac

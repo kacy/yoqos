@@ -148,10 +148,7 @@ pub fn grub(a: Allocator, c: Grub) ![]const u8 {
         \\search --no-floppy --fs-uuid --set=yoq_esp {s}
         \\if [ -f (${{yoq_esp}})/yoq/grubenv ]; then
         \\  load_env -f (${{yoq_esp}})/yoq/grubenv yoq_next yoq_default
-        \\  if [ "${{yoq_default}}" ]; then
-        \\    set default="${{yoq_default}}"
-        \\    set fallback="${{yoq_default}}"
-        \\  fi
+        \\  if [ "${{yoq_default}}" ]; then set default="${{yoq_default}}"; fi
         \\  if [ "${{yoq_next}}" ]; then
         \\    if [ "${{yoq_default}}" ]; then set yoq_trial_arg="yoq.trial"; fi
         \\    set default="${{yoq_next}}"
@@ -161,6 +158,12 @@ pub fn grub(a: Allocator, c: Grub) ![]const u8 {
         \\fi
         \\
     , .{ c.timeout, c.default, c.esp_uuid });
+    // grub falls back to `yoq_default` when an entry won't boot. it's
+    // given by position: grub takes an id for `default`, but not here,
+    // and with an id it showed the failed entry again and again.
+    for (c.entries, 0..) |e, i| {
+        try out.print(a, "if [ \"${{yoq_default}}\" = \"{s}\" ]; then set fallback={d}; fi\n", .{ e.id, i });
+    }
     // with every entry's files on the esp, as on a luks root, grub never
     // looks for the root's filesystem; it couldn't find it there anyway.
     for (c.entries) |e| {
@@ -475,7 +478,7 @@ test "grub's config on the esp" {
     try testing.expect(std.mem.endsWith(u8, on_esp, "  linux (${yoq_esp})/vmlinuz-linux rw ${yoq_trial_arg}\n  initrd (${yoq_esp})/initramfs-linux.img\n}\n"));
     try testing.expect(std.mem.indexOf(u8, text, "set default=\"gen-1\"\nsearch --no-floppy --fs-uuid --set=yoq_esp 41B2-0FB5\n") != null);
     try testing.expect(std.mem.indexOf(u8, text, "load_env -f (${yoq_esp})/yoq/grubenv yoq_next yoq_default\n") != null);
-    try testing.expect(std.mem.indexOf(u8, text, "set fallback=\"${yoq_default}\"") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "if [ \"${yoq_default}\" = \"before\" ]; then set fallback=1; fi") != null);
     try testing.expect(std.mem.endsWith(u8, text,
         \\search --no-floppy --fs-uuid --set=root 1df77bf6
         \\

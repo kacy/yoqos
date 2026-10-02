@@ -52,6 +52,11 @@ pub const Machine = struct {
     /// refind's btrfs driver as its package installs it, which os copies
     /// to the esp, and signs there for secure boot.
     refind_driver_src: []const u8 = "/usr/share/refind/" ++ images.refind_driver,
+    /// what installs grub, given grub-install's arguments: grub-install,
+    /// or a stand-in in tests.
+    grub_install: []const []const u8 = &.{"grub-install"},
+    /// the hash of the grub binary os signed last (see images.signGrub).
+    grub_signed: []const u8 = generation.grub_signed_path,
     /// set on a way back, like a rollback, a fallback, or gc: a file the
     /// menu can't sign goes on the esp unsigned, or stays as it is there,
     /// and its path goes here, instead of the menu write stopping.

@@ -289,13 +289,22 @@ pub fn checkSecrets(c: *const config.Config, f: *const facts.Facts, diags: *diag
 
 /// refuses, with a diagnostic, a plan for a machine with generations
 /// whose config signs images for secure boot, when sbctl has no keys to
-/// sign them with. os never makes or enrolls keys itself. returns whether
-/// the plan can go ahead.
+/// sign them with, or grub couldn't start: without shim, grub's lockdown
+/// loads nothing unless grub's tpm module checks it, and that module
+/// does nothing without a tpm 2.0. os never makes or enrolls keys
+/// itself. returns whether the plan can go ahead.
 pub fn checkSecureBoot(c: *const config.Config, f: *const facts.Facts, diags: *diag.List) !bool {
     const v = c.boot.secure_boot orelse return true;
-    if (!v.v or f.boot.sbctl_keys or !generation.running(f.boot.root_subvol)) return true;
-    try diags.add(.secure_boot_keys, v.src, "secure_boot is on, but sbctl has no keys in {s} to sign with", .{secureboot.keys_dir}, "run `sbctl create-keys`, then plan again. enroll the keys only once a generation with signed images is ready");
-    return false;
+    if (!v.v or !generation.running(f.boot.root_subvol)) return true;
+    if (!f.boot.sbctl_keys) {
+        try diags.add(.secure_boot_keys, v.src, "secure_boot is on, but sbctl has no keys in {s} to sign with", .{secureboot.keys_dir}, "run `sbctl create-keys`, then plan again. enroll the keys only once a generation with signed images is ready");
+        return false;
+    }
+    if (std.mem.eql(u8, f.boot.loader orelse "", "grub") and f.boot.tpm2 == false) {
+        try diags.add(.secure_boot_tpm, v.src, "secure_boot is on, but grub can't start under secure boot without a tpm 2.0", .{}, "turn the tpm on in the firmware setup, or leave secure_boot off on this machine");
+        return false;
+    }
+    return true;
 }
 
 /// refuses, with a diagnostic, a plan that removes os's drop-in that
@@ -367,6 +376,17 @@ test "secure boot without sbctl's keys stops the plan" {
     try testing.expect(std.mem.startsWith(u8, d.hint.?, "run `sbctl create-keys`"));
     const off = try t.cfg("[boot]\nkernel = \"none\"\nuki = true\nsecure_boot = false\n");
     try testing.expect(try checkSecureBoot(&off, &.{ .boot = .{ .root_fs = "btrfs", .root_subvol = "/@roots/3" } }, &t.diags));
+
+    // grub can't start under secure boot without a tpm 2.0; unknown is let through.
+    const grub: facts.Boot = .{ .root_fs = "btrfs", .root_subvol = "/@roots/3", .sbctl_keys = true, .loader = "grub", .tpm2 = false };
+    try testing.expect(!try checkSecureBoot(&c, &.{ .boot = grub }, &t.diags));
+    try testing.expectEqual(diag.Code.secure_boot_tpm, t.diags.items.items[1].code);
+    var with_tpm = grub;
+    with_tpm.tpm2 = true;
+    try testing.expect(try checkSecureBoot(&c, &.{ .boot = with_tpm }, &t.diags));
+    var sdboot = grub;
+    sdboot.loader = "systemd-boot";
+    try testing.expect(try checkSecureBoot(&c, &.{ .boot = sdboot }, &t.diags));
 }
 
 test "how much room a plan's new boot files take on the esp" {

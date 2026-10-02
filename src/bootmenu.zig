@@ -237,19 +237,33 @@ pub fn grubInstall(a: Allocator, io: std.Io, esp: []const u8, boot_dir: []const 
 
 /// grub-install's arguments for grub on `esp`, reading its menu from
 /// `boot_dir`, put `where`: "--removable", or a boot entry's
-/// "--bootloader-id=<name>".
+/// "--bootloader-id=<name>". grub is always built to start under secure
+/// boot with keys of your own, as the arch wiki does it: without shim's
+/// check, and with grub's tpm module, which measures what grub loads and
+/// counts as the check grub's lockdown asks for. secure boot off, both
+/// change nothing.
 pub fn grubInstallAt(a: Allocator, esp: []const u8, boot_dir: []const u8, where: []const u8) ![]const []const u8 {
     return a.dupe([]const u8, &.{
         "grub-install",
         "--target=x86_64-efi",
         try std.fmt.allocPrint(a, "--efi-directory={s}", .{esp}),
         try std.fmt.allocPrint(a, "--boot-directory={s}", .{boot_dir}),
+        "--modules=tpm",
+        "--disable-shim-lock",
         where,
     });
 }
 
+/// the efi binary grub-install puts on `esp` for `where`, as from
+/// grubEfiPath.
+pub fn grubBinary(a: Allocator, esp: []const u8, where: []const u8) ![]const u8 {
+    const prefix = "--bootloader-id=";
+    if (std.mem.startsWith(u8, where, prefix)) return std.fs.path.join(a, &.{ esp, "EFI", where[prefix.len..], "grubx64.efi" });
+    return std.fs.path.join(a, &.{ esp, "EFI", "BOOT", "BOOTX64.EFI" });
+}
+
 /// grub-install's argument for the efi path grub boots from on `esp`.
-fn grubEfiPath(a: Allocator, io: std.Io, esp: []const u8) ![]const u8 {
+pub fn grubEfiPath(a: Allocator, io: std.Io, esp: []const u8) ![]const u8 {
     var dir = std.Io.Dir.cwd().openDir(io, try std.fs.path.join(a, &.{ esp, "EFI" }), .{ .iterate = true }) catch return "--removable";
     defer dir.close(io);
     var it = dir.iterate();
@@ -391,7 +405,10 @@ test "grub-install keeps grub's efi path" {
     const esp = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     const argv = try grubInstall(a, io, esp, "/boot");
     try std.testing.expectEqualStrings("--boot-directory=/boot", argv[3]);
-    try std.testing.expectEqualStrings("--removable", argv[4]);
+    try std.testing.expectEqualStrings("--disable-shim-lock", argv[5]);
+    try std.testing.expectEqualStrings("--removable", argv[6]);
+    try std.testing.expectEqualStrings("/e/EFI/BOOT/BOOTX64.EFI", try grubBinary(a, "/e", "--removable"));
+    try std.testing.expectEqualStrings("/e/EFI/arch/grubx64.efi", try grubBinary(a, "/e", "--bootloader-id=arch"));
     try tmp.dir.createDirPath(io, "EFI/BOOT");
     try tmp.dir.writeFile(io, .{ .sub_path = "EFI/BOOT/grubx64.efi", .data = "" });
     try std.testing.expectEqualStrings("--removable", try grubEfiPath(a, io, esp));

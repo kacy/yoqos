@@ -14,12 +14,6 @@ entries=$VM_ESP/loader/entries
 stub_image="f=\$(ls /sys/firmware/efi/efivars/StubImageIdentifier-* 2>/dev/null) && tail -c +5 \$f | tr -d '\\000' | tr '\\\\' / || echo none"
 on_failure="bootctl status --no-pager 2>&1 | head -n 30; cat /proc/cmdline; ls -l $VM_ESP/yoq/boot; /usr/local/bin/os doctor"
 
-# a command that prints one of the firmware's secure boot variables,
-# 1 or 0: its value comes after 4 bytes of attributes.
-efivar() {
-    echo "tail -c 1 /sys/firmware/efi/efivars/$1-8be4df61-93ca-11d2-aa0d-00e098032b8c | od -An -tu1 | tr -d ' '"
-}
-
 "$vm" reboot
 settled
 check "$(efivar SetupMode)" 1

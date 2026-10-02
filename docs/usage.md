@@ -528,7 +528,8 @@ that:
 it also checks that the esp has room for another kernel, and with
 generations, that the boot menu has them and that os's units are there. with
 the root on luks, it checks that the initramfs can unlock it, and warns
-when the tpm unlocks it while secure boot is off. a warning shows as
+when the tpm unlocks it while secure boot is off, or with limine, which
+loads kernels without secure boot's check. a warning shows as
 `warn` and doesn't count as a failure. with
 `secure_boot` in the config, or firmware that enforces secure boot, it
 checks that sbctl and its keys are there, says whether the firmware
@@ -561,9 +562,11 @@ boot the running root without `os`:
 
 limine, refind, and systemd-boot need the esp mounted at `/boot` for this,
 since that's where arch installs the kernel. while the firmware enforces
-secure boot, refind and systemd-boot also need that kernel signed, since
+secure boot, grub, refind, and systemd-boot also need that kernel signed, since
 `os`'s signed images go: `sbctl sign -s /boot/vmlinuz-linux` does it, and
 keeps doing it for each new kernel. otherwise turn secure boot off first.
+the grub it installs again has to be signed too, so on grub it needs
+sbctl's keys, and signs grub with `sbctl sign -s`.
 
 the other generations stay as btrfs subvolumes unless you say yes when it
 asks, or pass `--delete-generations`. the running root stays where it is,
@@ -759,6 +762,10 @@ this, and `os doctor` warns about it on the running machine. with `uki`
 and `secure_boot` on (see [secure boot](#secure-boot)), the firmware
 starts only images signed with your keys, and each image has its command
 line built in, so nobody can swap the image or edit its command line.
+that holds on grub, systemd-boot, and refind, which start every kernel
+through the firmware. limine loads a kernel itself without that check, so
+with limine the tpm keeps a powered-off disk safe and no more, secure boot
+or not, and `os doctor` says so.
 turning secure boot on changes pcr 7, so the tpm won't unlock the disk
 until its key is enrolled again: type the passphrase once, then run
 `systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto <partition>`.
@@ -1208,9 +1215,10 @@ job, in this order:
 2. set `uki = true` and `secure_boot = true` under `[boot]`, and run
    `os apply`. like a new kernel, the change waits for a reboot. the next
    generation's images are signed, and so is every image the menu boots.
-3. sign the bootloader. `os doctor` lists the efi files on the esp that
-   have no signature. `sbctl sign -s <file>` signs one, and the `-s` has
-   sbctl's pacman hook sign it again whenever its package updates it.
+3. sign the bootloader. on grub, `os` did it in step 2. otherwise
+   `os doctor` lists the efi files on the esp that have no signature.
+   `sbctl sign -s <file>` signs one, and the `-s` has sbctl's pacman
+   hook sign it again whenever its package updates it.
 4. in the firmware setup, clear the secure boot keys, which puts it in
    setup mode. boot, and run `sbctl enroll-keys -m`. the `-m` keeps
    microsoft's keys next to yours: graphics cards and other devices carry
@@ -1247,27 +1255,31 @@ image costs one mkinitcpio run, so a menu write that needs new images
 takes a little longer. one already on the esp under its name, with a
 signature from your key, is reused.
 
-what `os` signs: its images in `yoq/boot` on the esp, and refind's btrfs
-driver, which it installs. each image is signed in a work directory inside
-the generation's root, then copied onto the esp, so the esp never has it
-unsigned. the bootloader itself comes from the bootloader's own install
-(`bootctl install`, limine's, `refind-install`), so its signature is yours
-to add, as in step 3, and `os doctor` flags it until then. the vm tests
-cover systemd-boot. grub won't boot under secure boot the way `os`
-installs it: it needs its modules built in and shim's check turned off,
-so keep secure boot off with grub for now.
+what `os` signs: its images in `yoq/boot` on the esp, grub, and refind's
+btrfs driver, which it installs. each image is signed in a work directory
+inside the generation's root, then copied onto the esp, so the esp never
+has it unsigned. grub runs without shim: `os` installs it with shim's
+check off and grub's `tpm` module built in, which grub's lockdown wants
+before it loads anything, and signs it. that module only works with a tpm
+2.0, so on a machine without one, or with it off in the firmware, grub
+stops at its rescue prompt under secure boot, and `os plan` stops first
+with E0136. when grub's binary isn't the one
+`os` signed last, `os` installs grub again and signs that. the other
+bootloaders come from their own install (`bootctl install`, limine's,
+`refind-install`), so their signatures are yours to add, as in step 3,
+and `os doctor` flags them until then. the vm tests cover systemd-boot
+and grub.
 
 the keys live in `/var`, outside every generation, so a rollback keeps
 them. an image is signed when it's written, and while the running
 generation or the new one has `secure_boot`, every menu write signs
 whatever images the menu boots, so the generation a failed trial falls
 back to starts too. a generation from before `uki` boots a plain kernel,
-which firmware enforcing secure boot refuses on systemd-boot and refind;
-turn secure boot off in the firmware before you boot one. `os rollback`
-says so before it goes back to one. limine loads a plain kernel itself,
-without asking the firmware, as long as its config's checksum isn't
-enrolled. turning `secure_boot` off stops the
-signing only once the firmware stops enforcing secure boot: until then,
+which firmware enforcing secure boot refuses on grub, systemd-boot, and
+refind; turn secure boot off in the firmware before you boot one. `os
+rollback` says so before it goes back to one. limine loads a plain kernel
+itself, without asking the firmware, as long as its config's checksum
+isn't enrolled. turning `secure_boot` off stops the signing only once the firmware stops enforcing secure boot: until then,
 as long as sbctl has keys, every menu write still signs, so a generation
 without the key starts too.
 

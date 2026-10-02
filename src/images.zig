@@ -12,6 +12,8 @@ const menu = @import("menu.zig");
 const uki = @import("uki.zig");
 const secureboot = @import("secureboot.zig");
 const bootfiles = @import("bootfiles.zig");
+const bootmenu = @import("bootmenu.zig");
+const generation = @import("generation.zig");
 const gens = @import("gens.zig");
 const Machine = gens.Machine;
 const Allocator = std.mem.Allocator;
@@ -89,13 +91,54 @@ fn signInto(m: *const Machine, src: []const u8, dest: []const u8) !?[]const u8 {
 }
 
 /// signs the loader files os puts on the esp itself, when they aren't
-/// signed yet: refind's btrfs driver. the one on the esp is replaced
-/// by a signed copy of refind's own, never signed as it is, since
-/// anyone who can write to the esp could have put it there. the
-/// bootloader's own binaries come from its install, and `os doctor`
-/// says if they're unsigned.
+/// signed yet: grub, and refind's btrfs driver. the other bootloaders'
+/// binaries come from their own install, and `os doctor` says if
+/// they're unsigned.
 pub fn signLoader(m: *const Machine, work: []const u8) !?[]const u8 {
-    if (m.loader != .refind) return null;
+    return switch (m.loader) {
+        .grub => signGrub(m),
+        .refind => signRefindDriver(m, work),
+        else => null,
+    };
+}
+
+/// installs grub again and signs it, unless its binary is the one os
+/// signed last. one signed with your key by hand may still be a grub
+/// that can't start under secure boot, like one from before os built
+/// grub for it (see bootmenu.grubInstallAt), so a signature alone
+/// isn't enough. grub-install writes straight to the esp, so its binary
+/// is signed there, just after: it comes from grub's package, never
+/// from what was on the esp.
+fn signGrub(m: *const Machine) !?[]const u8 {
+    const esp = m.boot.esp orelse return null;
+    const where = try bootmenu.grubEfiPath(m.a, m.io, esp);
+    const binary = try bootmenu.grubBinary(m.a, esp, where);
+    if (!rootfs.pathExists(m.io, binary)) return null;
+    if (try signedNow(m, binary) and grubRecorded(m, binary)) return null;
+    const args = try bootmenu.grubInstallAt(m.a, esp, esp, where);
+    if (try m.run(try std.mem.concat(m.a, []const u8, &.{ m.grub_install, args[1..], &.{"--no-nvram"} }))) |w| return w;
+    switch (try trySign(m, binary, binary)) {
+        .failed => |w| return w,
+        .unsigned => return null,
+        .signed => {},
+    }
+    const bytes = std.Io.Dir.cwd().readFileAlloc(m.io, binary, m.a, .limited(64 << 20)) catch return "can't read grub's binary after signing it";
+    rootfs.writeAtomic(m.io, m.grub_signed, &facts.sha256Hex(bytes), null) catch return "can't write " ++ generation.grub_signed_path;
+    return null;
+}
+
+/// whether grub's binary at `path` is the one os signed last.
+fn grubRecorded(m: *const Machine, path: []const u8) bool {
+    var buf: [64]u8 = undefined;
+    const want = std.Io.Dir.cwd().readFile(m.io, m.grub_signed, &buf) catch return false;
+    const bytes = std.Io.Dir.cwd().readFileAlloc(m.io, path, m.a, .limited(64 << 20)) catch return false;
+    return std.mem.eql(u8, want, &facts.sha256Hex(bytes));
+}
+
+/// refind's btrfs driver, which os puts beside refind. the one on the
+/// esp is replaced by a signed copy of refind's own, never signed as it
+/// is, since anyone who can write to the esp could have put it there.
+fn signRefindDriver(m: *const Machine, work: []const u8) !?[]const u8 {
     const conf = m.boot.loader_conf orelse return null;
     const driver = try std.fs.path.join(m.a, &.{ std.fs.path.dirnamePosix(conf).?, refind_driver });
     if (!rootfs.pathExists(m.io, driver) or try signedNow(m, driver)) return null;
@@ -857,6 +900,68 @@ test "refind's driver on the esp is replaced by a signed copy of refind's own" {
     try std.testing.expectEqual(null, try bootfiles.writeOnEsp(&m, &entries, &.{}, testPut, null));
     try std.testing.expectEqual(1, left.items.len);
     try std.testing.expectEqualStrings("planted", try tmp.dir.readFileAlloc(io, "esp/EFI/refind/" ++ refind_driver, a, .limited(64)));
+}
+
+test "grub is installed again and signed, unless it's the one os signed last" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "top/@roots/2/etc/kernel");
+    try tmp.dir.createDirPath(io, "esp/EFI/GRUB");
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/2/" ++ secureboot.config_rel, .data = secureboot.config_content });
+    // a grub someone signed by hand, which may not start under secure boot.
+    const signed_pe = secureboot.testPe(0x20b, 2048);
+    try tmp.dir.writeFile(io, .{ .sub_path = "esp/EFI/GRUB/grubx64.efi", .data = &signed_pe });
+    try tmp.dir.writeFile(io, .{ .sub_path = "sign.sh", .data = "[ \"$1\" = sign ] && printf ' signed' >> \"$2\"\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "grub-install.sh", .data =
+        \\for arg; do
+        \\    case $arg in --efi-directory=*) esp=${arg#*=} ;; --bootloader-id=*) id=${arg#*=} ;; esac
+        \\done
+        \\printf grub > "$esp/EFI/$id/grubx64.efi"
+        \\echo "$@" >> "$(dirname "$0")/grub-install.log"
+        \\
+    });
+    var m: Machine = .{
+        .a = a,
+        .io = io,
+        .boot = .{ .esp = try std.fmt.allocPrint(a, "{s}/esp", .{base}), .loader = "grub", .root_subvol = "/@roots/2" },
+        .loader = .grub,
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
+        .signer = &.{ "sh", try std.fmt.allocPrint(a, "{s}/sign.sh", .{base}) },
+        .db_cert = try std.fmt.allocPrint(a, "{s}/no-cert.pem", .{base}),
+        .grub_install = &.{ "sh", try std.fmt.allocPrint(a, "{s}/grub-install.sh", .{base}) },
+        .grub_signed = try std.fmt.allocPrint(a, "{s}/grub-signed", .{base}),
+    };
+    var entries = [_]menu.Entry{
+        .{ .id = "head", .title = "yoq 2", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw" },
+    };
+    try std.testing.expectEqual(null, try bootfiles.writeOnEsp(&m, &entries, &.{}, testPut, null));
+    try std.testing.expectEqualStrings("grub signed", try tmp.dir.readFileAlloc(io, "esp/EFI/GRUB/grubx64.efi", a, .limited(64)));
+    const log = try tmp.dir.readFileAlloc(io, "grub-install.log", a, .limited(4096));
+    try std.testing.expect(std.mem.indexOf(u8, log, "--modules=tpm --disable-shim-lock --bootloader-id=GRUB --no-nvram") != null);
+    try std.testing.expectEqualStrings(&facts.sha256Hex("grub signed"), try tmp.dir.readFileAlloc(io, "grub-signed", a, .limited(128)));
+
+    // the one os signed last stays as it is.
+    try tmp.dir.writeFile(io, .{ .sub_path = "esp/EFI/GRUB/grubx64.efi", .data = &signed_pe });
+    try tmp.dir.writeFile(io, .{ .sub_path = "grub-signed", .data = &facts.sha256Hex(&signed_pe) });
+    try std.testing.expectEqual(null, try bootfiles.writeOnEsp(&m, &entries, &.{}, testPut, null));
+    try std.testing.expectEqualSlices(u8, &signed_pe, try tmp.dir.readFileAlloc(io, "esp/EFI/GRUB/grubx64.efi", a, .limited(4096)));
+    try std.testing.expectEqualStrings(log, try tmp.dir.readFileAlloc(io, "grub-install.log", a, .limited(4096)));
+
+    // a signer that fails stops an apply, and a way back goes on.
+    m.signer = &.{"false"};
+    try tmp.dir.writeFile(io, .{ .sub_path = "grub-signed", .data = "" });
+    try std.testing.expect(std.mem.startsWith(u8, (try bootfiles.writeOnEsp(&m, &entries, &.{}, testPut, null)).?, "can't sign "));
+    var left: std.ArrayList([]const u8) = .empty;
+    m.left_unsigned = &left;
+    try std.testing.expectEqual(null, try bootfiles.writeOnEsp(&m, &entries, &.{}, testPut, null));
+    try std.testing.expectEqual(1, left.items.len);
 }
 
 /// a stand-in for chroot running ukify or mkinitcpio in a test's root:

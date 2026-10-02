@@ -226,6 +226,20 @@ back to, still starts then. signing covers:
   esp could have put it there. `os` tells whose signature an image has
   by the issuer and serial number of `/var/lib/sbctl/keys/db/db.pem`,
   which every signature names.
+- grub, on grub. `os` installs it with `--modules=tpm
+  --disable-shim-lock` every time, so it can start under secure boot
+  without shim, and when the binary on the esp isn't the one it signed
+  last, it runs `grub-install --no-nvram` again and signs the result in
+  place, since grub-install writes only to the esp. the hash of what it
+  signed goes in `/var/lib/yoq/grub-signed`. a grub someone signed by
+  hand can still be one built without those options, which wouldn't
+  start, so a signature alone isn't enough. grub's lockdown loads nothing,
+  not even `normal.mod`, until a verifier claims it, and the tpm module is
+  the only one there without shim. it registers only when the firmware
+  has a tpm 2.0, so `os plan` refuses `secure_boot` on grub without one
+  (E0136, from `facts.boot.tpm2`). kernels and images aren't modules:
+  grub hands each one to the firmware, which checks its signature, so an
+  entry added to grub.cfg can't start a kernel your keys didn't sign.
 - refind's btrfs driver, which `os` installs beside refind.conf. an
   unsigned one there is replaced by a signed copy of
   `/usr/share/refind/drivers_x64/btrfs_x64.efi`, signed in
@@ -522,17 +536,22 @@ next boot tries again once there's room.
   images, and `os` doesn't boot those: it boots the kernel and initramfs
   files in `/boot`, or with `[boot] uki`, images it builds from them. the
   vm tests boot images on systemd-boot and limine so far.
-- secure boot is tested on systemd-boot only. grub as `os` installs it
-  doesn't boot under secure boot, and limine stops booting if its config's
-  checksum was enrolled (`limine enroll-config`), since `os` edits
-  limine.conf. a generation from before `uki` boots a kernel without a
-  signature, so on systemd-boot and refind the firmware refuses it while
-  secure boot is on.
+- secure boot is tested on systemd-boot and grub. limine stops booting
+  if its config's checksum was enrolled (`limine enroll-config`), since
+  `os` edits limine.conf. a generation from before `uki` boots a kernel
+  without a signature, so on grub, systemd-boot, and refind the firmware
+  refuses it while secure boot is on.
 - the tpm key that `os install --tpm` adds is sealed to pcr 7, the secure
-  boot state, not to a signed pcr 11 policy for `os`'s own images. so
-  with secure boot on, anything signed with your keys that boots gets the
-  disk unlocked, and so does a plain kernel that limine loads without the
-  firmware's check.
+  boot state. on grub, systemd-boot, and refind that's enough: the
+  firmware checks every kernel they start, and each signed image has its
+  command line in it. limine without an enrolled config loads a kernel
+  without that check, so a plain kernel someone adds to its menu gets the
+  disk unlocked. a signed pcr 11 policy for `os`'s images wouldn't help
+  there, since a kernel nobody checked can extend pcr 11 to whatever the
+  policy expects, so `os` doesn't make one. a plain kernel signed with your
+  keys, like arch's after `sbctl sign -s /boot/vmlinuz-linux`, takes any
+  command line from grub or systemd-boot, so don't sign one you don't
+  need.
 
 ## later
 

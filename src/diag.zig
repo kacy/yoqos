@@ -35,6 +35,7 @@ pub const Code = enum {
     esp_full,
     secret_missing,
     secure_boot_keys,
+    secure_boot_tpm,
     luks_locked,
 };
 
@@ -251,6 +252,17 @@ pub const table = [_]Entry{
             "mode (clearing its keys), then boot and run `sbctl enroll-keys -m`, which keeps microsoft's keys " ++
             "next to yours, for firmware drivers signed with them; sign the bootloader with `sbctl sign -s " ++
             "<file>` (`os doctor` lists what's unsigned); then turn secure boot on and reboot.",
+    },
+    .{
+        .code = .secure_boot_tpm,
+        .id = "E0136",
+        .title = "grub can't start under secure boot here",
+        .explanation = "os starts grub under secure boot without shim. grub then locks itself down and " ++
+            "loads nothing, not even its own modules, unless something checks it first, and the thing that " ++
+            "does is grub's tpm module, which measures each file into the tpm. on a machine without a tpm " ++
+            "2.0 that module does nothing, so grub stops at its rescue prompt. turn the tpm on in the " ++
+            "firmware setup (it may be called ptt, fttpm, or security device), or leave `secure_boot` off " ++
+            "with grub.",
     },
     .{
         .code = .luks_locked,

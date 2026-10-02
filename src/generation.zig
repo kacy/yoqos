@@ -50,6 +50,10 @@ pub const unsettled_path = "/var/lib/yoq/unsettled";
 /// the machine runs now, so nothing changes the root it's leaving.
 pub const pending_path = "/var/lib/yoq/pending";
 
+/// the sha-256 of the grub binary os last built and signed for secure
+/// boot.
+pub const grub_signed_path = "/var/lib/yoq/grub-signed";
+
 /// whether a machine runs a generation: its root is one of @roots.
 pub fn running(root_subvol: ?[]const u8) bool {
     const sv = root_subvol orelse return false;

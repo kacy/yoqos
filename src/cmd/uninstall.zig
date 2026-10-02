@@ -13,6 +13,7 @@ const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
 const images = @import("../images.zig");
 const bootmenu = @import("../bootmenu.zig");
+const secureboot = @import("../secureboot.zig");
 const lists = @import("../lists.zig");
 const menu = @import("../menu.zig");
 const output = @import("../output.zig");
@@ -199,7 +200,12 @@ const Uninstaller = struct {
                         rootfs.writeAtomic(u.ctx.io, defaults, more, null) catch return "can't write " ++ defaults;
                     }
                 } else |_| {}
-                if (try u.run(try bootmenu.grubInstall(u.a, u.ctx.io, esp, "/boot"))) |w| return w;
+                const where = try bootmenu.grubEfiPath(u.a, u.ctx.io, esp);
+                if (try u.run(try bootmenu.grubInstallAt(u.a, esp, "/boot", where))) |w| return w;
+                // the plan's check made sure sbctl has keys.
+                if (u.boot.secure_boot == true) {
+                    if (try u.run(&.{ secureboot.package, "sign", "-s", try bootmenu.grubBinary(u.a, esp, where) })) |w| return w;
+                }
                 if (try u.run(&.{ "grub-mkconfig", "-o", "/boot/grub/grub.cfg" })) |w| return w;
                 if (!std.mem.eql(u8, esp, "/boot")) return u.run(&.{ "rm", "-rf", try std.fs.path.join(u.a, &.{ esp, "grub" }) });
                 return null;

@@ -29,6 +29,12 @@ check_top() {
     check "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && { $1; }; umount /run/yoq-top" "$2"
 }
 
+# a command that prints one of the firmware's secure boot variables,
+# 1 or 0: its value comes after 4 bytes of attributes.
+efivar() {
+    echo "tail -c 1 /sys/firmware/efi/efivars/$1-8be4df61-93ca-11d2-aa0d-00e098032b8c | od -An -tu1 | tr -d ' '"
+}
+
 # yoq-health runs once per boot, after the rest; wait until it has run
 # this boot, but not forever.
 settled() {
