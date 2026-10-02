@@ -54,6 +54,9 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const sync_date = date orelse try locking.today(ctx.io, a);
     const old_lock = try locking.readLock(ctx, a, top);
     const old: ?*const lock.Lock = if (old_lock) |*o| o else null;
+    if (date == null) {
+        if (old) |o| if (try clockBehind(a, sync_date, o.sync_date)) |why| return cli.fail(ctx, "{s}", .{why});
+    }
     const rs = try pastRepos(ctx, a, try locking.repos(ctx, a, &loaded.config), sync_date);
     const cache = try locking.cacheDir(ctx, a);
     // the databases without os's aur repository, which may not exist yet:
@@ -198,6 +201,15 @@ fn reviewRecipe(ctx: *Context, a: Allocator, b: aur.Builder, name: []const u8, w
     return false;
 }
 
+/// what to say when today, by the clock, is before `locked`, the lock's
+/// date: a clock reset to an old date, like a dead cmos battery's, before
+/// ntp sets it. the new lock would be dated then, and only `os update`
+/// moves the date, which should only go forward. null when it's fine.
+fn clockBehind(a: Allocator, today: []const u8, locked: []const u8) !?[]const u8 {
+    if (!std.mem.lessThan(u8, today, locked)) return null;
+    return try std.fmt.allocPrint(a, "the clock says it's {s}, before the lock's date, {s}, so nothing changed. set the clock, or if it's right and the lock's date isn't, `os update --date {s}` resolves as of today", .{ today, locked, today });
+}
+
 /// `rs`, or for a --date before today, arch's own repositories as the arch
 /// linux archive has them for that day: mirrors only have today's.
 fn pastRepos(ctx: *Context, a: Allocator, rs: []const sync.Repo, date: []const u8) ![]const sync.Repo {
@@ -266,6 +278,18 @@ fn sortRepos(dbs: []alpm.SyncDb) void {
 // -- tests --
 
 const TestRun = cli.TestRun;
+
+test "a clock behind the lock's date stops an update" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqual(null, try clockBehind(a, "2026-09-25", "2026-09-25"));
+    try std.testing.expectEqual(null, try clockBehind(a, "2026-10-02", "2026-09-25"));
+    try std.testing.expectEqualStrings(
+        "the clock says it's 2000-01-01, before the lock's date, 2026-09-25, so nothing changed. set the clock, or if it's right and the lock's date isn't, `os update --date 2000-01-01` resolves as of today",
+        (try clockBehind(a, "2000-01-01", "2026-09-25")).?,
+    );
+}
 
 test "repositories sort the way pacman.conf lists them" {
     var dbs = [_]alpm.SyncDb{

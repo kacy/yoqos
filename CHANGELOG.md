@@ -204,6 +204,11 @@
   merging the journal and the drift log by time. it sorted them all by
   time, so after the clock went back, an apply's later events could come
   out before its earlier ones.
+- `os update` stops when the clock says it's before the lock's date, like
+  a clock reset to 2000 before ntp sets it. it used to write a lock dated
+  then, which every apply after took for an old one, fetching from the
+  archive for that day, and the next update showed years of news.
+  `--date` still sets any date.
 
 ## 0.1.3
 
