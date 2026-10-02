@@ -226,6 +226,10 @@
 - `os install` won't fetch a config over plain http, git's own protocol,
   or ftp, or follow a redirect to one. anything on the way could change
   the config, and with it what runs as root on the new machine.
+- a `[files]` path can't have a control character in it. one with a nul,
+  written as `\u0000` in the toml, showed in the plan as one path, like
+  `/etc/sudoers.d.off/x`, while os wrote the part before the nul,
+  `/etc/sudoers.d/x`. checked writes refuse a nul in a path too.
 
 ## 0.1.3
 

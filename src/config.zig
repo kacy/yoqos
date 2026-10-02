@@ -584,6 +584,10 @@ pub fn unknownService(diags: *diag.List, name: []const u8, at: ?diag.Span) !void
 /// absolute path, outside os's own state.
 pub fn filePathProblem(p: []const u8) ?[]const u8 {
     if (p.len < 2 or p[0] != '/' or p[p.len - 1] == '/') return "files are keyed by their full path, like \"/etc/motd\"";
+    // a nul ends the path where the kernel reads it, so the plan would
+    // show one file and os write another, and other controls can hide
+    // what the plan shows.
+    if (hasControl(p)) return "control characters like newlines can't be in a path";
     if (hasOddSegment(p[1..])) return "write the path without //, . or .. in it";
     for ([_][]const u8{ "/etc/yoq", "/var/lib/yoq" }) |own| {
         if (std.mem.startsWith(u8, p, own) and (p.len == own.len or p[own.len] == '/')) return "os keeps its own state there";
@@ -939,7 +943,7 @@ test "[files] can't name a file os writes itself" {
 }
 
 test "[files] paths are plain and stay out of os's own state" {
-    for ([_][]const u8{ "etc/motd", "/", "/etc/../../tmp/x", "/etc/./motd", "/etc//motd", "/etc/motd/", "/etc/yoq/machine.toml", "/var/lib/yoq", "/var/lib/yoq/ids" }) |p| {
+    for ([_][]const u8{ "etc/motd", "/", "/etc/sudoers.d\x00.off/x", "/etc/motd\x1b[2K", "/etc/a\nb", "/etc/../../tmp/x", "/etc/./motd", "/etc//motd", "/etc/motd/", "/etc/yoq/machine.toml", "/var/lib/yoq", "/var/lib/yoq/ids" }) |p| {
         try testing.expect(filePathProblem(p) != null);
     }
     for ([_][]const u8{ "/etc/motd", "/etc/yoqx", "/var/lib/yoq-other/x", "/etc/..hidden" }) |p| {

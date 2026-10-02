@@ -303,6 +303,8 @@ pub fn writeAtomic(io: std.Io, path: []const u8, bytes: []const u8, bits: ?u32) 
 /// nothing can swap the path in between.
 fn replaceAt(dfd: std.os.linux.fd_t, name: []const u8, bytes: []const u8, bits: ?u32) error{WriteFailed}!void {
     const linux = std.os.linux;
+    // the kernel would read a name with a nul in it only up to there.
+    if (std.mem.indexOfScalar(u8, name, 0) != null) return error.WriteFailed;
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const tmp = std.fmt.bufPrintZ(&buf, "{s}.os-tmp", .{name}) catch return error.WriteFailed;
     var dest_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -387,6 +389,7 @@ const max_links = 40;
 /// followed, inside the root.
 fn openParent(a: Allocator, root: []const u8, rel: []const u8, make: bool) error{OutOfMemory}!Parent {
     const linux = std.os.linux;
+    if (std.mem.indexOfScalar(u8, rel, 0) != null) return .{ .refused = "the path has a nul in it" };
     var stack: std.ArrayList(linux.fd_t) = .empty;
     // every directory still on the stack closes. the one returned is
     // popped off first, since a return's value comes before its defers.
@@ -541,6 +544,12 @@ test "a checked write follows root's symlinks, and refuses others' and open dire
     try std.testing.expectEqual(null, try removeChecked(a, root, "lib/x.conf"));
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "root/usr/lib/x.conf", .{}));
     try std.testing.expectEqual(null, try removeChecked(a, root, "no/such/dir/f"));
+    // a nul would cut the path short, so a write meant for one file
+    // landed in another.
+    try std.testing.expect(std.mem.endsWith(u8, (try writeChecked(a, root, "etc/motd\x00.off", "x", null)).?, "the path has a nul in it"));
+    try std.testing.expect((try writeChecked(a, root, "etc\x00.off/motd", "x", null)) != null);
+    try std.testing.expect((try removeChecked(a, root, "etc/motd\x00.off")) != null);
+    try std.testing.expectEqualStrings("hi", try tmp.dir.readFileAlloc(io, "root/etc/motd", a, .limited(64)));
 }
 
 /// how many files this process has open.
