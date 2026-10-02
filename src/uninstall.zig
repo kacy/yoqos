@@ -54,9 +54,17 @@ pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool, unsigne
         });
         // os's images are signed, but systemd-boot and refind start
         // arch's plain kernel through the firmware, which refuses one
-        // without a signature while it enforces secure boot. limine
-        // loads kernels itself, and grub has its own trouble there.
-        if (b.secure_boot == true and (loader == .@"systemd-boot" or loader == .refind)) try checks.append(a, .{
+        // without a signature while it enforces secure boot. limine and
+        // grub load kernels themselves, but grub is installed again, and
+        // has to be signed.
+        const sb = b.secure_boot == true;
+        if (sb and loader == .grub) try checks.append(a, .{
+            .what = "secure boot",
+            .ok = b.sbctl_keys,
+            .found = if (b.sbctl_keys) "enforced, and sbctl has keys to sign grub" else "enforced, and sbctl has no keys to sign grub with",
+            .fix = "grub is installed again without os, and the firmware starts it only signed. put sbctl's keys back in /var/lib/sbctl, or turn secure boot off in the firmware setup.",
+        });
+        if (sb and (loader == .@"systemd-boot" or loader == .refind)) try checks.append(a, .{
             .what = "secure boot",
             .ok = unsigned_kernels.len == 0,
             .found = if (unsigned_kernels.len == 0) "enforced, and the kernels in /boot are signed" else try std.fmt.allocPrint(a, "enforced, and {s} has no signature", .{try std.mem.join(a, ", ", unsigned_kernels)}),
@@ -66,10 +74,10 @@ pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool, unsigne
         try steps.append(a, .{ .kind = .units, .what = "remove os's units that run at boot and shutdown: yoq-health, yoq-watchdog, and yoq-carry" });
         if (b.pacman_moved) try steps.append(a, .{ .kind = .pacman_db, .what = "move the pacman database back to /var/lib/pacman" });
         try steps.append(a, .{ .kind = .boot_menu, .what = switch (loader) {
-            .grub => if (b.luks_uuid != null)
-                "reinstall grub with a menu from grub-mkconfig in /boot/grub, booting this root, with what unlocks it added to /etc/default/grub"
-            else
-                "reinstall grub with a menu from grub-mkconfig in /boot/grub, booting this root",
+            .grub => try std.fmt.allocPrint(a, "reinstall grub with a menu from grub-mkconfig in /boot/grub, booting this root{s}{s}", .{
+                if (b.luks_uuid != null) ", with what unlocks it added to /etc/default/grub" else "",
+                if (sb) ", and sign grub with sbctl's keys" else "",
+            }),
             .limine => try std.fmt.allocPrint(a, "replace os's entries in {s} with one for this root", .{b.loader_conf orelse "limine.conf"}),
             .refind => "remove os's entries from refind, and boot this root through /boot/refind_linux.conf",
             .@"systemd-boot" => "replace os's entries in systemd-boot with one for this root, arch-linux.conf, as its default",
@@ -153,6 +161,16 @@ test "the steps on each rung" {
     var limine_sb = sb;
     limine_sb.loader = "limine";
     try testing.expect((try plan(a, &.{ .boot = limine_sb }, false, &.{"vmlinuz-linux"})).ready());
+    // grub loads arch's kernel itself, but needs sbctl's keys to be signed.
+    var grub_sb = sb;
+    grub_sb.loader = "grub";
+    const no_keys = try plan(a, &.{ .boot = grub_sb }, false, &.{"vmlinuz-linux"});
+    try testing.expect(!no_keys.ready());
+    try testing.expectEqualStrings("enforced, and sbctl has no keys to sign grub with", no_keys.checks[0].found);
+    grub_sb.sbctl_keys = true;
+    const keys = try plan(a, &.{ .boot = grub_sb }, false, &.{"vmlinuz-linux"});
+    try testing.expect(keys.ready());
+    try testing.expect(std.mem.endsWith(u8, keys.steps[2].what, "booting this root, and sign grub with sbctl's keys"));
 
     // limine without the esp at /boot can't boot arch's kernels on its own.
     const limine = try plan(a, &.{ .boot = .{ .root_subvol = "/@roots/2", .loader = "limine", .esp = "/efi", .snapper_root = true } }, true, &.{});
