@@ -10,6 +10,7 @@ const diag = @import("diag.zig");
 const lock = @import("lock.zig");
 const planner = @import("planner.zig");
 const desired = @import("desired.zig");
+const checks = @import("checks.zig");
 const settings = @import("settings.zig");
 const systemd = @import("systemd.zig");
 const users = @import("users.zig");
@@ -326,7 +327,7 @@ test "a secret's file is written from the store, and the facts only hold its key
 
     var f = try observe.observe(a, io, opts, &diags);
     try testing.expectEqual(.missing, f.secret("wifi/home").?.state);
-    try testing.expect(!try planner.checkSecrets(&c, &f, &diags));
+    try testing.expect(!try checks.checkSecrets(&c, &f, &diags));
     // apply refuses too, should it get that far.
     var p = (try planner.plan(a, &c, &l, &f, &diags)).?;
     try testing.expectEqual(null, try run(a, io, &p, &l, files, store, t, false, &diags));

@@ -13,6 +13,7 @@ const observe = @import("../observe.zig");
 const output = @import("../output.zig");
 const planner = @import("../planner.zig");
 const desired = @import("../desired.zig");
+const checks = @import("../checks.zig");
 const pipeline = @import("../pipeline.zig");
 const sync = @import("../sync.zig");
 const systemd = @import("../systemd.zig");
@@ -183,10 +184,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     }
     // before anything is built: a staged root whose boot files can't go
     // on the esp would only be thrown away.
-    if (!try planner.checkEsp(a, p, &result.facts, &w.diags)) return Outcome.failed(&w);
-    if (!try planner.checkSecrets(result.state.config(), &result.facts, &w.diags)) return Outcome.failed(&w);
-    if (!try planner.checkSecureBoot(result.state.config(), &result.facts, &w.diags)) return Outcome.failed(&w);
-    if (!try planner.checkLuks(result.state.config(), p, &result.facts, &w.diags)) return Outcome.failed(&w);
+    if (!try checks.passes(a, result.state.config(), p, &result.facts, &w.diags)) return Outcome.failed(&w);
     const cut = try journal.unfinished(a, ctx.io, ctx.root);
     var settled_generation = false;
     if (cut) |begin| {

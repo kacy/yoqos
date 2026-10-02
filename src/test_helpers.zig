@@ -22,6 +22,25 @@ pub fn configFrom(a: std.mem.Allocator, text: []const u8) !config.Config {
     return c;
 }
 
+/// a test's arena and diagnostics, with configs parsed into the arena.
+pub const Scratch = struct {
+    arena: std.heap.ArenaAllocator = .init(std.testing.allocator),
+    diags: diag.List = .init(std.testing.allocator),
+
+    pub fn deinit(t: *Scratch) void {
+        t.diags.deinit();
+        t.arena.deinit();
+    }
+
+    pub fn a(t: *Scratch) std.mem.Allocator {
+        return t.arena.allocator();
+    }
+
+    pub fn cfg(t: *Scratch, src: []const u8) !config.Config {
+        return configFrom(t.a(), src);
+    }
+};
+
 /// a locked package with a placeholder repo and hash.
 pub fn lockPackage(name: []const u8, version: []const u8, depends: []const []const u8) lock.Package {
     return .{ .name = name, .version = version, .repo = "core", .sha256 = "a" ** 64, .depends = depends };

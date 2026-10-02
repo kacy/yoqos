@@ -7,6 +7,7 @@ const gens = @import("../gens.zig");
 const cli = @import("../cli.zig");
 const facts = @import("../facts.zig");
 const planner = @import("../planner.zig");
+const checks = @import("../checks.zig");
 const show = @import("../show.zig");
 const output = @import("../output.zig");
 const why = @import("../why.zig");
@@ -80,10 +81,7 @@ pub fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const result = try w.plan(in) orelse return w.fail();
-    if (!try planner.checkEsp(result.allocator(), &result.plan, &result.facts, &w.diags)) return w.fail();
-    if (!try planner.checkSecrets(result.state.config(), &result.facts, &w.diags)) return w.fail();
-    if (!try planner.checkSecureBoot(result.state.config(), &result.facts, &w.diags)) return w.fail();
-    if (!try planner.checkLuks(result.state.config(), &result.plan, &result.facts, &w.diags)) return w.fail();
+    if (!try checks.passes(result.allocator(), result.state.config(), &result.plan, &result.facts, &w.diags)) return w.fail();
 
     if (ctx.json) {
         try planner.writeJson(ctx.out, result.allocator(), &result.plan);

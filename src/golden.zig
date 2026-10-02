@@ -12,6 +12,7 @@ const disk = @import("disk.zig");
 const diag = @import("diag.zig");
 const pipeline = @import("pipeline.zig");
 const planner = @import("planner.zig");
+const checks = @import("checks.zig");
 const status = @import("status.zig");
 const lists = @import("lists.zig");
 
@@ -66,7 +67,7 @@ fn runCase(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8
     defer if (built) |*r| r.deinit();
     // the esp, secret, and secure boot checks run where os plan and os apply
     // run them.
-    const planned = if (built) |*r| try planner.checkEsp(a, &r.plan, &r.facts, &diags) and try planner.checkSecrets(r.state.config(), &r.facts, &diags) and try planner.checkSecureBoot(r.state.config(), &r.facts, &diags) and try planner.checkLuks(r.state.config(), &r.plan, &r.facts, &diags) else false;
+    const planned = if (built) |*r| try checks.passes(a, r.state.config(), &r.plan, &r.facts, &diags) else false;
     if (planned) {
         const result = &built.?;
         var text: std.Io.Writer.Allocating = .init(a);
