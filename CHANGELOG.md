@@ -235,6 +235,14 @@
   which are shell: every login shell sources the first, and mkinitcpio's
   hooks source the second as root. a value like `C.UTF-8$(id)` ran there
   as a command, though the plan showed only a locale.
+- everything os prints goes out with control characters as escapes, like
+  `\x1b`, except newlines and tabs, and so do the c1 controls in utf-8.
+  plans, errors, `os status`, `os diff`, and the aur review print text
+  that others control: a cloned config and its lock, a recipe's
+  .SRCINFO and what its build prints, file names on the esp. an escape
+  sequence in any of them could move the cursor to hide a line of a plan
+  before the yes, or set the clipboard. progress keeps its own escape
+  for redrawing its line.
 
 ## 0.1.3
 

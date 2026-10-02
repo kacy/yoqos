@@ -83,6 +83,9 @@ pub const Context = struct {
     /// how package transactions show progress on `err`, unless --json is
     /// set. tests leave it off.
     progress: progress.Mode = .off,
+    /// stderr as it is, past the escaping `err` does, for progress, which
+    /// redraws its line with an escape of its own. null means `err`.
+    term: ?*std.Io.Writer = null,
     /// where secrets are kept: the machine's own, always, whatever --root
     /// says, since a root os builds is for this machine too.
     secrets: ?secrets.Store = null,

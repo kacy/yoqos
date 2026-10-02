@@ -7,6 +7,7 @@ const sync = @import("sync.zig");
 const history = @import("history.zig");
 const secrets = @import("secrets.zig");
 const rootfs = @import("rootfs.zig");
+const output = @import("output.zig");
 
 pub fn main(init: std.process.Init) !void {
     _ = rootfs.standardUmask();
@@ -17,6 +18,12 @@ pub fn main(init: std.process.Init) !void {
     const stdout = std.Io.File.stdout();
     var out = stdout.writer(init.io, &out_buf);
     var err = std.Io.File.stderr().writer(init.io, &err_buf);
+    // what os prints goes through these, which escape control characters,
+    // since some of it comes from places others control.
+    var plain_out_buf: [1024]u8 = undefined;
+    var plain_err_buf: [1024]u8 = undefined;
+    var plain_out: output.Plain = .init(&out.interface, &plain_out_buf);
+    var plain_err: output.Plain = .init(&err.interface, &plain_err_buf);
     var in_buf: [1024]u8 = undefined;
     const stdin = std.Io.File.stdin();
     var in = stdin.reader(init.io, &in_buf);
@@ -33,8 +40,9 @@ pub fn main(init: std.process.Init) !void {
     var ctx: cli.Context = .{
         .gpa = init.gpa,
         .io = init.io,
-        .out = &out.interface,
-        .err = &err.interface,
+        .out = &plain_out.interface,
+        .err = &plain_err.interface,
+        .term = &err.interface,
         .config_path = try hostConfig(init.arena.allocator(), init.io),
         .fetcher = http.fetcher(),
         .history = git.history(),
@@ -50,12 +58,12 @@ pub fn main(init: std.process.Init) !void {
         .set_echo = setEcho,
     };
     const code = cli.run(&ctx, argv[1..]) catch |e| blk: {
-        err.interface.print("os: {s}\n", .{@errorName(e)}) catch {};
+        plain_err.interface.print("os: {s}\n", .{@errorName(e)}) catch {};
         break :blk 1;
     };
 
-    out.interface.flush() catch {};
-    err.interface.flush() catch {};
+    plain_out.interface.flush() catch {};
+    plain_err.interface.flush() catch {};
     std.process.exit(code);
 }
 

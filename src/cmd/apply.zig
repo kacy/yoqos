@@ -226,10 +226,12 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     }
 
     var target = try targetFor(ctx, &w, result.state.config(), &result.state.lock) orelse return Outcome.failed(&w);
-    var shown: progress.Progress = .{ .w = ctx.err, .tty = ctx.progress == .terminal };
+    var shown: progress.Progress = .{ .w = ctx.term orelse ctx.err, .tty = ctx.progress == .terminal };
     if (ctx.progress != .off and !ctx.json) {
-        // progress goes to stderr; what's on stdout comes first.
+        // progress goes to stderr; what's on stdout comes first, and what
+        // went to stderr before it.
         try ctx.out.flush();
+        try ctx.err.flush();
         target.progress = &shown;
     }
     try clearStaleLock(ctx, a, target.dbpath);
