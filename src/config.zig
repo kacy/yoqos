@@ -667,6 +667,12 @@ pub fn systemProblem(key: []const u8, v: []const u8) ?[]const u8 {
     if (v.len == 0) return "leave it out instead";
     if (hasControl(v)) return "control characters like newlines can't be in it";
     if (std.mem.eql(u8, key, "timezone") and hasOddSegment(v)) return "zone names look like America/New_York";
+    // /etc/locale.conf and /etc/vconsole.conf are shell: profile.d sources
+    // the one in every login shell, and mkinitcpio's hooks the other, as
+    // root. a quote, $, or ; there would run as a command.
+    if ((std.mem.eql(u8, key, "locale") or std.mem.eql(u8, key, "keymap")) and !onlyAlnumOr(v, "_.@+-")) {
+        return "use letters, digits, and _.@+-, like en_US.UTF-8 or de-latin1";
+    }
     return null;
 }
 
@@ -1006,6 +1012,10 @@ test "[system] values" {
     try testing.expect(systemProblem("hostname", "a..b") != null);
     try testing.expect(systemProblem("hostname", "a.-b") != null);
     try testing.expectEqual(null, systemProblem("timezone", "America/New_York"));
+    for ([_][]const u8{ "en_US.UTF-8", "sr_RS@latin", "C.UTF-8" }) |v| try testing.expectEqual(null, systemProblem("locale", v));
+    for ([_][]const u8{ "de-latin1", "us", "fr_CH-latin1" }) |v| try testing.expectEqual(null, systemProblem("keymap", v));
+    for ([_][]const u8{ "C.UTF-8$(touch /tmp/p)", "en_US.UTF-8 x", "`id`", "a'b" }) |v| try testing.expect(systemProblem("locale", v) != null);
+    try testing.expect(systemProblem("keymap", "us;id>/tmp/p") != null);
     try testing.expect(systemProblem("timezone", "/etc/passwd") != null);
     try testing.expect(systemProblem("timezone", "../../etc/passwd") != null);
     try testing.expectEqual(null, systemProblem("locale", "en_US.UTF-8"));

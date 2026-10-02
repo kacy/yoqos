@@ -230,6 +230,11 @@
   written as `\u0000` in the toml, showed in the plan as one path, like
   `/etc/sudoers.d.off/x`, while os wrote the part before the nul,
   `/etc/sudoers.d/x`. checked writes refuse a nul in a path too.
+- `[system] locale` and `keymap` take letters, digits, and `_.@+-`
+  only. they go unquoted into /etc/locale.conf and /etc/vconsole.conf,
+  which are shell: every login shell sources the first, and mkinitcpio's
+  hooks source the second as root. a value like `C.UTF-8$(id)` ran there
+  as a command, though the plan showed only a locale.
 
 ## 0.1.3
 
