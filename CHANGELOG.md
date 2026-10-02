@@ -1,6 +1,14 @@
 # changelog
 
-## unreleased
+## 0.1.4
+
+this one is about disks and boot chains. `[files]` can hold secrets that
+never go into the config or the lock, `os install --encrypt` puts the root
+on luks (with a tpm key if you want one), and generations can boot as
+unified kernel images, signed for secure boot with your own sbctl keys.
+the fixes come from three review passes: power cuts around trial boots,
+logs that grew too big to read, and a long list of ways a user, a cloned
+config, or an aur recipe could get something past a plan.
 
 ### new
 
@@ -35,6 +43,9 @@
 - `[boot] encrypt = true` adds sd-encrypt to mkinitcpio's hooks, with a
   drop-in, when they can't unlock luks already. `os init` sets it on a luks
   root, and `os init --new --encrypt` (or `--tpm`) writes it.
+- taking `[boot] encrypt` out of the config on a luks root whose own
+  mkinitcpio hooks can't unlock it stops `os plan` and `os apply` with
+  E0135, since the initramfs left would never open the root.
 - generations work on a btrfs root inside luks. every bootloader boots
   them from copies on the esp, since none of them reads btrfs inside luks,
   with the arguments that unlock the root. facts name the luks volume
@@ -159,11 +170,6 @@
   like news titles, before `os history`, `os rollback`, or anything else
   prints them. a repository `os install` cloned could otherwise move the
   cursor or rewrite the terminal.
-  directory on the way, like their home, could point the write, a secret's
-  value included, at any file on the machine.
-- a checked `[files]` write no longer leaves a directory on the way open.
-  in an install, one in the target kept it busy, so its luks volume
-  couldn't close until os exited.
 - the health check judges a trial by the config and lock its generation
   was made with. a service turned on with `os enable` while a staged
   generation waited for its reboot wasn't in that generation, so it
@@ -186,11 +192,6 @@
   from the root's own start, and `yoq-carry.service`, which it never had,
   so a password changed after `os rollback` was left behind. 0.1.0 marked
   its units with a line of its own, which the update didn't take as os's.
-- taking `[boot] encrypt` out of the config on a luks root whose own
-  mkinitcpio hooks can't unlock it stops `os plan` and `os apply` with
-  E0135. the plan used to remove the drop-in and rebuild an initramfs that
-  couldn't open the root, which without generations left a machine that
-  didn't boot.
 - a kernel, microcode, or initramfs change made with pacman directly gets
   the boot menu written again from os's pacman hook, where the newest
   entry boots copies on the esp or an image: limine, systemd-boot, a luks
