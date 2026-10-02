@@ -82,8 +82,11 @@ check "grep -c '^options' $entries/yoq-head.conf || true" 0
 
 # an initramfs planted on the esp goes into the root's copy at the next
 # generation, but never into a signed image: os builds that one in the
-# root with mkinitcpio, so the machine still boots.
-"$vm" ssh "echo not an initramfs > $VM_ESP/initramfs-linux.img"
+# root with mkinitcpio, so the machine still boots. the real one is put
+# back by hand after: `mkinitcpio -P` would also have sbctl's post hook
+# sign arch's kernel in /boot, which the uninstall check below needs
+# unsigned.
+"$vm" ssh "cp -a $VM_ESP/initramfs-linux.img /root/initramfs-linux.img.real && echo not an initramfs > $VM_ESP/initramfs-linux.img"
 "$vm" ssh "/usr/local/bin/os add --yes tree" | tail -n 1
 on_trial no
 # still there: nothing in that apply wrote the initramfs.
@@ -94,7 +97,7 @@ check "f=\$(ls /sys/firmware/efi/efivars/LoaderEntrySelected-*) && tail -c +5 \$
 check "$(efivar SecureBoot)" 1
 check "grep -c 'root=UUID=[^ ]* rootflags=[^ ]*subvol=/@roots/[0-9]*' /proc/cmdline" 1
 # the real one back, and the package out again.
-"$vm" ssh "/usr/bin/mkinitcpio -P >/dev/null 2>&1"
+"$vm" ssh "cp -a /root/initramfs-linux.img.real $VM_ESP/initramfs-linux.img"
 "$vm" ssh "/usr/local/bin/os remove --yes tree" | tail -n 1
 on_trial no
 
@@ -112,8 +115,15 @@ falls_back "$before"
 check "$(efivar SecureBoot)" 1
 # uninstall would leave systemd-boot starting arch's unsigned kernel,
 # which the firmware refuses now, so it won't go ahead.
+on_failure="$on_failure; /usr/local/bin/os uninstall --json </dev/null 2>&1"
 check "{ /usr/local/bin/os uninstall --yes </dev/null 2>&1 || true; } | grep -c '^  no  secure boot: enforced, and vmlinuz-linux has no signature\$'" 1
 check "test -e /var/lib/yoq && echo state || echo none" state
+# signed, as sbctl's mkinitcpio hook does whenever sbctl has keys, the
+# kernel boots without os, so uninstall would go ahead. only its plan is
+# looked at, then the unsigned kernel goes back.
+"$vm" ssh "cp -a /boot/vmlinuz-linux /root/vmlinuz-linux.unsigned && sbctl sign /boot/vmlinuz-linux >/dev/null"
+check "/usr/local/bin/os uninstall --json </dev/null | grep -c '\"found\": \"enforced, and the kernels in /boot are signed\"'" 1
+"$vm" ssh "cp -a /root/vmlinuz-linux.unsigned /boot/vmlinuz-linux"
 
 # the platform key out again: setup mode, and no secure boot from the
 # next boot on.
