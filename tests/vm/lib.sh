@@ -143,6 +143,7 @@ wait_root() {
     done
     echo "$name: no boot into $1 after 10 minutes; the machine shows:"
     "$vm" ssh "findmnt -no FSROOT /; cat /proc/cmdline; systemctl is-active yoq-watchdog.timer multi-user.target; journalctl -b -u yoq-health -u yoq-watchdog.timer -u yoq-watchdog.service --no-pager -o cat | tail -n 10" || true
+    if [ -n "${on_failure:-}" ]; then "$vm" ssh "$on_failure" || true; fi
     exit 1
 }
 

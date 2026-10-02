@@ -88,13 +88,20 @@ if [ "$VM_LOADER" = grub ]; then
     "$vm" reboot
     settled
     last=$(newest)
-    before=$(second_newest)
+    # the generation the last fallback went to, which came up with its
+    # network. the one just before the newest is the trial that failed,
+    # without one, so ssh would never reach its boot.
+    before=$("$vm" ssh "/usr/local/bin/os history | grep 'fell back from' | tail -n 1 | sed 's/.* to \\([0-9]*\\).*/\\1/'")
+    on_failure="grub-editenv $VM_ESP/yoq/grubenv list; grep -e '^menuentry' -e '^set default' $VM_ESP/grub/grub.cfg"
     "$vm" ssh "grub-editenv $VM_ESP/yoq/grubenv set yoq_next=gen-$before yoq_default=gen-$before yoq_trial=$last yoq_tried=1"
+    # what grub boots next, for when that boot doesn't come up.
+    "$vm" ssh "$on_failure"
     "$vm" reboot || true
     wait_root "/@roots/boot-$before"
     settled
     check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'os never armed one'" 1
     check "ls /var/lib/yoq/generations | sort -n | tail -n 1 | cut -d. -f1" "$last"
     on_trial no
+    on_failure=
 fi
 echo "trial ok"
