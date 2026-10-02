@@ -1,5 +1,21 @@
 # changelog
 
+## unreleased
+
+### new
+
+- grub starts under secure boot. `os` installs grub with shim's check off
+  and grub's `tpm` module built in, as the arch wiki does for your own
+  keys, and with `secure_boot` it signs grub along with the images. a grub
+  that isn't the one `os` signed last, like one installed before this,
+  is installed again and signed. `os uninstall` under secure boot signs
+  the grub it leaves behind, and needs sbctl's keys for that.
+- `os doctor` warns when the tpm unlocks the root on grub or limine, even
+  with secure boot on: both load a kernel without the firmware's check,
+  so someone who can change the menu can boot their own with the disk
+  unlocked. `os install --tpm` notes it in its plan, since it installs
+  grub.
+
 ## 0.1.4
 
 this one is about disks and boot chains. `[files]` can hold secrets that
