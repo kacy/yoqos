@@ -156,30 +156,28 @@ fn cmdlineTpm(cmdline: []const u8) bool {
 /// with the root unlocked by the tpm, whether secure boot keeps the boot
 /// files that get the key from being changed. without it, it's a warning:
 /// the tpm keeps a powered-off disk safe, not a machine left alone. it's
-/// the same with grub or limine, which load kernels themselves: grub
-/// without shim doesn't check them, and limine checks nothing until its
-/// config's hash is enrolled, which os can't do while it edits that file.
+/// the same with limine, which loads kernels itself and checks nothing
+/// until its config's hash is enrolled, which os can't do while it edits
+/// that file. grub, systemd-boot, and refind start kernels through the
+/// firmware, which checks them.
 fn tpmCheck(b: *const facts.Boot, tpm: bool) ?enable.Check {
     if (!tpm) return null;
     const on = b.secure_boot orelse false;
-    const loader = menu.Loader.of(b.*);
-    const unchecked = loader == .grub or loader == .limine;
+    const limine = menu.Loader.of(b.*) == .limine;
     return .{
         .what = "tpm unlock",
-        .ok = on and !unchecked,
+        .ok = on and !limine,
         .warn = true,
         .found = if (!on)
             "the tpm unlocks the root, and secure boot is off"
-        else if (unchecked)
-            (if (loader == .grub) "the tpm unlocks the root, and grub loads kernels without secure boot's check" else "the tpm unlocks the root, and limine loads kernels without secure boot's check")
+        else if (limine)
+            "the tpm unlocks the root, and limine loads kernels without secure boot's check"
         else
             "the tpm unlocks the root, and secure boot is on",
         .fix = if (!on)
             "without secure boot, someone who can change the boot files can get a shell with the disk unlocked, so the tpm protects a powered-off disk, not a machine left alone. turn on uki and secure_boot under [boot] to close that."
-        else if (loader == .grub)
-            "secure boot checks what the firmware starts, but grub loads a kernel itself, without a check. someone who can change grub's menu on the esp, or type at it, can boot a kernel of their own with the disk unlocked, so the tpm protects a powered-off disk, not a machine left alone. systemd-boot and refind start every kernel through the firmware's check."
         else
-            "secure boot checks what the firmware starts, but limine loads a kernel itself, without a check. someone who can change limine's menu on the esp, or type at it, can boot a kernel of their own with the disk unlocked, so the tpm protects a powered-off disk, not a machine left alone. systemd-boot and refind start every kernel through the firmware's check.",
+            "secure boot checks what the firmware starts, but limine loads a kernel itself, without a check. someone who can change limine's menu on the esp, or type at it, can boot a kernel of their own with the disk unlocked, so the tpm protects a powered-off disk, not a machine left alone. grub, systemd-boot, and refind start every kernel through the firmware's check.",
     };
 }
 
@@ -368,13 +366,11 @@ test "a root the tpm unlocks without secure boot is a warning" {
     b.secure_boot = true;
     try std.testing.expect(tpmCheck(&b, true).?.ok);
     try std.testing.expectEqual(null, tpmCheck(&b, false));
-    // grub and limine load kernels without secure boot's check.
-    b.loader = "grub";
-    try std.testing.expectEqualStrings("the tpm unlocks the root, and grub loads kernels without secure boot's check", tpmCheck(&b, true).?.found);
-    try std.testing.expect(!tpmCheck(&b, true).?.ok);
+    // limine loads kernels without secure boot's check; grub doesn't.
     b.loader = "limine";
+    try std.testing.expectEqualStrings("the tpm unlocks the root, and limine loads kernels without secure boot's check", tpmCheck(&b, true).?.found);
     try std.testing.expect(!tpmCheck(&b, true).?.ok);
-    b.loader = "systemd-boot";
+    b.loader = "grub";
     try std.testing.expect(tpmCheck(&b, true).?.ok);
 }
 

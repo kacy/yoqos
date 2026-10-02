@@ -9,7 +9,8 @@
   keys, and with `secure_boot` it signs grub along with the images. a grub
   that isn't the one `os` signed last, like one installed before this,
   is installed again and signed. `os uninstall` under secure boot signs
-  the grub it leaves behind, and needs sbctl's keys for that. grub's tpm
+  the grub it leaves behind, and needs sbctl's keys for that, and arch's
+  kernel signed, as on systemd-boot and refind. grub's tpm
   module needs a tpm 2.0, so without one, `secure_boot` on grub stops
   `os plan` with E0136, and facts carry `tpm2`.
 
@@ -19,11 +20,10 @@
   generation the trial falls back to. grub was given that generation by
   name, which it ignores for a fallback, so it showed the failed entry
   again and again instead of falling back, and the watchdog never started.
-- `os doctor` warns when the tpm unlocks the root on grub or limine, even
-  with secure boot on: both load a kernel without the firmware's check,
-  so someone who can change the menu can boot their own with the disk
-  unlocked. `os install --tpm` notes it in its plan, since it installs
-  grub.
+- `os doctor` warns when the tpm unlocks the root on limine, even with
+  secure boot on: limine loads a kernel without the firmware's check, so
+  someone who can change its menu can boot their own with the disk
+  unlocked.
 
 ## 0.1.4
 

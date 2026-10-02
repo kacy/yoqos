@@ -52,11 +52,11 @@ pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool, unsigne
             .found = b.esp orelse "not mounted",
             .fix = try std.fmt.allocPrint(a, "without os, {s} boots the kernel arch installs in /boot, so the esp has to be mounted there.", .{@tagName(loader)}),
         });
-        // os's images are signed, but systemd-boot and refind start
-        // arch's plain kernel through the firmware, which refuses one
-        // without a signature while it enforces secure boot. limine and
-        // grub load kernels themselves, but grub is installed again, and
-        // has to be signed.
+        // os's images are signed, but grub, systemd-boot, and refind
+        // start arch's plain kernel through the firmware, which refuses
+        // one without a signature while it enforces secure boot. limine
+        // loads kernels itself. grub is installed again, and has to be
+        // signed too.
         const sb = b.secure_boot == true;
         if (sb and loader == .grub) try checks.append(a, .{
             .what = "secure boot",
@@ -64,7 +64,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool, unsigne
             .found = if (b.sbctl_keys) "enforced, and sbctl has keys to sign grub" else "enforced, and sbctl has no keys to sign grub with",
             .fix = "grub is installed again without os, and the firmware starts it only signed. put sbctl's keys back in /var/lib/sbctl, or turn secure boot off in the firmware setup.",
         });
-        if (sb and (loader == .@"systemd-boot" or loader == .refind)) try checks.append(a, .{
+        if (sb and loader != .limine) try checks.append(a, .{
             .what = "secure boot",
             .ok = unsigned_kernels.len == 0,
             .found = if (unsigned_kernels.len == 0) "enforced, and the kernels in /boot are signed" else try std.fmt.allocPrint(a, "enforced, and {s} has no signature", .{try std.mem.join(a, ", ", unsigned_kernels)}),
@@ -161,14 +161,15 @@ test "the steps on each rung" {
     var limine_sb = sb;
     limine_sb.loader = "limine";
     try testing.expect((try plan(a, &.{ .boot = limine_sb }, false, &.{"vmlinuz-linux"})).ready());
-    // grub loads arch's kernel itself, but needs sbctl's keys to be signed.
+    // grub needs arch's kernel signed, and sbctl's keys to sign itself.
     var grub_sb = sb;
     grub_sb.loader = "grub";
-    const no_keys = try plan(a, &.{ .boot = grub_sb }, false, &.{"vmlinuz-linux"});
+    const no_keys = try plan(a, &.{ .boot = grub_sb }, false, &.{});
     try testing.expect(!no_keys.ready());
     try testing.expectEqualStrings("enforced, and sbctl has no keys to sign grub with", no_keys.checks[0].found);
     grub_sb.sbctl_keys = true;
-    const keys = try plan(a, &.{ .boot = grub_sb }, false, &.{"vmlinuz-linux"});
+    try testing.expect(!(try plan(a, &.{ .boot = grub_sb }, false, &.{"vmlinuz-linux"})).ready());
+    const keys = try plan(a, &.{ .boot = grub_sb }, false, &.{});
     try testing.expect(keys.ready());
     try testing.expect(std.mem.endsWith(u8, keys.steps[2].what, "booting this root, and sign grub with sbctl's keys"));
 

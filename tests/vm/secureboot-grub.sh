@@ -4,8 +4,9 @@
 # built to start under secure boot, and signs it and the images it boots
 # with sbctl's keys. once the keys are enrolled, the trial boots its
 # signed image through grub, and a trial whose image has no signature
-# falls back. the keys stay enrolled, so leave.sh uninstalls under secure
-# boot after this, in the same vm.
+# falls back, as does an entry with an unsigned kernel. the keys stay
+# enrolled, so leave.sh uninstalls under secure boot after this, in the
+# same vm.
 set -eu
 . tests/vm/lib.sh
 
@@ -61,6 +62,22 @@ show_env
 falls_back "$before"
 check "$(efivar SecureBoot)" 1
 
-# uninstall can go ahead: it signs the grub it installs again.
+# grub starts a kernel through the firmware, which checks it: an entry
+# added to grub.cfg that boots arch's unsigned kernel, picked once, won't
+# start, and grub falls back to the newest generation.
+"$vm" ssh "printf 'menuentry \"planted\" --id planted {\n  linux (\${yoq_esp})/vmlinuz-linux %s yoq.planted\n  initrd (\${yoq_esp})/initramfs-linux.img\n}\n' \"\$(cat /proc/cmdline)\" >> $grub_cfg && grub-editenv $VM_ESP/yoq/grubenv set yoq_next=planted yoq_default=head"
+"$vm" reboot
+settled
+check "grep -c yoq.planted /proc/cmdline || true" 0
+check "findmnt -no FSROOT /" "/$(newest_root)"
+"$vm" ssh "grub-editenv $VM_ESP/yoq/grubenv unset yoq_default yoq_next yoq_tried && /usr/local/bin/os gc >/dev/null"
+check "grep -c planted $grub_cfg || true" 0
+
+# without os, grub boots arch's kernel, which the firmware refuses
+# unsigned, so uninstall waits for it to be signed. then it can go
+# ahead, and signs the grub it installs again.
+check "{ /usr/local/bin/os uninstall --yes </dev/null 2>&1 || true; } | grep -c '^  no  secure boot: enforced, and vmlinuz-linux has no signature\$'" 1
+"$vm" ssh "sbctl sign -s /boot/vmlinuz-linux >/dev/null"
 check "/usr/local/bin/os uninstall --json </dev/null | grep -c '\"found\": \"enforced, and sbctl has keys to sign grub\"'" 1
+check "/usr/local/bin/os uninstall --json </dev/null | grep -c '\"found\": \"enforced, and the kernels in /boot are signed\"'" 1
 echo "secure boot on grub ok"
