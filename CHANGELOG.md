@@ -186,6 +186,11 @@
   from the root's own start, and `yoq-carry.service`, which it never had,
   so a password changed after `os rollback` was left behind. 0.1.0 marked
   its units with a line of its own, which the update didn't take as os's.
+- taking `[boot] encrypt` out of the config on a luks root whose own
+  mkinitcpio hooks can't unlock it stops `os plan` and `os apply` with
+  E0135. the plan used to remove the drop-in and rebuild an initramfs that
+  couldn't open the root, which without generations left a machine that
+  didn't boot.
 
 ## 0.1.3
 

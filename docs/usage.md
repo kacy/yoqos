@@ -1161,6 +1161,11 @@ machine has the hooks already, so no drop-in comes with it. `os install
 hooks. the key holds nothing secret and doesn't say how the disk unlocks:
 that's in the luks header and on the kernel's command line.
 
+taking the key out, or setting it to false, removes the drop-in. on a luks
+root whose own hooks can't unlock it, `os plan` and `os apply` stop with
+E0135 instead, since the next initramfs couldn't open the root. add
+`sd-encrypt` to HOOKS in `/etc/mkinitcpio.conf` first, if that's the plan.
+
 ### unified kernel images
 
 ```toml

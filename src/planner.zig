@@ -1118,6 +1118,24 @@ pub fn checkSecureBoot(c: *const config.Config, f: *const facts.Facts, diags: *d
     return false;
 }
 
+/// refuses, with a diagnostic, a plan that removes os's drop-in that
+/// unlocks a luks root while mkinitcpio's own hooks don't: the initramfs
+/// built after it couldn't open the root, and without generations
+/// nothing would boot. returns whether the plan can go ahead.
+pub fn checkLuks(c: *const config.Config, p: *const Plan, f: *const facts.Facts, diags: *diag.List) !bool {
+    if (f.boot.luks_uuid == null or facts.hasEncryptHook(f.boot.initramfs_hooks)) return true;
+    if (c.providers.get("initramfs")) |pr| {
+        if (!std.mem.eql(u8, pr.v, "mkinitcpio")) return true;
+    }
+    for (p.changes) |ch| {
+        if (ch.kind != .file or ch.op != .remove or !std.mem.eql(u8, ch.subject, encrypt_initramfs_path)) continue;
+        const src = if (c.boot.encrypt) |e| e.src else null;
+        try diags.add(.luks_locked, src, "the root is on luks, and without [boot] encrypt nothing in the initramfs would unlock it", .{}, "keep `encrypt = true` under [boot], or add sd-encrypt to HOOKS in /etc/mkinitcpio.conf first");
+        return false;
+    }
+    return true;
+}
+
 pub const RenderOptions = struct {
     /// list each dependency instead of counting them.
     verbose: bool = false,
@@ -1704,6 +1722,35 @@ test "[boot] secure_boot brings sbctl, and its file where os writes the menu" {
     try testing.expect(removed);
     // left on, the file there is the one it wants.
     for ((try plan(a, &c, &with, &had, &t.diags)).?.changes) |ch| try testing.expect(ch.kind != .file);
+}
+
+test "turning encrypt off stops the plan when nothing else would unlock a luks root" {
+    var t: T = .{};
+    defer t.deinit();
+    const a = t.a();
+    var files = [_]facts.File{.{ .path = encrypt_initramfs_path, .sha256 = &facts.sha256Hex(encrypt_initramfs_content), .mode = "0644", .ours = true }};
+    const hooks = [_][]const u8{ "base", "systemd", "autodetect", "block", "filesystems" };
+    const luks: facts.Facts = .{ .files = &files, .boot = .{ .luks_uuid = "0f7a1c2e", .encrypt_dropin = true, .initramfs_hooks = &hooks } };
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
+    for ([_][]const u8{ "[boot]\nkernel = \"none\"\n", "[boot]\nkernel = \"none\"\nencrypt = false\n" }) |text| {
+        const off = try t.cfg(text);
+        const p = (try plan(a, &off, &l, &luks, &t.diags)).?;
+        try testing.expect(!try checkLuks(&off, &p, &luks, &t.diags));
+        try testing.expectEqual(diag.Code.luks_locked, t.diags.items.items[t.diags.items.items.len - 1].code);
+        // a root that isn't on luks, hooks that unlock it themselves, or
+        // another initramfs generator: the drop-in can go.
+        var plain = luks;
+        plain.boot.luks_uuid = null;
+        try testing.expect(try checkLuks(&off, &p, &plain, &t.diags));
+        var hooked = luks;
+        hooked.boot.initramfs_hooks = &.{ "base", "systemd", "sd-encrypt", "filesystems" };
+        try testing.expect(try checkLuks(&off, &p, &hooked, &t.diags));
+    }
+    const booster = try t.cfg("[boot]\nkernel = \"none\"\n[providers]\ninitramfs = \"booster\"\n");
+    try testing.expect(try checkLuks(&booster, &(try plan(a, &booster, &l, &luks, &t.diags)).?, &luks, &t.diags));
+    // left on, nothing is removed.
+    const on = try t.cfg("[boot]\nkernel = \"none\"\nencrypt = true\n");
+    try testing.expect(try checkLuks(&on, &(try plan(a, &on, &l, &luks, &t.diags)).?, &luks, &t.diags));
 }
 
 test "secure boot without sbctl's keys stops the plan" {
