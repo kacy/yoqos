@@ -6,8 +6,10 @@ const disk = @import("disk.zig");
 const sync = @import("sync.zig");
 const history = @import("history.zig");
 const secrets = @import("secrets.zig");
+const rootfs = @import("rootfs.zig");
 
 pub fn main(init: std.process.Init) !void {
+    _ = rootfs.standardUmask();
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
 
     var out_buf: [4096]u8 = undefined;

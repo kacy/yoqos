@@ -255,6 +255,26 @@ test "the run directory stays open, and the private one in it is root's alone" {
     try std.testing.expect(@intFromEnum((try tmp.dir.statFile(io, "theirs", .{})).permissions) & 0o777 != 0o700);
 }
 
+/// sets the mask on the modes of new files and directories to 022, as
+/// pacman does, whatever os was started with. a root shell with umask 0
+/// would otherwise make every directory os and its tools create, like
+/// those under /var/lib/yoq or the config's .git, writable by anyone.
+/// returns the mask there was.
+pub fn standardUmask() u32 {
+    return @intCast(std.os.linux.syscall1(.umask, 0o022));
+}
+
+test "os makes directories others can't write to, whatever its umask" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const before: u32 = @intCast(std.os.linux.syscall1(.umask, 0));
+    defer _ = std.os.linux.syscall1(.umask, before);
+    try std.testing.expectEqual(0, standardUmask());
+    try tmp.dir.createDirPath(io, "var/lib/yoq");
+    try std.testing.expectEqual(0o755, @intFromEnum((try tmp.dir.statFile(io, "var/lib/yoq", .{})).permissions) & 0o7777);
+}
+
 pub fn pathExists(io: std.Io, path: []const u8) bool {
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;

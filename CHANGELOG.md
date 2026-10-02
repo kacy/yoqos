@@ -218,6 +218,11 @@
   messages that send you to it say. it only did when the menu had lost
   os's entries or had unsigned images, so copies on the esp that went
   missing, or went stale after `mkinitcpio` by hand, stayed that way.
+- os sets its umask to 022 when it starts, as pacman does. run from a
+  root shell with umask 0, the directories it and its tools made, like
+  the ones under /var/lib/yoq and the config's .git, were writable by
+  anyone, who could then plant a generation's record, or a git setting
+  that runs a command as root.
 
 ## 0.1.3
 
