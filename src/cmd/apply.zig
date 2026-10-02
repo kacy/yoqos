@@ -240,7 +240,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "begin", &hash);
     const files = try desired.files(a, result.state.config(), &result.facts);
     const problems = w.diags.items.items.len;
-    const done = try apply.run(a, ctx.io, p, &result.state.lock, files, ctx.secrets, target, units, &w.diags) orelse {
+    const done = try apply.run(a, ctx.io, .{ .plan = p, .lock = &result.state.lock, .files = files, .store = ctx.secrets, .target = target, .units = units }, &w.diags) orelse {
         try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "failed", &hash);
         return Outcome.failed(&w);
     };
