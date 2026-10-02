@@ -212,6 +212,8 @@
 - `os update` shows arch news posted on the old lock's day too. a lock's
   date is a whole day, and an item posted later that day, after the
   update that made the lock, never showed in any update.
+- `os doctor` flags a lock dated after today by the clock, which passed
+  as a fresh one.
 
 ## 0.1.3
 

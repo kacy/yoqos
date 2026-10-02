@@ -42,13 +42,8 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     });
     if (loaded != null) {
         const l = try locking.readLock(ctx, a, ctx.config_path);
-        const age = if (l) |lk| try lockAge(ctx, a, lk.sync_date) else null;
-        try checks.append(a, .{
-            .what = "lock",
-            .ok = age != null and age.? <= status.stale_days,
-            .found = if (l) |lk| try std.fmt.allocPrint(a, "from {s}", .{lk.sync_date}) else "missing",
-            .fix = if (l == null) "there's no machine.lock beside the config. `os update` makes one." else "it's over two weeks old, so it's missing security fixes. `os update` moves it to today.",
-        });
+        const date = if (l) |lk| lk.sync_date else null;
+        try checks.append(a, try lockCheck(a, date, if (date) |d| try lockAge(ctx, a, d) else null));
     }
     const hook = hookInstalled(ctx);
     try checks.append(a, .{
@@ -209,6 +204,36 @@ fn secureBootChecks(a: Allocator, b: *const facts.Boot, wants: bool, sbctl: bool
         else
             "os signs its own images in yoq/boot when it writes the boot menu (`os gc` writes it now). sign the bootloader's files with `sbctl sign -s <file>`, which signs them again whenever their package updates them.",
     });
+}
+
+/// the check of the lock from `date`, `age` days old, or of none when
+/// `date` is null. a lock from after today means the clock is behind, or
+/// was ahead when the lock was made.
+fn lockCheck(a: Allocator, date: ?[]const u8, age: ?i64) !enable.Check {
+    const d = date orelse return .{ .what = "lock", .ok = false, .found = "missing", .fix = "there's no machine.lock beside the config. `os update` makes one." };
+    const ahead = age != null and age.? < 0;
+    return .{
+        .what = "lock",
+        .ok = age != null and age.? <= status.stale_days and !ahead,
+        .found = try std.fmt.allocPrint(a, "from {s}{s}", .{ d, if (ahead) ", after today by the clock" else "" }),
+        .fix = if (ahead)
+            "the clock is behind the lock's date, or was ahead when the lock was made. set the clock; `os update` stops until it's past the lock's date, unless `--date` names today."
+        else
+            "it's over two weeks old, so it's missing security fixes. `os update` moves it to today.",
+    };
+}
+
+test "a lock from after today says the clock is off" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expect((try lockCheck(a, "2026-09-25", 3)).ok);
+    try std.testing.expect(!(try lockCheck(a, "2026-09-25", 30)).ok);
+    try std.testing.expect(!(try lockCheck(a, null, null)).ok);
+    const ahead = try lockCheck(a, "2026-09-25", -2);
+    try std.testing.expect(!ahead.ok);
+    try std.testing.expectEqualStrings("from 2026-09-25, after today by the clock", ahead.found);
+    try std.testing.expect(std.mem.startsWith(u8, ahead.fix.?, "the clock is behind"));
 }
 
 /// how many days old the lock's date is.
