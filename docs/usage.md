@@ -1260,7 +1260,10 @@ btrfs driver, which it installs. each image is signed in a work directory
 inside the generation's root, then copied onto the esp, so the esp never
 has it unsigned. grub runs without shim: `os` installs it with shim's
 check off and grub's `tpm` module built in, which grub's lockdown wants
-before it loads anything, and signs it. when grub's binary isn't the one
+before it loads anything, and signs it. that module only works with a tpm
+2.0, so on a machine without one, or with it off in the firmware, grub
+stops at its rescue prompt under secure boot, and `os plan` stops first
+with E0136. when grub's binary isn't the one
 `os` signed last, `os` installs grub again and signs that. the other
 bootloaders come from their own install (`bootctl install`, limine's,
 `refind-install`), so their signatures are yours to add, as in step 3,

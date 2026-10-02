@@ -233,7 +233,11 @@ back to, still starts then. signing covers:
   place, since grub-install writes only to the esp. the hash of what it
   signed goes in `/var/lib/yoq/grub-signed`. a grub someone signed by
   hand can still be one built without those options, which wouldn't
-  start, so a signature alone isn't enough.
+  start, so a signature alone isn't enough. grub's lockdown loads nothing,
+  not even `normal.mod`, until a verifier claims it, and the tpm module is
+  the only one there without shim. it registers only when the firmware
+  has a tpm 2.0, so `os plan` refuses `secure_boot` on grub without one
+  (E0136, from `facts.boot.tpm2`).
 - refind's btrfs driver, which `os` installs beside refind.conf. an
   unsigned one there is replaced by a signed copy of
   `/usr/share/refind/drivers_x64/btrfs_x64.efi`, signed in

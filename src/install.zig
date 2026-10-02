@@ -100,12 +100,6 @@ pub const tpm_tools = [_][]const u8{"systemd-cryptenroll"};
 /// it's missing as "tpm2-tss", the package that has it.
 pub const tpm_library = "/usr/lib/libtss2-esys.so.0";
 
-/// whether a tpm's tpm_version_major file in sysfs says it's a tpm 2.0,
-/// the only kind systemd-cryptenroll and sd-encrypt use.
-pub fn isTpm2(version_major: ?[]const u8) bool {
-    return std.mem.eql(u8, std.mem.trim(u8, version_major orelse return false, " \n"), "2");
-}
-
 /// what --tpm protects: the tpm hands over the key to whatever boots, and
 /// grub, which os installs, loads a kernel without secure boot's check,
 /// so secure boot doesn't keep that from being one someone put on the
@@ -443,11 +437,6 @@ test "an encrypted install" {
 
     try testing.expectEqualStrings("rd.luks.name=0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b=root", try luksArgs(a, "0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b", false));
     try testing.expectEqualStrings("rd.luks.name=u=root rd.luks.options=tpm2-device=auto", try luksArgs(a, "u", true));
-
-    // a tpm 1.2 is still a tpm in sysfs, and no use here.
-    try testing.expect(isTpm2("2\n"));
-    try testing.expect(!isTpm2("1\n"));
-    try testing.expect(!isTpm2(null));
 }
 
 test "a passphrase file's passphrase" {

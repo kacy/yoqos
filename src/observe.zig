@@ -175,6 +175,7 @@ const Reader = struct {
         b.uefi = r.exists("sys/firmware/efi");
         if (try r.file(secureboot.secure_boot_var)) |v| b.secure_boot = secureboot.efiFlag(v);
         if (try r.file(secureboot.setup_mode_var)) |v| b.setup_mode = secureboot.efiFlag(v);
+        b.tpm2 = facts.isTpm2(try r.file(facts.tpm_version_rel));
         // an automounted esp only shows up in mountinfo once it's used.
         for ([_][]const u8{ "efi/EFI", "boot/efi/EFI", "boot/EFI" }) |p| _ = r.exists(p);
         const ms = try mounts(r.a, try r.file("proc/self/mountinfo") orelse "");

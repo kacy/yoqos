@@ -9,7 +9,9 @@
   keys, and with `secure_boot` it signs grub along with the images. a grub
   that isn't the one `os` signed last, like one installed before this,
   is installed again and signed. `os uninstall` under secure boot signs
-  the grub it leaves behind, and needs sbctl's keys for that.
+  the grub it leaves behind, and needs sbctl's keys for that. grub's tpm
+  module needs a tpm 2.0, so without one, `secure_boot` on grub stops
+  `os plan` with E0136, and facts carry `tpm2`.
 - `os doctor` warns when the tpm unlocks the root on grub or limine, even
   with secure boot on: both load a kernel without the firmware's check,
   so someone who can change the menu can boot their own with the disk

@@ -316,7 +316,7 @@ const Installer = struct {
             .passphrase_file = in.secret != null,
             .interactive = ctx.interactive,
             .config_encrypt = if (c.boot.encrypt) |e| e.v else false,
-            .has_tpm = install.isTpm2(rootfs.readHead(ctx.io, "/sys/class/tpm/tpm0/tpm_version_major", &tpm_version)),
+            .has_tpm = facts.isTpm2(rootfs.readHead(ctx.io, "/" ++ facts.tpm_version_rel, &tpm_version)),
             .has_tpm2_tss = l.package("tpm2-tss") != null,
             .secrets_unset = try unsetSecrets(in.a, ctx.secrets, (try planner.wanted(in.a, c)).secrets),
         };

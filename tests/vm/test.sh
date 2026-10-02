@@ -23,8 +23,9 @@ export VM_ESP VM_ROOT VM_LOADER
 [ "${VM_IMAGE:-cloud}" = ext4 ] && export VM_DISK2=1 VM_DISK3=1 VM_TPM=1
 # systemd-boot and archinstall's grub run on firmware that can enforce
 # secure boot, in setup mode until secureboot.sh or secureboot-grub.sh
-# enrolls keys.
+# enrolls keys. grub needs a tpm to start under secure boot.
 case ${VM_IMAGE:-cloud} in sdboot | archinstall) export VM_SECBOOT=1 ;; esac
+[ "${VM_IMAGE:-cloud}" = archinstall ] && export VM_TPM=1
 "$vm" start
 trap '"$vm" stop' EXIT
 

@@ -132,6 +132,8 @@ pub const Boot = struct {
     /// new keys. null where there's no efi variable to say.
     secure_boot: ?bool = null,
     setup_mode: ?bool = null,
+    /// the machine has a tpm 2.0. null under another root.
+    tpm2: ?bool = null,
     /// efi binaries on the esp without a signature: os's images in
     /// yoq/boot, which count as unsigned unless sbctl's db key signed
     /// them, and everything under EFI, which any signature will do for.
@@ -215,6 +217,16 @@ pub const Wanted = struct {
     secrets: []const []const u8 = &.{},
     secret_files: []const []const u8 = &.{},
 };
+
+/// where sysfs says which tpm version the machine has.
+pub const tpm_version_rel = "sys/class/tpm/tpm0/tpm_version_major";
+
+/// whether a tpm's tpm_version_major file in sysfs says it's a tpm 2.0,
+/// the only kind systemd-cryptenroll, sd-encrypt, and grub's tpm module
+/// use.
+pub fn isTpm2(version_major: ?[]const u8) bool {
+    return std.mem.eql(u8, std.mem.trim(u8, version_major orelse return false, " \n"), "2");
+}
 
 /// the hash files are compared by.
 pub fn sha256Hex(bytes: []const u8) [64]u8 {
@@ -367,4 +379,10 @@ test "parse sorts what it reads" {
     );
     try testing.expectEqualStrings("bluetooth.service", f.units[0].name);
     try testing.expect(f.unit("sshd.service").?.enabled);
+}
+
+test "a tpm 1.2 is still a tpm in sysfs, and no use here" {
+    try std.testing.expect(isTpm2("2\n"));
+    try std.testing.expect(!isTpm2("1\n"));
+    try std.testing.expect(!isTpm2(null));
 }
