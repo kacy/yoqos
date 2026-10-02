@@ -24,7 +24,7 @@ pub fn since(a: Allocator, io: std.Io, root: []const u8) ![]facts.PacmanChange {
     const after = try journal.lastDone(a, io, root) orelse 0;
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
     var out: std.ArrayList(facts.PacmanChange) = .empty;
-    var lines = std.mem.tokenizeScalar(u8, try fs.read(path), '\n');
+    var lines = std.mem.tokenizeScalar(u8, try fs.readTail(path, journal.window), '\n');
     while (lines.next()) |text| {
         const c = std.json.parseFromSliceLeaky(facts.PacmanChange, a, text, .{}) catch continue;
         if (c.time > after) try out.append(a, c);

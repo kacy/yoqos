@@ -10,6 +10,11 @@ const Allocator = std.mem.Allocator;
 
 pub const path = "var/lib/yoq/journal";
 
+/// the most of a log os reads at once: its end, for what happened last,
+/// or a window at a time for `os events`. the logs only grow, and a few
+/// years of applies are far less.
+pub const window = 16 << 20;
+
 /// `time` is unix milliseconds: seconds are too coarse to tell an apply
 /// from a pacman run right after it.
 pub const Line = struct { time: i64, event: []const u8, plan: []const u8 };
@@ -91,7 +96,7 @@ fn scan(a: Allocator, io: std.Io, root: []const u8) !struct { last: ?Line = null
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
     var last: ?Line = null;
     var done: ?i64 = null;
-    var lines = std.mem.tokenizeScalar(u8, try fs.read(path), '\n');
+    var lines = std.mem.tokenizeScalar(u8, try fs.readTail(path, window), '\n');
     while (lines.next()) |text| {
         const line = std.json.parseFromSliceLeaky(Line, a, text, .{ .ignore_unknown_fields = true }) catch continue;
         last = line;

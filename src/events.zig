@@ -95,14 +95,13 @@ pub fn decode(a: Allocator, line: []const u8) ?Event {
     return null;
 }
 
-/// the finished lines in `bytes` from `offset` on, and the offset to read
-/// from next time. a last line without its newline is still being
-/// written, so it waits for the next read. a file shorter than `offset`
-/// was started over, and is read from the top.
-pub fn newLines(bytes: []const u8, offset: usize) struct { lines: []const u8, next: usize } {
-    const from = if (offset > bytes.len) 0 else offset;
-    const end = if (std.mem.lastIndexOfScalar(u8, bytes[from..], '\n')) |i| from + i + 1 else from;
-    return .{ .lines = bytes[from..end], .next = end };
+/// how many bytes of `bytes`, read from a log, are finished lines. a last
+/// line without its newline is still being written, so it waits for the
+/// next read, unless `bytes` is a whole window with no newline at all: a
+/// line that long would hold the reader there for good, so it's passed.
+pub fn finished(bytes: []const u8, max: usize) usize {
+    if (std.mem.lastIndexOfScalar(u8, bytes, '\n')) |i| return i + 1;
+    return if (bytes.len >= max) bytes.len else 0;
 }
 
 /// the logs events come from, under a machine's root.
@@ -111,15 +110,29 @@ pub const sources = [_][]const u8{ journal.path, drift.path };
 /// where each of `sources` has been read up to.
 pub const Offsets = [sources.len]usize;
 
+/// the most of a log one poll reads. a log that's grown past it is read a
+/// window at a time.
+pub const window = journal.window;
+
 /// the events added to the logs under `root` since `offsets`, oldest
-/// first, and moves `offsets` past them.
+/// first, and moves `offsets` past them. a log shorter than its offset
+/// was started over, and is read from the top.
 pub fn poll(a: Allocator, io: std.Io, root: []const u8, offsets: *Offsets) ![]Event {
+    return pollWindow(a, io, root, offsets, window);
+}
+
+fn pollWindow(a: Allocator, io: std.Io, root: []const u8, offsets: *Offsets, max: usize) ![]Event {
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
     var out: std.ArrayList(Event) = .empty;
     for (sources, offsets) |path, *offset| {
-        const got = newLines(try fs.read(path), offset.*);
-        offset.* = got.next;
-        var lines = std.mem.tokenizeScalar(u8, got.lines, '\n');
+        var got = try fs.readFrom(path, offset.*, max);
+        if (got.size < offset.*) {
+            offset.* = 0;
+            got = try fs.readFrom(path, 0, max);
+        }
+        const n = finished(got.bytes, max);
+        offset.* += n;
+        var lines = std.mem.tokenizeScalar(u8, got.bytes[0..n], '\n');
         while (lines.next()) |line| {
             if (decode(a, line)) |e| try out.append(a, e);
         }
@@ -273,20 +286,40 @@ test "--since takes unix milliseconds or a utc date and time" {
     }
 }
 
-test "new lines wait for their newline, and a file started over is read again" {
-    const got = newLines("one\ntwo\nthr", 0);
-    try testing.expectEqualStrings("one\ntwo\n", got.lines);
-    try testing.expectEqual(8, got.next);
-    const more = newLines("one\ntwo\nthree\n", got.next);
-    try testing.expectEqualStrings("three\n", more.lines);
-    try testing.expectEqual(14, more.next);
-    const none = newLines("one\ntwo\nthree\n", more.next);
-    try testing.expectEqualStrings("", none.lines);
-    try testing.expectEqual(14, none.next);
-    const over = newLines("four\n", 14);
-    try testing.expectEqualStrings("four\n", over.lines);
-    try testing.expectEqual(5, over.next);
-    try testing.expectEqual(0, newLines("", 0).next);
+test "new lines wait for their newline" {
+    try testing.expectEqual(8, finished("one\ntwo\nthr", 64));
+    try testing.expectEqual(0, finished("thr", 64));
+    try testing.expectEqual(0, finished("", 64));
+    // a line as long as the window is passed, not waited on forever.
+    try testing.expectEqual(3, finished("thr", 3));
+}
+
+test "a log read a window at a time, and one started over" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    for (0..10) |i| try drift.record(a, io, root, @intCast(i), &.{"htop"});
+    const line = "{\"time\":0,\"packages\":[\"htop\"]}\n".len;
+    var offsets: Offsets = @splat(0);
+    // three lines and a bit fit in the window; the bit waits.
+    var seen: usize = 0;
+    while (true) {
+        const got = try pollWindow(a, io, root, &offsets, line * 3 + 5);
+        if (got.len == 0) break;
+        try testing.expect(got.len <= 3);
+        seen += got.len;
+    }
+    try testing.expectEqual(10, seen);
+    try testing.expectEqual(10 * line, offsets[1]);
+    // the log started over, shorter than where the reader was.
+    try tmp.dir.writeFile(io, .{ .sub_path = drift.path, .data = "{\"time\":99,\"packages\":[\"vim\"]}\n" });
+    const again = try poll(a, io, root, &offsets);
+    try testing.expectEqual(1, again.len);
+    try testing.expectEqual(99, again[0].time);
 }
 
 test "polling reads both logs in time order, then only what's new" {

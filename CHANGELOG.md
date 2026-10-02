@@ -173,6 +173,10 @@
   answered just after midnight utc, or an apply of a lock made just
   before, looked for packages only in an archive day that was older than
   the lock, or not there yet.
+- a journal or drift log past 64 MiB read as empty, so an apply cut off
+  went unnoticed, every pacman run ever showed as drift, and `os events`
+  printed nothing. os now reads the end of a log for what happened last,
+  and `os events` reads a long one a window at a time.
 
 ## 0.1.3
 

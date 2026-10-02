@@ -30,9 +30,12 @@ pub fn eventsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var offsets: events.Offsets = @splat(0);
     while (true) {
         _ = arena.reset(.retain_capacity);
+        const before = offsets;
         const batch = try events.poll(arena.allocator(), ctx.io, ctx.root, &offsets);
         // a reader that went away, like `head`, ends the command.
         write(ctx.out, batch, since) catch return 0;
+        // a log longer than one poll reads takes a few.
+        if (!std.mem.eql(usize, &before, &offsets)) continue;
         if (!follow) return 0;
         try ctx.io.sleep(.fromMilliseconds(poll_ms), .awake);
     }
