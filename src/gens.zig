@@ -577,10 +577,7 @@ pub const Machine = struct {
 
     /// signs the efi binary at `path` in place, with sbctl's keys.
     fn signFile(m: *const Machine, path: []const u8) !?[]const u8 {
-        var argv: std.ArrayList([]const u8) = .empty;
-        try argv.appendSlice(m.a, m.signer);
-        try argv.appendSlice(m.a, &.{ "sign", path });
-        const why = try m.run(argv.items) orelse return null;
+        const why = try m.run(try secureboot.signArgv(m.a, m.signer, path)) orelse return null;
         return try std.fmt.allocPrint(m.a, "can't sign {s} for secure boot: {s}", .{ path, why });
     }
 

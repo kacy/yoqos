@@ -58,8 +58,11 @@ pub fn unsignedWarning(a: Allocator, files: []const []const u8) ![]const u8 {
 
 /// the command that signs `file` in place with sbctl's db key. `signer`
 /// is sbctl, or a stand-in in tests.
-pub fn signArgv(a: Allocator, signer: []const u8, file: []const u8) ![]const []const u8 {
-    return a.dupe([]const u8, &.{ signer, "sign", file });
+pub fn signArgv(a: Allocator, signer: []const []const u8, file: []const u8) ![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, signer);
+    try argv.appendSlice(a, &.{ "sign", file });
+    return argv.items;
 }
 
 /// a one-byte efi variable's value, as efivarfs shows it: four bytes of
@@ -200,7 +203,7 @@ const testing = std.testing;
 test "sbctl's arguments" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const argv = try signArgv(arena.allocator(), "sbctl", "/run/yoq/private/top/@roots/4/tmp/yoq-uki/yoq.efi");
+    const argv = try signArgv(arena.allocator(), &.{package}, "/run/yoq/private/top/@roots/4/tmp/yoq-uki/yoq.efi");
     try testing.expectEqual(3, argv.len);
     try testing.expectEqualStrings("sbctl", argv[0]);
     try testing.expectEqualStrings("sign", argv[1]);
