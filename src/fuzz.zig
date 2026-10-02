@@ -15,6 +15,7 @@ const news = @import("news.zig");
 const edit = @import("edit.zig");
 const show = @import("show.zig");
 const planner = @import("planner.zig");
+const planview = @import("planview.zig");
 
 const testing = std.testing;
 const Smith = testing.Smith;
@@ -261,8 +262,8 @@ fn fuzzConfig(_: void, s: *Smith) !void {
     _ = try planner.wanted(a, c);
     var f: facts.Facts = .{};
     const p = try planner.plan(a, c, &l, &f, &diags) orelse return;
-    try planner.writeText(&sink.writer, a, &p, .{ .verbose = true });
-    try planner.writeJson(&sink.writer, a, &p);
+    try planview.writeText(&sink.writer, a, &p, .{ .verbose = true });
+    try planview.writeJson(&sink.writer, a, &p);
 }
 
 // -- lock --

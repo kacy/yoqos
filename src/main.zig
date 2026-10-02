@@ -153,6 +153,7 @@ test {
     _ = @import("planner.zig");
     _ = @import("desired.zig");
     _ = @import("checks.zig");
+    _ = @import("planview.zig");
     _ = @import("pipeline.zig");
     _ = @import("golden.zig");
     _ = @import("fuzz.zig");

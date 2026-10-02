@@ -12,6 +12,7 @@ const lock = @import("../lock.zig");
 const observe = @import("../observe.zig");
 const output = @import("../output.zig");
 const planner = @import("../planner.zig");
+const planview = @import("../planview.zig");
 const desired = @import("../desired.zig");
 const checks = @import("../checks.zig");
 const pipeline = @import("../pipeline.zig");
@@ -161,7 +162,7 @@ pub const Outcome = struct {
 };
 
 pub const RunOptions = struct {
-    render: planner.RenderOptions = .{},
+    render: planview.RenderOptions = .{},
     /// the hash of a saved plan: the run applies that plan or nothing.
     expect: ?[]const u8 = null,
 };
@@ -211,7 +212,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
         return .{ .code = 0, .matches = true, .changed_generation = settled_generation, .reason = if (settled_generation) "apply" else null };
     }
 
-    if (!ctx.json and !opts.render.quiet) try planner.writeText(ctx.out, a, p, opts.render);
+    if (!ctx.json and !opts.render.quiet) try planview.writeText(ctx.out, a, p, opts.render);
     if (try cli.approve(ctx, yes, "apply", "apply this?")) |code| return .{ .code = code, .matches = false };
     if (try movedSince(ctx, in, &(try p.hash()))) return .{ .code = 1, .matches = false };
 

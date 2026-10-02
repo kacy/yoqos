@@ -13,6 +13,7 @@ const diag = @import("diag.zig");
 const lock = @import("lock.zig");
 const facts = @import("facts.zig");
 const planner = @import("planner.zig");
+const planview = @import("planview.zig");
 const desired = @import("desired.zig");
 const catalog = @import("catalog.zig");
 const edit = @import("edit.zig");
@@ -219,7 +220,7 @@ fn planJson(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *cons
     defer diags.deinit();
     const p = try planner.plan(a, c, l, f, &diags) orelse return null;
     var out: std.Io.Writer.Allocating = .init(a);
-    try planner.writeJson(&out.writer, a, &p);
+    try planview.writeJson(&out.writer, a, &p);
     return out.written();
 }
 
@@ -357,7 +358,7 @@ test "property: applying a plan leaves nothing to plan" {
         const again = (try planner.plan(a, &c, &l, &after, &diags)).?;
         if (!again.empty()) {
             var out: std.Io.Writer.Allocating = .init(a);
-            try planner.writeText(&out.writer, a, &again, .{ .verbose = true });
+            try planview.writeText(&out.writer, a, &again, .{ .verbose = true });
             std.debug.print("still to do after applying:\n{s}\n", .{out.written()});
             return error.TestUnexpectedResult;
         }
