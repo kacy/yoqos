@@ -345,7 +345,9 @@ systemd-boot, or a luks root with the esp elsewhere, or an image with
 directly gets the menu written again by os's pacman hook, the way `os gc`
 writes it, so the top entry boots the new files and not the old kernel,
 whose modules pacman removed. it skips that while another os is running,
-or a generation waits for the next boot; `os gc` does it then.
+or a generation waits for the next boot; `os gc` does it then. running
+`mkinitcpio` by hand isn't a pacman transaction, so nothing sees it: run
+`os gc` after it there.
 
 ## going back
 
