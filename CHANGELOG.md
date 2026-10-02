@@ -46,8 +46,30 @@
 - `os doctor` checks sbctl, its keys, the firmware's secure boot and setup
   mode, and lists efi files on the esp without a signature. facts carry
   the same, and `os gc` signs images left unsigned.
+- with secure boot, each entry's image has its command line built in, and
+  the entries pass none. the stub ignores a command line from the
+  bootloader then, so one added to an entry on the esp, like
+  `init=/bin/sh`, never reaches the kernel. images are per entry, shared
+  by entries with the same command line, and a trial boots a twin with
+  `yoq.trial` in it. `os plan` counts the room they take.
+- `os install --tpm` notes in its plan that without secure boot, the tpm
+  keeps a powered-off disk safe, not a machine left alone.
+- `os doctor` warns when the tpm unlocks the root and secure boot is off.
+  a warning shows as `warn` and fails nothing; its json check has
+  `"warn": true`.
 
 ### fixes
+
+- images are built from the kernel and initramfs copies in each root's
+  own `/boot`, never from the esp's files, which anything that can write
+  the esp could have changed. with the esp at `/boot`, the newest
+  generation's image used to come from the esp.
+- a signed image takes its kernel from the root's package in
+  `/usr/lib/modules`, and builds its initramfs in the root with mkinitcpio,
+  since the copies in `/boot` came from the esp when the generation was
+  recorded. an initramfs planted on the esp while the machine was off used
+  to be signed into the next image. autodetect stays on, since a signed
+  image is only built on the machine that boots it.
 
 - an image signed with a key other than sbctl's db key, say from before
   `sbctl create-keys` made new ones, counts as unsigned: the next menu

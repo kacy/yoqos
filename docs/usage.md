@@ -521,7 +521,9 @@ that:
 
 it also checks that the esp has room for another kernel, and with
 generations, that the boot menu has them and that os's units are there. with
-the root on luks, it checks that the initramfs can unlock it. with
+the root on luks, it checks that the initramfs can unlock it, and warns
+when the tpm unlocks it while secure boot is off. a warning shows as
+`warn` and doesn't count as a failure. with
 `secure_boot` in the config, or firmware that enforces secure boot, it
 checks that sbctl and its keys are there, says whether the firmware
 enforces secure boot or is in setup mode, and lists the efi files on the
@@ -728,6 +730,20 @@ the passphrase still works for when the tpm can't unlock it, like after
 some firmware updates or with the disk in another machine, so keep it
 somewhere safe. `--tpm` means `--encrypt` too, and needs a tpm 2.0; a
 1.2 one doesn't count.
+
+what `--tpm` protects depends on secure boot. the tpm's key is sealed to
+the firmware's secure boot state (pcr 7), not to the boot files, so it
+unlocks the disk for whatever boots. without secure boot, someone who can
+change the files on the esp, or an entry's command line, can boot a shell
+with the disk unlocked. so `--tpm` keeps a powered-off disk safe, like a
+stolen laptop's, but not a machine left alone. the install plan notes
+this, and `os doctor` warns about it on the running machine. with `uki`
+and `secure_boot` on (see [secure boot](#secure-boot)), the firmware
+starts only images signed with your keys, and each image has its command
+line built in, so nobody can swap the image or edit its command line.
+turning secure boot on changes pcr 7, so the tpm won't unlock the disk
+until its key is enrolled again: type the passphrase once, then run
+`systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto <partition>`.
 
 the config has to say the root is encrypted, or the new machine's
 initramfs can't unlock it: `[boot] encrypt = true` (see [encrypted
@@ -1184,6 +1200,28 @@ the boot menu even when they can't sign, keep the images that are signed
 already, and warn about the ones that aren't, which firmware enforcing
 secure boot won't start. put the keys back, or make and enroll new ones,
 and `os gc` signs them.
+
+with secure boot, each image has its entry's command line built in: the
+root, `rootflags=subvol=`, the console and luks arguments. the entries
+pass none. systemd's stub ignores a command line from the bootloader for
+an image that has one while secure boot is on, and the signature covers
+it, so nobody who can write the esp can add `init=/bin/sh`. images are
+per entry then, shared only by entries with the same command line, and a
+trial boots a twin of the newest one with `yoq.trial` in it. that takes
+more room on the esp than shared images, and `os plan` counts it.
+
+a signed image never takes its kernel or initramfs from the esp, even
+through the copies `os` keeps in each root. the kernel comes from the
+root's package, in `/usr/lib/modules/<version>/vmlinuz`, and the
+initramfs is built for it inside the root with `mkinitcpio`, from the
+root's own config and modules. autodetect stays on, since a signed image
+is only built on the machine that boots it, so the initramfs is about as
+big as the root's own. early microcode comes from mkinitcpio's
+`microcode` hook, which arch's default hooks have; without it, signed
+images boot without early microcode. each new
+image costs one mkinitcpio run, so a menu write that needs new images
+takes a little longer. one already on the esp under its name, with a
+signature from your key, is reused.
 
 what `os` signs: its images in `yoq/boot` on the esp, and refind's btrfs
 driver, which it installs. each image is signed in a work directory inside

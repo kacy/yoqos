@@ -86,6 +86,16 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             });
         }
         if (try enable.luksCheck(a, &b)) |c| try checks.append(a, c);
+        if (b.luks_uuid) |uuid| {
+            const device = b.luks_device orelse try std.fmt.allocPrint(a, "/dev/disk/by-uuid/{s}", .{uuid});
+            // the header needs root to read; the command line doesn't.
+            const dump = switch (try exec.output(a, ctx.io, &.{ "cryptsetup", "luksDump", "--dump-json-metadata", device })) {
+                .ok => |t| t,
+                .failed => null,
+            };
+            const tpm = try tpmToken(a, dump) orelse cmdlineTpm(try rootfs.readProc(a, ctx.io, "/proc/cmdline"));
+            if (tpmCheck(&b, tpm)) |c| try checks.append(a, c);
+        }
         const wants = if (loaded) |l| if (l.config.boot.secure_boot) |v| v.v else false else false;
         if (wants or (b.secure_boot orelse false)) {
             try secureBootChecks(a, &b, wants, rootfs.pathExists(ctx.io, "/usr/bin/sbctl"), &checks);
@@ -106,15 +116,60 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             .fix = "anything running as that user can change the machine without asking anyone. take out NOPASSWD unless that's what you want.",
         });
     }
-    var ok = true;
-    for (checks.items) |c| ok = ok and c.ok;
+    const ok = enable.allOk(checks.items);
     if (ctx.json) {
         try output.writeDoc(ctx.out, "yoq.doctor/1", .{ .ok = ok, .checks = checks.items });
     } else {
         try enable.writeChecks(ctx.out, checks.items);
-        try ctx.out.writeAll(if (ok) "\nnothing to fix.\n" else "\nthe lines under each \"no\" say what to do.\n");
+        const end = if (!ok) "\nthe lines under each \"no\" say what to do.\n" else if (enable.anyWarning(checks.items)) "\nnothing to fix, but read the lines under each \"warn\".\n" else "\nnothing to fix.\n";
+        try ctx.out.writeAll(end);
     }
     return if (ok) 0 else 1;
+}
+
+/// whether a luks2 header, as `cryptsetup luksDump --dump-json-metadata`
+/// prints it, has a key the tpm unlocks: a systemd-tpm2 token, as
+/// systemd-cryptenroll leaves. null when there's no header to go by.
+fn tpmToken(a: Allocator, dump: ?[]const u8) !?bool {
+    const text = dump orelse return null;
+    const v = std.json.parseFromSliceLeaky(std.json.Value, a, text, .{}) catch |e| switch (e) {
+        error.OutOfMemory => return e,
+        else => return null,
+    };
+    if (v != .object) return null;
+    const tokens = v.object.get("tokens") orelse return false;
+    if (tokens != .object) return false;
+    for (tokens.object.values()) |t| {
+        if (t != .object) continue;
+        const kind = t.object.get("type") orelse continue;
+        if (kind == .string and std.mem.eql(u8, kind.string, "systemd-tpm2")) return true;
+    }
+    return false;
+}
+
+/// whether the kernel command line has the initramfs try the tpm, as
+/// `os install --tpm` sets it up: rd.luks.options with tpm2-device.
+fn cmdlineTpm(cmdline: []const u8) bool {
+    var words: generation.Words = .{ .text = cmdline };
+    while (words.next()) |w| {
+        if (std.mem.startsWith(u8, w, "rd.luks.options=") and std.mem.indexOf(u8, w, "tpm2-device") != null) return true;
+    }
+    return false;
+}
+
+/// with the root unlocked by the tpm, whether secure boot keeps the boot
+/// files that get the key from being changed. without it, it's a warning:
+/// the tpm keeps a powered-off disk safe, not a machine left alone.
+fn tpmCheck(b: *const facts.Boot, tpm: bool) ?enable.Check {
+    if (!tpm) return null;
+    const on = b.secure_boot orelse false;
+    return .{
+        .what = "tpm unlock",
+        .ok = on,
+        .warn = true,
+        .found = if (on) "the tpm unlocks the root, and secure boot is on" else "the tpm unlocks the root, and secure boot is off",
+        .fix = "without secure boot, someone who can change the boot files can get a shell with the disk unlocked, so the tpm protects a powered-off disk, not a machine left alone. turn on uki and secure_boot under [boot] to close that.",
+    };
 }
 
 /// what secure boot needs: sbctl, its keys, firmware that enforces it,
@@ -233,6 +288,45 @@ test "secure boot checks" {
     checks.clearRetainingCapacity();
     try secureBootChecks(a, &b, false, true, &checks);
     try std.testing.expect(checks.items[2].ok);
+}
+
+test "a root the tpm unlocks without secure boot is a warning" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // systemd-cryptenroll's token, beside a passphrase's keyslot.
+    const enrolled =
+        \\{"keyslots":{"0":{"type":"luks2"},"1":{"type":"luks2"}},
+        \\ "tokens":{"0":{"type":"systemd-tpm2","keyslots":["1"],"tpm2-pcrs":[7]}},
+        \\ "segments":{},"digests":{},"config":{}}
+    ;
+    try std.testing.expectEqual(true, try tpmToken(a, enrolled));
+    try std.testing.expectEqual(false, try tpmToken(a, "{\"keyslots\":{\"0\":{\"type\":\"luks2\"}},\"tokens\":{}}"));
+    try std.testing.expectEqual(false, try tpmToken(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-fido2\"}}}"));
+    try std.testing.expectEqual(false, try tpmToken(a, "{\"keyslots\":{}}"));
+    // no header to read, as without root: the command line decides.
+    try std.testing.expectEqual(null, try tpmToken(a, null));
+    try std.testing.expectEqual(null, try tpmToken(a, "not json"));
+    try std.testing.expect(cmdlineTpm("root=UUID=b rootflags=subvol=/@roots/1 rw rd.luks.name=u=root rd.luks.options=tpm2-device=auto panic=10"));
+    try std.testing.expect(cmdlineTpm("rd.luks.options=0f7a1c2e=tpm2-device=auto,discard"));
+    try std.testing.expect(!cmdlineTpm("root=UUID=b rw rd.luks.name=u=root"));
+    try std.testing.expect(!cmdlineTpm(""));
+
+    var b: facts.Boot = .{ .luks_uuid = "u", .secure_boot = false };
+    const c = tpmCheck(&b, true).?;
+    try std.testing.expect(!c.ok and c.warn);
+    try std.testing.expectEqualStrings("the tpm unlocks the root, and secure boot is off", c.found);
+    // a warning stops nothing.
+    try std.testing.expect(enable.allOk(&.{c}));
+    try std.testing.expect(enable.anyWarning(&.{c}));
+    var out: std.Io.Writer.Allocating = .init(a);
+    try enable.writeChecks(&out.writer, &.{c});
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "checks\nwarn  tpm unlock: the tpm unlocks the root, and secure boot is off\n        without secure boot, "));
+    b.secure_boot = null;
+    try std.testing.expect(!tpmCheck(&b, true).?.ok);
+    b.secure_boot = true;
+    try std.testing.expect(tpmCheck(&b, true).?.ok);
+    try std.testing.expectEqual(null, tpmCheck(&b, false));
 }
 
 test "a sudoers rule without a password, and a commented one" {

@@ -1017,6 +1017,7 @@ pub fn checkEsp(a: Allocator, p: *const Plan, f: *const facts.Facts, diags: *dia
     const uki_on = ukiAfter(p, f);
     var e = espNeed(p, b, uki_on) orelse EspNeed{ .need = 0, .collectable = true };
     e.need +|= try resignRoom(a, p, f, uki_on);
+    e.need +|= embeddedRoom(p, f, uki_on);
     if (e.need == 0) return true;
     const free = b.esp_free orelse return true;
     if (generation.fits(e.need, free)) return true;
@@ -1037,6 +1038,13 @@ fn resignRoom(a: Allocator, p: *const Plan, f: *const facts.Facts, uki_on: bool)
     if (p.changes.len == 0 or !uki_on or !generation.running(b.root_subvol)) return 0;
     const esp = b.esp orelse return 0;
     if (!signsAfter(p, f) or (try secureboot.ours(a, b.unsigned, esp)).len == 0) return 0;
+    return largestImage(b);
+}
+
+/// the room the largest signed image takes, from the running root's boot
+/// files, a sixteenth bigger, like a new one. os builds its initramfs, so
+/// that counts with a little to spare (see uki.signedInitramfs).
+fn largestImage(b: *const facts.Boot) u64 {
     var kernel: u64 = 0;
     var initramfs: u64 = 0;
     var ucode: u64 = 0;
@@ -1048,8 +1056,42 @@ fn resignRoom(a: Allocator, p: *const Plan, f: *const facts.Facts, uki_on: bool)
         } else ucode +|= file.size;
     }
     var e: Estimate = .{};
-    e.add(kernel +| initramfs +| ucode +| uki.stub_size, 0);
+    e.add(kernel +| uki.signedInitramfs(initramfs) +| ucode +| uki.stub_size, 0);
     return e.total;
+}
+
+/// the room images with their command lines in them take, beyond what
+/// `espNeed` counts, when the menu written after a plan signs (see
+/// gens.Machine.ukiName): each entry has its own image then. the
+/// generation before the new one moves to an entry with a command line of
+/// its own, so it gets a new image. a plan that changes the boot files
+/// gives the trial its twin of the new one, and counts the new one again
+/// at its signed size, which espNeed doesn't. one that starts signing
+/// gives every generation's entry, and the trial's, a new image.
+fn embeddedRoom(p: *const Plan, f: *const facts.Facts, uki_on: bool) u64 {
+    const b = &f.boot;
+    if (p.changes.len == 0 or !uki_on or !generation.running(b.root_subvol) or b.esp == null) return 0;
+    if (!signsAfter(p, f)) return 0;
+    const signs_now = secureboot.enforcedWithKeys(b.secure_boot, b.sbctl_keys) or f.file(secureboot.config_path) != null;
+    // the new generation's, the ones already there, and the trial's.
+    if (!signs_now) return largestImage(b) *| (b.generations.len + 2);
+    var images: u64 = 1;
+    for (p.changes) |c| {
+        if (c.reboot != null and bootFilesChange(c.reboot.?)) {
+            images += 2;
+            break;
+        }
+    }
+    return largestImage(b) *| images;
+}
+
+/// whether a change for this reboot reason makes new boot files, and so
+/// new images.
+fn bootFilesChange(reason: []const u8) bool {
+    for ([_][]const u8{ "kernel", "initramfs", "microcode", "systemd", uki_reboot }) |r| {
+        if (std.mem.eql(u8, reason, r)) return true;
+    }
+    return false;
 }
 
 /// whether the menu written after a plan signs what it boots: the
@@ -2022,17 +2064,18 @@ test "signing an image already on the esp needs room beside it" {
         .esp = "/efi",
         .loader = "grub",
         .root_subvol = "/@roots/3",
-        .esp_free = 40 * mib,
+        .esp_free = 100 * mib,
         .boot_files = &boot_files,
         .secure_boot = true,
         .sbctl_keys = true,
         .unsigned = &.{"/efi/yoq/boot/0123456789abcdef-yoq.efi"},
     } };
     // a change that brings no new boot files; the menu after it still
-    // signs the image, in a copy beside it.
+    // signs the image, in a copy beside it, and the generation before
+    // the new one gets an image with its own command line in it.
     const tool: Plan = .{ .changes = &.{.{ .op = .add, .kind = .package, .subject = "tree", .to = "2.2.1" }} };
     try testing.expect(!try checkEsp(a, &tool, &f, &t.diags));
-    try testing.expectEqualStrings("the esp at /efi has 40 MiB free, and this plan's new boot files need about 52 MiB", t.diags.items.items[0].message);
+    try testing.expectEqualStrings("the esp at /efi has 100 MiB free, and this plan's new boot files need about 112 MiB", t.diags.items.items[0].message);
     // with nothing unsigned, or nothing that signs, there's room.
     f.boot.unsigned = &.{"/efi/EFI/BOOT/BOOTX64.EFI"};
     try testing.expect(try checkEsp(a, &tool, &f, &t.diags));
@@ -2045,6 +2088,43 @@ test "signing an image already on the esp needs room beside it" {
     f.files = &both;
     try testing.expect(!try checkEsp(a, &tool, &f, &t.diags));
     try testing.expect(try checkEsp(a, &.{ .changes = &.{} }, &f, &t.diags));
+}
+
+test "with secure boot, each entry's image has its command line, and takes room" {
+    const mib = 1 << 20;
+    const boot_files = [_]facts.BootFile{
+        .{ .name = "initramfs-linux.img", .size = 32 * mib },
+        .{ .name = "vmlinuz-linux", .size = 16 * mib },
+    };
+    // os builds the initramfs for a signed image, with an eighth to spare.
+    const now = 16 * mib + 36 * mib + uki.stub_size;
+    const image = now + now / 16;
+    var files = [_]facts.File{
+        .{ .path = uki.config_path, .sha256 = "", .mode = "0644" },
+        .{ .path = secureboot.config_path, .sha256 = "", .mode = "0644" },
+    };
+    const gens = [_]facts.Generation{ .{ .n = 1, .root = "@roots/1" }, .{ .n = 2, .root = "@roots/2" } };
+    var f: facts.Facts = .{ .files = &files, .boot = .{ .esp = "/efi", .loader = "grub", .root_subvol = "/@roots/3", .boot_files = &boot_files, .generations = &gens } };
+    const tool: Plan = .{ .changes = &.{.{ .op = .add, .kind = .package, .subject = "tree", .to = "2.2.1" }} };
+    const upgrade: Plan = .{ .changes = &.{.{ .op = .change, .kind = .package, .subject = "linux", .from = "6.16.8", .to = "6.17.1", .reboot = "kernel" }} };
+    // the generation before the new one moves to an entry of its own.
+    try testing.expectEqual(image, embeddedRoom(&tool, &f, true));
+    // new boot files give the trial a twin of the new image, and the new
+    // one counts again at its signed size, besides what espNeed counts.
+    try testing.expectEqual(3 * image, embeddedRoom(&upgrade, &f, true));
+    // no images, an empty plan, or no signing: nothing.
+    try testing.expectEqual(0, embeddedRoom(&tool, &f, false));
+    try testing.expectEqual(0, embeddedRoom(&.{ .changes = &.{} }, &f, true));
+    f.files = files[0..1];
+    try testing.expectEqual(0, embeddedRoom(&tool, &f, true));
+    // a plan that starts signing makes every entry's image new: the two
+    // generations there, the new one, and the trial's.
+    const on: Plan = .{ .changes = &.{.{ .op = .add, .kind = .file, .subject = secureboot.config_path, .reboot = secure_boot_reboot }} };
+    try testing.expectEqual(4 * image, embeddedRoom(&on, &f, true));
+    // firmware that enforces it, with keys, signs already.
+    f.boot.secure_boot = true;
+    f.boot.sbctl_keys = true;
+    try testing.expectEqual(image, embeddedRoom(&on, &f, true));
 }
 
 test "a secret's file is planned by its keyed hash, never its value" {
