@@ -196,8 +196,7 @@ pub const Machine = struct {
             };
             return null;
         };
-        rootfs.writeAtomic(m.io, m.unsettled_note, r, null) catch return try std.fmt.allocPrint(m.a, "can't write {s}", .{m.unsettled_note});
-        return null;
+        return rootfs.writeWhole(m.a, m.io, m.unsettled_note, r);
     }
 
     /// the next generation, from the root at `root`: its read-only record,
@@ -422,7 +421,7 @@ pub const Machine = struct {
     }
 
     fn write(m: *const Machine, path: []const u8, text: []const u8) !?[]const u8 {
-        return writeFile(m.a, m.io, path, text);
+        return rootfs.writeWhole(m.a, m.io, path, text);
     }
 
     /// the loader's own config, which os adds its entries to.
@@ -1243,13 +1242,7 @@ pub fn writeRecord(a: Allocator, io: std.Io, var_dir: []const u8, r: generation.
     var json: std.Io.Writer.Allocating = .init(a);
     try std.json.Stringify.value(r, .{}, &json.writer);
     try json.writer.writeByte('\n');
-    return writeFile(a, io, try recordPath(a, var_dir, r.n), json.written());
-}
-
-/// writes `text` to `path` whole, or says it couldn't.
-fn writeFile(a: Allocator, io: std.Io, path: []const u8, text: []const u8) !?[]const u8 {
-    rootfs.writeAtomic(io, path, text, null) catch return try std.fmt.allocPrint(a, "can't write {s}", .{path});
-    return null;
+    return rootfs.writeWhole(a, io, try recordPath(a, var_dir, r.n), json.written());
 }
 
 /// the commands that put a copy of `src` at `dest` whole: a copy beside
@@ -1337,7 +1330,7 @@ pub fn writeUnits(a: Allocator, io: std.Io, root: []const u8, os_path: []const u
 /// it on there.
 fn writeUnit(a: Allocator, io: std.Io, dir: []const u8, u: enable.Unit) !?[]const u8 {
     const text = try std.fmt.allocPrint(a, "{s}{s}", .{ unit_header, u.text });
-    if (try writeFile(a, io, try std.fs.path.join(a, &.{ dir, u.name }), text)) |w| return w;
+    if (try rootfs.writeWhole(a, io, try std.fs.path.join(a, &.{ dir, u.name }), text)) |w| return w;
     const link = try u.wantsLink(a) orelse return null;
     const at = try std.fs.path.join(a, &.{ dir, link });
     return exec.runAll(a, io, &.{
