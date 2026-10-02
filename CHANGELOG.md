@@ -168,6 +168,11 @@
   was made with. a service turned on with `os enable` while a staged
   generation waited for its reboot wasn't in that generation, so it
   wasn't running, and the trial fell back.
+- packages for a lock from an earlier day download from the archive as it
+  was that day, then the day after, then the mirrors. an `os update`
+  answered just after midnight utc, or an apply of a lock made just
+  before, looked for packages only in an archive day that was older than
+  the lock, or not there yet.
 
 ## 0.1.3
 

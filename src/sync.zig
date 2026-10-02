@@ -205,6 +205,43 @@ pub fn archived(a: Allocator, rs: []const Repo, date: []const u8) ![]const Repo 
     return out;
 }
 
+/// `rs`, with where packages for a lock from `date` download from: the
+/// archive as it was that day, then the day after, then the mirrors. the
+/// archive's copy of a day can be from before a package that day's lock
+/// has, and an apply just after midnight utc, of a lock from just before,
+/// can come before the archive has that day at all, while the mirrors
+/// still serve most of its packages. a package's name has its version,
+/// so wherever it comes from, it's the one the lock names. databases come
+/// from `archived` alone, since a mirror's are always today's.
+pub fn pastServers(a: Allocator, rs: []const Repo, date: []const u8) ![]const Repo {
+    if (date.len != 10) return rs;
+    const after = nextDay(date) orelse return archived(a, rs, date);
+    const out = try a.dupe(Repo, rs);
+    for (out) |*r| {
+        if (!lists.contains(&archived_repos, r.name) or servedFromDisk(r.*)) continue;
+        var servers: std.ArrayList([]const u8) = .empty;
+        for ([_][]const u8{ date, &after }) |d| {
+            try servers.append(a, try std.fmt.allocPrint(a, "https://archive.archlinux.org/repos/{s}/{s}/{s}/$repo/os/$arch", .{ d[0..4], d[5..7], d[8..10] }));
+        }
+        try servers.appendSlice(a, serversOf(r.*));
+        r.servers = servers.items;
+    }
+    return out;
+}
+
+/// the day after `date`, both yyyy-mm-dd.
+fn nextDay(date: []const u8) ?[10]u8 {
+    const y = std.fmt.parseInt(u16, date[0..4], 10) catch return null;
+    const m = std.fmt.parseInt(u8, date[5..7], 10) catch return null;
+    const d = std.fmt.parseInt(u8, date[8..10], 10) catch return null;
+    if (m < 1 or m > 12 or d < 1) return null;
+    const days = std.time.epoch.getDaysInMonth(y, @enumFromInt(m));
+    var out: [10]u8 = undefined;
+    const ny, const nm, const nd = if (d < days) .{ y, m, d + 1 } else if (m < 12) .{ y, m + 1, 1 } else .{ y + 1, 1, 1 };
+    _ = std.fmt.bufPrint(&out, "{d:0>4}-{d:0>2}-{d:0>2}", .{ ny, nm, nd }) catch return null;
+    return out;
+}
+
 /// the databases for `date`, from the cache if they're there, else
 /// downloaded into it. returns null, with reasons in `diags`, if a
 /// repository can't be fetched from any of its servers.
@@ -368,6 +405,24 @@ test "arch's own repositories from the archive, as they were that day" {
     try testing.expectEqualStrings("https://c/$repo", got[1].servers[0]);
     try testing.expectEqualStrings("file:///srv/extra", got[2].servers[0]);
     try testing.expectEqualStrings("https://m/$repo/os/$arch", rs[0].servers[0]);
+}
+
+test "packages for an older lock come from the archive, the day after, then the mirrors" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const rs = [_]Repo{ .{ .name = "core", .servers = &.{"https://m/$repo/os/$arch"} }, .{ .name = "extra", .servers = &.{} }, .{ .name = "chaotic-aur", .servers = &.{"https://c/$repo"} } };
+    const got = try pastServers(a, &rs, "2026-12-31");
+    try testing.expectEqual(3, got[0].servers.len);
+    try testing.expectEqualStrings("https://archive.archlinux.org/repos/2026/12/31/$repo/os/$arch", got[0].servers[0]);
+    try testing.expectEqualStrings("https://archive.archlinux.org/repos/2027/01/01/$repo/os/$arch", got[0].servers[1]);
+    try testing.expectEqualStrings("https://m/$repo/os/$arch", got[0].servers[2]);
+    // without a server of its own, the fallback mirror.
+    try testing.expectEqualStrings(fallback_server, got[1].servers[2]);
+    try testing.expectEqualStrings("https://c/$repo", got[2].servers[0]);
+    try testing.expectEqualStrings("2024-02-29", &nextDay("2024-02-28").?);
+    try testing.expectEqualStrings("2026-03-01", &nextDay("2026-02-28").?);
+    try testing.expectEqualStrings("2026-10-01", &nextDay("2026-09-30").?);
 }
 
 const FakeFetcher = struct {

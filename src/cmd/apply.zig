@@ -510,7 +510,7 @@ fn targetFor(ctx: *Context, w: *cli.Work, c: *const config.Config, l: *const loc
     return .{
         .root = ctx.root,
         .dbpath = try observe.pacmanDb(a, ctx.io, ctx.root),
-        .dbs = try sync.withServers(a, dbs, rs),
+        .dbs = try sync.withServers(a, dbs, if (old) try sync.pastServers(a, pc.repos, l.sync_date) else rs),
         .cachedir = try cli.machinePath(ctx, a, "/var/cache/yoq/pkg"),
         .gpgdir = try keyring(ctx, a),
         .download_user = pc.download_user,
