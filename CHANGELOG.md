@@ -159,6 +159,15 @@
   like news titles, before `os history`, `os rollback`, or anything else
   prints them. a repository `os install` cloned could otherwise move the
   cursor or rewrite the terminal.
+  directory on the way, like their home, could point the write, a secret's
+  value included, at any file on the machine.
+- a checked `[files]` write no longer leaves a directory on the way open.
+  in an install, one in the target kept it busy, so its luks volume
+  couldn't close until os exited.
+- the health check judges a trial by the config and lock its generation
+  was made with. a service turned on with `os enable` while a staged
+  generation waited for its reboot wasn't in that generation, so it
+  wasn't running, and the trial fell back.
 
 ## 0.1.3
 
