@@ -59,7 +59,10 @@ the older ones, then the system from before generations.
 
 `os` writes the whole `grub.cfg` on the esp, and `enable-rollback`
 reinstalls grub to read it there. grub can write to fat, so trial boots
-(below) are kept in an env file beside it.
+(below) are kept in an env file beside it. `os` notes each trial in
+`/var/lib/yoq/trial` too, and only a trial noted there can make the
+machine fall back: anything that can write the esp can write the env
+file.
 
 ### limine
 

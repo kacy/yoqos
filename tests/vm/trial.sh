@@ -82,4 +82,19 @@ if "$vm" ssh "systemctl is-active -q NetworkManager.service"; then
     falls_back "$before"
     check "journalctl -b -1 -u yoq-health --no-pager -o cat | grep -c 'no network'" 1
 fi
+# a trial only grub's env file names, as anything that can write the esp
+# could plant, boots an older generation once, and rolls nothing back.
+if [ "$VM_LOADER" = grub ]; then
+    "$vm" reboot
+    settled
+    last=$(newest)
+    before=$(second_newest)
+    "$vm" ssh "grub-editenv $VM_ESP/yoq/grubenv set yoq_next=gen-$before yoq_default=gen-$before yoq_trial=$last yoq_tried=1"
+    "$vm" reboot || true
+    wait_root "/@roots/boot-$before"
+    settled
+    check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'os never armed one'" 1
+    check "ls /var/lib/yoq/generations | sort -n | tail -n 1 | cut -d. -f1" "$last"
+    on_trial no
+fi
 echo "trial ok"

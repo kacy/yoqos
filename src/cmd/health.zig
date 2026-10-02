@@ -56,6 +56,14 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             try ctx.out.print("generation {d} hasn't been tried yet; the next boot tries it.\n", .{t.n});
             return 0;
         }
+        // a trial os never noted, only grub's env file on the esp, could
+        // be anyone's who can write there. falling back would make this
+        // boot's generation the newest, config and all, for good.
+        if (!t.noted) {
+            _ = try store.end();
+            try ctx.err.print("os: grub's env file on the esp says generation {d} is on trial, but os never armed one. the trial is ended, and nothing rolls back. `os rollback --to-booted` keeps the generation this boot runs.\n", .{t.n});
+            return 1;
+        }
         return fellBack(ctx, a, store, boot, t.n);
     }
 

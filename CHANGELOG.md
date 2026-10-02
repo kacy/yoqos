@@ -260,6 +260,11 @@
   ends. its files belonged to the build user, so a build could leave a
   program there, set-uid to that user, for anyone to run, and with it
   change the next recipe after its review.
+- on grub, os notes a trial in /var when it arms one, as it does on the
+  other bootloaders, and a trial only grub's env file on the esp names
+  never makes the machine fall back. anything that could write the esp
+  could plant one that booted an older generation once, and the health
+  check then made that generation the newest, with its config, for good.
 
 ## 0.1.3
 
