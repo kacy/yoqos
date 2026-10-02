@@ -181,6 +181,11 @@
   clock went back in between, like ntp fixing a clock that ran ahead.
   an apply's done line notes where the drift log ended, and the runs past
   that count, where before only runs stamped later than the apply did.
+- a machine that turned generations on with 0.1.0 gets its units brought
+  up to date in its next generation too: the watchdog timer that counts
+  from the root's own start, and `yoq-carry.service`, which it never had,
+  so a password changed after `os rollback` was left behind. 0.1.0 marked
+  its units with a line of its own, which the update didn't take as os's.
 
 ## 0.1.3
 

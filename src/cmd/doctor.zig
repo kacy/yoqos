@@ -82,7 +82,7 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
                 .what = "units",
                 .ok = missing.items.len == 0,
                 .found = if (missing.items.len == 0) "all in place" else try std.mem.join(a, ", ", missing.items),
-                .fix = "trial boots need these. `os uninstall` then `os enable-rollback` puts them back, or copy them from an older generation.",
+                .fix = "trial boots need these. the next change that makes a generation puts them back, as long as yoq-health.service is there; without it, `os uninstall` then `os enable-rollback` does.",
             });
         }
         if (try enable.luksCheck(a, &b)) |c| try checks.append(a, c);
