@@ -21,7 +21,8 @@ check "$(efivar SecureBoot)" 0
 # under [boot].
 "$vm" ssh "pacman -S --noconfirm --needed --noprogressbar sbctl >/dev/null && sbctl create-keys >/dev/null"
 "$vm" ssh "if grep -q '^\\[boot\\]' /etc/yoq/machine.toml; then sed -i -e '/^\\[boot\\]/a secure_boot = true' -e '/^\\[boot\\]/a uki = true' /etc/yoq/machine.toml; else printf '\\n[boot]\\nuki = true\\nsecure_boot = true\\n' >> /etc/yoq/machine.toml; fi"
-"$vm" ssh "/usr/local/bin/os apply --yes" | tail -n 3
+# the new packages need a relock, as with any key that brings some.
+"$vm" ssh "/usr/local/bin/os update --yes" | tail -n 3
 on_trial yes
 
 # grub went in again and is signed, like every image its menu starts.
