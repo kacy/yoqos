@@ -123,8 +123,8 @@ pub fn poll(a: Allocator, io: std.Io, root: []const u8, offsets: *Offsets) ![]Ev
 
 fn pollWindow(a: Allocator, io: std.Io, root: []const u8, offsets: *Offsets, max: usize) ![]Event {
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
-    var out: std.ArrayList(Event) = .empty;
-    for (sources, offsets) |path, *offset| {
+    var logs: [sources.len][]const Event = undefined;
+    for (sources, offsets, &logs) |path, *offset, *events| {
         var got = try fs.readFrom(path, offset.*, max);
         if (got.size < offset.*) {
             offset.* = 0;
@@ -132,18 +132,34 @@ fn pollWindow(a: Allocator, io: std.Io, root: []const u8, offsets: *Offsets, max
         }
         const n = finished(got.bytes, max);
         offset.* += n;
+        var list: std.ArrayList(Event) = .empty;
         var lines = std.mem.tokenizeScalar(u8, got.bytes[0..n], '\n');
         while (lines.next()) |line| {
-            if (decode(a, line)) |e| try out.append(a, e);
+            if (decode(a, line)) |e| try list.append(a, e);
+        }
+        events.* = list.items;
+    }
+    return merge(a, logs[0], logs[1]);
+}
+
+/// the events of two logs in one list, by time, but each log's in the
+/// order it has them: a clock set back between two lines, say by ntp,
+/// gives the later one an earlier time, and it still happened after.
+fn merge(a: Allocator, x: []const Event, y: []const Event) ![]Event {
+    const out = try a.alloc(Event, x.len + y.len);
+    var i: usize = 0;
+    var j: usize = 0;
+    for (out) |*e| {
+        // on a tie, the first log's comes first.
+        if (j == y.len or (i < x.len and x[i].time <= y[j].time)) {
+            e.* = x[i];
+            i += 1;
+        } else {
+            e.* = y[j];
+            j += 1;
         }
     }
-    // stable, so events with the same time keep their order in a log.
-    std.mem.sort(Event, out.items, {}, struct {
-        fn lt(_: void, x: Event, y: Event) bool {
-            return x.time < y.time;
-        }
-    }.lt);
-    return out.items;
+    return out;
 }
 
 /// the unix milliseconds `--since` names: a number of them, or a utc date,
@@ -284,6 +300,19 @@ test "--since takes unix milliseconds or a utc date and time" {
     for ([_][]const u8{ "", "-5", "+5", "yesterday", "2026-9-30", "2026-13-01", "2026-09-32", "+026-09-30", "2026-09-30T", "2026-09-30 13:05", "2026-09-30T24:00", "2026-09-30T13:60", "2026-09-30T13:05:60", "2026-09-30T1:05", "2026-09-30T13:05+02:00", "2026-09-30T13:05ZZ" }) |bad| {
         try testing.expectEqual(null, parseSince(bad));
     }
+}
+
+test "each log keeps its own order, whatever the clock said" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // the clock went back between the journal's second and third lines.
+    const journal_events = [_]Event{ .{ .time = 100, .kind = .commit }, .{ .time = 200, .kind = .generation }, .{ .time = 50, .kind = .gc } };
+    const pacman = [_]Event{ .{ .time = 60, .kind = .pacman }, .{ .time = 150, .kind = .pacman } };
+    const got = try merge(a, &journal_events, &pacman);
+    var kinds: [5]Kind = undefined;
+    for (got, &kinds) |e, *k| k.* = e.kind;
+    try testing.expectEqualSlices(Kind, &.{ .pacman, .commit, .pacman, .generation, .gc }, &kinds);
 }
 
 test "new lines wait for their newline" {

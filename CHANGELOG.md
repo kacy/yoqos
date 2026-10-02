@@ -200,6 +200,10 @@
   it put back that generation's config, gets the config put back at the
   next boot. the next `os apply` used to apply the newer config to the
   older system. the commit that puts it back names the generation now.
+- `os events` keeps each log's events in the order they were written,
+  merging the journal and the drift log by time. it sorted them all by
+  time, so after the clock went back, an apply's later events could come
+  out before its earlier ones.
 
 ## 0.1.3
 
