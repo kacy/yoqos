@@ -1028,11 +1028,7 @@ root's alone, so every `os secret` command needs root. `apply` decrypts a
 value right before it writes the file, and wipes it from memory once it's
 written.
 
-`os secret set` on a name that's already set encrypts the value again. values
-set with an earlier build of `os` were bound to pcr 7, the secure boot
-state, so on a machine with a tpm2 they stop decrypting once secure boot is
-turned on or off: `os plan` stops with E0133, and setting each one again
-fixes it.
+`os secret set` on a name that's already set encrypts the value again.
 
 a name is letters, digits, `-`, `_`, and `.`, with `/` to group them, like
 `wifi/home`; no part of it starts with a dot. a value comes from stdin byte
