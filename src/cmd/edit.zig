@@ -194,35 +194,50 @@ fn adoptFile(ctx: *Context, args: []const [:0]const u8) !u8 {
 const Adoptable = struct { content: []const u8, mode: u32 };
 
 /// the file at `path` on the machine, if it's a plain file anyone can
-/// read. null after saying why not.
+/// read. null after saying why not. what's checked is the file that's
+/// read: opened once, not followed if it's a symlink, and looked at
+/// through what was opened. a check by its path, and a read by it after,
+/// would read whatever a user who can write its directory, like a
+/// service's own under /etc, put there in between, a symlink to
+/// /etc/shadow say, into a config meant to be safe to publish.
 fn readAdoptable(ctx: *Context, a: std.mem.Allocator, path: []const u8) !?Adoptable {
-    const full = try cli.machinePath(ctx, a, path);
-    const cwd = std.Io.Dir.cwd();
-    const st = cwd.statFile(ctx.io, full, .{ .follow_symlinks = false }) catch |e| {
-        _ = try cli.fail(ctx, "can't adopt {s}: {s}", .{ path, if (e == error.FileNotFound) "it doesn't exist" else @errorName(e) });
-        return null;
+    const linux = std.os.linux;
+    const full = try a.dupeZ(u8, try cli.machinePath(ctx, a, path));
+    // nonblocking, so a fifo there can't hold os up.
+    const opened = linux.open(full, .{ .ACCMODE = .RDONLY, .NOFOLLOW = true, .NONBLOCK = true, .CLOEXEC = true }, 0);
+    const fd: linux.fd_t = switch (linux.errno(opened)) {
+        .SUCCESS => @intCast(opened),
+        .NOENT => return adoptFailed(ctx, path, "it doesn't exist"),
+        .LOOP => return adoptFailed(ctx, path, "it's a symlink. adopt the file it points to, if that's under /etc"),
+        else => |e| return adoptFailed(ctx, path, @tagName(e)),
     };
-    const problem: ?[]const u8 = switch (st.kind) {
-        .file => null,
-        .sym_link => "it's a symlink. adopt the file it points to, if that's under /etc",
-        else => "it isn't a regular file",
-    };
-    if (problem) |why| {
-        _ = try cli.fail(ctx, "can't adopt {s}: {s}", .{ path, why });
-        return null;
-    }
-    const mode: u32 = @intCast(@intFromEnum(st.permissions));
+    defer _ = linux.close(fd);
+    var st: linux.Statx = undefined;
+    if (linux.errno(linux.statx(fd, "", linux.AT.EMPTY_PATH, .{ .TYPE = true, .MODE = true, .SIZE = true }, &st)) != .SUCCESS) return adoptFailed(ctx, path, "it can't be looked at");
+    if (st.mode & linux.S.IFMT != linux.S.IFREG) return adoptFailed(ctx, path, "it isn't a regular file");
+    const mode: u32 = st.mode & 0o7777;
     // a file others can't read may well hold a secret, and the config is
     // meant to be safe to publish.
-    if (mode & 0o004 == 0) {
-        _ = try cli.fail(ctx, "can't adopt {s}: not everyone can read it, so it may hold secrets. if it doesn't, write its [files] entry by hand", .{path});
-        return null;
+    if (mode & 0o004 == 0) return adoptFailed(ctx, path, "not everyone can read it, so it may hold secrets. if it doesn't, write its [files] entry by hand");
+    const buf = try a.alloc(u8, max_adopt_bytes + 1);
+    var n: usize = 0;
+    while (n < buf.len) {
+        const got = linux.read(fd, buf[n..].ptr, buf.len - n);
+        switch (linux.errno(got)) {
+            .SUCCESS => if (got == 0) break else {
+                n += got;
+            },
+            .INTR => {},
+            else => return adoptFailed(ctx, path, "it can't be read"),
+        }
     }
-    const content = cwd.readFileAlloc(ctx.io, full, a, .limited(max_adopt_bytes)) catch |e| {
-        _ = try cli.fail(ctx, "can't adopt {s}: {s}", .{ path, if (e == error.StreamTooLong) "it's over 1 MiB" else @errorName(e) });
-        return null;
-    };
-    return .{ .content = content, .mode = mode };
+    if (n > max_adopt_bytes) return adoptFailed(ctx, path, "it's over 1 MiB");
+    return .{ .content = buf[0..n], .mode = mode };
+}
+
+fn adoptFailed(ctx: *Context, path: []const u8, why: []const u8) !?Adoptable {
+    _ = try cli.fail(ctx, "can't adopt {s}: {s}", .{ path, why });
+    return null;
 }
 
 /// the config loader reads sources up to this size.
@@ -522,6 +537,13 @@ test "adopt takes a file from /etc into the config" {
     try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "isn't a regular file") != null);
     try t.exec(&.{ "--root", root, "adopt", "/etc/nope" });
     try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "doesn't exist") != null);
+    // a fifo is looked at through what was opened, which doesn't wait for
+    // a writer.
+    const fifo = try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}/etc/fifo", .{root}, 0);
+    defer std.testing.allocator.free(fifo);
+    try std.testing.expectEqual(.SUCCESS, std.os.linux.errno(std.os.linux.mknodat(std.os.linux.AT.FDCWD, fifo, std.os.linux.S.IFIFO | 0o644, 0)));
+    try t.exec(&.{ "--root", root, "adopt", "/etc/fifo" });
+    try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "isn't a regular file") != null);
     try t.exec(&.{ "--root", root, "adopt", "/etc/shadow" });
     try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "machine state") != null);
     try std.testing.expectEqual(1, t.recorder.messages.items.len);

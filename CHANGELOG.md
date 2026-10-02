@@ -274,6 +274,11 @@
   each include of it. a few files that each included the next twice were
   read millions of times, so a cloned config could keep `os install`
   from ever showing its plan.
+- `os adopt` checks the file it reads: it opens it once, without
+  following a symlink, and looks at what it opened. it used to check the
+  path and then read it again, so a user who could write the file's
+  directory, like a service's own under /etc, could swap in a symlink to
+  /etc/shadow in between and have it copied into the config.
 
 ## 0.1.3
 
