@@ -1035,6 +1035,19 @@ pub const Machine = struct {
         return m.bootOnEsp() and std.mem.eql(u8, head, m.boot.root_subvol orelse "") and !m.unsettled(head);
     }
 
+    /// whether the menu's newest entry, for the root at `head`, boots
+    /// copies of its boot files on the esp, or an image of them, made as
+    /// the menu was written, rather than the files themselves: the
+    /// bootloader can't read the root, or it boots an image. a root whose
+    /// files aren't on the esp yet (see `unsettled`) counts as not, since
+    /// with /boot as the esp, pacman puts a new kernel on the esp, not in
+    /// that root's own /boot.
+    pub fn headCopied(m: *const Machine, head: []const u8) !bool {
+        if (m.headOnEsp(head) and !try m.bootsImage(head)) return false;
+        if (m.unsettled(head)) return false;
+        return menu.copiesOnEsp(m.boot) or try m.bootsImage(head);
+    }
+
     /// whether /boot is the esp, as archinstall sets it up. kernels then
     /// live outside every root, so each root keeps copies of its own in
     /// its /boot directory, under the mount, where grub and refind read
@@ -1606,6 +1619,48 @@ test "a watchdog timer an older os wrote is brought up to date in a new generati
     try std.testing.expect(std.mem.indexOf(u8, now, "OnBootSec") == null);
     try std.testing.expectEqualStrings(health, try tmp.dir.readFileAlloc(io, dir ++ "/yoq-health.service", a, .limited(4096)));
     try std.testing.expectEqualStrings("[Service]\nExecStart=/usr/bin/mine\n", try tmp.dir.readFileAlloc(io, dir ++ "/yoq-watchdog.service", a, .limited(4096)));
+}
+
+test "which menus boot copies of the running root's boot files" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var m: Machine = .{
+        .a = a,
+        .io = io,
+        .boot = .{ .loader = "limine", .esp = "/efi", .root_subvol = "/@roots/3" },
+        .loader = .limine,
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
+        .unsettled_note = try std.fmt.allocPrint(a, "{s}/note", .{base}),
+    };
+    // limine reads only the esp.
+    try std.testing.expect(try m.headCopied("/@roots/3"));
+    // with /boot as the esp, the newest entry boots the esp's own files.
+    m.boot.esp = "/boot";
+    try std.testing.expect(!try m.headCopied("/@roots/3"));
+    // grub reads the root, unless it's on luks.
+    m.boot.loader = "grub";
+    m.loader = .grub;
+    m.boot.esp = "/efi";
+    try std.testing.expect(!try m.headCopied("/@roots/3"));
+    m.boot.luks_uuid = "u";
+    try std.testing.expect(try m.headCopied("/@roots/3"));
+    m.boot.luks_uuid = null;
+    // an image is a copy, wherever the esp is.
+    try tmp.dir.createDirPath(io, "top/@roots/3/etc/kernel");
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/3/" ++ uki.config_rel, .data = "" });
+    try std.testing.expect(try m.headCopied("/@roots/3"));
+    m.boot.esp = "/boot";
+    try std.testing.expect(try m.headCopied("/@roots/3"));
+    // unless the root's files aren't on the esp yet.
+    try tmp.dir.writeFile(io, .{ .sub_path = "note", .data = "/@roots/3\n" });
+    try std.testing.expect(!try m.headCopied("/@roots/3"));
 }
 
 test "units from enable-rollback in 0.1.0 are brought up to date, and the missing one goes in" {

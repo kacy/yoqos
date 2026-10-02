@@ -339,6 +339,14 @@ esp itself, so a kernel that `pacman` installs directly is the one it
 boots. rolling back puts that generation's kernel back on the esp, when it
 fits (see below).
 
+where the top entry boots copies on the esp instead, as on limine,
+systemd-boot, or a luks root with the esp elsewhere, or an image with
+`[boot] uki`, a kernel, microcode, or initramfs change that `pacman` makes
+directly gets the menu written again by os's pacman hook, the way `os gc`
+writes it, so the top entry boots the new files and not the old kernel,
+whose modules pacman removed. it skips that while another os is running,
+or a generation waits for the next boot; `os gc` does it then.
+
 ## going back
 
 ```

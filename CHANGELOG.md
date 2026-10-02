@@ -191,6 +191,11 @@
   E0135. the plan used to remove the drop-in and rebuild an initramfs that
   couldn't open the root, which without generations left a machine that
   didn't boot.
+- a kernel, microcode, or initramfs change made with pacman directly gets
+  the boot menu written again from os's pacman hook, where the newest
+  entry boots copies on the esp or an image: limine, systemd-boot, a luks
+  root, or `[boot] uki`. the entry kept booting the old kernel, whose
+  modules pacman had removed, until the next generation.
 
 ## 0.1.3
 
