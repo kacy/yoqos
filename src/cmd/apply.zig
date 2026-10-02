@@ -12,6 +12,7 @@ const lock = @import("../lock.zig");
 const observe = @import("../observe.zig");
 const output = @import("../output.zig");
 const planner = @import("../planner.zig");
+const desired = @import("../desired.zig");
 const pipeline = @import("../pipeline.zig");
 const sync = @import("../sync.zig");
 const systemd = @import("../systemd.zig");
@@ -238,7 +239,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     const units = liveUnits(ctx);
     const hash = try p.hash();
     try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "begin", &hash);
-    const files = try planner.desiredFiles(a, result.state.config(), &result.facts);
+    const files = try desired.files(a, result.state.config(), &result.facts);
     const problems = w.diags.items.items.len;
     const done = try apply.run(a, ctx.io, p, &result.state.lock, files, ctx.secrets, target, units, &w.diags) orelse {
         try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "failed", &hash);

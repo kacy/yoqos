@@ -9,6 +9,7 @@ const alpm = @import("alpm.zig");
 const diag = @import("diag.zig");
 const lock = @import("lock.zig");
 const planner = @import("planner.zig");
+const desired = @import("desired.zig");
 const settings = @import("settings.zig");
 const systemd = @import("systemd.zig");
 const users = @import("users.zig");
@@ -62,7 +63,7 @@ fn transaction(a: Allocator, p: *const planner.Plan, l: *const lock.Lock, t: Tar
 /// machine. units going away stop before their packages are removed, and
 /// new ones start after theirs are installed. returns null, with reasons
 /// in `diags`, if a step failed; steps before it stay done.
-pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock, files: []const planner.DesiredFile, store: ?secrets.Store, t: Target, units: bool, diags: *diag.List) !?Result {
+pub fn run(a: Allocator, io: std.Io, p: *const planner.Plan, l: *const lock.Lock, files: []const desired.File, store: ?secrets.Store, t: Target, units: bool, diags: *diag.List) !?Result {
     var skipped: std.ArrayList(planner.Change) = .empty;
     for (p.changes) |c| {
         if (!applies(c.kind, units)) try skipped.append(a, c);
@@ -105,7 +106,7 @@ const mkinitcpio = "/usr/bin/mkinitcpio";
 /// initramfs is built again once they're all in place.
 pub fn rebuildsInitramfs(changes: []const planner.Change) bool {
     for (changes) |c| {
-        if (c.kind == .file and planner.isInitramfsDropIn(c.subject)) return true;
+        if (c.kind == .file and desired.isInitramfsDropIn(c.subject)) return true;
     }
     return false;
 }
@@ -134,7 +135,7 @@ fn rebuildInitramfs(a: Allocator, io: std.Io, root: []const u8, diags: *diag.Lis
 /// (`live`, as for units) the sysctl file and the module list are loaded
 /// right away. a secret's value is read from `store` just for the write,
 /// and wiped after it.
-fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.DesiredFile, store: ?secrets.Store, p: *const planner.Plan, path: []const u8, live: bool, diags: *diag.List) !bool {
+fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const desired.File, store: ?secrets.Store, p: *const planner.Plan, path: []const u8, live: bool, diags: *diag.List) !bool {
     const d = lists.find(files, "path", path).?; // the plan came from these files.
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
     const mode = std.fmt.parseInt(u32, d.mode, 8) catch unreachable; // validated with the config.
@@ -148,9 +149,9 @@ fn writeFile(a: Allocator, io: std.Io, root: []const u8, files: []const planner.
         return false;
     }
     if (!live) return true;
-    const then: []const []const u8 = if (std.mem.eql(u8, path, planner.sysctl_path))
+    const then: []const []const u8 = if (std.mem.eql(u8, path, desired.sysctl_path))
         &.{ "sysctl", "-p", path }
-    else if (std.mem.eql(u8, path, planner.modules_path))
+    else if (std.mem.eql(u8, path, desired.modules_path))
         &.{ "systemctl", "restart", "systemd-modules-load.service" }
     else
         return true;
@@ -285,7 +286,7 @@ test "files are written with their mode, and the plan comes back empty" {
     );
     for (c.files.entries.items) |*e| e.value.content = e.value.text.?.v;
     const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
-    const files = try planner.desiredFiles(a, &c, &.{});
+    const files = try desired.files(a, &c, &.{});
     const want = try planner.wanted(a, &c);
     const observe = @import("observe.zig");
 
@@ -298,7 +299,7 @@ test "files are written with their mode, and the plan comes back empty" {
     f = try observe.observe(a, io, .{ .root = root, .packages = false, .units = false, .wanted = want }, &diags);
     try testing.expect((try planner.plan(a, &c, &l, &f, &diags)).?.empty());
     try testing.expectEqualStrings("0600", f.file("/etc/ssh/sshd_config.d/10-local.conf").?.mode);
-    try testing.expectEqualStrings("0644", f.file(planner.sysctl_path).?.mode);
+    try testing.expectEqualStrings("0644", f.file(desired.sysctl_path).?.mode);
 }
 
 test "a secret's file is written from the store, and the facts only hold its keyed hash" {
@@ -318,7 +319,7 @@ test "a secret's file is written from the store, and the facts only hold its key
 
     const c = try helpers.configFrom(a, "[boot]\nkernel = \"none\"\n[files.\"/etc/wifi.psk\"]\nsecret = \"wifi/home\"\n");
     const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
-    const files = try planner.desiredFiles(a, &c, &.{});
+    const files = try desired.files(a, &c, &.{});
     const want = try planner.wanted(a, &c);
     const opts: observe.Options = .{ .root = root, .packages = false, .units = false, .wanted = want, .secrets = store };
     const t: Target = .{ .root = root, .dbpath = "", .dbs = &.{}, .cachedir = "", .gpgdir = null };

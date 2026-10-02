@@ -13,7 +13,6 @@ const config = @import("config.zig");
 const lock = @import("lock.zig");
 const facts = @import("facts.zig");
 const catalog = @import("catalog.zig");
-const aur = @import("aur.zig");
 const diag = @import("diag.zig");
 const output = @import("output.zig");
 const lists = @import("lists.zig");
@@ -21,6 +20,7 @@ const generation = @import("generation.zig");
 const menu = @import("menu.zig");
 const uki = @import("uki.zig");
 const secureboot = @import("secureboot.zig");
+const desired = @import("desired.zig");
 const Allocator = std.mem.Allocator;
 
 pub const schema = "yoq.plan/1";
@@ -418,7 +418,7 @@ fn sameShell(current: []const u8, want: []const u8) bool {
 /// mode set when only that differs. generated files nothing asks for any
 /// more are removed; other files the config doesn't name are left alone.
 fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change), content: *std.ArrayList(u8)) !void {
-    const want = try desiredFiles(a, c, f);
+    const want = try desired.files(a, c, f);
     var files: std.ArrayList(Change) = .empty;
     for (want) |d| {
         const mode = try normalMode(a, d.mode);
@@ -428,7 +428,7 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
             .kind = .file,
             .subject = d.path,
             .cause = d.cause orelse try std.fmt.allocPrint(a, "files.\"{s}\"", .{d.path}),
-            .reboot = d.reboot orelse fileReboot(d.path),
+            .reboot = d.reboot orelse desired.fileReboot(d.path),
         };
         const hash = try contentHash(a, d, f);
         if (f.file(d.path)) |have| {
@@ -452,7 +452,7 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
         const d = lists.find(want, "path", ch.subject).?;
         try content.print(a, "{s} {s}\n", .{ d.path, try contentHash(a, d.*, f) orelse unknown_hash });
     }
-    for (generated_paths) |p| {
+    for (desired.generated_paths) |p| {
         if (lists.indexOf(want, "path", p) != null) continue;
         const have = f.file(p) orelse continue;
         if (!have.ours) continue;
@@ -461,7 +461,7 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
             .kind = .file,
             .subject = p,
             .to = "remove: os wrote it, and nothing asks for it now",
-            .reboot = fileReboot(p),
+            .reboot = desired.fileReboot(p),
         });
     }
     lists.sortByField(Change, "subject", files.items);
@@ -470,7 +470,7 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
 
 /// a secret others can read is allowed, but the plan says so after its
 /// mode.
-fn exposure(d: DesiredFile, mode: []const u8) []const u8 {
+fn exposure(d: desired.File, mode: []const u8) []const u8 {
     if (d.secret == null) return "";
     const bits = std.fmt.parseInt(u32, mode, 8) catch 0;
     return if (bits & 0o044 != 0) ", which lets others read the secret" else "";
@@ -483,7 +483,7 @@ const unknown_hash = "unknown";
 /// for a secret, the keyed hash of its value the facts carry, which is
 /// null when the observer couldn't read it. the planner never sees a
 /// secret's value.
-fn contentHash(a: Allocator, d: DesiredFile, f: *const facts.Facts) !?[]const u8 {
+fn contentHash(a: Allocator, d: desired.File, f: *const facts.Facts) !?[]const u8 {
     const name = d.secret orelse return try a.dupe(u8, &facts.sha256Hex(d.content));
     const s = f.secret(name) orelse return null;
     return s.keyed;
@@ -512,18 +512,12 @@ fn normalMode(a: Allocator, mode: []const u8) ![]const u8 {
     return if (mode.len == 3) std.fmt.allocPrint(a, "0{s}", .{mode}) else mode;
 }
 
-/// whether the config has repositories of its own for pacman: declared
-/// ones, or the local one aur packages are built into.
-pub fn ownRepos(c: *const config.Config) bool {
-    return c.repos.entries.items.len > 0 or c.aur.items.items.len > 0;
-}
-
 /// pacman reads the config's repositories through one include line, and
 /// trusts each one's key. a repository pacman.conf declares too would be
 /// there twice, which pacman refuses, so each is reported and the result
 /// is false.
 fn planRepos(a: Allocator, c: *const config.Config, f: *const facts.Facts, changes: *std.ArrayList(Change), diags: *diag.List) !bool {
-    if (!ownRepos(c)) return true;
+    if (!desired.ownRepos(c)) return true;
     var twice = false;
     for (c.repos.entries.items) |e| {
         if (!lists.contains(f.pacman.repos, e.name)) continue;
@@ -540,299 +534,6 @@ fn planRepos(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
     return true;
 }
 
-/// a file os writes, from `[files]` or made from another key.
-pub const DesiredFile = struct {
-    path: []const u8,
-    content: []const u8,
-    /// for a file that holds a secret: its name, and `content` is empty.
-    /// apply reads the value only as it writes the file.
-    secret: ?[]const u8 = null,
-    mode: []const u8 = config.File.default_mode,
-    /// the key that makes the file, for ones `[files]` doesn't name.
-    cause: ?[]const u8 = null,
-    /// where that key is set, when the config sets it.
-    src: ?config.Src = null,
-    /// why a change to it needs a reboot, if one does.
-    reboot: ?[]const u8 = null,
-};
-
-/// where `[sysctl]` goes.
-pub const sysctl_path = "/etc/sysctl.d/99-yoq.conf";
-
-/// where `[boot] modules` goes.
-pub const modules_path = "/etc/modules-load.d/99-yoq.conf";
-
-const greetd_config_path = "/etc/greetd/config.toml";
-const tty_session_path = "/etc/profile.d/yoq-session.sh";
-
-/// mkinitcpio's drop-in that loads nvidia's modules early.
-const nvidia_initramfs_path = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf";
-
-/// mkinitcpio's drop-in that unlocks a luks root.
-pub const encrypt_initramfs_path = facts.initramfs_dropins ++ "/" ++ facts.encrypt_dropin;
-
-/// whether a file os writes is a mkinitcpio drop-in. changing one changes
-/// the initramfs, so it waits for a reboot like a kernel does, and apply
-/// rebuilds the initramfs in the root it builds.
-pub fn isInitramfsDropIn(path: []const u8) bool {
-    return std.mem.startsWith(u8, path, "/etc/mkinitcpio.conf.d/");
-}
-
-/// why a change to a file os writes needs a reboot: a drop-in changes the
-/// initramfs, the ukify config changes what the menu boots, and the
-/// secure boot file whether its images are signed.
-fn fileReboot(path: []const u8) ?[]const u8 {
-    if (isInitramfsDropIn(path)) return "initramfs";
-    if (std.mem.eql(u8, path, secureboot.config_path)) return secure_boot_reboot;
-    return if (std.mem.eql(u8, path, uki.config_path)) uki_reboot else null;
-}
-
-/// the reboot reason for turning `[boot] uki` on or off.
-pub const uki_reboot = "uki";
-
-/// the reboot reason for turning `[boot] secure_boot` on or off.
-pub const secure_boot_reboot = "secure boot";
-
-/// files os writes from other keys, each starting with a "written by os"
-/// line. one still there that nothing asks for any more is removed. the
-/// session's own config isn't here: it's the user's file.
-const generated_paths = [_][]const u8{ sysctl_path, modules_path, greetd_config_path, tty_session_path, nvidia_initramfs_path, encrypt_initramfs_path, uki.config_path, secureboot.config_path };
-
-/// the first line of a file os makes from `key`.
-fn header(comptime key: []const u8) []const u8 {
-    return "# written by os from " ++ key ++ " in the config. edits here are overwritten.\n";
-}
-
-/// tuigreet on tty1, offering every installed wayland session.
-const greetd_config =
-    \\# written by os for [desktop] login = "greetd". edits here are overwritten.
-    \\[terminal]
-    \\vt = 1
-    \\
-    \\[default_session]
-    \\command = "tuigreet --time --remember --remember-session --sessions /usr/share/wayland-sessions"
-    \\user = "greeter"
-    \\
-;
-
-/// logging in on tty1 starts the session through uwsm.
-const tty_session =
-    \\# written by os for [desktop] login = "tty". edits here are overwritten.
-    \\if [ -z "$WAYLAND_DISPLAY" ] && [ "$(tty)" = /dev/tty1 ] && uwsm check may-start; then
-    \\    exec uwsm start {s}
-    \\fi
-    \\
-;
-
-/// the modules nvidia's driver wants early.
-const nvidia_modules = [_][]const u8{ "nvidia", "nvidia_modeset", "nvidia_uvm", "nvidia_drm" };
-
-const nvidia_initramfs_content = blk: {
-    var s: []const u8 = "# written by os for [hardware] gpu = \"nvidia\".\nMODULES+=(" ++ nvidia_modules[0];
-    for (nvidia_modules[1..]) |m| s = s ++ " " ++ m;
-    break :blk s ++ ")\n";
-};
-
-/// sd-encrypt unlocks the root with what the kernel's command line names,
-/// and it needs systemd in the initramfs: busybox's hooks (udev, keymap,
-/// consolefont, and resume and usr, which systemd does itself) become
-/// systemd's, sd-encrypt goes before filesystems, and keyboard before
-/// that, to type the passphrase with. mkinitcpio sources drop-ins as
-/// bash, after its own config, so this works on whatever hooks are set.
-pub const encrypt_initramfs_content =
-    \\# written by os from [boot] encrypt in the config. edits here are overwritten.
-    \\_yoq_hooks=()
-    \\for _yoq_hook in "${HOOKS[@]}"; do
-    \\    case $_yoq_hook in
-    \\    udev) _yoq_hook=systemd ;;
-    \\    keymap | consolefont) _yoq_hook=sd-vconsole ;;
-    \\    encrypt | sd-encrypt | resume | usr) continue ;;
-    \\    filesystems)
-    \\        [[ " ${_yoq_hooks[*]} " == *" keyboard "* ]] || _yoq_hooks+=(keyboard)
-    \\        _yoq_hooks+=(sd-encrypt)
-    \\        ;;
-    \\    esac
-    \\    [[ " ${_yoq_hooks[*]} " == *" $_yoq_hook "* ]] || _yoq_hooks+=("$_yoq_hook")
-    \\done
-    \\HOOKS=("${_yoq_hooks[@]}")
-    \\unset _yoq_hooks _yoq_hook
-    \\# with autodetect, add_checked_modules keeps only the modules this machine
-    \\# uses, and mkinitcpio counts finding none as a failed build, without
-    \\# saying why. that's what it finds when the driver is built into the
-    \\# kernel, as arch's tpm and btrfs drivers are, and sd-encrypt asks for
-    \\# the tpm's on every build. finding none isn't a failure here; a module
-    \\# it finds and can't add still is.
-    \\if declare -F add_checked_modules >/dev/null && ! declare -F _yoq_add_checked_modules >/dev/null; then
-    \\    eval "_yoq_$(declare -f add_checked_modules)"
-    \\    add_checked_modules() {
-    \\        _yoq_add_checked_modules "$@" || true
-    \\    }
-    \\fi
-    \\
-;
-
-/// every file the config wants: `[files]`, then the ones other keys make.
-/// nvidia's initramfs drop-in is left out when the machine loads those
-/// modules already, as `f` shows.
-pub fn desiredFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts) ![]const DesiredFile {
-    var out: std.ArrayList(DesiredFile) = .empty;
-    for (c.files.entries.items) |e| {
-        if (e.value.secret) |s| {
-            try out.append(a, .{ .path = e.name, .content = "", .secret = s.v, .mode = e.value.modeOf() });
-            continue;
-        }
-        // a source that couldn't be read was reported when loading.
-        const content = e.value.content orelse continue;
-        try out.append(a, .{ .path = e.name, .content = content, .mode = e.value.modeOf() });
-    }
-    const made = [_]?DesiredFile{
-        try sysctlFile(a, c),
-        try loginFile(a, c),
-        try reposFile(a, c, f),
-        try sessionFile(a, c),
-        try modulesFile(a, c),
-        nvidiaFile(c, f),
-        encryptFile(c, f),
-        ukiFile(c, f),
-        secureBootFile(c, f),
-    };
-    for (made) |m| {
-        if (m) |d| try out.append(a, d);
-    }
-    return out.items;
-}
-
-fn sysctlFile(a: Allocator, c: *const config.Config) !?DesiredFile {
-    if (c.sysctl.entries.items.len == 0) return null;
-    var text: std.ArrayList(u8) = .empty;
-    try text.appendSlice(a, header("[sysctl]"));
-    for (try sortedNames(a, c.sysctl.entries.items)) |k| try text.print(a, "{s} = {s}\n", .{ k, c.sysctl.get(k).?.v.text });
-    return .{ .path = sysctl_path, .content = text.items, .cause = "sysctl", .src = c.sysctl.entries.items[0].value.src };
-}
-
-fn modulesFile(a: Allocator, c: *const config.Config) !?DesiredFile {
-    if (c.boot.modules.items.items.len == 0) return null;
-    var text: std.ArrayList(u8) = .empty;
-    try text.appendSlice(a, header("[boot] modules"));
-    for (try sortedNames(a, c.boot.modules.items.items)) |n| try text.print(a, "{s}\n", .{n});
-    return .{ .path = modules_path, .content = text.items, .cause = "boot.modules", .src = c.boot.modules.items.items[0].src };
-}
-
-/// the `name` of each item, sorted, so a file doesn't depend on the
-/// config's order.
-fn sortedNames(a: Allocator, items: anytype) ![]const []const u8 {
-    const names = try a.alloc([]const u8, items.len);
-    for (items, names) |it, *n| n.* = it.name;
-    lists.sortStrings(names);
-    return names;
-}
-
-fn loginFile(a: Allocator, c: *const config.Config) !?DesiredFile {
-    const login = c.desktop.login orelse return null;
-    return switch (login.v) {
-        .greetd => .{ .path = greetd_config_path, .content = greetd_config, .cause = "desktop.login", .src = login.src },
-        .tty => .{
-            .path = tty_session_path,
-            .content = try std.fmt.allocPrint(a, tty_session, .{catalog.sessionDesktop((c.desktop.session orelse return null).v)}),
-            .cause = "desktop.login",
-            .src = login.src,
-        },
-        .sddm => null,
-    };
-}
-
-/// the file pacman.conf includes for the config's repositories. once
-/// pacman.conf reads it, it stays, empty if need be: pacman fails on an
-/// include that's gone.
-fn reposFile(a: Allocator, c: *const config.Config, f: *const facts.Facts) !?DesiredFile {
-    if (!ownRepos(c) and !f.pacman.includes_repos) return null;
-    var text: std.ArrayList(u8) = .empty;
-    try text.appendSlice(a, header("[repos]"));
-    for (c.repos.entries.items) |e| {
-        // one without a server was reported when the config loaded.
-        const server = e.value.server orelse continue;
-        // with a key, packages must be signed by it; without one, they
-        // aren't checked.
-        const siglevel = if (e.value.key != null) "Required DatabaseOptional" else "Optional TrustAll";
-        try text.print(a, "\n[{s}]\nSigLevel = {s}\nServer = {s}\n", .{ e.name, siglevel, server.v });
-    }
-    // the aur packages os builds, unsigned, in a local repository.
-    if (c.aur.items.items.len > 0) try text.print(a, "\n[{s}]\nSigLevel = Optional TrustAll\nServer = file://{s}\n", .{ aur.repo_name, aur.repo_dir });
-    return .{ .path = facts.repos_conf, .content = text.items, .cause = "repos", .src = reposSrc(c) };
-}
-
-/// where the config first asks for a repository of its own, if it does.
-pub fn reposSrc(c: *const config.Config) ?config.Src {
-    if (c.repos.entries.items.len > 0) return c.repos.entries.items[0].value.src;
-    if (c.aur.items.items.len > 0) return c.aur.items.items[0].src;
-    return null;
-}
-
-/// hyprland reads /etc/xdg/hypr when a user has no config of their own.
-/// the file keeps its extension: .conf, or .lua for newer ones.
-fn sessionFile(a: Allocator, c: *const config.Config) !?DesiredFile {
-    const content = c.desktop.session_content orelse return null;
-    const ext = std.fs.path.extension(c.desktop.session_config.?.v);
-    return .{
-        .path = try std.fmt.allocPrint(a, "/etc/xdg/hypr/hyprland{s}", .{if (ext.len > 0) ext else ".conf"}),
-        .content = content,
-        .cause = "desktop.session_config",
-        .src = c.desktop.session_config.?.src,
-    };
-}
-
-/// nvidia's driver wants its modules in the initramfs. amd and intel come
-/// with mkinitcpio's kms hook already.
-fn nvidiaFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
-    const gpu = c.hardware.gpu orelse return null;
-    if (gpu.v != .nvidia) return null;
-    if (c.providers.get("initramfs")) |p| {
-        if (!std.mem.eql(u8, p.v, "mkinitcpio")) return null;
-    }
-    for (nvidia_modules) |m| {
-        if (!lists.contains(f.initramfs_modules, m)) break;
-    } else return null;
-    return .{ .path = nvidia_initramfs_path, .content = nvidia_initramfs_content, .cause = "hardware.gpu", .src = gpu.src, .reboot = "initramfs" };
-}
-
-/// the drop-in for `[boot] encrypt`, unless mkinitcpio's hooks unlock
-/// luks already, as an encrypted archinstall's do, or another initramfs
-/// generator builds it.
-fn encryptFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
-    const encrypt = c.boot.encrypt orelse return null;
-    if (!encrypt.v) return null;
-    if (c.providers.get("initramfs")) |p| {
-        if (!std.mem.eql(u8, p.v, "mkinitcpio")) return null;
-    }
-    if (facts.hasEncryptHook(f.boot.initramfs_hooks)) return null;
-    return .{ .path = encrypt_initramfs_path, .content = encrypt_initramfs_content, .cause = "boot.encrypt", .src = encrypt.src, .reboot = "initramfs" };
-}
-
-/// the ukify config for `[boot] uki`, which has the menu boot an image.
-fn ukiFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
-    return menuFile(c.boot.uki, f, .{ .path = uki.config_path, .content = uki.config_content, .cause = "boot.uki", .reboot = uki_reboot });
-}
-
-/// the file that has a root's images signed for `[boot] secure_boot`.
-fn secureBootFile(c: *const config.Config, f: *const facts.Facts) ?DesiredFile {
-    return menuFile(c.boot.secure_boot, f, .{ .path = secureboot.config_path, .content = secureboot.config_content, .cause = "boot.secure_boot", .reboot = secure_boot_reboot });
-}
-
-/// `file`, which tells os's boot menu how to boot a root, when `key` is
-/// on and os writes the menu: in a root running a generation, or one
-/// being built, where mounts say nothing (no root filesystem in facts).
-/// a machine without generations boots the way it always has, so there
-/// the key only brings its package. the next menu reads it, so a change
-/// waits for a reboot.
-fn menuFile(key: ?config.Val(bool), f: *const facts.Facts, file: DesiredFile) ?DesiredFile {
-    const v = key orelse return null;
-    if (!v.v) return null;
-    if (f.boot.root_fs != null and !generation.running(f.boot.root_subvol)) return null;
-    var out = file;
-    out.src = v.src;
-    return out;
-}
-
 /// what the observer should look at for this config: every file it might
 /// want or os may have generated, and the repositories' signing keys.
 pub fn wanted(a: Allocator, c: *const config.Config) !facts.Wanted {
@@ -847,16 +548,7 @@ pub fn wanted(a: Allocator, c: *const config.Config) !facts.Wanted {
         try secret_files.append(a, e.name);
         if (!lists.contains(names.items, s.v)) try names.append(a, s.v);
     }
-    return .{ .files = try filePaths(a, c), .keys = keys.items, .secrets = names.items, .secret_files = secret_files.items };
-}
-
-fn filePaths(a: Allocator, c: *const config.Config) ![]const []const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
-    for (try desiredFiles(a, c, &.{})) |d| try out.append(a, d.path);
-    for (generated_paths) |p| {
-        if (!lists.contains(out.items, p)) try out.append(a, p);
-    }
-    return out.items;
+    return .{ .files = try desired.paths(a, c), .keys = keys.items, .secrets = names.items, .secret_files = secret_files.items };
 }
 
 // -- output --
@@ -904,7 +596,7 @@ pub fn espNeed(p: *const Plan, b: *const facts.Boot, uki_on: bool) ?EspNeed {
         const r = c.reboot orelse continue;
         if (std.mem.eql(u8, r, "initramfs") or std.mem.eql(u8, r, "microcode")) initramfs = true;
         if (std.mem.eql(u8, r, "microcode")) microcode = true;
-        if (std.mem.eql(u8, r, uki_reboot)) every = true;
+        if (std.mem.eql(u8, r, desired.uki_reboot)) every = true;
         if (std.mem.eql(u8, r, "systemd")) stub = true;
     }
     // the files the plan changes, and every file, for a menu that stops
@@ -1088,7 +780,7 @@ fn embeddedRoom(p: *const Plan, f: *const facts.Facts, uki_on: bool) u64 {
 /// whether a change for this reboot reason makes new boot files, and so
 /// new images.
 fn bootFilesChange(reason: []const u8) bool {
-    for ([_][]const u8{ "kernel", "initramfs", "microcode", "systemd", uki_reboot }) |r| {
+    for ([_][]const u8{ "kernel", "initramfs", "microcode", "systemd", desired.uki_reboot }) |r| {
         if (std.mem.eql(u8, reason, r)) return true;
     }
     return false;
@@ -1128,7 +820,7 @@ pub fn checkLuks(c: *const config.Config, p: *const Plan, f: *const facts.Facts,
         if (!std.mem.eql(u8, pr.v, "mkinitcpio")) return true;
     }
     for (p.changes) |ch| {
-        if (ch.kind != .file or ch.op != .remove or !std.mem.eql(u8, ch.subject, encrypt_initramfs_path)) continue;
+        if (ch.kind != .file or ch.op != .remove or !std.mem.eql(u8, ch.subject, desired.encrypt_initramfs_path)) continue;
         const src = if (c.boot.encrypt) |e| e.src else null;
         try diags.add(.luks_locked, src, "the root is on luks, and without [boot] encrypt nothing in the initramfs would unlock it", .{}, "keep `encrypt = true` under [boot], or add sd-encrypt to HOOKS in /etc/mkinitcpio.conf first");
         return false;
@@ -1309,12 +1001,6 @@ pub fn writeJson(w: *std.Io.Writer, a: Allocator, p: *const Plan) !void {
 }
 
 // -- tests --
-
-test "a mkinitcpio drop-in waits for a reboot, written or removed" {
-    try testing.expectEqualStrings("initramfs", fileReboot("/etc/mkinitcpio.conf.d/50-local.conf").?);
-    try testing.expectEqual(null, fileReboot("/etc/mkinitcpio.conf.dx/a.conf"));
-    try testing.expectEqual(null, fileReboot("/etc/motd"));
-}
 
 const testing = std.testing;
 
@@ -1545,10 +1231,10 @@ test "files: written when missing, rewritten when different, and the sysctl file
     try testing.expectEqualStrings("/etc/issue", p.changes[1].subject);
     try testing.expectEqualStrings("rewrite, mode 0600", p.changes[1].to.?);
     try testing.expectEqual(Op.add, p.changes[2].op);
-    try testing.expectEqualStrings(sysctl_path, p.changes[3].subject);
+    try testing.expectEqualStrings(desired.sysctl_path, p.changes[3].subject);
     try testing.expectEqualStrings("sysctl", p.changes[3].cause.?);
 
-    const sysctl = (try desiredFiles(t.a(), &c, &f))[3];
+    const sysctl = (try desired.files(t.a(), &c, &f))[3];
     try testing.expectEqualStrings(
         \\# written by os from [sysctl] in the config. edits here are overwritten.
         \\kernel.printk = 3 3 3 3
@@ -1606,16 +1292,16 @@ test "nvidia's initramfs drop-in, unless the machine loads the modules already" 
     defer t.deinit();
     const c = try t.cfg("[boot]\nkernel = \"none\"\n[hardware]\ngpu = \"nvidia\"\n");
     const without: facts.Facts = .{};
-    const want = try desiredFiles(t.a(), &c, &without);
+    const want = try desired.files(t.a(), &c, &without);
     try testing.expectEqual(1, want.len);
-    try testing.expectEqualStrings(nvidia_initramfs_path, want[0].path);
+    try testing.expectEqualStrings(desired.nvidia_initramfs_path, want[0].path);
     try testing.expectEqualStrings("initramfs", want[0].reboot.?);
 
     const with: facts.Facts = .{ .initramfs_modules = &.{ "nvidia", "nvidia_modeset", "nvidia_uvm", "nvidia_drm" } };
-    try testing.expectEqual(0, (try desiredFiles(t.a(), &c, &with)).len);
+    try testing.expectEqual(0, (try desired.files(t.a(), &c, &with)).len);
 
     const booster = try t.cfg("[boot]\nkernel = \"none\"\n[hardware]\ngpu = \"nvidia\"\n[providers]\ninitramfs = \"booster\"\n");
-    try testing.expectEqual(0, (try desiredFiles(t.a(), &booster, &without)).len);
+    try testing.expectEqual(0, (try desired.files(t.a(), &booster, &without)).len);
 }
 
 test "the drop-in that unlocks a luks root, unless the hooks do already" {
@@ -1624,7 +1310,7 @@ test "the drop-in that unlocks a luks root, unless the hooks do already" {
     const c = try t.cfg("[boot]\nkernel = \"none\"\nencrypt = true\n");
     // mkinitcpio's own hooks, as a clean build starts with.
     const plain: facts.Facts = .{ .boot = .{ .initramfs_hooks = &.{ "base", "systemd", "autodetect", "microcode", "modconf", "kms", "keyboard", "sd-vconsole", "block", "filesystems", "fsck" } } };
-    const want = try desiredFiles(t.a(), &c, &plain);
+    const want = try desired.files(t.a(), &c, &plain);
     try testing.expectEqual(1, want.len);
     try testing.expectEqualStrings("/etc/mkinitcpio.conf.d/90-yoq-encrypt.conf", want[0].path);
     try testing.expectEqualStrings("initramfs", want[0].reboot.?);
@@ -1640,12 +1326,12 @@ test "the drop-in that unlocks a luks root, unless the hooks do already" {
     const unlocking = [_][]const []const u8{ &.{ "base", "udev", "encrypt", "filesystems" }, &.{ "base", "systemd", "sd-encrypt", "filesystems" } };
     for (unlocking) |hooks| {
         const ready: facts.Facts = .{ .boot = .{ .initramfs_hooks = hooks } };
-        try testing.expectEqual(0, (try desiredFiles(t.a(), &c, &ready)).len);
+        try testing.expectEqual(0, (try desired.files(t.a(), &c, &ready)).len);
     }
     const off = try t.cfg("[boot]\nkernel = \"none\"\nencrypt = false\n");
-    try testing.expectEqual(0, (try desiredFiles(t.a(), &off, &plain)).len);
+    try testing.expectEqual(0, (try desired.files(t.a(), &off, &plain)).len);
     const booster = try t.cfg("[boot]\nkernel = \"none\"\nencrypt = true\n[providers]\ninitramfs = \"booster\"\n");
-    try testing.expectEqual(0, (try desiredFiles(t.a(), &booster, &plain)).len);
+    try testing.expectEqual(0, (try desired.files(t.a(), &booster, &plain)).len);
 }
 
 test "[boot] uki brings ukify, and its config where os writes the menu" {
@@ -1657,20 +1343,20 @@ test "[boot] uki brings ukify, and its config where os writes the menu" {
     try testing.expectEqualStrings("boot.uki", w.cause.?);
 
     const on_gens: facts.Facts = .{ .boot = .{ .root_fs = "btrfs", .root_subvol = "/@roots/3" } };
-    const want = try desiredFiles(a, &c, &on_gens);
+    const want = try desired.files(a, &c, &on_gens);
     try testing.expectEqual(1, want.len);
     try testing.expectEqualStrings("/etc/kernel/yoq-uki.conf", want[0].path);
     try testing.expectEqualStrings("uki", want[0].reboot.?);
     try testing.expect(std.mem.startsWith(u8, want[0].content, "# written by os from [boot] uki in the config."));
     // a root being built, where mounts say nothing, gets it too.
-    try testing.expectEqual(1, (try desiredFiles(a, &c, &.{})).len);
+    try testing.expectEqual(1, (try desired.files(a, &c, &.{})).len);
     // without generations, os writes no menu.
     for ([_]facts.Boot{ .{ .root_fs = "ext4" }, .{ .root_fs = "btrfs", .root_subvol = "/@" } }) |b| {
-        try testing.expectEqual(0, (try desiredFiles(a, &c, &.{ .boot = b })).len);
+        try testing.expectEqual(0, (try desired.files(a, &c, &.{ .boot = b })).len);
     }
     const off = try t.cfg("[boot]\nkernel = \"none\"\nuki = false\n");
     try testing.expectEqual(null, findWant(try wants(a, &off), "systemd-ukify"));
-    try testing.expectEqual(0, (try desiredFiles(a, &off, &on_gens)).len);
+    try testing.expectEqual(0, (try desired.files(a, &off, &on_gens)).len);
 
     // turning it off takes os's config out, which needs a reboot too.
     const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
@@ -1694,12 +1380,12 @@ test "[boot] secure_boot brings sbctl, and its file where os writes the menu" {
     const c = try t.cfg("[boot]\nkernel = \"none\"\nuki = true\nsecure_boot = true\n");
     try testing.expectEqualStrings("boot.secure_boot", findWant(try wants(a, &c), "sbctl").?.cause.?);
     const on_gens: facts.Facts = .{ .boot = .{ .root_fs = "btrfs", .root_subvol = "/@roots/3", .sbctl_keys = true } };
-    const want = try desiredFiles(a, &c, &on_gens);
+    const want = try desired.files(a, &c, &on_gens);
     try testing.expectEqual(2, want.len);
     try testing.expectEqualStrings("/etc/kernel/yoq-secure-boot.conf", want[1].path);
     try testing.expectEqualStrings("secure boot", want[1].reboot.?);
     try testing.expect(std.mem.startsWith(u8, want[1].content, "# written by os from [boot] secure_boot in the config."));
-    try testing.expectEqual(0, (try desiredFiles(a, &c, &.{ .boot = .{ .root_fs = "ext4" } })).len);
+    try testing.expectEqual(0, (try desired.files(a, &c, &.{ .boot = .{ .root_fs = "ext4" } })).len);
 
     // turning it off takes the file out, which needs a reboot too.
     const off = try t.cfg("[boot]\nkernel = \"none\"\nuki = true\n");
@@ -1728,7 +1414,7 @@ test "turning encrypt off stops the plan when nothing else would unlock a luks r
     var t: T = .{};
     defer t.deinit();
     const a = t.a();
-    var files = [_]facts.File{.{ .path = encrypt_initramfs_path, .sha256 = &facts.sha256Hex(encrypt_initramfs_content), .mode = "0644", .ours = true }};
+    var files = [_]facts.File{.{ .path = desired.encrypt_initramfs_path, .sha256 = &facts.sha256Hex(desired.encrypt_initramfs_content), .mode = "0644", .ours = true }};
     const hooks = [_][]const u8{ "base", "systemd", "autodetect", "block", "filesystems" };
     const luks: facts.Facts = .{ .files = &files, .boot = .{ .luks_uuid = "0f7a1c2e", .encrypt_dropin = true, .initramfs_hooks = &hooks } };
     const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
@@ -1853,7 +1539,7 @@ test "logging in on tty1 starts the session through uwsm" {
     var t: T = .{};
     defer t.deinit();
     const c = try t.cfg("[desktop]\nsession = \"hyprland\"\nlogin = \"tty\"\n");
-    const want = try desiredFiles(t.a(), &c, &.{});
+    const want = try desired.files(t.a(), &c, &.{});
     try testing.expectEqual(1, want.len);
     try testing.expectEqualStrings("/etc/profile.d/yoq-session.sh", want[0].path);
     try testing.expect(std.mem.indexOf(u8, want[0].content, "exec uwsm start hyprland.desktop\n") != null);
@@ -1864,7 +1550,7 @@ test "the session's own config lands where hyprland looks without a user one" {
     defer t.deinit();
     var c = try t.cfg("[desktop]\nsession = \"hyprland\"\nsession_config = \"files/hyprland.lua\"\n");
     c.desktop.session_content = "-- mine\n";
-    const want = try desiredFiles(t.a(), &c, &.{});
+    const want = try desired.files(t.a(), &c, &.{});
     try testing.expectEqual(1, want.len);
     try testing.expectEqualStrings("/etc/xdg/hypr/hyprland.lua", want[0].path);
     try testing.expectEqualStrings("-- mine\n", want[0].content);
@@ -1874,9 +1560,9 @@ test "kernel modules to load at boot" {
     var t: T = .{};
     defer t.deinit();
     const c = try t.cfg("[boot]\nmodules = [\"nct6775\", \"i2c-dev\"]\n");
-    const want = try desiredFiles(t.a(), &c, &.{});
+    const want = try desired.files(t.a(), &c, &.{});
     try testing.expectEqual(1, want.len);
-    try testing.expectEqualStrings(modules_path, want[0].path);
+    try testing.expectEqualStrings(desired.modules_path, want[0].path);
     try testing.expectEqualStrings("# written by os from [boot] modules in the config. edits here are overwritten.\ni2c-dev\nnct6775\n", want[0].content);
 }
 
@@ -1886,14 +1572,14 @@ test "a file os generated goes when nothing asks for it, but one it didn't write
     const c = try t.cfg("[boot]\nkernel = \"none\"\n");
     const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
     var files = [_]facts.File{
-        .{ .path = sysctl_path, .sha256 = "x", .mode = "0644", .ours = true },
-        .{ .path = greetd_config_path, .sha256 = "y", .mode = "0644", .ours = false },
+        .{ .path = desired.sysctl_path, .sha256 = "x", .mode = "0644", .ours = true },
+        .{ .path = desired.greetd_config_path, .sha256 = "y", .mode = "0644", .ours = false },
     };
     const f: facts.Facts = .{ .files = &files };
     const p = (try plan(t.a(), &c, &l, &f, &t.diags)).?;
     try testing.expectEqual(1, p.changes.len);
     try testing.expectEqual(Op.remove, p.changes[0].op);
-    try testing.expectEqualStrings(sysctl_path, p.changes[0].subject);
+    try testing.expectEqualStrings(desired.sysctl_path, p.changes[0].subject);
 }
 
 test "a unit that can't be enabled only starts and stops" {
@@ -1954,7 +1640,7 @@ test "a repository from the config: its file, pacman.conf's include, and its key
         \\plan: 2 to add, 1 to change, 0 to remove · no reboot
         \\
     , out.written());
-    const want = try desiredFiles(t.a(), &c, &.{});
+    const want = try desired.files(t.a(), &c, &.{});
     try testing.expect(std.mem.indexOf(u8, want[0].content, "[chaotic-aur]\nSigLevel = Required DatabaseOptional\nServer = https://cdn-mirror.chaotic.cx/$repo/$arch\n") != null);
 
     // once pacman.conf has the include and the keyring the key, nothing's left
@@ -2045,11 +1731,11 @@ test "unified kernel images on the esp take a kernel's files together" {
     try testing.expectEqual(51 * mib, espNeed(&systemd, &b, true).?.need);
     try testing.expectEqual(null, espNeed(&systemd, &b, false));
     // turning them on makes every kernel's image.
-    const on: Plan = .{ .changes = &.{.{ .op = .add, .kind = .file, .subject = uki.config_path, .reboot = uki_reboot }} };
+    const on: Plan = .{ .changes = &.{.{ .op = .add, .kind = .file, .subject = uki.config_path, .reboot = desired.uki_reboot }} };
     try testing.expectEqual(51 * mib, espNeed(&on, &b, true).?.need);
     // turning them off on systemd-boot needs copies of every file again.
     b.loader = "systemd-boot";
-    const off: Plan = .{ .changes = &.{.{ .op = .remove, .kind = .file, .subject = uki.config_path, .reboot = uki_reboot }} };
+    const off: Plan = .{ .changes = &.{.{ .op = .remove, .kind = .file, .subject = uki.config_path, .reboot = desired.uki_reboot }} };
     try testing.expectEqual(34 * mib + k + k / 16, espNeed(&off, &b, false).?.need);
     b.loader = "grub";
     try testing.expectEqual(null, espNeed(&off, &b, false));
@@ -2166,7 +1852,7 @@ test "with secure boot, each entry's image has its command line, and takes room"
     try testing.expectEqual(0, embeddedRoom(&tool, &f, true));
     // a plan that starts signing makes every entry's image new: the two
     // generations there, the new one, and the trial's.
-    const on: Plan = .{ .changes = &.{.{ .op = .add, .kind = .file, .subject = secureboot.config_path, .reboot = secure_boot_reboot }} };
+    const on: Plan = .{ .changes = &.{.{ .op = .add, .kind = .file, .subject = secureboot.config_path, .reboot = desired.secure_boot_reboot }} };
     try testing.expectEqual(4 * image, embeddedRoom(&on, &f, true));
     // firmware that enforces it, with keys, signs already.
     f.boot.secure_boot = true;

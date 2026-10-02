@@ -13,6 +13,7 @@ const diag = @import("diag.zig");
 const lock = @import("lock.zig");
 const facts = @import("facts.zig");
 const planner = @import("planner.zig");
+const desired = @import("desired.zig");
 const catalog = @import("catalog.zig");
 const edit = @import("edit.zig");
 const lists = @import("lists.zig");
@@ -182,7 +183,7 @@ fn genFacts(a: Allocator, r: Random, c: *const config.Config, l: *const lock.Loc
     var files: std.ArrayList(facts.File) = .empty;
     for ((try planner.wanted(a, c)).files) |p| {
         if (!chance(r, 40)) continue;
-        const want = lists.find(try planner.desiredFiles(a, c, &f), "path", p);
+        const want = lists.find(try desired.files(a, c, &f), "path", p);
         const right = want != null and chance(r, 50);
         try files.append(a, .{
             .path = p,
@@ -265,7 +266,7 @@ fn applied(a: Allocator, c: *const config.Config, f: *const facts.Facts, p: *con
     var keys: std.ArrayList([]const u8) = .empty;
     try keys.appendSlice(a, f.pacman.keys);
     var out = f.*;
-    const desired = try planner.desiredFiles(a, c, f);
+    const wanted_files = try desired.files(a, c, f);
 
     for (p.changes) |ch| switch (ch.kind) {
         .package, .dependency => {
@@ -319,7 +320,7 @@ fn applied(a: Allocator, c: *const config.Config, f: *const facts.Facts, p: *con
                 _ = files.orderedRemove(i.?);
                 continue;
             }
-            const d = lists.find(desired, "path", ch.subject).?;
+            const d = lists.find(wanted_files, "path", ch.subject).?;
             const mode = if (d.mode.len == 3) try std.fmt.allocPrint(a, "0{s}", .{d.mode}) else d.mode;
             const file: facts.File = .{ .path = d.path, .sha256 = try a.dupe(u8, &facts.sha256Hex(d.content)), .mode = mode, .ours = d.cause != null };
             if (i) |n| files.items[n] = file else try files.append(a, file);
