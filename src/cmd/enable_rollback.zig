@@ -17,7 +17,6 @@ const menu = @import("../menu.zig");
 const output = @import("../output.zig");
 const events = @import("../events.zig");
 const journal = @import("../journal.zig");
-const applying = @import("apply.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 

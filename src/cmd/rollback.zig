@@ -15,7 +15,6 @@ const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
 const trial = @import("../trial.zig");
 const journal = @import("../journal.zig");
-const rootfs = @import("../rootfs.zig");
 const secureboot = @import("../secureboot.zig");
 const menu = @import("../menu.zig");
 const news = @import("../news.zig");

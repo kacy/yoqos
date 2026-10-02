@@ -9,7 +9,6 @@ const cli = @import("../cli.zig");
 const exec = @import("../exec.zig");
 const lists = @import("../lists.zig");
 const output = @import("../output.zig");
-const planner = @import("../planner.zig");
 const pipeline = @import("../pipeline.zig");
 const facts = @import("../facts.zig");
 const applying = @import("apply.zig");
