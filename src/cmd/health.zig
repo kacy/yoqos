@@ -35,6 +35,7 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     // back, or settling a kernel waits for that to finish, rather than
     // both writing the menu and records at once.
     if (try cli.refused(ctx, cli.waitForMachine(ctx))) return 1;
+    try rollback.finishRestore(ctx, a, boot);
     const store = trial.Store.of(a, ctx.io, boot) orelse return 0;
     const t = try store.current() orelse {
         try ctx.out.writeAll("no generation on trial.\n");

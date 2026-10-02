@@ -196,6 +196,10 @@
   entry boots copies on the esp or an image: limine, systemd-boot, a luks
   root, or `[boot] uki`. the entry kept booting the old kernel, whose
   modules pacman had removed, until the next generation.
+- a rollback or fallback cut off after it made its generation, but before
+  it put back that generation's config, gets the config put back at the
+  next boot. the next `os apply` used to apply the newer config to the
+  older system. the commit that puts it back names the generation now.
 
 ## 0.1.3
 

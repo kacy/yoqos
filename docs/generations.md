@@ -370,7 +370,10 @@ on the root you're leaving. a rollback also ends any trial that's waiting
 
 the config goes back too. `/etc/yoq` lives in `/var/lib/yoq/config`,
 outside every generation, and a rollback writes back the config and lock
-that generation had, as a new commit, so its history stays whole.
+that generation had, as a new commit, so its history stays whole. a
+rollback cut off after it made the generation, but before that commit, has
+the commit made by the health check at the next boot, before `os apply`
+can run again.
 
 if you booted an older generation from the menu and want to stay on it,
 `os rollback --to-booted` makes it the newest generation.
