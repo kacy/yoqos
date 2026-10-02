@@ -250,12 +250,14 @@ pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer warnUnsigned(ctx, a, left.items) catch {};
     var removed: std.ArrayList(u32) = .empty;
     if (try m.collect(keep, &removed)) |problem| return cli.fail(ctx, "{s}", .{problem});
-    // a menu another tool dropped os's entries from gets them back, and
-    // with secure boot, images left unsigned, like ones from before
-    // sbctl had keys, get signed.
+    // the menu is written again even with nothing to remove: a menu
+    // another tool dropped os's entries from gets them back, with secure
+    // boot, images left unsigned, like ones from before sbctl had keys,
+    // get signed, and copies on the esp of boot files changed by hand,
+    // like with mkinitcpio, are made again.
     const unsigned = m.signs(boot.root_subvol.?) and
         (try secureboot.ours(a, boot.unsigned, boot.esp orelse "/")).len > 0;
-    if (removed.items.len == 0 and (boot.menu_missing != null or unsigned)) {
+    if (removed.items.len == 0) {
         const records = try gens.readRecords(a, ctx.io, "/var");
         if (records.len > 0) {
             const head = try std.fmt.allocPrint(a, "/{s}", .{records[records.len - 1].root});

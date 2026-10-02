@@ -492,7 +492,7 @@ copies of the system you can boot from the menu. it shows its checks and
 steps and asks first; `--yes` skips the question. there, `os rollback [n]`
 starts an older generation as a new one for the next boot, `os rollback
 --to-booted` keeps the one you booted from the menu, `os gc [--keep n]`
-removes old ones, and `os pin <n>` keeps one. `os diff 3 5` shows what
+removes old ones and writes the boot menu again, and `os pin <n>` keeps one. `os diff 3 5` shows what
 changed between two generations: packages added, removed, and at other
 versions, then the config between their commits. with one number, it
 compares that generation with the newest. it reads each generation's

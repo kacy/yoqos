@@ -214,6 +214,10 @@
   update that made the lock, never showed in any update.
 - `os doctor` flags a lock dated after today by the clock, which passed
   as a fresh one.
+- `os gc` writes the boot menu again even with nothing to remove, as the
+  messages that send you to it say. it only did when the menu had lost
+  os's entries or had unsigned images, so copies on the esp that went
+  missing, or went stale after `mkinitcpio` by hand, stayed that way.
 
 ## 0.1.3
 

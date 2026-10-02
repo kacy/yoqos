@@ -75,6 +75,16 @@ check "/usr/local/bin/os status | grep -c 'boot menu without'" 1
 check "/usr/local/bin/os gc | grep -c 'wrote the boot menu'" 1
 menu_generations 2
 check "/usr/local/bin/os status | grep -c 'boot menu without' || true" 0
+# copies on the esp that went by hand come back at gc, with nothing to
+# remove.
+case $VM_LOADER in
+limine | systemd-boot)
+    "$vm" ssh "rm -f $VM_ESP/yoq/boot/*"
+    check "/usr/local/bin/os gc | grep -c 'nothing to remove'" 1
+    check "ls $VM_ESP/yoq/boot | grep -c . | grep -c '^[1-9]'" 1
+    ;;
+*) ;;
+esac
 
 # generation 1, booted once from the menu: a fresh copy of it, from
 # before tree.
