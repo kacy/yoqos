@@ -22,6 +22,38 @@ pub const Root = struct {
         };
     }
 
+    /// the end of a log, up to `max` bytes, from the start of a line: the
+    /// part that matters however long it's grown. `read` gives "" for a
+    /// file past its limit, which would look like a log with nothing in
+    /// it. "" if it's missing or can't be read.
+    pub fn readTail(r: Root, rel: []const u8, max: usize) ![]const u8 {
+        const f = std.Io.Dir.cwd().openFile(r.io, try r.path(rel), .{}) catch return "";
+        defer f.close(r.io);
+        const size = f.length(r.io) catch return "";
+        if (size <= max) return r.readRange(f, 0, @intCast(size));
+        // with the byte before it, to tell if the first line is cut, and
+        // if it is, it goes.
+        const bytes = try r.readRange(f, size - max - 1, max + 1);
+        const nl = std.mem.indexOfScalar(u8, bytes, '\n') orelse return "";
+        return bytes[nl + 1 ..];
+    }
+
+    /// up to `max` bytes of a log from `offset` on, and the file's size,
+    /// for a reader that keeps its place. bytes is empty past the end.
+    pub fn readFrom(r: Root, rel: []const u8, offset: u64, max: usize) !struct { bytes: []const u8, size: u64 } {
+        const f = std.Io.Dir.cwd().openFile(r.io, try r.path(rel), .{}) catch return .{ .bytes = "", .size = 0 };
+        defer f.close(r.io);
+        const size = f.length(r.io) catch return .{ .bytes = "", .size = 0 };
+        if (offset >= size) return .{ .bytes = "", .size = size };
+        return .{ .bytes = try r.readRange(f, offset, @intCast(@min(size - offset, max))), .size = size };
+    }
+
+    fn readRange(r: Root, f: std.Io.File, offset: u64, len: usize) ![]const u8 {
+        const buf = try r.a.alloc(u8, len);
+        const n = f.readPositionalAll(r.io, buf, offset) catch return "";
+        return buf[0..n];
+    }
+
     /// replaces the file in one step, making its directory if needed, so a
     /// crash leaves the old or the new content, never half of each.
     pub fn write(r: Root, rel: []const u8, bytes: []const u8) error{ OutOfMemory, WriteFailed }!void {
@@ -424,6 +456,26 @@ fn dirProblem(a: Allocator, fd: std.os.linux.fd_t, name: []const u8) !?[]const u
     const open = st.mode & 0o002 != 0 or (st.mode & 0o020 != 0 and !group);
     if (open and st.mode & linux.S.ISVTX == 0) return try std.fmt.allocPrint(a, "others can write to the directory {s} on the way", .{name});
     return null;
+}
+
+test "a log longer than what's read keeps its end" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const r: Root = .{ .a = a, .io = io, .dir = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}) };
+    try std.testing.expectEqualStrings("", try r.readTail("log", 8));
+    try tmp.dir.writeFile(io, .{ .sub_path = "log", .data = "first\nsecond\nthird\n" });
+    try std.testing.expectEqualStrings("first\nsecond\nthird\n", try r.readTail("log", 64));
+    // cut inside "second": the part of it goes.
+    try std.testing.expectEqualStrings("third\n", try r.readTail("log", 9));
+    try std.testing.expectEqualStrings("second\nthird\n", try r.readTail("log", 13));
+    const from = try r.readFrom("log", 6, 7);
+    try std.testing.expectEqualStrings("second\n", from.bytes);
+    try std.testing.expectEqual(19, from.size);
+    try std.testing.expectEqualStrings("", (try r.readFrom("log", 30, 7)).bytes);
 }
 
 test "a checked write follows root's symlinks, and refuses others' and open directories" {

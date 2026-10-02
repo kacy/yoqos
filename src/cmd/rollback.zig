@@ -18,6 +18,7 @@ const journal = @import("../journal.zig");
 const rootfs = @import("../rootfs.zig");
 const secureboot = @import("../secureboot.zig");
 const menu = @import("../menu.zig");
+const news = @import("../news.zig");
 const Context = cli.Context;
 
 pub fn historyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
@@ -187,7 +188,7 @@ pub fn startFrom(ctx: *Context, a: std.mem.Allocator, m: *const gens.Machine, bo
     // a trial still waiting is overtaken: the next boot runs this.
     if (trial.Store.of(a, ctx.io, boot)) |store| if (try store.end()) |w| try ctx.err.print("os: couldn't end the pending trial: {s}\n", .{w});
     if (config) |c| {
-        if (!try restoreConfig(ctx, a, c, reason)) return null;
+        if (!try restoreConfig(ctx, a, c, try restoreMessage(a, reason, made))) return null;
     }
     try applying.collectOld(ctx, m, generation.default_keep);
     gens.blockHibernation(ctx.io);
@@ -249,12 +250,14 @@ pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer warnUnsigned(ctx, a, left.items) catch {};
     var removed: std.ArrayList(u32) = .empty;
     if (try m.collect(keep, &removed)) |problem| return cli.fail(ctx, "{s}", .{problem});
-    // a menu another tool dropped os's entries from gets them back, and
-    // with secure boot, images left unsigned, like ones from before
-    // sbctl had keys, get signed.
+    // the menu is written again even with nothing to remove: a menu
+    // another tool dropped os's entries from gets them back, with secure
+    // boot, images left unsigned, like ones from before sbctl had keys,
+    // get signed, and copies on the esp of boot files changed by hand,
+    // like with mkinitcpio, are made again.
     const unsigned = m.signs(boot.root_subvol.?) and
         (try secureboot.ours(a, boot.unsigned, boot.esp orelse "/")).len > 0;
-    if (removed.items.len == 0 and (boot.menu_missing != null or unsigned)) {
+    if (removed.items.len == 0) {
         const records = try gens.readRecords(a, ctx.io, "/var");
         if (records.len > 0) {
             const head = try std.fmt.allocPrint(a, "/{s}", .{records[records.len - 1].root});
@@ -303,6 +306,65 @@ pub fn pinCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     return 0;
 }
 
+/// the commit message of the config a way back puts back for generation
+/// `n`, which it made for `reason`. the number makes it that generation's
+/// alone, so `unrestored` can tell a second rollback to the same one from
+/// the first.
+fn restoreMessage(a: std.mem.Allocator, reason: []const u8, n: u32) ![]const u8 {
+    return std.fmt.allocPrint(a, "{s} (generation {d})", .{ reason, n });
+}
+
+/// whether `reason` is one a way back gives the generation it makes.
+fn wayBack(reason: []const u8) bool {
+    for ([_][]const u8{ "rollback to ", "keep ", "fell back from " }) |p| {
+        if (std.mem.startsWith(u8, reason, p)) return true;
+    }
+    return false;
+}
+
+/// the config to put back, when `newest`, the generation the machine
+/// runs, came from a way back that stopped before it put back that
+/// generation's config: a power cut, or ctrl-c, after the generation was
+/// recorded. the commit that puts it back, in `log`, says so. one made
+/// before generation numbers went into its message has the reason alone.
+pub fn unrestored(a: std.mem.Allocator, newest: generation.Record, running: []const u8, log: []const history.Entry) !?generation.Config {
+    if (!std.mem.eql(u8, newest.root, std.mem.trimStart(u8, running, "/")) or !wayBack(newest.reason)) return null;
+    const c: generation.Config = .{ .dir = newest.config_dir orelse return null, .rev = newest.config_rev orelse return null };
+    const bare = try news.plain(a, newest.reason);
+    const numbered = try news.plain(a, try restoreMessage(a, newest.reason, newest.n));
+    for (log) |e| {
+        if (std.mem.eql(u8, e.message, numbered) or std.mem.eql(u8, e.message, bare)) return null;
+    }
+    return c;
+}
+
+/// at boot: puts back the config of the generation this machine runs, if
+/// the way back that made it was cut off before it could (see
+/// `unrestored`). `os apply` refuses until that boot, so nothing applies
+/// the newer config to it first.
+pub fn finishRestore(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot) !void {
+    const records = try gens.readRecords(a, ctx.io, "/var");
+    if (records.len == 0) return;
+    try finishRestoreOf(ctx, a, records[records.len - 1], boot.root_subvol.?);
+}
+
+/// `finishRestore` for `newest`, the newest generation, and the root at
+/// `running`. a config that's as that generation had it already, as when
+/// a rollback had nothing to change, stays as it is.
+fn finishRestoreOf(ctx: *Context, a: std.mem.Allocator, newest: generation.Record, running: []const u8) !void {
+    const dir = newest.config_dir orelse return;
+    var why: []const u8 = "";
+    const log = try ctx.history.log(a, dir, &why) orelse return;
+    const c = try unrestored(a, newest, running, log) orelse return;
+    const files = try ctx.history.files(a, c.dir, c.rev, &why) orelse return;
+    for (files) |f| {
+        const now = ctx.files.read(a, try std.fs.path.join(a, &.{ c.dir, f.path })) catch break;
+        if (!std.mem.eql(u8, now, f.bytes)) break;
+    } else return;
+    if (!try restoreConfig(ctx, a, c, try restoreMessage(a, newest.reason, newest.n))) return;
+    try ctx.out.print("put back generation {d}'s config in {s}; the {s} that made it stopped before it could.\n", .{ newest.n, c.dir, if (std.mem.startsWith(u8, newest.reason, "fell back")) "fallback" else "rollback" });
+}
+
 /// writes the config directory back as it was at `c.rev`, and commits it.
 fn restoreConfig(ctx: *Context, a: std.mem.Allocator, c: generation.Config, message: []const u8) !bool {
     var why: []const u8 = "";
@@ -343,6 +405,38 @@ test "a rollback to a generation without an image, under secure boot" {
     try std.testing.expectEqual(null, secureBootWarning(.@"systemd-boot", true, true));
     try std.testing.expectEqual(null, secureBootWarning(.@"systemd-boot", false, false));
     try std.testing.expectEqual(null, secureBootWarning(.@"systemd-boot", null, false));
+}
+
+test "a rollback cut off before its config went back finishes at the next boot" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
+    try t.exec(&.{ "add", "--no-apply", "ripgrep" });
+    try t.exec(&.{ "add", "--no-apply", "fd" });
+    // generation 3 is generation 1 again, and its config never came back.
+    const back: generation.Record = .{ .n = 3, .time = 0, .root = "@roots/3", .reason = "rollback to 1: add ripgrep", .config_dir = "/etc/yoq", .config_rev = "1" };
+    try finishRestoreOf(&t.ctx, a, back, "/@roots/3");
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.toml").?, "fd") == null);
+    try std.testing.expectEqualStrings("rollback to 1: add ripgrep (generation 3)", t.recorder.messages.items[2]);
+    // done once; edits made after it stay.
+    try t.exec(&.{ "add", "--no-apply", "tree" });
+    try finishRestoreOf(&t.ctx, a, back, "/@roots/3");
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.toml").?, "tree") != null);
+    try std.testing.expectEqual(4, t.recorder.messages.items.len);
+    // a generation an apply made, one booted from a copy, and a rollback
+    // from an older os, whose commit has the reason alone, are left be.
+    var log = [_]history.Entry{.{ .n = 1, .rev = "1", .message = "rollback to 1: add ripgrep" }};
+    try std.testing.expectEqual(null, try unrestored(a, back, "/@roots/3", &log));
+    try std.testing.expectEqual(null, try unrestored(a, .{ .n = 3, .time = 0, .root = "@roots/3", .reason = "add fd", .config_dir = "/etc/yoq", .config_rev = "2" }, "/@roots/3", &.{}));
+    try std.testing.expectEqual(null, try unrestored(a, back, "/@roots/boot-1", &.{}));
+    try std.testing.expect(try unrestored(a, .{ .n = 4, .time = 0, .root = "@roots/4", .reason = "fell back from 5 to 3", .config_dir = "/etc/yoq", .config_rev = "1" }, "/@roots/4", &log) != null);
+    // a config that's as the generation had it already gets no commit.
+    const same: generation.Record = .{ .n = 5, .time = 0, .root = "@roots/5", .reason = "keep 4: add tree", .config_dir = "/etc/yoq", .config_rev = "4" };
+    try finishRestoreOf(&t.ctx, a, same, "/@roots/5");
+    try std.testing.expectEqual(4, t.recorder.messages.items.len);
 }
 
 test "history lists generations, and rollback needs one to go back to" {

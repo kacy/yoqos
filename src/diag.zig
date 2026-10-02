@@ -35,6 +35,7 @@ pub const Code = enum {
     esp_full,
     secret_missing,
     secure_boot_keys,
+    luks_locked,
 };
 
 pub const Entry = struct {
@@ -250,6 +251,16 @@ pub const table = [_]Entry{
             "mode (clearing its keys), then boot and run `sbctl enroll-keys -m`, which keeps microsoft's keys " ++
             "next to yours, for firmware drivers signed with them; sign the bootloader with `sbctl sign -s " ++
             "<file>` (`os doctor` lists what's unsigned); then turn secure boot on and reboot.",
+    },
+    .{
+        .code = .luks_locked,
+        .id = "E0135",
+        .title = "the initramfs wouldn't unlock the root",
+        .explanation = "the root is on luks, and the only thing that unlocks it at boot is os's mkinitcpio " ++
+            "drop-in from `[boot] encrypt = true`. the config doesn't ask for it any more, so applying would " ++
+            "remove it and build an initramfs that can't open the root, and the machine wouldn't boot. keep " ++
+            "`encrypt = true` under [boot], or first add sd-encrypt (or encrypt, for busybox's hooks) to HOOKS " ++
+            "in /etc/mkinitcpio.conf, then plan again.",
     },
 };
 

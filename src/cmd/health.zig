@@ -18,6 +18,7 @@ const trial = @import("../trial.zig");
 const menu = @import("../menu.zig");
 const rollback = @import("rollback.zig");
 const journal = @import("../journal.zig");
+const pipeline = @import("../pipeline.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
@@ -34,6 +35,7 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     // back, or settling a kernel waits for that to finish, rather than
     // both writing the menu and records at once.
     if (try cli.refused(ctx, cli.waitForMachine(ctx))) return 1;
+    try rollback.finishRestore(ctx, a, boot);
     const store = trial.Store.of(a, ctx.io, boot) orelse return 0;
     const t = try store.current() orelse {
         try ctx.out.writeAll("no generation on trial.\n");
@@ -57,7 +59,7 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         return fellBack(ctx, a, store, boot, t.n);
     }
 
-    const problems = try check(ctx, a);
+    const problems = try check(ctx, a, try trialInputs(ctx, a, record));
     if (problems.len == 0) {
         if (try headDefault(ctx, a, boot)) |why| try ctx.err.print("os: generation {d} is healthy, but couldn't make it grub.cfg's default: {s}. `os gc` writes the menu again.\n", .{ t.n, why });
         if (try store.end()) |why| return cli.fail(ctx, "generation {d} is healthy, but couldn't make it the default: {s}", .{ t.n, why });
@@ -147,8 +149,33 @@ fn settleBoot(ctx: *Context, a: Allocator, boot: facts.Boot) !?[]const u8 {
     return null;
 }
 
-/// what's wrong with the running machine, if anything.
-fn check(ctx: *Context, a: Allocator) ![]const []const u8 {
+/// what to judge a trial by: the config and lock its generation was made
+/// with, from the config's history, or the config as it is when that's
+/// gone. after a staged apply, `os enable` and the like still edit the
+/// config, and a service turned on since then isn't in the generation on
+/// trial. it's not running, but that's no reason to fall back.
+pub fn trialInputs(ctx: *Context, a: Allocator, r: generation.Record) !pipeline.Inputs {
+    var in = cli.inputs(ctx);
+    const dir = r.config_dir orelse return in;
+    const rev = r.config_rev orelse return in;
+    if (!cli.eql(std.fs.path.dirnamePosix(ctx.config_path) orelse ".", dir)) return in;
+    var why: []const u8 = "";
+    const files = try ctx.history.files(a, dir, rev, &why) orelse return in;
+    const staging = try cli.machinePath(ctx, a, health_dir);
+    for (files) |f| {
+        if (!try cli.writeFile(ctx, try std.fs.path.join(a, &.{ staging, f.path }), f.bytes)) return in;
+    }
+    in.config_path = try std.fs.path.join(a, &.{ staging, std.fs.path.basenamePosix(ctx.config_path) });
+    return in;
+}
+
+/// where the trial's config goes while it's checked. /run goes at the
+/// next boot.
+const health_dir = "/run/yoq/health";
+
+/// what's wrong with the running machine, if anything, by the config in
+/// `in`.
+fn check(ctx: *Context, a: Allocator, in: pipeline.Inputs) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     // no --wait: this runs as part of the boot, which isn't finished until
     // it is, so waiting would wait for itself. it runs after
@@ -171,7 +198,7 @@ fn check(ctx: *Context, a: Allocator) ![]const []const u8 {
     // configured services that aren't running show up as unit changes.
     var w: cli.Work = .init(ctx);
     defer w.deinit();
-    if (try w.plan(cli.inputs(ctx))) |result| {
+    if (try w.plan(in)) |result| {
         var down: std.ArrayList([]const u8) = .empty;
         for (result.plan.changes) |c| {
             if (c.kind == .unit and c.op != .remove) try down.append(a, try a.dupe(u8, c.subject));
@@ -221,4 +248,27 @@ test "a config puts the machine on a network when it turns on a network service"
     try std.testing.expect(networked(&c));
     c.services.entries.items[0].value.enabled = .{ .v = false, .src = src };
     try std.testing.expect(!networked(&c));
+}
+
+test "a trial is judged by the config its generation was made with" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var t: cli.TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
+    try t.exec(&.{ "add", "--no-apply", "ripgrep" });
+    // made while the staged generation waits for its reboot.
+    try t.exec(&.{ "enable", "--no-apply", "ssh" });
+    const r: generation.Record = .{ .n = 5, .time = 0, .root = "@roots/5", .reason = "update", .config_dir = "/etc/yoq", .config_rev = "1" };
+    const in = try trialInputs(&t.ctx, a, r);
+    try std.testing.expectEqualStrings(health_dir ++ "/machine.toml", in.config_path);
+    const text = t.fs.get(in.config_path).?;
+    try std.testing.expect(std.mem.indexOf(u8, text, "ripgrep") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "ssh") == null);
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.toml").?, "ssh") != null);
+    // a record from before configs were kept, or one whose commit is
+    // gone, goes by the config as it is.
+    try std.testing.expectEqualStrings("/etc/yoq/machine.toml", (try trialInputs(&t.ctx, a, .{ .n = 5, .time = 0, .root = "@roots/5", .reason = "x" })).config_path);
+    try std.testing.expectEqualStrings("/etc/yoq/machine.toml", (try trialInputs(&t.ctx, a, .{ .n = 5, .time = 0, .root = "@roots/5", .reason = "x", .config_dir = "/etc/yoq", .config_rev = "9" })).config_path);
 }

@@ -185,6 +185,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     if (!try planner.checkEsp(a, p, &result.facts, &w.diags)) return Outcome.failed(&w);
     if (!try planner.checkSecrets(result.state.config(), &result.facts, &w.diags)) return Outcome.failed(&w);
     if (!try planner.checkSecureBoot(result.state.config(), &result.facts, &w.diags)) return Outcome.failed(&w);
+    if (!try planner.checkLuks(result.state.config(), p, &result.facts, &w.diags)) return Outcome.failed(&w);
     const cut = try journal.unfinished(a, ctx.io, ctx.root);
     var settled_generation = false;
     if (cut) |begin| {
@@ -241,7 +242,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
         try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "failed", &hash);
         return Outcome.failed(&w);
     };
-    try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "done", &hash);
+    try journal.recordDone(a, ctx.io, ctx.root, journal.now(ctx.io), &hash);
     try recordIds(ctx, a);
     var code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units);
     if (w.diags.items.items.len > problems) code = try scriptsFailed(ctx, w.diags.items.items[problems..]);
@@ -510,7 +511,7 @@ fn targetFor(ctx: *Context, w: *cli.Work, c: *const config.Config, l: *const loc
     return .{
         .root = ctx.root,
         .dbpath = try observe.pacmanDb(a, ctx.io, ctx.root),
-        .dbs = try sync.withServers(a, dbs, rs),
+        .dbs = try sync.withServers(a, dbs, if (old) try sync.pastServers(a, pc.repos, l.sync_date) else rs),
         .cachedir = try cli.machinePath(ctx, a, "/var/cache/yoq/pkg"),
         .gpgdir = try keyring(ctx, a),
         .download_user = pc.download_user,

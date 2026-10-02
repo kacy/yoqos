@@ -492,7 +492,7 @@ copies of the system you can boot from the menu. it shows its checks and
 steps and asks first; `--yes` skips the question. there, `os rollback [n]`
 starts an older generation as a new one for the next boot, `os rollback
 --to-booted` keeps the one you booted from the menu, `os gc [--keep n]`
-removes old ones, and `os pin <n>` keeps one. `os diff 3 5` shows what
+removes old ones and writes the boot menu again, and `os pin <n>` keeps one. `os diff 3 5` shows what
 changed between two generations: packages added, removed, and at other
 versions, then the config between their commits. with one number, it
 compares that generation with the newest. it reads each generation's
@@ -1160,6 +1160,11 @@ machine has the hooks already, so no drop-in comes with it. `os install
 --encrypt` needs the key, since a new machine starts from mkinitcpio's own
 hooks. the key holds nothing secret and doesn't say how the disk unlocks:
 that's in the luks header and on the kernel's command line.
+
+taking the key out, or setting it to false, removes the drop-in. on a luks
+root whose own hooks can't unlock it, `os plan` and `os apply` stop with
+E0135 instead, since the next initramfs couldn't open the root. add
+`sd-encrypt` to HOOKS in `/etc/mkinitcpio.conf` first, if that's the plan.
 
 ### unified kernel images
 

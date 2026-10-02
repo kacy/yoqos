@@ -264,16 +264,28 @@ pub const Machine = struct {
     /// from the kernel's start, which a slow luks passphrase used up. only
     /// units that don't name the os they run are rewritten, since those
     /// read the same whichever os wrote them, and only ones os wrote.
+    /// units an older os didn't write at all, like yoq-carry.service on a
+    /// machine that turned generations on with 0.1.0, go in and are turned
+    /// on, running the os the health service there runs.
     fn refreshUnits(m: *const Machine, subvol: []const u8) !void {
         const dir = try m.at(&.{ subvol, "etc/systemd/system" });
+        const health = std.Io.Dir.cwd().readFileAlloc(m.io, try std.fs.path.join(m.a, &.{ dir, "yoq-health.service" }), m.a, .limited(64 << 10)) catch "";
         const a = try enable.units(m.a, "a");
         const b = try enable.units(m.a, "b");
-        for (a, b) |u, other| {
-            if (!std.mem.eql(u8, u.text, other.text)) continue;
+        const os_path = if (ours(health)) execPath(health, " health") else null;
+        const named = try enable.units(m.a, os_path orelse "");
+        for (a, b, named) |u, other, with_os| {
             const path = try std.fs.path.join(m.a, &.{ dir, u.name });
-            const now = std.Io.Dir.cwd().readFileAlloc(m.io, path, m.a, .limited(64 << 10)) catch continue;
+            const now = std.Io.Dir.cwd().readFileAlloc(m.io, path, m.a, .limited(64 << 10)) catch |e| switch (e) {
+                error.FileNotFound => {
+                    if (os_path != null) _ = try writeUnit(m.a, m.io, dir, with_os);
+                    continue;
+                },
+                else => continue,
+            };
+            if (!std.mem.eql(u8, u.text, other.text)) continue;
             const want = try std.fmt.allocPrint(m.a, "{s}{s}", .{ unit_header, u.text });
-            if (!std.mem.startsWith(u8, now, unit_header) or std.mem.eql(u8, now, want)) continue;
+            if (!ours(now) or std.mem.eql(u8, now, want)) continue;
             rootfs.writeAtomic(m.io, path, want, null) catch {};
         }
     }
@@ -1023,6 +1035,19 @@ pub const Machine = struct {
         return m.bootOnEsp() and std.mem.eql(u8, head, m.boot.root_subvol orelse "") and !m.unsettled(head);
     }
 
+    /// whether the menu's newest entry, for the root at `head`, boots
+    /// copies of its boot files on the esp, or an image of them, made as
+    /// the menu was written, rather than the files themselves: the
+    /// bootloader can't read the root, or it boots an image. a root whose
+    /// files aren't on the esp yet (see `unsettled`) counts as not, since
+    /// with /boot as the esp, pacman puts a new kernel on the esp, not in
+    /// that root's own /boot.
+    pub fn headCopied(m: *const Machine, head: []const u8) !bool {
+        if (m.headOnEsp(head) and !try m.bootsImage(head)) return false;
+        if (m.unsettled(head)) return false;
+        return menu.copiesOnEsp(m.boot) or try m.bootsImage(head);
+    }
+
     /// whether /boot is the esp, as archinstall sets it up. kernels then
     /// live outside every root, so each root keeps copies of its own in
     /// its /boot directory, under the mount, where grub and refind read
@@ -1279,21 +1304,45 @@ fn heldTitle(a: Allocator, entries: []const menu.Entry, held: ?usize, pending: u
 /// the first line of every unit os writes.
 const unit_header = "# written by os.\n";
 
+/// whether os wrote the unit `text`: it starts with os's line, or the one
+/// enable-rollback wrote before 0.1.1.
+fn ours(text: []const u8) bool {
+    return std.mem.startsWith(u8, text, unit_header) or std.mem.startsWith(u8, text, "# written by os enable-rollback.\n");
+}
+
+/// the program a unit's `ExecStart=<program><args>` line runs, if it has
+/// one ending in `args`.
+fn execPath(text: []const u8, args: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "ExecStart=") or !std.mem.endsWith(u8, line, args)) continue;
+        const path = line["ExecStart=".len .. line.len - args.len];
+        return if (path.len > 0 and path[0] == '/') path else null;
+    }
+    return null;
+}
+
 /// writes os's units that run at boot (enable.units) into the root at
 /// `root`, and turns them on there. `os_path` is the os they run.
 pub fn writeUnits(a: Allocator, io: std.Io, root: []const u8, os_path: []const u8) !?[]const u8 {
     const dir = try std.fs.path.join(a, &.{ root, "etc/systemd/system" });
     for (try enable.units(a, os_path)) |u| {
-        const text = try std.fmt.allocPrint(a, "{s}{s}", .{ unit_header, u.text });
-        if (try writeFile(a, io, try std.fs.path.join(a, &.{ dir, u.name }), text)) |w| return w;
-        const link = try u.wantsLink(a) orelse continue;
-        const at = try std.fs.path.join(a, &.{ dir, link });
-        if (try exec.runAll(a, io, &.{
-            &.{ "mkdir", "-p", std.fs.path.dirnamePosix(at).? },
-            &.{ "ln", "-sf", try std.fmt.allocPrint(a, "../{s}", .{u.name}), at },
-        })) |w| return w;
+        if (try writeUnit(a, io, dir, u)) |w| return w;
     }
     return null;
+}
+
+/// writes the unit `u` into `dir`, a root's /etc/systemd/system, and turns
+/// it on there.
+fn writeUnit(a: Allocator, io: std.Io, dir: []const u8, u: enable.Unit) !?[]const u8 {
+    const text = try std.fmt.allocPrint(a, "{s}{s}", .{ unit_header, u.text });
+    if (try writeFile(a, io, try std.fs.path.join(a, &.{ dir, u.name }), text)) |w| return w;
+    const link = try u.wantsLink(a) orelse return null;
+    const at = try std.fs.path.join(a, &.{ dir, link });
+    return exec.runAll(a, io, &.{
+        &.{ "mkdir", "-p", std.fs.path.dirnamePosix(at).? },
+        &.{ "ln", "-sf", try std.fmt.allocPrint(a, "../{s}", .{u.name}), at },
+    });
 }
 
 /// where the hibernation block goes: in /run, so the next boot, whichever
@@ -1570,6 +1619,85 @@ test "a watchdog timer an older os wrote is brought up to date in a new generati
     try std.testing.expect(std.mem.indexOf(u8, now, "OnBootSec") == null);
     try std.testing.expectEqualStrings(health, try tmp.dir.readFileAlloc(io, dir ++ "/yoq-health.service", a, .limited(4096)));
     try std.testing.expectEqualStrings("[Service]\nExecStart=/usr/bin/mine\n", try tmp.dir.readFileAlloc(io, dir ++ "/yoq-watchdog.service", a, .limited(4096)));
+}
+
+test "which menus boot copies of the running root's boot files" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var m: Machine = .{
+        .a = a,
+        .io = io,
+        .boot = .{ .loader = "limine", .esp = "/efi", .root_subvol = "/@roots/3" },
+        .loader = .limine,
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
+        .unsettled_note = try std.fmt.allocPrint(a, "{s}/note", .{base}),
+    };
+    // limine reads only the esp.
+    try std.testing.expect(try m.headCopied("/@roots/3"));
+    // with /boot as the esp, the newest entry boots the esp's own files.
+    m.boot.esp = "/boot";
+    try std.testing.expect(!try m.headCopied("/@roots/3"));
+    // grub reads the root, unless it's on luks.
+    m.boot.loader = "grub";
+    m.loader = .grub;
+    m.boot.esp = "/efi";
+    try std.testing.expect(!try m.headCopied("/@roots/3"));
+    m.boot.luks_uuid = "u";
+    try std.testing.expect(try m.headCopied("/@roots/3"));
+    m.boot.luks_uuid = null;
+    // an image is a copy, wherever the esp is.
+    try tmp.dir.createDirPath(io, "top/@roots/3/etc/kernel");
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/3/" ++ uki.config_rel, .data = "" });
+    try std.testing.expect(try m.headCopied("/@roots/3"));
+    m.boot.esp = "/boot";
+    try std.testing.expect(try m.headCopied("/@roots/3"));
+    // unless the root's files aren't on the esp yet.
+    try tmp.dir.writeFile(io, .{ .sub_path = "note", .data = "/@roots/3\n" });
+    try std.testing.expect(!try m.headCopied("/@roots/3"));
+}
+
+test "units from enable-rollback in 0.1.0 are brought up to date, and the missing one goes in" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    const dir = "top/@roots/1/etc/systemd/system";
+    try tmp.dir.createDirPath(io, dir);
+    const units = try enable.units(a, "/usr/bin/os");
+    const old_header = "# written by os enable-rollback.\n";
+    const old_timer = try std.mem.replaceOwned(u8, a, units[1].text, "OnActiveSec=", "OnBootSec=");
+    try tmp.dir.writeFile(io, .{ .sub_path = dir ++ "/yoq-health.service", .data = try std.fmt.allocPrint(a, "{s}{s}", .{ old_header, units[0].text }) });
+    try tmp.dir.writeFile(io, .{ .sub_path = dir ++ "/yoq-watchdog.timer", .data = try std.fmt.allocPrint(a, "{s}{s}", .{ old_header, old_timer }) });
+    try tmp.dir.writeFile(io, .{ .sub_path = dir ++ "/yoq-watchdog.service", .data = try std.fmt.allocPrint(a, "{s}{s}", .{ old_header, units[2].text }) });
+    const m: Machine = .{
+        .a = a,
+        .io = io,
+        .boot = .{ .loader = "grub", .root_subvol = "/@roots/1" },
+        .loader = .grub,
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
+    };
+    try m.refreshUnits("/@roots/1");
+    const timer = try tmp.dir.readFileAlloc(io, dir ++ "/yoq-watchdog.timer", a, .limited(4096));
+    try std.testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}{s}", .{ unit_header, units[1].text }), timer);
+    const carry = try tmp.dir.readFileAlloc(io, dir ++ "/yoq-carry.service", a, .limited(4096));
+    try std.testing.expect(std.mem.indexOf(u8, carry, "ExecStop=/usr/bin/os carry\n") != null);
+    _ = try tmp.dir.statFile(io, dir ++ "/multi-user.target.wants/yoq-carry.service", .{});
+    // a root os never set up gets nothing.
+    try tmp.dir.createDirPath(io, "top/@roots/2/etc/systemd/system");
+    try m.refreshUnits("/@roots/2");
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "top/@roots/2/etc/systemd/system/yoq-carry.service", .{}));
 }
 
 test "records by number, and dates" {

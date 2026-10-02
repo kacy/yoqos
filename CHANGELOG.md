@@ -159,6 +159,65 @@
   like news titles, before `os history`, `os rollback`, or anything else
   prints them. a repository `os install` cloned could otherwise move the
   cursor or rewrite the terminal.
+  directory on the way, like their home, could point the write, a secret's
+  value included, at any file on the machine.
+- a checked `[files]` write no longer leaves a directory on the way open.
+  in an install, one in the target kept it busy, so its luks volume
+  couldn't close until os exited.
+- the health check judges a trial by the config and lock its generation
+  was made with. a service turned on with `os enable` while a staged
+  generation waited for its reboot wasn't in that generation, so it
+  wasn't running, and the trial fell back.
+- packages for a lock from an earlier day download from the archive as it
+  was that day, then the day after, then the mirrors. an `os update`
+  answered just after midnight utc, or an apply of a lock made just
+  before, looked for packages only in an archive day that was older than
+  the lock, or not there yet.
+- a journal or drift log past 64 MiB read as empty, so an apply cut off
+  went unnoticed, every pacman run ever showed as drift, and `os events`
+  printed nothing. os now reads the end of a log for what happened last,
+  and `os events` reads a long one a window at a time.
+- pacman runs after an apply show as changed outside os even when the
+  clock went back in between, like ntp fixing a clock that ran ahead.
+  an apply's done line notes where the drift log ended, and the runs past
+  that count, where before only runs stamped later than the apply did.
+- a machine that turned generations on with 0.1.0 gets its units brought
+  up to date in its next generation too: the watchdog timer that counts
+  from the root's own start, and `yoq-carry.service`, which it never had,
+  so a password changed after `os rollback` was left behind. 0.1.0 marked
+  its units with a line of its own, which the update didn't take as os's.
+- taking `[boot] encrypt` out of the config on a luks root whose own
+  mkinitcpio hooks can't unlock it stops `os plan` and `os apply` with
+  E0135. the plan used to remove the drop-in and rebuild an initramfs that
+  couldn't open the root, which without generations left a machine that
+  didn't boot.
+- a kernel, microcode, or initramfs change made with pacman directly gets
+  the boot menu written again from os's pacman hook, where the newest
+  entry boots copies on the esp or an image: limine, systemd-boot, a luks
+  root, or `[boot] uki`. the entry kept booting the old kernel, whose
+  modules pacman had removed, until the next generation.
+- a rollback or fallback cut off after it made its generation, but before
+  it put back that generation's config, gets the config put back at the
+  next boot. the next `os apply` used to apply the newer config to the
+  older system. the commit that puts it back names the generation now.
+- `os events` keeps each log's events in the order they were written,
+  merging the journal and the drift log by time. it sorted them all by
+  time, so after the clock went back, an apply's later events could come
+  out before its earlier ones.
+- `os update` stops when the clock says it's before the lock's date, like
+  a clock reset to 2000 before ntp sets it. it used to write a lock dated
+  then, which every apply after took for an old one, fetching from the
+  archive for that day, and the next update showed years of news.
+  `--date` still sets any date.
+- `os update` shows arch news posted on the old lock's day too. a lock's
+  date is a whole day, and an item posted later that day, after the
+  update that made the lock, never showed in any update.
+- `os doctor` flags a lock dated after today by the clock, which passed
+  as a fresh one.
+- `os gc` writes the boot menu again even with nothing to remove, as the
+  messages that send you to it say. it only did when the menu had lost
+  os's entries or had unsigned images, so copies on the esp that went
+  missing, or went stale after `mkinitcpio` by hand, stayed that way.
 
 ## 0.1.3
 
