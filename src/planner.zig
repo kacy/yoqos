@@ -1062,7 +1062,7 @@ fn largestImage(b: *const facts.Boot) u64 {
 
 /// the room images with their command lines in them take, beyond what
 /// `espNeed` counts, when the menu written after a plan signs (see
-/// gens.Machine.ukiName): each entry has its own image then. the
+/// images.ukiName): each entry has its own image then. the
 /// generation before the new one moves to an entry with a command line of
 /// its own, so it gets a new image. a plan that changes the boot files
 /// gives the trial its twin of the new one, and counts the new one again
@@ -1097,7 +1097,7 @@ fn bootFilesChange(reason: []const u8) bool {
 /// whether the menu written after a plan signs what it boots: the
 /// generation it makes or the running one has the secure boot file, or
 /// the firmware enforces secure boot and sbctl has keys (see
-/// gens.Machine.signs). a plan that removes the file still signs once,
+/// images.signs). a plan that removes the file still signs once,
 /// since the running root has it.
 fn signsAfter(p: *const Plan, f: *const facts.Facts) bool {
     if (secureboot.enforcedWithKeys(f.boot.secure_boot, f.boot.sbctl_keys)) return true;

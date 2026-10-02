@@ -1,5 +1,5 @@
 //! the boot menu's entries, and each bootloader's way of writing them.
-//! this part is pure; gens.zig reads the machine and writes the files.
+//! this part is pure; bootmenu.zig reads the machine and writes the files.
 
 const std = @import("std");
 const facts = @import("facts.zig");

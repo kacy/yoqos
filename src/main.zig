@@ -147,6 +147,9 @@ test {
     _ = @import("accounts.zig");
     _ = @import("newconfig.zig");
     _ = @import("gens.zig");
+    _ = @import("bootmenu.zig");
+    _ = @import("bootfiles.zig");
+    _ = @import("images.zig");
     _ = @import("planner.zig");
     _ = @import("pipeline.zig");
     _ = @import("golden.zig");

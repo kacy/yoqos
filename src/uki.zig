@@ -6,7 +6,7 @@
 //! its own. with secure boot, each entry's image has its command line in
 //! it: the stub ignores the loader's then, and the signature keeps anyone
 //! who can write the esp from adding init=/bin/sh to it. this part is
-//! pure; gens.zig builds them.
+//! pure; images.zig builds them.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

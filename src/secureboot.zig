@@ -2,7 +2,7 @@
 //! puts on the esp, and the loader files it installs there, with
 //! `sbctl sign`. the keys are sbctl's own, in /var/lib/sbctl, which no
 //! generation holds, so they outlast every rollback. os never makes or
-//! enrolls keys. this part is pure; gens.zig signs.
+//! enrolls keys. this part is pure; images.zig signs.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
