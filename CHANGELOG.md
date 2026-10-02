@@ -209,6 +209,9 @@
   then, which every apply after took for an old one, fetching from the
   archive for that day, and the next update showed years of news.
   `--date` still sets any date.
+- `os update` shows arch news posted on the old lock's day too. a lock's
+  date is a whole day, and an item posted later that day, after the
+  update that made the lock, never showed in any update.
 
 ## 0.1.3
 

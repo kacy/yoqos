@@ -225,7 +225,7 @@ fn withoutLocal(a: Allocator, rs: []const sync.Repo) ![]const sync.Repo {
     return out.items;
 }
 
-/// arch news posted after the old lock's date, up to the new one. a feed
+/// arch news posted from the old lock's date, up to the new one. a feed
 /// that can't be fetched is worth a warning, not a failed update.
 fn newsSince(ctx: *Context, a: Allocator, old: []const u8, new: []const u8) ![]const news.Item {
     if (!std.mem.lessThan(u8, old, new)) return &.{};

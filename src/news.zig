@@ -32,11 +32,14 @@ pub fn parse(a: Allocator, xml: []const u8) ![]const Item {
     return out.items;
 }
 
-/// the items posted after `after` and up to `upto`, both yyyy-mm-dd.
-pub fn between(a: Allocator, items: []const Item, after: []const u8, upto: []const u8) ![]const Item {
+/// the items posted on `from` or after, up to `upto`, both yyyy-mm-dd.
+/// a lock's date is a day, and an item posted later on the day of the
+/// old lock came after it, so that day counts. an item from before the
+/// old lock that day shows up twice, which beats never.
+pub fn between(a: Allocator, items: []const Item, from: []const u8, upto: []const u8) ![]const Item {
     var out: std.ArrayList(Item) = .empty;
     for (items) |it| {
-        if (std.mem.order(u8, it.date, after) == .gt and std.mem.order(u8, it.date, upto) != .gt) try out.append(a, it);
+        if (std.mem.order(u8, it.date, from) != .lt and std.mem.order(u8, it.date, upto) != .gt) try out.append(a, it);
     }
     return out.items;
 }
@@ -114,7 +117,9 @@ test "items from the feed, and the ones between two dates" {
     const since = try between(a, items, "2026-09-18", "2026-09-25");
     try std.testing.expectEqual(1, since.len);
     try std.testing.expectEqualStrings("https://archlinux.org/news/mkinitcpio-42/", since[0].link);
-    try std.testing.expectEqual(0, (try between(a, items, "2026-09-22", "2026-09-25")).len);
+    // posted on the old lock's day, maybe after it.
+    try std.testing.expectEqual(1, (try between(a, items, "2026-09-22", "2026-09-25")).len);
+    try std.testing.expectEqual(0, (try between(a, items, "2026-09-23", "2026-09-25")).len);
 }
 
 test "titles lose control characters and escape sequences" {
