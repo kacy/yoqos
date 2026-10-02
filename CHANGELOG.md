@@ -270,6 +270,10 @@
   unquoted into grub.cfg, so a file on the esp called
   `x;set root=(hd9);-ucode.img` became grub commands in every menu os
   wrote after, and went into each root's /boot with the rest.
+- a config's includes stop at 256 files read, counting a file again for
+  each include of it. a few files that each included the next twice were
+  read millions of times, so a cloned config could keep `os install`
+  from ever showing its plan.
 
 ## 0.1.3
 
