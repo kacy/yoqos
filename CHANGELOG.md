@@ -252,6 +252,10 @@
   changed PKGBUILD as "Binary files differ". the review also escapes the
   c1 controls in utf-8 and the marks that reverse the direction text
   shows in.
+- a package file an aur recipe commits is removed before the build. one
+  that sorted first, like `foo-0-0-any.pkg.tar.zst`, went into the local
+  repository instead of what the build made, though the review only
+  named it as a binary file.
 
 ## 0.1.3
 
