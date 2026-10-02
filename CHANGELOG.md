@@ -243,6 +243,15 @@
   sequence in any of them could move the cursor to hide a line of a plan
   before the yes, or set the clipboard. progress keeps its own escape
   for redrawing its line.
+- an aur review shows a file whose name git quotes, like `é.install`.
+  it was listed but its content was left out, though it can be the
+  install script that runs as root. a symlink shows as one, and a file
+  git can't show says so.
+- an aur review shows a recipe's changes as text whatever its own
+  .gitattributes says. one that marked its files `-diff` showed a
+  changed PKGBUILD as "Binary files differ". the review also escapes the
+  c1 controls in utf-8 and the marks that reverse the direction text
+  shows in.
 
 ## 0.1.3
 
