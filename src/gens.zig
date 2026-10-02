@@ -1319,14 +1319,21 @@ pub const esp_boot_dir = "yoq/boot";
 
 /// mounts what mkinitcpio needs in the root given first, as arch-chroot
 /// does, then runs the rest there. the root goes on itself first, so it's
-/// a mount, and autodetect finds its filesystem at /.
+/// a mount, and autodetect finds its filesystem at /. mkinitcpio's post
+/// hooks get empty directories over theirs: sbctl's signs the kernel it's
+/// given whenever it finds keys, which here is the root's package file in
+/// /usr/lib/modules, and os signs the image itself.
 const api_chroot_script =
+    \\set -e
     \\r=$1; shift
-    \\mount --bind "$r" "$r" &&
-    \\mount -t proc proc "$r/proc" &&
-    \\mount -t sysfs -o ro sys "$r/sys" &&
-    \\mount --rbind /dev "$r/dev" &&
-    \\mount -t tmpfs -o mode=0755,nosuid,nodev run "$r/run" &&
+    \\mount --bind "$r" "$r"
+    \\mount -t proc proc "$r/proc"
+    \\mount -t sysfs -o ro sys "$r/sys"
+    \\mount --rbind /dev "$r/dev"
+    \\mount -t tmpfs -o mode=0755,nosuid,nodev run "$r/run"
+    \\for d in usr/lib/initcpio/post etc/initcpio/post; do
+    \\    if [ -d "$r/$d" ]; then mount -t tmpfs -o mode=0755 post "$r/$d"; fi
+    \\done
     \\exec chroot "$r" "$@"
 ;
 
@@ -1807,6 +1814,13 @@ test "a signed image takes the kernel from its package and builds its own initra
     try tmp.dir.deleteTree(io, "top/@roots/2/" ++ uki.modules_dir);
     entries[0] = .{ .id = "head", .title = "yoq 4", .subvol = "/@roots/2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw", .esp_dir = "" };
     try std.testing.expect(std.mem.startsWith(u8, (try m.writeOnEsp(&entries, &.{}, testPut, null)).?, "can't find the kernel for vmlinuz-linux"));
+}
+
+test "the script that runs mkinitcpio in a root parses, and hides its post hooks" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqual(null, try exec.run(arena.allocator(), std.testing.io, &.{ "sh", "-n", "-c", api_chroot_script }));
+    try std.testing.expect(std.mem.indexOf(u8, api_chroot_script, "usr/lib/initcpio/post etc/initcpio/post") != null);
 }
 
 /// a kernel in the test root at `root`, as linux's package installs it,
