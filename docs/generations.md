@@ -193,9 +193,9 @@ as it always did.
 `os init` sets the key on a machine that boots unified kernel images
 already: one whose mkinitcpio presets have a `default_uki=` or
 `fallback_uki=`, or with images in `EFI/Linux` on the esp, like omarchy,
-as long as ukify is installed. `os` leaves the machine's own images alone and builds its own from the
-kernel and initramfs files in `/boot`, so mkinitcpio has to keep writing
-the initramfs files too (`default_image=`).
+as long as ukify is installed. `os` leaves the machine's own images alone
+and builds its own from the kernel and initramfs files in `/boot`, so
+mkinitcpio has to keep writing the initramfs files too (`default_image=`).
 
 ## secure boot
 
@@ -271,8 +271,10 @@ starts, a new image for every entry.
 a signature only adds a few KiB. signing an image that's on the esp
 already takes more, since its signed copy goes in beside it before it
 replaces it, so when there's one without a signature, `os plan` counts
-room for an image that size. `os` doesn't rely on sbctl's own pacman hook: a staged generation's
-image is signed before its trial boot. the hook still runs when packages
+room for an image that size.
+
+`os` doesn't rely on sbctl's own pacman hook: a staged generation's image
+is signed before its trial boot. the hook still runs when packages
 change on the running system, but not in a root `os` builds, like a staged
 one, a clean build, or an install. it signs files at their paths on the
 esp, which isn't mounted there, so it would only fail. `os` turns it off
@@ -302,9 +304,9 @@ everything lives in the btrfs top level:
 | `@roots/boot-<n>` | a fresh writable copy of generation n, for its menu entry |
 | `@var`, `@home`, `@root`, `@srv`, `@usrlocal` | data, which no generation holds |
 
-every `os apply`, `add`, `remove`, `enable`, `disable`, `edit`, or `update`
-that changes the machine records the result as the next generation, labeled
-with what made it:
+every `os apply`, `add`, `remove`, `enable`, `disable`, `edit`, `update`,
+or `adopt` of a file that changes the machine records the result as the
+next generation, labeled with what made it:
 
 ```
 yoq 3 · 2026-09-27 · update packages to 2026-09-27
@@ -325,8 +327,9 @@ an older generation then has accounts for packages it doesn't have, but an
 id given out once is never given to anyone else, and a package installed
 again gets its old id back, along with the files in `/var` it owns. `os
 status` says if a system account's id ever changes anyway. a generation
-waiting for the next boot gets them once more as the machine shuts down, from `yoq-carry.service`, so a password you change
-between `os rollback` and the reboot comes along too.
+waiting for the next boot gets them once more as the machine shuts down,
+from `yoq-carry.service`, so a password you change between `os rollback`
+and the reboot comes along too.
 
 when the esp is `/boot`, as archinstall sets it up, the kernel and
 initramfs live on the esp, outside every root. each generation therefore
@@ -509,6 +512,11 @@ next boot tries again once there's room.
   limine.conf. a generation from before `uki` boots a kernel without a
   signature, so on systemd-boot and refind the firmware refuses it while
   secure boot is on.
+- the tpm key that `os install --tpm` adds is sealed to pcr 7, the secure
+  boot state, not to a signed pcr 11 policy for `os`'s own images. so
+  with secure boot on, anything signed with your keys that boots gets the
+  disk unlocked, and so does a plain kernel that limine loads without the
+  firmware's check.
 
 ## later
 
