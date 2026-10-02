@@ -298,6 +298,13 @@ pub fn writeAtomic(io: std.Io, path: []const u8, bytes: []const u8, bits: ?u32) 
     return replaceAt(@intCast(dfd), std.fs.path.basenamePosix(path), bytes, bits);
 }
 
+/// `writeAtomic` with mode 0644, for the steps that say what went wrong
+/// instead of failing: null when it worked.
+pub fn writeWhole(a: Allocator, io: std.Io, path: []const u8, bytes: []const u8) error{OutOfMemory}!?[]const u8 {
+    writeAtomic(io, path, bytes, null) catch return try std.fmt.allocPrint(a, "can't write {s}", .{path});
+    return null;
+}
+
 /// `writeAtomic`'s work, for the file `name` in the open directory `dfd`:
 /// the temporary file and the rename both happen in that directory, so
 /// nothing can swap the path in between.

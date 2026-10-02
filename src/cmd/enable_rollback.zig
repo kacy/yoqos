@@ -12,11 +12,11 @@ const exec = @import("../exec.zig");
 const facts = @import("../facts.zig");
 const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
+const bootmenu = @import("../bootmenu.zig");
 const menu = @import("../menu.zig");
 const output = @import("../output.zig");
 const events = @import("../events.zig");
 const journal = @import("../journal.zig");
-const applying = @import("apply.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
@@ -314,7 +314,7 @@ const Enabler = struct {
         const esp = e.boot.esp.?;
         // what the firmware boots now, kept until grub-install is done.
         if (!try e.keep(try std.fs.path.join(e.a, &.{ esp, "EFI" }), "/run/yoq/efi-backup")) return false;
-        return e.sh(try gens.grubInstall(e.a, e.ctx.io, esp, esp));
+        return e.sh(try bootmenu.grubInstall(e.a, e.ctx.io, esp, esp));
     }
 
     /// the menu, with generation 1 and the system as it is now. grub's goes

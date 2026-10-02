@@ -10,7 +10,7 @@ const toml = @import("toml.zig");
 const diag = @import("diag.zig");
 const catalog = @import("catalog.zig");
 const lists = @import("lists.zig");
-const planner = @import("planner.zig");
+const desired = @import("desired.zig");
 const secrets = @import("secrets.zig");
 const Allocator = std.mem.Allocator;
 
@@ -518,7 +518,7 @@ fn validateModules(c: *const Config, diags: *diag.List) !void {
 fn validateFiles(c: *const Config, diags: *diag.List) !void {
     // files os makes from other keys. a [files] entry for one of them
     // would fight it on every apply.
-    const made = try planner.desiredFiles(diags.arena.allocator(), c, &.{});
+    const made = try desired.files(diags.arena.allocator(), c, &.{});
     for (c.files.entries.items) |e| {
         const f = &e.value;
         if (filePathProblem(e.name)) |hint| try diags.add(.bad_value, f.src, "\"{s}\" isn't a path os can write", .{e.name}, hint);

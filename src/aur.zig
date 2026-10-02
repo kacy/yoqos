@@ -419,8 +419,7 @@ pub const Builder = struct {
     }
 
     fn write(b: Builder, path: []const u8, text: []const u8) !?[]const u8 {
-        rootfs.writeAtomic(b.io, path, text, null) catch return try std.fmt.allocPrint(b.a, "can't write {s}", .{path});
-        return null;
+        return rootfs.writeWhole(b.a, b.io, path, text);
     }
 
     /// makes `path` and its parents. null when it worked.

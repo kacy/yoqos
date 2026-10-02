@@ -15,7 +15,6 @@ const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
 const trial = @import("../trial.zig");
 const journal = @import("../journal.zig");
-const rootfs = @import("../rootfs.zig");
 const secureboot = @import("../secureboot.zig");
 const menu = @import("../menu.zig");
 const news = @import("../news.zig");
@@ -179,7 +178,7 @@ pub fn startFrom(ctx: *Context, a: std.mem.Allocator, m: *const gens.Machine, bo
     const config: ?generation.Config = if (target.config_dir != null and target.config_rev != null) .{ .dir = target.config_dir.?, .rev = target.config_rev.? } else null;
     var made: u32 = 0;
     var later: ?[]const u8 = null;
-    if (try m.start(source, reason, std.Io.Timestamp.now(ctx.io, .real).toSeconds(), config, &made, &later)) |w| {
+    if (try m.start(source, .{ .reason = reason, .time = std.Io.Timestamp.now(ctx.io, .real).toSeconds(), .config = config }, &made, &later)) |w| {
         try ctx.err.print("os: {s}\n", .{w});
         return null;
     }

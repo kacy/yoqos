@@ -229,8 +229,7 @@ pub const Store = struct {
     }
 
     fn write(s: Store, path: []const u8, text: []const u8) !?[]const u8 {
-        rootfs.writeAtomic(s.io, path, text, null) catch return try std.fmt.allocPrint(s.a, "can't write {s}", .{path});
-        return null;
+        return rootfs.writeWhole(s.a, s.io, path, text);
     }
 
     fn bootctl(s: Store, verb: []const u8, id: []const u8) !?[]const u8 {

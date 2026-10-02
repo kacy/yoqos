@@ -8,6 +8,7 @@ const std = @import("std");
 const config = @import("config.zig");
 const lock = @import("lock.zig");
 const planner = @import("planner.zig");
+const desired = @import("desired.zig");
 const output = @import("output.zig");
 const lists = @import("lists.zig");
 const catalog = @import("catalog.zig");
@@ -171,10 +172,10 @@ pub fn explainFile(a: Allocator, c: *const config.Config, path: []const u8) !Fil
         if (f.secret) |s| {
             ans.cause = .{ .key = try std.fmt.allocPrint(a, "files.\"{s}\" secret = \"{s}\"", .{ path, s.v }), .src = f.src };
         } else ans.cause = .{ .key = try std.fmt.allocPrint(a, "files.\"{s}\"", .{path}), .src = f.src };
-    } else if (lists.find(try planner.desiredFiles(a, c, &.{}), "path", path)) |d| {
+    } else if (lists.find(try desired.files(a, c, &.{}), "path", path)) |d| {
         ans.cause = .{ .key = d.cause.?, .src = d.src };
-    } else if (std.mem.eql(u8, path, "/etc/pacman.conf") and planner.ownRepos(c)) {
-        ans.cause = .{ .key = "repos", .src = planner.reposSrc(c) };
+    } else if (std.mem.eql(u8, path, "/etc/pacman.conf") and desired.ownRepos(c)) {
+        ans.cause = .{ .key = "repos", .src = desired.reposSrc(c) };
         ans.partial = true;
     }
     return ans;

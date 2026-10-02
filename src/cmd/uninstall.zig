@@ -11,6 +11,8 @@ const exec = @import("../exec.zig");
 const facts = @import("../facts.zig");
 const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
+const images = @import("../images.zig");
+const bootmenu = @import("../bootmenu.zig");
 const lists = @import("../lists.zig");
 const menu = @import("../menu.zig");
 const output = @import("../output.zig");
@@ -83,7 +85,7 @@ fn unsignedKernels(a: Allocator, io: std.Io, boot: facts.Boot) ![]const []const 
     var it = d.iterate();
     while (it.next(io) catch null) |e| {
         if (e.kind != .file or !std.mem.startsWith(u8, e.name, "vmlinuz-")) continue;
-        if (!gens.fileSigned(io, try std.fs.path.join(a, &.{ esp, e.name }), null)) try out.append(a, try a.dupe(u8, e.name));
+        if (!images.fileSigned(io, try std.fs.path.join(a, &.{ esp, e.name }), null)) try out.append(a, try a.dupe(u8, e.name));
     }
     lists.sortStrings(out.items);
     return out.items;
@@ -197,7 +199,7 @@ const Uninstaller = struct {
                         rootfs.writeAtomic(u.ctx.io, defaults, more, null) catch return "can't write " ++ defaults;
                     }
                 } else |_| {}
-                if (try u.run(try gens.grubInstall(u.a, u.ctx.io, esp, "/boot"))) |w| return w;
+                if (try u.run(try bootmenu.grubInstall(u.a, u.ctx.io, esp, "/boot"))) |w| return w;
                 if (try u.run(&.{ "grub-mkconfig", "-o", "/boot/grub/grub.cfg" })) |w| return w;
                 if (!std.mem.eql(u8, esp, "/boot")) return u.run(&.{ "rm", "-rf", try std.fs.path.join(u.a, &.{ esp, "grub" }) });
                 return null;

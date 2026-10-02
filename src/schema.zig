@@ -10,6 +10,7 @@ const facts = @import("facts.zig");
 const lists = @import("lists.zig");
 const lock = @import("lock.zig");
 const planner = @import("planner.zig");
+const planview = @import("planview.zig");
 const secrets = @import("secrets.zig");
 const status = @import("status.zig");
 const toml = @import("toml.zig");
@@ -27,7 +28,7 @@ pub const docs = [_]Doc{
     .{ .name = "events", .what = "a line of os events, as os events prints them", .write = docSchema(events.Event, events.schema) },
     .{ .name = "facts", .what = "what os reads from a machine: os facts, and --facts", .write = docSchema(facts.Facts, facts.schema) },
     .{ .name = "lock", .what = "machine.lock", .write = lockSchema },
-    .{ .name = "plan", .what = "os plan --json, and the file os plan -o saves", .write = docSchema(planner.Doc, planner.schema) },
+    .{ .name = "plan", .what = "os plan --json, and the file os plan -o saves", .write = docSchema(planview.Doc, planner.schema) },
     .{ .name = "secret", .what = "os secret set and rm --json", .write = docSchema(secrets.Entry, secrets.entry_schema) },
     .{ .name = "secrets", .what = "os secret list --json", .write = docSchema(secrets.List, secrets.list_schema) },
     .{ .name = "status", .what = "os status --json", .write = docSchema(status.Status, status.schema) },

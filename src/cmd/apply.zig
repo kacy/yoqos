@@ -12,6 +12,9 @@ const lock = @import("../lock.zig");
 const observe = @import("../observe.zig");
 const output = @import("../output.zig");
 const planner = @import("../planner.zig");
+const planview = @import("../planview.zig");
+const desired = @import("../desired.zig");
+const checks = @import("../checks.zig");
 const pipeline = @import("../pipeline.zig");
 const sync = @import("../sync.zig");
 const systemd = @import("../systemd.zig");
@@ -159,7 +162,7 @@ pub const Outcome = struct {
 };
 
 pub const RunOptions = struct {
-    render: planner.RenderOptions = .{},
+    render: planview.RenderOptions = .{},
     /// the hash of a saved plan: the run applies that plan or nothing.
     expect: ?[]const u8 = null,
 };
@@ -182,10 +185,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     }
     // before anything is built: a staged root whose boot files can't go
     // on the esp would only be thrown away.
-    if (!try planner.checkEsp(a, p, &result.facts, &w.diags)) return Outcome.failed(&w);
-    if (!try planner.checkSecrets(result.state.config(), &result.facts, &w.diags)) return Outcome.failed(&w);
-    if (!try planner.checkSecureBoot(result.state.config(), &result.facts, &w.diags)) return Outcome.failed(&w);
-    if (!try planner.checkLuks(result.state.config(), p, &result.facts, &w.diags)) return Outcome.failed(&w);
+    if (!try checks.passes(a, result.state.config(), p, &result.facts, &w.diags)) return Outcome.failed(&w);
     const cut = try journal.unfinished(a, ctx.io, ctx.root);
     var settled_generation = false;
     if (cut) |begin| {
@@ -212,7 +212,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
         return .{ .code = 0, .matches = true, .changed_generation = settled_generation, .reason = if (settled_generation) "apply" else null };
     }
 
-    if (!ctx.json and !opts.render.quiet) try planner.writeText(ctx.out, a, p, opts.render);
+    if (!ctx.json and !opts.render.quiet) try planview.writeText(ctx.out, a, p, opts.render);
     if (try cli.approve(ctx, yes, "apply", "apply this?")) |code| return .{ .code = code, .matches = false };
     if (try movedSince(ctx, in, &(try p.hash()))) return .{ .code = 1, .matches = false };
 
@@ -238,9 +238,9 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     const units = liveUnits(ctx);
     const hash = try p.hash();
     try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "begin", &hash);
-    const files = try planner.desiredFiles(a, result.state.config(), &result.facts);
+    const files = try desired.files(a, result.state.config(), &result.facts);
     const problems = w.diags.items.items.len;
-    const done = try apply.run(a, ctx.io, p, &result.state.lock, files, ctx.secrets, target, units, &w.diags) orelse {
+    const done = try apply.run(a, ctx.io, .{ .plan = p, .lock = &result.state.lock, .files = files, .store = ctx.secrets, .target = target, .units = units }, &w.diags) orelse {
         try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "failed", &hash);
         return Outcome.failed(&w);
     };
@@ -356,9 +356,8 @@ pub fn recordGeneration(ctx: *Context, done: Outcome, caller_reason: []const u8)
         return lost;
     };
     defer m.close();
-    const now = std.Io.Timestamp.now(ctx.io, .real).toSeconds();
-    const commit = try configNow(ctx, a);
-    const recorded = if (done.staged_root) |root| try m.recordStaged(root, reason, now, commit) else try m.record(reason, now, commit);
+    const stamp: generation.Stamp = .{ .reason = reason, .time = std.Io.Timestamp.now(ctx.io, .real).toSeconds(), .config = try configNow(ctx, a) };
+    const recorded = if (done.staged_root) |root| try m.recordStaged(root, stamp) else try m.record(stamp);
     if (recorded) |problem| {
         if (done.staged_root != null) {
             try ctx.err.print("os: the change was built, but couldn't be recorded, so it's gone again: {s}. the running system is as it was; `os apply` tries again.\n", .{problem});

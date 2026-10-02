@@ -187,6 +187,11 @@ pub fn keeps(r: Record, records: []const Record, keep: usize) bool {
 /// a config directory at one commit.
 pub const Config = struct { dir: []const u8, rev: []const u8 };
 
+/// what a new generation's record says about where it came from: what
+/// made it, when, in unix seconds, and the config commit it matches, when
+/// there is one.
+pub const Stamp = struct { reason: []const u8, time: i64, config: ?Config };
+
 /// a file in /boot that belongs to the root beside it: a kernel, a
 /// microcode image, or an initramfs. fallback images are left out; they're
 /// large and no menu entry uses them. so is a name with anything but

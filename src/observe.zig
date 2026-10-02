@@ -8,6 +8,8 @@ const std = @import("std");
 const exec = @import("exec.zig");
 const generation = @import("generation.zig");
 const gens = @import("gens.zig");
+const images = @import("images.zig");
+const bootfiles = @import("bootfiles.zig");
 const accounts = @import("accounts.zig");
 const menu = @import("menu.zig");
 const facts = @import("facts.zig");
@@ -232,9 +234,9 @@ const Reader = struct {
         var out: std.ArrayList([]const u8) = .empty;
         // os's images need sbctl's db key; the bootloader's files may be
         // signed with another the firmware has, like microsoft's.
-        const key = try gens.dbKey(r.a, r.io, try r.path(secureboot.db_cert_rel));
-        for (try r.names(try std.fs.path.join(r.a, &.{ esp[1..], gens.esp_boot_dir }), .file)) |name| {
-            try r.addUnsigned(&out, &.{ esp, gens.esp_boot_dir, name }, key);
+        const key = try images.dbKey(r.a, r.io, try r.path(secureboot.db_cert_rel));
+        for (try r.names(try std.fs.path.join(r.a, &.{ esp[1..], bootfiles.esp_boot_dir }), .file)) |name| {
+            try r.addUnsigned(&out, &.{ esp, bootfiles.esp_boot_dir, name }, key);
         }
         var dir = std.Io.Dir.cwd().openDir(r.io, try r.path(try std.fs.path.join(r.a, &.{ esp[1..], "EFI" })), .{ .iterate = true }) catch return out.items;
         defer dir.close(r.io);
@@ -251,7 +253,7 @@ const Reader = struct {
     /// binary without a signature, from `key` when there is one.
     fn addUnsigned(r: Reader, out: *std.ArrayList([]const u8), parts: []const []const u8, key: ?[]const u8) !void {
         const p = try std.fs.path.join(r.a, parts);
-        if (!uki.isEfi(std.fs.path.basename(p)) or gens.fileSigned(r.io, try r.path(p[1..]), key)) return;
+        if (!uki.isEfi(std.fs.path.basename(p)) or images.fileSigned(r.io, try r.path(p[1..]), key)) return;
         try out.append(r.a, p);
     }
 
