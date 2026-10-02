@@ -265,6 +265,11 @@
   never makes the machine fall back. anything that could write the esp
   could plant one that booted an older generation once, and the health
   check then made that generation the newest, with its config, for good.
+- a kernel, initramfs, or microcode file whose name has anything but
+  letters, digits, and `._+-` is left out of the boot menu. names went
+  unquoted into grub.cfg, so a file on the esp called
+  `x;set root=(hd9);-ucode.img` became grub commands in every menu os
+  wrote after, and went into each root's /boot with the rest.
 
 ## 0.1.3
 

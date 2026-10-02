@@ -1167,6 +1167,7 @@ pub const Machine = struct {
             defer b.close(m.io);
             var it = b.iterate();
             while (it.next(m.io) catch null) |f| {
+                if (!generation.bootFile(f.name)) continue;
                 if (std.mem.startsWith(u8, f.name, "vmlinuz-")) try kernels.append(m.a, try m.a.dupe(u8, f.name));
                 if (std.mem.endsWith(u8, f.name, "-ucode.img")) try initrds.append(m.a, try m.a.dupe(u8, f.name));
             }
@@ -2325,4 +2326,33 @@ test "a work directory in a root's /tmp is made fresh, and root's alone" {
     try std.testing.expectEqual(.directory, st.kind);
     try std.testing.expectEqual(0o700, @intFromEnum(st.permissions) & 0o777);
     try std.testing.expectEqualStrings("theirs", try tmp.dir.readFileAlloc(io, "theirs/yoq.efi", a, .limited(64)));
+}
+
+test "a boot file named with more than letters, digits, and ._+- stays out of the menu" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "top/@roots/2/boot");
+    for ([_][]const u8{ "vmlinuz-linux", "initramfs-linux.img", "amd-ucode.img", "x;set root=(hd9);-ucode.img", "vmlinuz-a{b}" }) |f| {
+        try tmp.dir.writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "top/@roots/2/boot/{s}", .{f}), .data = "x" });
+    }
+    const m: Machine = .{
+        .a = a,
+        .io = io,
+        .boot = .{ .loader = "grub", .root_subvol = "/@roots/1" },
+        .loader = .grub,
+        .root_uuid = "r",
+        .esp_uuid = "e",
+        .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
+        .unsettled_note = try std.fmt.allocPrint(a, "{s}/note", .{base}),
+    };
+    const e = try m.entry("gen-2", "yoq 2", "/@roots/2", "");
+    try std.testing.expectEqualStrings("vmlinuz-linux", e.kernel);
+    try std.testing.expectEqual(2, e.initrds.len);
+    try std.testing.expectEqualStrings("amd-ucode.img", e.initrds[0]);
+    try std.testing.expectEqualStrings("initramfs-linux.img", e.initrds[1]);
 }
