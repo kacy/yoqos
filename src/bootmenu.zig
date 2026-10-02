@@ -232,12 +232,19 @@ fn heldTitle(a: Allocator, entries: []const menu.Entry, held: ?usize, pending: u
 /// `boot_dir`, on the efi path grub boots from now: its own directory
 /// under EFI/, or the removable path, EFI/BOOT.
 pub fn grubInstall(a: Allocator, io: std.Io, esp: []const u8, boot_dir: []const u8) ![]const []const u8 {
+    return grubInstallAt(a, esp, boot_dir, try grubEfiPath(a, io, esp));
+}
+
+/// grub-install's arguments for grub on `esp`, reading its menu from
+/// `boot_dir`, put `where`: "--removable", or a boot entry's
+/// "--bootloader-id=<name>".
+pub fn grubInstallAt(a: Allocator, esp: []const u8, boot_dir: []const u8, where: []const u8) ![]const []const u8 {
     return a.dupe([]const u8, &.{
         "grub-install",
         "--target=x86_64-efi",
         try std.fmt.allocPrint(a, "--efi-directory={s}", .{esp}),
         try std.fmt.allocPrint(a, "--boot-directory={s}", .{boot_dir}),
-        try grubEfiPath(a, io, esp),
+        where,
     });
 }
 

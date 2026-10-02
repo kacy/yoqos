@@ -14,6 +14,7 @@ const exec = @import("../exec.zig");
 const facts = @import("../facts.zig");
 const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
+const bootmenu = @import("../bootmenu.zig");
 const install = @import("../install.zig");
 const lock = @import("../lock.zig");
 const events = @import("../events.zig");
@@ -560,10 +561,10 @@ const Installer = struct {
         if (try exec.runAll(in.a, in.ctx.io, &.{
             &.{ "mkdir", "-p", try std.fs.path.join(in.a, &.{ esp, "yoq" }) },
             &.{ "grub-editenv", try std.fs.path.join(in.a, &.{ esp, generation.grubenv }), "create" },
-            try in.grubInstall(esp, "--removable"),
+            try bootmenu.grubInstallAt(in.a, esp, esp, "--removable"),
         })) |w| return w;
         if (try in.run(&.{ "efibootmgr", "--version" }) == null) {
-            if (try in.run(try in.grubInstall(esp, "--bootloader-id=yoq"))) |w| {
+            if (try in.run(try bootmenu.grubInstallAt(in.a, esp, esp, "--bootloader-id=yoq"))) |w| {
                 try in.ctx.err.print("os: no boot entry of its own ({s}); the disk still boots from the removable path.\n", .{w});
             }
         }
@@ -595,18 +596,6 @@ const Installer = struct {
         const args = try install.consoleArgs(in.a, try rootfs.readProc(in.a, in.ctx.io, "/proc/cmdline"));
         if (!in.encrypt) return args;
         return std.fmt.allocPrint(in.a, "{s} {s}", .{ args, try install.luksArgs(in.a, in.luks_uuid, in.tpm) });
-    }
-
-    /// grub-install's arguments for the esp at `esp`, with its menu
-    /// there, put `where`: the removable path, or a boot entry.
-    fn grubInstall(in: *Installer, esp: []const u8, where: []const u8) ![]const []const u8 {
-        return in.a.dupe([]const u8, &.{
-            "grub-install",
-            "--target=x86_64-efi",
-            try std.fmt.allocPrint(in.a, "--efi-directory={s}", .{esp}),
-            try std.fmt.allocPrint(in.a, "--boot-directory={s}", .{esp}),
-            where,
-        });
     }
 
     fn uuid(in: *Installer, device: []const u8, why: *[]const u8) !?[]const u8 {
