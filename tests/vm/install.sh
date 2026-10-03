@@ -126,14 +126,16 @@ tests/vm/secureboot-luks.sh
 check "/usr/local/bin/os uninstall --yes --delete-generations >/tmp/out 2>&1; echo \$?" 0
 check "grep -c '^GRUB_CMDLINE_LINUX=.* rd.luks.name=' /etc/default/grub" 1
 check "grep -c 'rd.luks.options=tpm2-device=auto' /boot/grub/grub.cfg | grep -c -v '^0\$'" 1
-# the tpm still unlocks it, through grub and arch's own signed kernel. if
-# it asks for the passphrase instead, it gets it, and pcr 7's events show
-# what changed.
+# arch's plain kernel boots now, without systemd's stub, whose initramfs
+# adds an os separator to pcr 7. the tpm's key was made with it there, so
+# this boot asks for the passphrase, which opens the root, and the key
+# made again makes the next boot unattended.
 answered=$(VM_ANSWER_MAYBE=1 "$vm" reboot-answer "passphrase for" "correct horse battery")
+"$vm" ssh "/usr/lib/systemd/systemd-pcrlock log --pcr=7 2>&1 | grep -c os-separator" || true
 if [ "$answered" = answered ]; then
-    "$vm" ssh "/usr/lib/systemd/systemd-pcrlock log --pcr=7 2>&1 | tail -n 20; cryptsetup luksDump \$(cryptsetup status root | sed -n 's/^ *device: *//p') | sed -n '/^Tokens:/,/^Digests:/p'" || true
-    echo "install: the tpm didn't unlock the root after uninstall"
-    exit 1
+    part=$("$vm" ssh "cryptsetup status root | sed -n 's/^ *device: *//p'")
+    "$vm" ssh "printf 'correct horse battery' > /root/luks-key && chmod 600 /root/luks-key && systemd-cryptenroll --unlock-key-file=/root/luks-key --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 $part >/dev/null; rm -f /root/luks-key"
+    "$vm" reboot
 fi
 check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in use."
 check "test -e /var/lib/yoq && echo state || echo none" none

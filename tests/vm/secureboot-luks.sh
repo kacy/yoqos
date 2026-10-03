@@ -51,7 +51,7 @@ check "/usr/local/bin/os doctor | grep -c '^  no  firmware keys: sbctl.s db key 
 "$vm" ssh "rm -rf /var/lib/sbctl && mv /root/sbctl.enrolled /var/lib/sbctl"
 
 # the tpm's key made again, as the docs say: the next boot is unattended.
-"$vm" ssh "printf 'correct horse battery' > /root/luks-key && systemd-cryptenroll --unlock-key-file=/root/luks-key --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 $part >/dev/null; rm -f /root/luks-key"
+"$vm" ssh "printf 'correct horse battery' > /root/luks-key && chmod 600 /root/luks-key && systemd-cryptenroll --unlock-key-file=/root/luks-key --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 $part >/dev/null; rm -f /root/luks-key"
 check "/usr/local/bin/os doctor | grep -c '^  ok  tpm key: opens the root\$'" 1
 "$vm" reboot
 check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in use."
@@ -60,7 +60,6 @@ settled
 
 # without os, grub boots arch's kernel, which has to be signed then.
 "$vm" ssh "sbctl sign -s /boot/vmlinuz-linux >/dev/null"
-# what pcr 7 was made of, to compare with if the tpm doesn't unlock the
-# root after os is gone.
-"$vm" ssh "/usr/lib/systemd/systemd-pcrlock log --pcr=7 2>&1 | tail -n 20" || true
+# booted through systemd's stub, pcr 7 has its os separator.
+check "/usr/lib/systemd/systemd-pcrlock log --pcr=7 2>&1 | grep -c os-separator" 1
 echo "secure boot on luks ok"
