@@ -123,6 +123,8 @@ cuts, secure boot, encrypted installs, upgrading `os` itself, and leaving.
 what it hasn't had yet is much time on real hardware. if you try it on a
 spare machine, i'd love to hear how it went.
 
+- [examples/](examples): whole machines to read and borrow from, from a
+  six-package minimal one to a fleet of two that share files
 - [docs/usage.md](docs/usage.md): installing it, every command, and the
   config format
 - [docs/generations.md](docs/generations.md): how generations, trials, and

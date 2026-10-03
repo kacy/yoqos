@@ -25,6 +25,8 @@ jobs:
           version: 0.16.0
       - run: zig build fmt
       - run: zig build test --summary all
+      - name: the example configs load and pass os's checks
+        run: zig build && tests/examples.sh ./zig-out/bin/os
 
   native:
     # debian trixie ships libalpm 15, the same as arch, and libsystemd.
@@ -59,6 +61,8 @@ jobs:
       - run: zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline
       - name: init, lock, status, and plan against this machine
         run: tests/arch/smoke.sh ./zig-out/bin/os
+      - name: the example configs resolve against today's arch packages
+        run: tests/examples.sh ./zig-out/bin/os --resolve
 
   vm:
     # a booted arch vm under kvm: systemd running and a real bootloader.

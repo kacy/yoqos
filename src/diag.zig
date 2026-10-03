@@ -152,7 +152,8 @@ pub const table = [_]Entry{
         .title = "choose a provider",
         .explanation = "a package depends on something several packages provide, like java-runtime, and os " ++
             "won't pick one for you. add the choice to the config under [providers], for example " ++
-            "`java-runtime = \"jre-openjdk\"`.",
+            "`java-runtime = \"jre-openjdk\"`. a name with a dot in it goes in quotes, like " ++
+            "`\"libxtables.so\" = \"iptables\"`, or toml reads it as a table.",
     },
     .{
         .code = .alpm_failed,

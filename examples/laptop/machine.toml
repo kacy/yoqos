@@ -1,0 +1,52 @@
+# a laptop that's encrypted, boots signed images, and tries to last all
+# day on battery. its root is on luks, the initramfs unlocks it, and each
+# generation boots a unified kernel image signed with your own secure boot
+# keys (see "secure boot" in docs/usage.md for the one-time key setup).
+version = 1
+packages = [
+  "base", "linux-firmware", "sof-firmware", "grub", "efibootmgr", "btrfs-progs",
+  "sudo", "tpm2-tss", "neovim", "git", "firefox", "noto-fonts",
+]
+
+[providers]
+# arch has more than one package for these, and os asks instead of picking
+# the first one the way pacman does. naming them here means it never has to.
+"libxtables.so" = "iptables"
+initramfs = "mkinitcpio"
+jack = "pipewire-jack"
+
+[system]
+hostname = "lark"
+timezone = "Europe/Berlin"
+locale = "en_US.UTF-8"
+keymap = "de"
+
+[boot]
+encrypt = true
+uki = true
+secure_boot = true
+
+[hardware]
+cpu = "intel"
+gpu = "intel"
+
+[users.sam]
+shell = "bash"
+groups = ["wheel", "video"]
+
+[services]
+networkmanager = true
+bluetooth = true
+tlp = true
+fstrim = true
+fwupd = true
+
+# wi-fi, with its password kept out of the config: `os secret set
+# wifi/home` asks for it once on this machine, and os writes the file
+# from it, mode 0600.
+[files."/etc/NetworkManager/system-connections/home.nmconnection"]
+secret = "wifi/home"
+
+[sysctl]
+"vm.swappiness" = 10
+"vm.dirty_writeback_centisecs" = 1500

@@ -892,7 +892,9 @@ blank disk instead of a directory.
 
 `machine.toml` is plain toml: no functions, no loops, no variables. if you
 want those, write a script that generates the toml. a normal config should
-read in half a minute. a full example:
+read in half a minute. [examples/](../examples) has whole machines to read
+and borrow from: a laptop, desktops, a home server, a container, and a
+fleet that shares files. a full example:
 
 ```toml
 version = 1

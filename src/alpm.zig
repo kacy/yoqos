@@ -10,6 +10,7 @@ const build_options = @import("build_options");
 const facts = @import("facts.zig");
 const lock = @import("lock.zig");
 const diag = @import("diag.zig");
+const toml = @import("toml.zig");
 const rootfs = @import("rootfs.zig");
 const progress = @import("progress.zig");
 const Allocator = std.mem.Allocator;
@@ -165,17 +166,34 @@ pub fn clearStaleLock(a: Allocator, io: std.Io, dbpath: []const u8) error{OutOfM
     return path;
 }
 
-/// reports choices nobody made, for when there's no one to ask.
+/// reports choices nobody made, for when there's no one to ask. the hint
+/// writes the name as a toml key, quoted when it has a dot, like
+/// "libxtables.so", which toml would otherwise read as a table.
 pub fn reportChoices(a: Allocator, choices: []const Choice, diags: *diag.List) !void {
     for (choices) |ch| {
         const options = try std.mem.join(a, ", ", ch.options);
-        try diags.addHint(.provider_choice, null, "{s} has more than one provider: {s}", .{ ch.name, options }, "pick one in [providers], like {s} = \"{s}\"", .{ ch.name, ch.options[0] });
+        var key: std.Io.Writer.Allocating = .init(a);
+        toml.writeKey(&key.writer, ch.name) catch return error.OutOfMemory;
+        try diags.addHint(.provider_choice, null, "{s} has more than one provider: {s}", .{ ch.name, options }, "pick one in [providers], like {s} = \"{s}\"", .{ key.written(), ch.options[0] });
     }
 }
 
 // -- tests --
 
 const testing = std.testing;
+
+test "a provider's hint writes its name as a toml key" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var diags: diag.List = .init(testing.allocator);
+    defer diags.deinit();
+    try reportChoices(arena.allocator(), &.{
+        .{ .name = "libxtables.so", .options = &.{ "iptables", "iptables-legacy" } },
+        .{ .name = "java-runtime", .options = &.{"jre-openjdk"} },
+    }, &diags);
+    try testing.expectEqualStrings("pick one in [providers], like \"libxtables.so\" = \"iptables\"", diags.items.items[0].hint.?);
+    try testing.expectEqualStrings("pick one in [providers], like java-runtime = \"jre-openjdk\"", diags.items.items[1].hint.?);
+}
 
 const fixture_dbs = [_]SyncDb{
     .{ .name = "core", .path = "tests/alpm/repos/core.db" },

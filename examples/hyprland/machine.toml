@@ -1,0 +1,45 @@
+# a hyprland desktop. `session` brings hyprland and its portal, `audio`
+# brings pipewire, and `login` sets up greetd with tuigreet on tty1. the
+# hyprland config next to this file becomes the machine's default, for
+# anyone without one in ~/.config/hypr.
+version = 1
+packages = [
+  "base", "linux-firmware", "grub", "efibootmgr", "btrfs-progs", "sudo",
+  "kitty", "wofi", "waybar", "mako", "grim", "slurp", "wl-clipboard",
+  "noto-fonts", "noto-fonts-emoji", "ttf-jetbrains-mono-nerd",
+  "firefox", "neovim", "git",
+]
+
+[providers]
+# arch has more than one package for these, and os asks instead of picking
+# the first one the way pacman does. naming them here means it never has to.
+"libxtables.so" = "iptables"
+initramfs = "mkinitcpio"
+jack = "pipewire-jack"
+
+[system]
+hostname = "atlas"
+timezone = "America/New_York"
+locale = "en_US.UTF-8"
+
+[boot]
+kernel = "linux-zen"
+
+[hardware]
+cpu = "amd"
+gpu = "amd"
+
+[desktop]
+session = "hyprland"
+audio = "pipewire"
+login = "greetd"
+session_config = "hyprland.conf"
+
+[users.kacy]
+shell = "zsh"
+groups = ["wheel", "video", "input"]
+
+[services]
+networkmanager = true
+bluetooth = true
+power-profiles = true

@@ -1,0 +1,17 @@
+# the build server. `os config show --resolved` on this file prints the
+# merged config with the file and line every value came from.
+include = ["../../base.toml", "../../profiles/server.toml"]
+packages = ["base-devel", "zig", "ccache"]
+
+# the base turns on magic sysrq; a server in a shared rack doesn't need it.
+unset = ["sysctl.kernel.sysrq"]
+
+[system]
+hostname = "forge"
+
+[hardware]
+cpu = "intel"
+
+[services.forgejo]
+unit = "forgejo.service"
+package = "forgejo"

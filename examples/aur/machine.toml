@@ -1,0 +1,27 @@
+# packages from beyond arch's own repositories. aur packages build in a
+# clean chroot; `os update` shows you each recipe (or what changed in it)
+# before it builds anything. a repository like chaotic-aur is pinned like
+# arch's are, and its key is checked.
+version = 1
+packages = [
+  "base", "linux-firmware", "grub", "efibootmgr", "btrfs-progs", "sudo",
+  "devtools", "neovim", "git",
+]
+aur = ["visual-studio-code-bin", "yay-bin"]
+
+[repos.chaotic-aur]
+server = "https://cdn-mirror.chaotic.cx/$repo/$arch"
+key = "EF925EA60F33D0CB85C44AD13056513887B78AEB"
+
+[system]
+hostname = "studio"
+timezone = "Europe/London"
+locale = "en_GB.UTF-8"
+keymap = "uk"
+
+[users.robin]
+shell = "zsh"
+groups = ["wheel"]
+
+[services]
+networkmanager = true

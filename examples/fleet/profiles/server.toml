@@ -1,0 +1,16 @@
+# what a server adds to the base.
+packages = ["tmux", "rsync", "docker-compose"]
+
+[boot]
+kernel = "linux-lts"
+
+[users.jo]
+groups = ["wheel", "docker"]
+
+[services]
+docker = true
+fstrim = true
+firewalld = true
+
+[sysctl]
+"net.ipv4.ip_forward" = 1
