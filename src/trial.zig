@@ -108,11 +108,11 @@ pub const Store = struct {
         // the bootloader, or for refind the firmware, clears the one-shot
         // variable when it reads it, whatever then boots. an entry picked
         // by hand in its place didn't try the trial.
-        const cleared = !rootfs.pathExists(s.io, if (s.loader == .refind) bootnext_var else oneshot_var);
+        const pending = rootfs.pathExists(s.io, if (s.loader == .refind) bootnext_var else oneshot_var);
         return .{
             .n = std.fmt.parseInt(u32, note.words[0], 10) catch return null,
             .fallback = std.fmt.parseInt(u32, note.words[1], 10) catch 0,
-            .tried = cleared and !byHand(s.loader, .{
+            .tried = wasTried(s.loader, pending, .{
                 .selected = try s.efiText(selected_var),
                 .default = try s.efiText(default_var),
                 .boot_current = try s.efiNumber(bootcurrent_var),
@@ -500,6 +500,29 @@ const Booted = struct {
     boot_current: ?u16 = null,
     trial_entry: []const u8 = "",
 };
+
+/// whether the trial's boot has happened, on limine, systemd-boot, or
+/// refind: the one-shot that starts it, LoaderEntryOneShot or the
+/// firmware's BootNext, is gone, `pending` is false, and this boot
+/// wasn't an entry picked by hand in its place. a one-shot still there
+/// means no boot has read it, so the trial hasn't run, whatever this
+/// boot is.
+fn wasTried(loader: menu.Loader, pending: bool, b: Booted) bool {
+    return !pending and !byHand(loader, b);
+}
+
+test "a trial whose one-shot is still there wasn't tried" {
+    // refind: BootNext still names the trial's entry, and this boot came
+    // from refind's own, so no boot read it.
+    try std.testing.expect(!wasTried(.refind, true, .{ .boot_current = 0xa, .trial_entry = "0004" }));
+    try std.testing.expect(!wasTried(.@"systemd-boot", true, .{ .selected = "yoq-gen-2.conf", .default = "yoq-gen-2.conf" }));
+    try std.testing.expect(!wasTried(.limine, true, .{}));
+    // gone, and this boot is the default: the trial ran and didn't come up.
+    try std.testing.expect(wasTried(.refind, false, .{ .boot_current = 0xa, .trial_entry = "0004" }));
+    try std.testing.expect(wasTried(.@"systemd-boot", false, .{ .selected = "yoq-gen-2.conf", .default = "yoq-gen-2.conf" }));
+    // gone, but an older entry was picked in its place.
+    try std.testing.expect(!wasTried(.refind, false, .{ .boot_current = 4, .trial_entry = "0004" }));
+}
 
 /// whether a boot that isn't the trial's, though the one-shot that
 /// would have started it is gone, ran an entry picked by hand: that

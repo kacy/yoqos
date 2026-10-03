@@ -48,28 +48,21 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         _ = try store.end();
         return 0;
     };
-    // a power cut stopped os partway: after the trial passed, or before
-    // it was armed.
-    if (t.phase == .passed) return finishPass(ctx, a, store, boot, record, false);
-    const on_trial_root = std.mem.eql(u8, boot.root_subvol.?[1..], record.root);
-    if (t.phase == .arming and !on_trial_root) return rearm(ctx, a, store, boot, t, record);
-    if (!on_trial_root) {
-        // an older entry picked by hand before the trial ran isn't a
-        // failed trial: the next boot tries it again.
-        if (!t.tried) {
+    switch (next(t, std.mem.eql(u8, boot.root_subvol.?[1..], record.root))) {
+        .finish_pass => return finishPass(ctx, a, store, boot, record, false),
+        .rearm => return rearm(ctx, a, store, boot, t, record),
+        .retry => {
             _ = try store.retry();
             try ctx.out.print("generation {d} hasn't been tried yet; the next boot tries it.\n", .{t.n});
             return 0;
-        }
-        // a trial os never noted, only grub's env file on the esp, could
-        // be anyone's who can write there. falling back would make this
-        // boot's generation the newest, config and all, for good.
-        if (!t.noted) {
+        },
+        .end_unnoted => {
             _ = try store.end();
             try ctx.err.print("os: grub's env file on the esp says generation {d} is on trial, but os never armed one. the trial is ended, and nothing rolls back. `os rollback --to-booted` keeps the generation this boot runs.\n", .{t.n});
             return 1;
-        }
-        return fellBack(ctx, a, store, boot, t.n);
+        },
+        .fall_back => return fellBack(ctx, a, store, boot, t.n),
+        .judge => {},
     }
 
     const problems = try check(ctx, a, try trialInputs(ctx, a, record));
@@ -88,6 +81,54 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     try ctx.out.flush();
     _ = try exec.run(a, ctx.io, &.{ "systemctl", "reboot" });
     return 1;
+}
+
+/// what a boot does about a trial, by its note and whether this boot runs
+/// the trial's root.
+const Next = enum {
+    /// an earlier boot passed it, and a power cut stopped os before it
+    /// was the default.
+    finish_pass,
+    /// a power cut stopped os before the bootloader was set up.
+    rearm,
+    /// the trial's boot hasn't happened, like when an older entry was
+    /// picked by hand: the next boot tries it again.
+    retry,
+    /// only grub's env file names it, which anything that can write the
+    /// esp could have planted. falling back would make this boot's
+    /// generation the newest, config and all, for good.
+    end_unnoted,
+    /// it ran and didn't come up, and this boot is the one it falls back
+    /// to.
+    fall_back,
+    /// this boot is the trial.
+    judge,
+};
+
+fn next(t: trial.Trial, on_trial_root: bool) Next {
+    if (t.phase == .passed) return .finish_pass;
+    if (on_trial_root) return .judge;
+    if (t.phase == .arming) return .rearm;
+    if (!t.tried) return .retry;
+    if (!t.noted) return .end_unnoted;
+    return .fall_back;
+}
+
+test "a trial that hasn't run is never fallen back from" {
+    // whatever os noted, a boot that didn't run the trial and didn't use
+    // up its one-shot leaves it to the next boot.
+    for ([_]trial.Phase{ .arming, .armed }) |phase| {
+        const waiting: trial.Trial = .{ .n = 7, .fallback = 6, .tried = false, .phase = phase };
+        try std.testing.expect(next(waiting, false) != .fall_back);
+    }
+    try std.testing.expectEqual(Next.retry, next(.{ .n = 7, .fallback = 6, .tried = false }, false));
+    try std.testing.expectEqual(Next.rearm, next(.{ .n = 7, .fallback = 6, .tried = false, .phase = .arming }, false));
+    try std.testing.expectEqual(Next.fall_back, next(.{ .n = 7, .fallback = 6, .tried = true }, false));
+    try std.testing.expectEqual(Next.end_unnoted, next(.{ .n = 7, .fallback = 6, .tried = true, .noted = false }, false));
+    try std.testing.expectEqual(Next.judge, next(.{ .n = 7, .fallback = 6, .tried = true }, true));
+    // a trial that passed already ran; the boot after finishes the job,
+    // whichever generation it runs.
+    try std.testing.expectEqual(Next.finish_pass, next(.{ .n = 7, .fallback = 6, .tried = false, .phase = .passed }, false));
 }
 
 /// the trial passed: grub.cfg's default and the bootloader's choices
