@@ -52,7 +52,7 @@ jobs:
       image: archlinux:latest
       options: --privileged
     steps:
-      - run: printf %s "$MIRRORLIST" > /etc/pacman.d/mirrorlist && pacman -Syu --noconfirm --needed git libarchive systemd-libs btrfs-progs
+      - run: printf %s "$MIRRORLIST" > /etc/pacman.d/mirrorlist && pacman -Syu --noconfirm --needed git libarchive systemd-libs btrfs-progs lowdown mandoc
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
@@ -63,6 +63,8 @@ jobs:
         run: tests/arch/smoke.sh ./zig-out/bin/os
       - name: the example configs resolve against today's arch packages
         run: tests/examples.sh ./zig-out/bin/os --resolve
+      - name: the man pages render, and mandoc finds nothing wrong in them
+        run: dist/man.sh man && mandoc -T lint -W unsupp man/*
 
   vm:
     # a booted arch vm under kvm: systemd running and a real bootloader.
@@ -138,7 +140,7 @@ jobs:
       image: archlinux:latest
       options: --privileged --device /dev/kvm
     steps:
-      - run: printf %s "$MIRRORLIST" > /etc/pacman.d/mirrorlist && pacman -Syu --noconfirm --needed git libarchive systemd-libs archiso qemu-base edk2-ovmf libisoburn openssh
+      - run: printf %s "$MIRRORLIST" > /etc/pacman.d/mirrorlist && pacman -Syu --noconfirm --needed git libarchive systemd-libs archiso qemu-base edk2-ovmf libisoburn lowdown openssh
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
@@ -156,7 +158,7 @@ jobs:
     timeout-minutes: 20
     container: archlinux:latest
     steps:
-      - run: printf %s "$MIRRORLIST" > /etc/pacman.d/mirrorlist && pacman -Syu --noconfirm --needed base-devel git zig
+      - run: printf %s "$MIRRORLIST" > /etc/pacman.d/mirrorlist && pacman -Syu --noconfirm --needed base-devel git zig lowdown
       - uses: actions/checkout@v4
         with:
           # pkgver counts commits.
@@ -172,4 +174,5 @@ jobs:
           os version
           test -f /usr/share/libalpm/hooks/yoq-drift.hook
           test -f /usr/share/yoq/profiles/omarchy.toml
+          test -f /usr/share/man/man1/os.1.gz && test -f /usr/share/man/man7/os-generations.7.gz
           pacman -Qi yoq-os-git

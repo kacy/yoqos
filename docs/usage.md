@@ -76,7 +76,9 @@ sudo pacman -U yoq-os-0.1.5-1-x86_64.pkg.tar.zst
 
 the package holds the `os` command, a pacman hook that records direct
 `pacman` use for `os status`, the profiles in `/usr/share/yoq/profiles`,
-and these docs. the tarball holds the same files, laid out like `/usr`.
+these docs, and man pages made from them: `man os` is this page, and `man
+os-generations` is [generations.md](generations.md). the tarball holds the
+same files, laid out like `/usr`.
 
 to build it yourself, `dist/PKGBUILD` makes `yoq-os-git` from the
 repository's `main` branch, or `yoq-os` from a release tag with

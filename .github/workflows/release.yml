@@ -29,7 +29,7 @@ jobs:
       image: archlinux:latest
       options: --privileged
     steps:
-      - run: printf %s "$MIRRORLIST" > /etc/pacman.d/mirrorlist && pacman -Syu --noconfirm --needed base-devel git zig github-cli libarchive systemd-libs archiso
+      - run: printf %s "$MIRRORLIST" > /etc/pacman.d/mirrorlist && pacman -Syu --noconfirm --needed base-devel git zig github-cli libarchive systemd-libs archiso lowdown
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -59,6 +59,9 @@ jobs:
           install -Dm644 dist/yoq-drift.hook "$dir/share/libalpm/hooks/yoq-drift.hook"
           install -Dm644 -t "$dir/share/yoq/profiles" dist/profiles/*.toml
           install -Dm644 -t "$dir/share/doc/yoq-os" README.md CHANGELOG.md docs/*.md
+          dist/man.sh man
+          install -Dm644 man/os.1 "$dir/share/man/man1/os.1"
+          install -Dm644 man/os-generations.7 "$dir/share/man/man7/os-generations.7"
           install -Dm644 LICENSE "$dir/share/licenses/yoq-os/LICENSE"
           tar -czf "$dir.tar.gz" "$dir"
       - name: the arch package
