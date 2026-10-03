@@ -24,6 +24,11 @@
 
 ### fixes
 
+- on a luks root, a passphrase typed more than 90 seconds after the prompt
+  came up landed in emergency mode, since the initramfs gave up waiting
+  for the root. every generation's command line there now has
+  `rd.systemd.default_device_timeout_sec=infinity`, and `os uninstall`
+  keeps it in grub's defaults.
 - `os install --tpm` seals the tpm's key to pcr 7, the firmware's secure
   boot state, as the docs always said. since systemd 258,
   systemd-cryptenroll seals to nothing unless told, so the tpm handed the

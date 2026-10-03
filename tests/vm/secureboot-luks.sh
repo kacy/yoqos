@@ -35,6 +35,7 @@ VM_ANSWER_DELAY=330 "$vm" reboot-answer "passphrase for" "correct horse battery"
 settled
 check "$(efivar SecureBoot)" 1
 check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in use."
+check "grep -c ' rd.systemd.default_device_timeout_sec=infinity' /proc/cmdline" 1
 check "ls /sys/firmware/efi/efivars | grep -c '^StubInfo-'" 1
 check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'the default now'" 1
 on_trial no
