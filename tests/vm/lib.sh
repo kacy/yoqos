@@ -184,6 +184,23 @@ break_trial_boot() {
     esac
 }
 
+# makes the next trial boot's kernel one the bootloader can't load: gone
+# ($1 = missing) or not a kernel at all ($1 = garbage). grub and refind
+# read it from the staged root's /boot; limine and systemd-boot get a
+# path of their own on the esp, so the fallback's copies stay whole.
+break_trial_kernel() {
+    if [ "$1" = missing ]; then esp_file=/yoq/boot/missing-kernel; else esp_file=/yoq/boot/garbage-kernel; fi
+    case $VM_LOADER in
+    limine) "$vm" ssh "echo not a kernel > $VM_ESP/yoq/boot/garbage-kernel && sed -i '/^\/yoq trial boot/,/cmdline/ s|^    path: boot():.*|    path: boot():$esp_file|' $(menu_file) && grep -A5 '^/yoq trial boot' $(menu_file)" ;;
+    systemd-boot) "$vm" ssh "echo not a kernel > $VM_ESP/yoq/boot/garbage-kernel && sed -i 's|^linux .*|linux $esp_file|' $VM_ESP/loader/entries/yoq-trial.conf && cat $VM_ESP/loader/entries/yoq-trial.conf" ;;
+    *)
+        staged=$(newest_root)
+        if [ "$1" = missing ]; then how="mv /run/yoq-top/$staged/boot/vmlinuz-linux /run/yoq-top/$staged/boot/vmlinuz-linux.gone"; else how="echo not a kernel > /run/yoq-top/$staged/boot/vmlinuz-linux"; fi
+        "$vm" ssh "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && $how; umount /run/yoq-top"
+        ;;
+    esac
+}
+
 # the newest generation's root, like @roots/7.
 newest_root() {
     n=$(newest)
