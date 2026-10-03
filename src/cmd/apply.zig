@@ -389,7 +389,8 @@ fn armTrial(ctx: *Context, a: Allocator, m: *const gens.Machine, boot: facts.Boo
     const records = try gens.readRecords(a, ctx.io, "/var");
     if (records.len == 0) return;
     const n = records[records.len - 1].n;
-    const store = trial.Store.of(a, ctx.io, boot) orelse return;
+    var store = trial.Store.of(a, ctx.io, boot) orelse return;
+    store.top = m.top;
     const before = generation.trialFallback(records, if (try store.current()) |t| t.fallback else 0) orelse return;
     if (try store.arm(n, generation.find(records, before).?)) |problem| {
         // with no trial, the new generation is the default after all.

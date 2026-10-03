@@ -204,21 +204,25 @@ pub fn carryCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer w.deinit();
     const a = w.allocator();
     const boot = try w.generations() orelse return 0;
-    // a trial's boot files can break after it was armed. limine would
-    // stop at an error screen over them, so a trial with a broken file
-    // isn't tried.
-    if (trial.Store.of(a, ctx.io, boot)) |store| {
-        if (try store.current()) |t| {
-            if (!t.tried) _ = try applying.skipBroken(ctx, store, t.n, t.fallback);
-        }
-    }
     const running = boot.root_subvol.?;
-    const waiting = try waitingRoot(ctx, a, running) orelse return 0;
+    const next = try waitingRoot(ctx, a, running);
+    var store = trial.Store.of(a, ctx.io, boot);
+    const t = if (store) |s| try s.current() else null;
+    const untried = if (t) |tr| !tr.tried else false;
+    if (next == null and !untried) return 0;
     // an os still changing the machine as it shuts down could be removing
     // that root; the carry made when it was started stands then.
     if (try cli.refused(ctx, cli.lockForEdit(ctx))) return 1;
     const m = try cli.openMachine(ctx, a, boot) orelse return 1;
     defer m.close();
+    // a trial's boot files can break after it was armed. limine would
+    // stop at an error screen over them, so a trial with a broken file
+    // isn't tried.
+    if (untried) {
+        store.?.top = m.top;
+        _ = try applying.skipBroken(ctx, store.?, t.?.n, t.?.fallback);
+    }
+    const waiting = next orelse return 0;
     if (try m.carry(waiting)) |problem| return cli.fail(ctx, "couldn't carry this machine's state into {s}: {s}", .{ waiting, problem });
     try ctx.out.print("carried this machine's state into {s}, which the next boot runs.\n", .{waiting});
     return 0;

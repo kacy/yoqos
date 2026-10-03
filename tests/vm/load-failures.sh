@@ -3,9 +3,9 @@
 # alone by an older entry picked by hand. a broken initramfs (trial.sh)
 # gets as far as a kernel panic, which reboots by itself; these stop in
 # the bootloader. grub falls back to the generation before by itself.
-# limine would stop at an error screen, so os looks at the trial's files
-# at shutdown and doesn't try a trial with a broken one, on systemd-boot
-# too. a file that looks fine but won't start, a kernel for another
+# limine and refind would stop at an error screen, so os looks at the
+# trial's files at shutdown and doesn't try a trial with a broken one, on
+# systemd-boot too. a file that looks fine but won't start, a kernel for another
 # machine, makes systemd-boot reboot, and the boot after runs the
 # default. runs after trial.sh, in the same vm.
 set -eu
@@ -41,7 +41,6 @@ proof() {
     case $VM_LOADER:$1 in
     grub:*) echo "console:Falling back to" ;;
     systemd-boot:foreign) echo "console:Failed to start boot entry" ;;
-    refind:*) echo "console:yoq trial boot" ;;
     *) echo "journal:won't try it" ;;
     esac
 }

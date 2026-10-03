@@ -123,6 +123,34 @@ pub fn sdbootFiles(a: Allocator, text: []const u8) ![]const Loaded {
     return out.items;
 }
 
+/// the volume refind's trial entry loads from, a partition guid, and the
+/// files it loads there: its loader, and the initrds in its options.
+pub const RefindTrial = struct { volume: []const u8, files: []const Loaded };
+
+/// refind's trial entry in `conf`, the refind.conf of the trial's copy of
+/// refind, or null without one.
+pub fn refindTrialFiles(a: Allocator, conf: []const u8) !?RefindTrial {
+    const start = std.mem.indexOf(u8, conf, "menuentry \"" ++ trial_title ++ "\"") orelse return null;
+    const end = std.mem.indexOfScalarPos(u8, conf, start, '}') orelse conf.len;
+    var volume: ?[]const u8 = null;
+    var files: std.ArrayList(Loaded) = .empty;
+    var lines = std.mem.splitScalar(u8, conf[start..end], '\n');
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, t, "volume ")) volume = std.mem.trim(u8, t["volume ".len..], " ");
+        if (std.mem.startsWith(u8, t, "loader ")) try files.append(a, .{ .path = std.mem.trim(u8, t["loader ".len..], " "), .kernel = true });
+        if (!std.mem.startsWith(u8, t, "options ")) continue;
+        var words = std.mem.tokenizeAny(u8, t["options ".len..], " \"");
+        while (words.next()) |w| {
+            if (!std.mem.startsWith(u8, w, "initrd=")) continue;
+            const path = try a.dupe(u8, w["initrd=".len..]);
+            std.mem.replaceScalar(u8, path, '\\', '/');
+            try files.append(a, .{ .path = path, .kernel = false });
+        }
+    }
+    return .{ .volume = volume orelse return null, .files = files.items };
+}
+
 /// the command line a trial boots with: an entry's, and the argument that
 /// starts the watchdog.
 pub fn trialArgs(a: Allocator, args: []const u8) ![]const u8 {
@@ -930,6 +958,14 @@ test "refind's entries, and its include" {
     try testing.expect(std.mem.startsWith(u8, trial, "timeout 3\n\n# written by os"));
     try testing.expect(std.mem.indexOf(u8, trial, "include yoq.conf") == null);
     try testing.expect(std.mem.endsWith(u8, trial, "default_selection \"yoq trial boot\"\n"));
+    // what the trial entry loads, from that config.
+    const loads = (try refindTrialFiles(a, trial)).?;
+    try testing.expectEqualStrings("esp-guid", loads.volume);
+    try testing.expectEqual(3, loads.files.len);
+    try testing.expectEqualStrings("/vmlinuz-linux", loads.files[0].path);
+    try testing.expect(loads.files[0].kernel and !loads.files[2].kernel);
+    try testing.expectEqualStrings("/initramfs-linux.img", loads.files[2].path);
+    try testing.expectEqual(null, try refindTrialFiles(a, "timeout 3\n"));
     try testing.expectEqualStrings("\"Arch Linux\" \"root=UUID=r rw initrd=\\amd-ucode.img initrd=\\initramfs-linux.img\"\n", try refindLinux(a, test_entries[0]));
     try testing.expectEqualStrings("timeout 20\n", try unspliceRefind(a, "timeout 20\ninclude yoq.conf\n"));
     const conf = "timeout 20\ninclude yoq.conf\ndefault_selection 1\n";

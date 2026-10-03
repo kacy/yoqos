@@ -40,6 +40,9 @@ pub const Store = struct {
     /// refind's config, and the esp's partition, for its trial boots.
     conf: ?[]const u8 = null,
     esp_device: ?[]const u8 = null,
+    /// where the btrfs top level is mounted, for refind's trial, which
+    /// loads its kernel from its root. null when it isn't.
+    top: ?[]const u8 = null,
 
     /// null for a machine without an esp or a bootloader os knows.
     pub fn of(a: Allocator, io: std.Io, boot: facts.Boot) ?Store {
@@ -79,7 +82,7 @@ pub const Store = struct {
     }
 
     /// an efi variable's text, as the boot loader interface stores it:
-    /// utf-16 after 4 bytes of attributes. its ascii only, which is all
+    /// utf-16 after 4 bytes of attributes, read as ascii, which is all
     /// os's entry names are.
     fn efiText(s: Store, path: []const u8) !?[]const u8 {
         const bytes = std.Io.Dir.cwd().readFileAlloc(s.io, path, s.a, .limited(4096)) catch return null;
@@ -210,38 +213,54 @@ pub const Store = struct {
     /// what's wrong with a file the trial entry loads, as "<path>: <why>",
     /// or null when each one looks loadable. limine stops at an error
     /// screen until someone presses a key when it can't load one, and so
-    /// does systemd-boot before 258, so a trial with a broken file is
-    /// better not tried. grub falls back by itself.
+    /// do refind and systemd-boot before 258, so a trial with a broken
+    /// file is better not tried. grub falls back by itself.
     pub fn brokenFile(s: Store) !?[]const u8 {
-        for (try s.trialFiles()) |f| {
-            const path = try std.fs.path.join(s.a, &.{ s.esp, f.path });
+        const found = try s.trialFiles() orelse return null;
+        for (found.files) |f| {
+            const path = try std.fs.path.join(s.a, &.{ found.base, f.path });
             if (try fileProblem(s.a, s.io, path, f.kernel)) |why| return try std.fmt.allocPrint(s.a, "{s}: {s}", .{ path, why });
         }
         return null;
     }
 
-    /// the files the trial entry loads.
-    fn trialFiles(s: Store) ![]const menu.Loaded {
+    const TrialFiles = struct { base: []const u8, files: []const menu.Loaded };
+
+    /// the files the trial entry loads, as paths under `base`, or null
+    /// when there's nothing to look at.
+    fn trialFiles(s: Store) !?TrialFiles {
         const cwd = std.Io.Dir.cwd();
         switch (s.loader) {
             .limine => {
-                const conf = s.conf orelse return &.{};
-                return menu.limineTrialFiles(s.a, cwd.readFileAlloc(s.io, conf, s.a, .limited(1 << 20)) catch return &.{});
+                const text = cwd.readFileAlloc(s.io, s.conf orelse return null, s.a, .limited(1 << 20)) catch return null;
+                return .{ .base = s.esp, .files = try menu.limineTrialFiles(s.a, text) };
             },
             .@"systemd-boot" => {
                 const conf = s.conf orelse try std.fs.path.join(s.a, &.{ s.esp, "loader/loader.conf" });
                 const dir_path = try std.fs.path.join(s.a, &.{ std.fs.path.dirnamePosix(conf).?, "entries" });
-                var dir = cwd.openDir(s.io, dir_path, .{ .iterate = true }) catch return &.{};
+                var dir = cwd.openDir(s.io, dir_path, .{ .iterate = true }) catch return null;
                 defer dir.close(s.io);
                 var it = dir.iterate();
                 // the counter in its name changes once it has booted.
                 while (it.next(s.io) catch null) |f| {
                     if (!std.mem.startsWith(u8, f.name, "yoq-trial") or !std.mem.endsWith(u8, f.name, ".conf")) continue;
-                    return menu.sdbootFiles(s.a, dir.readFileAlloc(s.io, f.name, s.a, .limited(1 << 16)) catch return &.{});
+                    const text = dir.readFileAlloc(s.io, f.name, s.a, .limited(1 << 16)) catch return null;
+                    return .{ .base = s.esp, .files = try menu.sdbootFiles(s.a, text) };
                 }
-                return &.{};
+                return null;
             },
-            .grub, .refind => return &.{},
+            // the trial's copy of refind reads its own refind.conf. its
+            // entry loads from the esp, or from the root's partition,
+            // where paths start at the btrfs top level.
+            .refind => {
+                const conf = try std.fs.path.join(s.a, &.{ try s.refindTrialDir(), "refind.conf" });
+                const text = cwd.readFileAlloc(s.io, conf, s.a, .limited(1 << 20)) catch return null;
+                const t = try menu.refindTrialFiles(s.a, text) orelse return null;
+                const esp_part = try s.lsblk("PARTUUID", s.esp_device orelse return null) orelse return null;
+                const base = if (std.ascii.eqlIgnoreCase(t.volume, esp_part)) s.esp else s.top orelse return null;
+                return .{ .base = base, .files = t.files };
+            },
+            .grub => return null,
         }
     }
 
@@ -251,7 +270,8 @@ pub const Store = struct {
     pub fn skip(s: Store) !?[]const u8 {
         return switch (s.loader) {
             .limine, .@"systemd-boot" => s.bootctl("set-oneshot", ""),
-            .grub, .refind => null,
+            .refind => exec.run(s.a, s.io, &.{ "efibootmgr", "-q", "-N" }),
+            .grub => null,
         };
     }
 
