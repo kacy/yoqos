@@ -21,7 +21,10 @@ export VM_ESP VM_ROOT VM_LOADER
 # the ext4 machine installs new ones on a second disk, and on luks on a
 # third, which its tpm unlocks, and whose passphrase is typed at the
 # serial console once secure boot is on.
-[ "${VM_IMAGE:-cloud}" = ext4 ] && export VM_DISK2=1 VM_DISK3=1 VM_TPM=1 VM_SERIAL_IN=1
+[ "${VM_IMAGE:-cloud}" = ext4 ] && export VM_DISK2=1 VM_DISK3=1 VM_TPM=1
+# every vm's serial console takes input too, so one that stops answering
+# over ssh can be asked why (vm.sh diagnose).
+export VM_SERIAL_IN=1
 # every image but cloud and snapper runs on firmware that can enforce
 # secure boot, in setup mode until a test enrolls keys. grub needs a tpm
 # to start under secure boot.
@@ -47,6 +50,9 @@ if [ "${VM_SUITE:-}" = upgrade ]; then
     exit 0
 fi
 
+# the serial console report a vm that stops answering gets, checked once
+# here so it works when it's needed.
+"$vm" diagnose 2>&1 | grep -a -c '^lo ' | grep -qx 1 || { echo "test: the serial console report came back empty"; exit 1; }
 "$vm" copy "$os" /usr/local/bin/os
 "$vm" copy tests/arch/smoke.sh /root/smoke.sh
 "$vm" ssh mkdir -p /root/dist

@@ -33,6 +33,10 @@
 #                            VM_ANSWER_MAYBE=1, a boot that comes up
 #                            without the prompt is fine too. it prints
 #                            "answered" when it typed
+#   vm.sh diagnose           log in on the serial console and print the
+#                            vm's network and sshd state, as a vm that
+#                            stops answering over ssh does by itself.
+#                            needs VM_SERIAL_IN
 #   vm.sh stop               power off and throw the overlay away
 #
 # VM_TPM=1 gives the vm a tpm 2.0, from swtpm. a start or start-iso begins
@@ -74,7 +78,27 @@ wait_boot() {
         sleep 3
     done
     echo "vm: no ssh after 6 minutes; the console log is $dir/console.log" >&2
+    diagnose
     exit 1
+}
+
+# logs in on the serial console of a vm that doesn't answer over ssh, and
+# prints what it says about its network and sshd. needs VM_SERIAL_IN; the
+# root password is the test images' own.
+diagnose() {
+    [ -S "$dir/serial.sock" ] || return 0
+    from=$(($(wc -c < "$dir/console.log") + 1))
+    for line in "" root yoq "export SYSTEMD_COLORS=0 SYSTEMD_PAGER=; echo yoq-diag-start; ip -br addr; ip route; systemctl is-active sshd NetworkManager systemd-networkd; systemctl --failed --no-legend; ss -tln; journalctl -b --no-pager -o short-monotonic -u NetworkManager -u systemd-networkd -u sshd | tail -n 40; echo yoq-diag-end"; do
+        printf '%s\r' "$line" | socat - UNIX-CONNECT:"$dir/serial.sock" || return 0
+        sleep 3
+    done
+    sleep 10
+    echo "--- what the vm says, from its serial console" >&2
+    # the shell marks its prompts and commands with escape sequences of its
+    # own (osc 3008), which come off with the colors.
+    tail -c +"$from" "$dir/console.log" | tr -d '\r' |
+        sed -e 's/\x1b\[[0-9;?=!]*[a-zA-Z]//g' -e 's/\x1b\][^\x07\x1b]*\(\x07\|\x1b\\\)//g' |
+        sed -n '/yoq-diag-start$/,/yoq-diag-end$/p' >&2
 }
 
 seed() {
@@ -87,6 +111,12 @@ users:
   - name: root
     ssh_authorized_keys:
       - $(cat "$dir/key.pub")
+# the same root password archinstall's images have, so a vm that stops
+# answering over ssh can still be asked what's wrong on its serial console.
+chpasswd:
+  expire: false
+  users:
+    - {name: root, password: yoq, type: text}
 EOF
     printf 'instance-id: yoq-test\nlocal-hostname: yoq-test\n' > "$dir/seed/meta-data"
     xorriso -as mkisofs -quiet -o "$dir/seed.iso" -V cidata -J -r "$dir/seed/user-data" "$dir/seed/meta-data"
@@ -262,6 +292,12 @@ reboot-answer)
     printf '%s\r' "$3" | socat - UNIX-CONNECT:"$dir/serial.sock"
     wait_boot "$old"
     echo answered
+    ;;
+diagnose)
+    # the same report a vm that stops answering gets, on demand, then out
+    # of the serial console's shell again.
+    diagnose
+    printf 'exit\r' | socat - UNIX-CONNECT:"$dir/serial.sock"
     ;;
 stop)
     if [ -f "$dir/qemu.pid" ]; then kill "$(cat "$dir/qemu.pid")" 2>/dev/null || true; fi
