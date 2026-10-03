@@ -194,3 +194,15 @@ newest_root() {
 second_newest() {
     "$vm" ssh "ls /var/lib/yoq/generations | sort -n | tail -n 2 | head -n 1 | cut -d. -f1"
 }
+
+# the running kernel is the root's own linux, and its modules are there.
+kernel_matches() {
+    check "test -d /usr/lib/modules/\$(uname -r) && echo modules" modules
+    check "[ \"\$(uname -r)\" = \"\$(pacman -Q linux | cut -d' ' -f2 | sed 's/\\.arch/-arch/')\" ] && echo same || { uname -r; pacman -Q linux; }" same
+}
+
+# puts tests/vm/older.sh in the vm, and prints what it finds for $1.
+older() {
+    "$vm" copy tests/vm/older.sh /root/older.sh
+    "$vm" ssh "sh /root/older.sh $1"
+}

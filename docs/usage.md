@@ -381,9 +381,14 @@ plan: 3 to add, 142 to change, 1 to remove · reboot needed: kernel
 ```
 
 notable upgrades are the ones that need a reboot, graphics and boot
-packages, and new major versions. past eight, the rest are counted on an
-`and N more` line, so the screen stays short. `os update -v` lists every
-package.
+packages, and new major versions, in that order. past eight, the rest are
+counted on an `and N more` line, so the screen stays short. `os update -v`
+lists every package.
+
+without generations, a new kernel goes on right away, and the one that's
+running keeps its modules until the reboot, as arch's kernel-modules-hook
+does: something plugged in before the reboot still finds its driver. the
+first `os apply` after the reboot removes them.
 
 before the plan, `update` lists the arch news posted since the lock's
 last date. arch posts there when an update needs a hand, so read those

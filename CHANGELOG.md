@@ -29,6 +29,14 @@
   reboot. 0.1.4 took only its own note in /var as a sign that os armed a
   trial, so it ended that one and kept the failed boot. the journal's
   armed event, which 0.1.3 wrote, counts now too.
+- without generations, an apply that upgrades the running kernel's
+  package keeps that kernel's modules until the reboot, as arch's
+  kernel-modules-hook does. pacman took them away with the old package,
+  so nothing new loaded until the reboot, like a usb stick's driver. the
+  first `os apply` after the reboot removes them.
+- the update screen lists the kernel and the other packages that need a
+  reboot first among the notable ones. they were in name order, so a few
+  weeks of major version bumps could push the kernel into "and n more".
 
 ## 0.1.4
 

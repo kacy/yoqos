@@ -18,6 +18,7 @@ const rootfs = @import("rootfs.zig");
 const exec = @import("exec.zig");
 const lists = @import("lists.zig");
 const secrets = @import("secrets.zig");
+const modules = @import("modules.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Target = alpm.Target;
@@ -72,6 +73,9 @@ pub const Job = struct {
     /// systemd runs the machine, so units change too, and files that
     /// load something load it right away.
     units: bool,
+    /// the running kernel's release, when `target` is the machine it runs:
+    /// its modules outlast an upgrade of its package (see modules.zig).
+    running_kernel: ?[]const u8 = null,
 };
 
 /// applies `job.plan`, with units only when `job.units` says systemd runs
@@ -99,7 +103,10 @@ pub fn run(a: Allocator, io: std.Io, job: Job, diags: *diag.List) !?Result {
     }
     const tx = try transaction(a, p, job.lock, t);
     if (tx.install.len + tx.remove.len + tx.explicit.len + tx.dependency.len > 0) {
-        if (!try alpm.transact(a, io, tx, diags)) return null;
+        const kept: ?modules.Kept = if (job.running_kernel) |r| try modules.keep(a, io, t.root, r, p.changes) else null;
+        const ok = try alpm.transact(a, io, tx, diags);
+        if (kept) |k| try modules.restore(a, io, t.root, k);
+        if (!ok) return null;
     }
     for (p.changes) |c| {
         const ok = switch (c.kind) {

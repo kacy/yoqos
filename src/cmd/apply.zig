@@ -6,6 +6,7 @@ const rootfs = @import("../rootfs.zig");
 const cli = @import("../cli.zig");
 const config = @import("../config.zig");
 const alpm = @import("../alpm.zig");
+const modules = @import("../modules.zig");
 const apply = @import("../apply.zig");
 const journal = @import("../journal.zig");
 const lock = @import("../lock.zig");
@@ -205,6 +206,11 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
             },
         }
     }
+    // modules os kept for the kernel before the last reboot are done with,
+    // whatever this apply does.
+    var uts: std.os.linux.utsname = undefined;
+    const running_kernel = if (cli.eql(ctx.root, "/")) modules.running(&uts) else null;
+    if (running_kernel) |r| try modules.dropKept(a, ctx.io, "/", r);
     if (p.empty()) {
         if (ctx.json) {
             try output.writeDoc(ctx.out, "yoq.apply/1", .{ .applied = 0, .skipped = p.changes });
@@ -240,7 +246,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "begin", &hash);
     const files = try desired.files(a, result.state.config(), &result.facts);
     const problems = w.diags.items.items.len;
-    const done = try apply.run(a, ctx.io, .{ .plan = p, .lock = &result.state.lock, .files = files, .store = ctx.secrets, .target = target, .units = units }, &w.diags) orelse {
+    const done = try apply.run(a, ctx.io, .{ .plan = p, .lock = &result.state.lock, .files = files, .store = ctx.secrets, .target = target, .units = units, .running_kernel = running_kernel }, &w.diags) orelse {
         try journal.record(a, ctx.io, ctx.root, journal.now(ctx.io), "failed", &hash);
         return Outcome.failed(&w);
     };
