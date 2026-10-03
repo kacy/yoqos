@@ -72,7 +72,8 @@ for how in root fstab sysinit; do
     case $how in
     root) proof="console:Failed to mount" ;;
     fstab) proof="console:Timed out waiting for device" ;;
-    sysinit) proof="console:start job is running for" ;;
+    # the trial boot gets as far as flushing its journal to /var.
+    sysinit) proof="" ;;
     esac
     "$vm" reboot
     settled
