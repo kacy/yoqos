@@ -2,8 +2,8 @@
 # a new machine: os install puts this machine's config on the vm's blank
 # second disk, and the vm then boots that disk alone, as generation 1. the
 # same config goes on the third disk too, inside luks2 that the vm's tpm
-# unlocks, and that disk boots after. runs last, since it leaves the vm
-# running the new machines.
+# unlocks, and that disk boots after, then turns secure boot on. runs
+# last, since it leaves the vm running the new machines.
 set -eu
 . tests/vm/lib.sh
 
@@ -119,6 +119,8 @@ check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in
 # generation 1 stays in the menu, booting its copies on the esp.
 check "grep -c 'linux (\${yoq_esp})/yoq/boot/' /boot/grub/grub.cfg" 1
 check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
+# secure boot on it: the tpm's key stops working until it's made again.
+tests/vm/secureboot-luks.sh
 # leaving: grub-mkconfig's menu takes what unlocks the root from grub's
 # defaults, where os puts it, since only os's own entries had it.
 check "/usr/local/bin/os uninstall --yes --delete-generations >/tmp/out 2>&1; echo \$?" 0
