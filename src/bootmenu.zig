@@ -343,7 +343,7 @@ test "a generation going on trial leaves the default on the one before, for each
     try std.testing.expect(std.mem.startsWith(u8, log, "set-default yoq-gen-2.conf\nold head\n# written by os. edits here are overwritten.\ntitle yoq 2\n"));
     const head = try tmp.dir.readFileAlloc(io, "esp/loader/entries/yoq-head.conf", a, .limited(1 << 16));
     try std.testing.expect(std.mem.indexOf(u8, head, "title yoq 3\n") != null);
-    _ = try tmp.dir.statFile(io, "esp/loader/entries/yoq-trial.conf", .{});
+    _ = try tmp.dir.statFile(io, "esp/loader/entries/yoq-trial+1.conf", .{});
 
     // refind: os's file defaults to generation 2, held or with a trial
     // waiting that falls back to it.

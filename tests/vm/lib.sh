@@ -176,7 +176,7 @@ newest() {
 break_trial_boot() {
     case $VM_LOADER in
     limine) "$vm" ssh "echo not an initramfs > $VM_ESP/yoq/boot/garbage.img && sed -i '/^\/yoq trial boot/,/cmdline/ s|module_path: boot():[^ ]*initramfs[^ ]*|module_path: boot():/yoq/boot/garbage.img|' $(menu_file) && grep -A5 '^/yoq trial boot' $(menu_file)" ;;
-    systemd-boot) "$vm" ssh "echo not an initramfs > $VM_ESP/yoq/boot/garbage.img && sed -i 's|^initrd .*initramfs.*|initrd /yoq/boot/garbage.img|' $VM_ESP/loader/entries/yoq-trial.conf && cat $VM_ESP/loader/entries/yoq-trial.conf" ;;
+    systemd-boot) "$vm" ssh "echo not an initramfs > $VM_ESP/yoq/boot/garbage.img && sed -i 's|^initrd .*initramfs.*|initrd /yoq/boot/garbage.img|' $VM_ESP/loader/entries/yoq-trial*.conf && cat $VM_ESP/loader/entries/yoq-trial*.conf" ;;
     *)
         staged=$(newest_root)
         "$vm" ssh "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && echo not an initramfs > /run/yoq-top/$staged/boot/initramfs-linux.img; umount /run/yoq-top"
@@ -192,7 +192,7 @@ break_trial_kernel() {
     if [ "$1" = missing ]; then esp_file=/yoq/boot/missing-kernel; else esp_file=/yoq/boot/garbage-kernel; fi
     case $VM_LOADER in
     limine) "$vm" ssh "echo not a kernel > $VM_ESP/yoq/boot/garbage-kernel && sed -i '/^\/yoq trial boot/,/cmdline/ s|^    path: boot():.*|    path: boot():$esp_file|' $(menu_file) && grep -A5 '^/yoq trial boot' $(menu_file)" ;;
-    systemd-boot) "$vm" ssh "echo not a kernel > $VM_ESP/yoq/boot/garbage-kernel && sed -i 's|^linux .*|linux $esp_file|' $VM_ESP/loader/entries/yoq-trial.conf && cat $VM_ESP/loader/entries/yoq-trial.conf" ;;
+    systemd-boot) "$vm" ssh "echo not a kernel > $VM_ESP/yoq/boot/garbage-kernel && sed -i 's|^linux .*|linux $esp_file|' $VM_ESP/loader/entries/yoq-trial*.conf && cat $VM_ESP/loader/entries/yoq-trial*.conf" ;;
     *)
         staged=$(newest_root)
         if [ "$1" = missing ]; then how="mv /run/yoq-top/$staged/boot/vmlinuz-linux /run/yoq-top/$staged/boot/vmlinuz-linux.gone"; else how="echo not a kernel > /run/yoq-top/$staged/boot/vmlinuz-linux"; fi
