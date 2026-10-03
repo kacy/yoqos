@@ -128,9 +128,9 @@ tests/vm/secureboot-luks.sh
 # defaults, where os puts it, since only os's own entries had it.
 check "/usr/local/bin/os uninstall --yes --delete-generations >/tmp/out 2>&1; echo \$?" 0
 # it says the next boot asks for the passphrase, and how to make the key
-# again for the partition under the root.
-check "grep -c '^  the next boot asks for the passphrase once' /tmp/out" 1
-check "grep -c \"systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 \$(cryptsetup status root | sed -n 's/^ *device: *//p')\" /tmp/out" 1
+# again for the partition under the root, in its plan and once it's done.
+check "grep -c '^  the next boot asks for the passphrase once' /tmp/out" 2
+check "grep -c \"systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 \$(cryptsetup status root | sed -n 's/^ *device: *//p')\" /tmp/out" 2
 check "grep -c '^GRUB_CMDLINE_LINUX=.* rd.luks.name=' /etc/default/grub" 1
 check "grep -c 'rd.luks.options=tpm2-device=auto' /boot/grub/grub.cfg | grep -c -v '^0\$'" 1
 # arch's plain kernel boots now, without systemd's stub, whose initramfs
