@@ -155,6 +155,9 @@ const Uninstaller = struct {
                 if (try u.run(&.{ "rm", "-f", try std.fs.path.join(u.a, &.{ "/etc/systemd/system", rel }) })) |w| return w;
             }
         }
+        for (enable.trial_hook) |f| {
+            if (try u.run(&.{ "rm", "-f", try std.fs.path.join(u.a, &.{ "/", f.path }) })) |w| return w;
+        }
         return u.run(&.{ "systemctl", "daemon-reload" });
     }
 

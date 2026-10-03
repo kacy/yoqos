@@ -31,8 +31,8 @@ check "test -f /var/lib/sbctl/keys/db/db.key && test -f /var/lib/sbctl/keys/db/d
 
 "$vm" ssh "/usr/local/bin/os update --yes" | tail -n 3
 on_trial yes
-check "grep -c '^efi /yoq/boot/[0-9a-f]*-yoq.efi\$' $entries/yoq-trial.conf" 1
-image=$("$vm" ssh "sed -n 's|^efi ||p' $entries/yoq-trial.conf")
+check "grep -c '^efi /yoq/boot/[0-9a-f]*-yoq.efi\$' $entries/yoq-trial*.conf" 1
+image=$("$vm" ssh "sed -n 's|^efi ||p' $entries/yoq-trial*.conf")
 # every image os put on the esp is signed; systemd-boot's own files aren't
 # yet, and doctor names them.
 check "/usr/local/bin/os doctor | grep '^  no  esp signatures:' | grep -c -e '$image' -e '/yoq/boot/' || true" 0
@@ -60,7 +60,7 @@ check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
 
 # each image has its entry's command line in it, so the entries pass
 # none, and the trial starts a twin with the trial's.
-check "cat $entries/yoq-head.conf $entries/yoq-trial.conf | grep -c '^options' || true" 0
+check "cat $entries/yoq-head.conf $entries/yoq-trial*.conf | grep -c '^options' || true" 0
 check "test \"\$(sed -n 's|^efi ||p' $entries/yoq-head.conf)\" != '$image' && echo differs" differs
 check "grep -c 'root=UUID=[^ ]* rootflags=[^ ]*subvol=/@roots/[0-9]*' /proc/cmdline" 1
 # with secure boot on, the stub ignores a command line from the entry: one
@@ -103,9 +103,9 @@ on_trial no
 "$vm" ssh "/usr/local/bin/os add --yes intel-ucode" | tail -n 1
 on_trial yes
 before=$(second_newest)
-"$vm" ssh "echo not an initramfs > /root/garbage.img && ukify build --config=/etc/kernel/yoq-uki.conf --linux=/boot/vmlinuz-linux --initrd=/root/garbage.img --cmdline=\"\$(cat /proc/cmdline)\" --output=$VM_ESP/yoq/boot/garbage.efi >/dev/null && sbctl sign $VM_ESP/yoq/boot/garbage.efi >/dev/null && sed -i 's|^efi .*|efi /yoq/boot/garbage.efi|' $entries/yoq-trial.conf && cat $entries/yoq-trial.conf"
+"$vm" ssh "echo not an initramfs > /root/garbage.img && ukify build --config=/etc/kernel/yoq-uki.conf --linux=/boot/vmlinuz-linux --initrd=/root/garbage.img --cmdline=\"\$(cat /proc/cmdline)\" --output=$VM_ESP/yoq/boot/garbage.efi >/dev/null && sbctl sign $VM_ESP/yoq/boot/garbage.efi >/dev/null && sed -i 's|^efi .*|efi /yoq/boot/garbage.efi|' $entries/yoq-trial*.conf && cat $entries/yoq-trial*.conf"
 show_env
-falls_back "$before"
+falls_back "$before" "console:Kernel panic"
 check "$(efivar SecureBoot)" 1
 # uninstall would leave systemd-boot starting arch's unsigned kernel,
 # which the firmware refuses now, so it won't go ahead.

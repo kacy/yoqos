@@ -309,6 +309,14 @@ pub const Machine = struct {
             if (!ours(now) or std.mem.eql(u8, now, want)) continue;
             rootfs.writeAtomic(m.io, path, want, null) catch {};
         }
+        // the initramfs hook, on a machine whose units are os's, goes in
+        // where it's missing; the next initramfs built there has it.
+        if (os_path == null) return;
+        for (enable.trial_hook) |f| {
+            const path = try m.at(&.{ subvol, f.path });
+            if (rootfs.pathExists(m.io, path)) continue;
+            _ = try rootfs.writeWhole(m.a, m.io, path, f.text);
+        }
     }
 
     /// removes the subvolumes a cut-off run left that no generation uses
@@ -534,6 +542,9 @@ pub fn writeUnits(a: Allocator, io: std.Io, root: []const u8, os_path: []const u
     for (try enable.units(a, os_path)) |u| {
         if (try writeUnit(a, io, dir, u)) |w| return w;
     }
+    for (enable.trial_hook) |f| {
+        if (try rootfs.writeWhole(a, io, try std.fs.path.join(a, &.{ root, f.path }), f.text)) |w| return w;
+    }
     return null;
 }
 
@@ -701,10 +712,17 @@ test "units from enable-rollback in 0.1.0 are brought up to date, and the missin
     const carry = try tmp.dir.readFileAlloc(io, dir ++ "/yoq-carry.service", a, .limited(4096));
     try std.testing.expect(std.mem.indexOf(u8, carry, "ExecStop=/usr/bin/os carry\n") != null);
     _ = try tmp.dir.statFile(io, dir ++ "/multi-user.target.wants/yoq-carry.service", .{});
+    // the unit for emergency shells, and the hook that puts it in the
+    // initramfs.
+    _ = try tmp.dir.statFile(io, dir ++ "/emergency.target.wants/" ++ enable.emergency_unit, .{});
+    try std.testing.expectEqualStrings(enable.trial_hook[2].text, try tmp.dir.readFileAlloc(io, "top/@roots/1/etc/mkinitcpio.conf.d/" ++ facts.trial_dropin, a, .limited(4096)));
+    _ = try tmp.dir.statFile(io, "top/@roots/1/etc/initcpio/install/yoq-trial", .{});
+    _ = try tmp.dir.statFile(io, "top/@roots/1/etc/initcpio/hooks/yoq-trial", .{});
     // a root os never set up gets nothing.
     try tmp.dir.createDirPath(io, "top/@roots/2/etc/systemd/system");
     try m.refreshUnits("/@roots/2");
     try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "top/@roots/2/etc/systemd/system/yoq-carry.service", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "top/@roots/2/etc/initcpio/install/yoq-trial", .{}));
 }
 
 test "records by number, and dates" {

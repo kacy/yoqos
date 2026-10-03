@@ -175,11 +175,16 @@ pub const initramfs_dropins = "/etc/mkinitcpio.conf.d";
 /// one named after it that sets HOOKS again would undo it.
 pub const encrypt_dropin = "90-yoq-encrypt.conf";
 
-/// whether a mkinitcpio drop-in, by name, is one os makes from other
-/// keys. facts leave these out of the hooks and modules they list, since
-/// the planner decides from those whether os's are needed.
+/// os's drop-in, in every root with generations, that adds the hook
+/// rebooting a trial from an emergency shell in the initramfs. it comes
+/// after the luks one, which sets HOOKS whole.
+pub const trial_dropin = "95-yoq-trial.conf";
+
+/// whether a mkinitcpio drop-in, by name, is one os makes. facts leave
+/// these out of the hooks and modules they list, since the planner
+/// decides from those whether os's are needed.
 pub fn osDropIn(name: []const u8) bool {
-    return std.mem.startsWith(u8, name, "10-yoq-") or std.mem.eql(u8, name, encrypt_dropin);
+    return std.mem.startsWith(u8, name, "10-yoq-") or std.mem.eql(u8, name, encrypt_dropin) or std.mem.eql(u8, name, trial_dropin);
 }
 
 pub const BootFile = struct { name: []const u8, size: u64 };

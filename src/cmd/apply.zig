@@ -389,7 +389,8 @@ fn armTrial(ctx: *Context, a: Allocator, m: *const gens.Machine, boot: facts.Boo
     const records = try gens.readRecords(a, ctx.io, "/var");
     if (records.len == 0) return;
     const n = records[records.len - 1].n;
-    const store = trial.Store.of(a, ctx.io, boot) orelse return;
+    var store = trial.Store.of(a, ctx.io, boot) orelse return;
+    store.top = m.top;
     const before = generation.trialFallback(records, if (try store.current()) |t| t.fallback else 0) orelse return;
     if (try store.arm(n, generation.find(records, before).?)) |problem| {
         // with no trial, the new generation is the default after all.
@@ -402,7 +403,22 @@ fn armTrial(ctx: *Context, a: Allocator, m: *const gens.Machine, boot: facts.Boo
         return;
     }
     try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .trial, .step = .armed, .generation = n });
+    if (try skipBroken(ctx, store, n, before)) return;
     if (!ctx.json) try ctx.out.print("reboot to finish. the next boot tries generation {d} once; if it doesn't come up healthy, the machine goes back to generation {d}.\n", .{ n, before });
+}
+
+/// leaves the trial of generation `n` untried when a file its entry
+/// loads is broken, so the bootloader never stops at an error screen
+/// over it: the next boot runs generation `before`, and the health check
+/// takes that as the trial failing. returns whether it did.
+pub fn skipBroken(ctx: *Context, store: trial.Store, n: u32, before: u32) !bool {
+    const broken = try store.brokenFile() orelse return false;
+    if (try store.skip()) |w| {
+        try ctx.err.print("os: generation {d}'s boot files are broken ({s}), and the trial couldn't be called off: {s}\n", .{ n, broken, w });
+        return true;
+    }
+    try ctx.err.print("os: generation {d}'s boot files are broken ({s}), so the next boot won't try it. it runs generation {d}, which counts as the trial failing.\n", .{ n, broken, before });
+    return true;
 }
 
 /// removes generations past the newest `keep`, besides the first and

@@ -257,10 +257,11 @@ pub const Unit = struct {
 
 /// yoq-health.service runs `os health` at each boot, which ends a trial
 /// one way or the other, yoq-watchdog.timer reboots a trial boot that
-/// hangs before it, and yoq-carry.service carries passwords and the like
+/// hangs before it, yoq-emergency.service reboots one that drops to an
+/// emergency shell, and yoq-carry.service carries passwords and the like
 /// into a generation waiting for the reboot, as the machine shuts down.
 /// `os_path` is the os they run.
-pub fn units(a: Allocator, os_path: []const u8) ![4]Unit {
+pub fn units(a: Allocator, os_path: []const u8) ![5]Unit {
     return .{
         .{
             .name = "yoq-health.service",
@@ -283,11 +284,14 @@ pub fn units(a: Allocator, os_path: []const u8) ![4]Unit {
             .name = "yoq-watchdog.timer",
             // from when this timer starts in the booted root, not from the
             // kernel or the initramfs's systemd: time spent typing a luks
-            // passphrase in the initramfs doesn't count.
+            // passphrase in the initramfs doesn't count. it starts as soon
+            // as the root's systemd does, and so does its service, so a
+            // unit that hangs before sysinit.target holds up neither.
             .text =
             \\[Unit]
             \\Description=Reboot a generation on trial that doesn't finish booting
             \\ConditionKernelCommandLine=yoq.trial
+            \\DefaultDependencies=no
             \\
             \\[Timer]
             \\OnActiveSec=5min
@@ -304,6 +308,7 @@ pub fn units(a: Allocator, os_path: []const u8) ![4]Unit {
             .text =
             \\[Unit]
             \\Description=Reboot a generation on trial that didn't finish booting
+            \\DefaultDependencies=no
             \\SuccessAction=reboot-force
             \\
             \\[Service]
@@ -312,6 +317,30 @@ pub fn units(a: Allocator, os_path: []const u8) ![4]Unit {
             \\
             ,
             .wanted_by = null,
+        },
+        .{
+            .name = emergency_unit,
+            // a trial that can't mount its filesystems, in the root or in
+            // the initramfs (see trial_hook), would wait at an emergency
+            // shell for a password. it reboots instead, into the
+            // generation before. in the initramfs, /usr/bin/true is
+            // busybox's.
+            .text =
+            \\[Unit]
+            \\Description=Reboot a generation on trial that went into emergency mode
+            \\ConditionKernelCommandLine=yoq.trial
+            \\DefaultDependencies=no
+            \\SuccessAction=reboot-force
+            \\
+            \\[Service]
+            \\Type=oneshot
+            \\ExecStart=/usr/bin/true
+            \\
+            \\[Install]
+            \\WantedBy=emergency.target
+            \\
+            ,
+            .wanted_by = "emergency.target",
         },
         .{
             .name = "yoq-carry.service",
@@ -337,6 +366,65 @@ pub fn units(a: Allocator, os_path: []const u8) ![4]Unit {
         },
     };
 }
+
+/// the unit that reboots a trial from an emergency shell.
+pub const emergency_unit = "yoq-emergency.service";
+
+/// a file os writes into each root along with its units: a path under
+/// the root, and its content.
+pub const RootFile = struct { path: []const u8, text: []const u8 };
+
+/// mkinitcpio's hook that reboots a trial from the initramfs's emergency
+/// shell, and the drop-in that adds it to HOOKS. the drop-in comes after
+/// os's others, since the luks one sets HOOKS whole. a systemd initramfs
+/// gets yoq-emergency.service, wanted by emergency.target. a busybox one
+/// gets a runtime hook instead: mkinitcpio's init reads each one into its
+/// own shell before it mounts the root, so on a trial boot it can make
+/// the shell that a failed mount drops to a reboot.
+pub const trial_hook = [_]RootFile{
+    .{
+        .path = "etc/initcpio/install/yoq-trial",
+        .text =
+        \\#!/bin/bash
+        \\# written by os: a generation on trial that drops to an emergency
+        \\# shell in the initramfs reboots instead.
+        \\build() {
+        \\    if [[ " ${HOOKS[*]} " == *" systemd "* ]]; then
+        \\        local dir=/usr/lib/systemd/system
+        \\        add_file /etc/systemd/system/yoq-emergency.service "$dir/yoq-emergency.service"
+        \\        add_symlink "$dir/emergency.target.wants/yoq-emergency.service" "$dir/yoq-emergency.service"
+        \\    else
+        \\        add_runscript
+        \\    fi
+        \\}
+        \\
+        \\help() {
+        \\    echo "reboots a generation on trial that drops to an emergency shell"
+        \\}
+        \\
+        ,
+    },
+    .{
+        .path = "etc/initcpio/hooks/yoq-trial",
+        .text =
+        \\#!/usr/bin/ash
+        \\# written by os: on a trial boot, the shell a failed mount drops to
+        \\# is a reboot, into the generation before.
+        \\run_hook() {
+        \\    case " $(cat /proc/cmdline) " in
+        \\    *" yoq.trial "*)
+        \\        launch_interactive_shell() {
+        \\            echo "yoq: this generation on trial can't boot; rebooting into the one before."
+        \\            reboot -f
+        \\        }
+        \\        ;;
+        \\    esac
+        \\}
+        \\
+        ,
+    },
+    .{ .path = "etc/mkinitcpio.conf.d/" ++ facts.trial_dropin, .text = "# written by os.\nHOOKS+=(yoq-trial)\n" },
+};
 
 /// snap-pac's config, from `text`, with its snapshots of the root off.
 /// a [root] section gets `snapshot = no` in place of its own setting.

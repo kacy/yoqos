@@ -14,6 +14,7 @@ const generation = @import("generation.zig");
 const facts = @import("facts.zig");
 const menu = @import("menu.zig");
 const events = @import("events.zig");
+const bootcheck = @import("bootcheck.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Trial = struct {
@@ -39,6 +40,9 @@ pub const Store = struct {
     /// refind's config, and the esp's partition, for its trial boots.
     conf: ?[]const u8 = null,
     esp_device: ?[]const u8 = null,
+    /// where the btrfs top level is mounted, for refind's trial, which
+    /// loads its kernel from its root. null when it isn't.
+    top: ?[]const u8 = null,
 
     /// null for a machine without an esp or a bootloader os knows.
     pub fn of(a: Allocator, io: std.Io, boot: facts.Boot) ?Store {
@@ -61,13 +65,36 @@ pub const Store = struct {
             return grubTrial(noted, env_trial, env_default, try s.value("yoq_tried") != null);
         }
         const words = try s.state() orelse return null;
+        // the bootloader, or for refind the firmware, clears the one-shot
+        // variable when it reads it, whatever then boots. an entry picked
+        // by hand in its place didn't try the trial.
+        const cleared = !rootfs.pathExists(s.io, if (s.loader == .refind) bootnext_var else oneshot_var);
         return .{
             .n = std.fmt.parseInt(u32, words[0], 10) catch return null,
             .fallback = std.fmt.parseInt(u32, words[1], 10) catch 0,
-            // the bootloader, or for refind the firmware, clears the
-            // one-shot variable when it reads it.
-            .tried = !rootfs.pathExists(s.io, if (s.loader == .refind) bootnext_var else oneshot_var),
+            .tried = cleared and !byHand(s.loader, .{
+                .selected = try s.efiText(selected_var),
+                .default = try s.efiText(default_var),
+                .boot_current = try s.efiNumber(bootcurrent_var),
+                .trial_entry = words[2],
+            }),
         };
+    }
+
+    /// an efi variable's text, as the boot loader interface stores it:
+    /// utf-16 after 4 bytes of attributes, read as ascii, which is all
+    /// os's entry names are.
+    fn efiText(s: Store, path: []const u8) !?[]const u8 {
+        const bytes = std.Io.Dir.cwd().readFileAlloc(s.io, path, s.a, .limited(4096)) catch return null;
+        return try efiString(s.a, bytes);
+    }
+
+    /// an efi variable's 16-bit number, like BootCurrent's.
+    fn efiNumber(s: Store, path: []const u8) !?u16 {
+        var buf: [8]u8 = undefined;
+        const bytes = std.Io.Dir.cwd().readFile(s.io, path, &buf) catch return null;
+        if (bytes.len < 6) return null;
+        return std.mem.readInt(u16, bytes[4..6], .little);
     }
 
     /// makes the next boot try the newest generation, `n`, once, and
@@ -183,6 +210,71 @@ pub const Store = struct {
         }
     }
 
+    /// what's wrong with a file the trial entry loads, as "<path>: <why>",
+    /// or null when each one looks loadable. limine stops at an error
+    /// screen until someone presses a key when it can't load one, and so
+    /// do refind and systemd-boot before 258, so a trial with a broken
+    /// file is better not tried. grub falls back by itself.
+    pub fn brokenFile(s: Store) !?[]const u8 {
+        const found = try s.trialFiles() orelse return null;
+        for (found.files) |f| {
+            const path = try std.fs.path.join(s.a, &.{ found.base, f.path });
+            if (try fileProblem(s.a, s.io, path, f.kernel)) |why| return try std.fmt.allocPrint(s.a, "{s}: {s}", .{ path, why });
+        }
+        return null;
+    }
+
+    const TrialFiles = struct { base: []const u8, files: []const menu.Loaded };
+
+    /// the files the trial entry loads, as paths under `base`, or null
+    /// when there's nothing to look at.
+    fn trialFiles(s: Store) !?TrialFiles {
+        const cwd = std.Io.Dir.cwd();
+        switch (s.loader) {
+            .limine => {
+                const text = cwd.readFileAlloc(s.io, s.conf orelse return null, s.a, .limited(1 << 20)) catch return null;
+                return .{ .base = s.esp, .files = try menu.limineTrialFiles(s.a, text) };
+            },
+            .@"systemd-boot" => {
+                const conf = s.conf orelse try std.fs.path.join(s.a, &.{ s.esp, "loader/loader.conf" });
+                const dir_path = try std.fs.path.join(s.a, &.{ std.fs.path.dirnamePosix(conf).?, "entries" });
+                var dir = cwd.openDir(s.io, dir_path, .{ .iterate = true }) catch return null;
+                defer dir.close(s.io);
+                var it = dir.iterate();
+                // the counter in its name changes once it has booted.
+                while (it.next(s.io) catch null) |f| {
+                    if (!std.mem.startsWith(u8, f.name, "yoq-trial") or !std.mem.endsWith(u8, f.name, ".conf")) continue;
+                    const text = dir.readFileAlloc(s.io, f.name, s.a, .limited(1 << 16)) catch return null;
+                    return .{ .base = s.esp, .files = try menu.sdbootFiles(s.a, text) };
+                }
+                return null;
+            },
+            // the trial's copy of refind reads its own refind.conf. its
+            // entry loads from the esp, or from the root's partition,
+            // where paths start at the btrfs top level.
+            .refind => {
+                const conf = try std.fs.path.join(s.a, &.{ try s.refindTrialDir(), "refind.conf" });
+                const text = cwd.readFileAlloc(s.io, conf, s.a, .limited(1 << 20)) catch return null;
+                const t = try menu.refindTrialFiles(s.a, text) orelse return null;
+                const esp_part = try s.lsblk("PARTUUID", s.esp_device orelse return null) orelse return null;
+                const base = if (std.ascii.eqlIgnoreCase(t.volume, esp_part)) s.esp else s.top orelse return null;
+                return .{ .base = base, .files = t.files };
+            },
+            .grub => return null,
+        }
+    }
+
+    /// leaves the trial untried: the next boot runs the default, the
+    /// generation before, and the health check takes that as the trial
+    /// failing.
+    pub fn skip(s: Store) !?[]const u8 {
+        return switch (s.loader) {
+            .limine, .@"systemd-boot" => s.bootctl("set-oneshot", ""),
+            .refind => exec.run(s.a, s.io, &.{ "efibootmgr", "-q", "-N" }),
+            .grub => null,
+        };
+    }
+
     /// the trial hasn't booted yet: the next boot tries it again.
     pub fn retry(s: Store) !?[]const u8 {
         return switch (s.loader) {
@@ -256,10 +348,16 @@ pub const Store = struct {
     /// refind's firmware entry.
     const state_path = "/var/lib/yoq/trial";
     /// the variable limine and systemd-boot boot once from, under the
-    /// boot loader interface's vendor guid.
+    /// boot loader interface's vendor guid; the one they boot by default,
+    /// which bootctl sets too; and the one they set to the entry this boot
+    /// runs.
     const oneshot_var = "/sys/firmware/efi/efivars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
-    /// the firmware's own one-shot boot, under the global uefi guid.
-    const bootnext_var = "/sys/firmware/efi/efivars/BootNext-8be4df61-93ca-11d0-aa0d-00e098032b8c";
+    const default_var = "/sys/firmware/efi/efivars/LoaderEntryDefault-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
+    const selected_var = "/sys/firmware/efi/efivars/LoaderEntrySelected-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
+    /// the firmware's own one-shot boot, and the boot entry this boot
+    /// started from, under the global uefi guid.
+    const bootnext_var = "/sys/firmware/efi/efivars/BootNext-8be4df61-93ca-11d2-aa0d-00e098032b8c";
+    const bootcurrent_var = "/sys/firmware/efi/efivars/BootCurrent-8be4df61-93ca-11d2-aa0d-00e098032b8c";
 
     /// the env file on the esp that grub reads the menu's choices from.
     fn envPath(s: Store) ![]const u8 {
@@ -317,6 +415,139 @@ test "grub's trial is os's note of it, not the esp's" {
     try std.testing.expectEqual(9, planted.n);
     try std.testing.expect(!planted.noted);
     try std.testing.expectEqual(null, grubTrial(null, null, 2, true));
+}
+
+/// what a boot that cleared the trial's one-shot says about itself.
+const Booted = struct {
+    /// limine's and systemd-boot's entry for this boot, and the default
+    /// os set, the generation the trial falls back to.
+    selected: ?[]const u8 = null,
+    default: ?[]const u8 = null,
+    /// the firmware entry this boot started from, and the trial's, for
+    /// refind, which starts a trial through a firmware entry of its own.
+    boot_current: ?u16 = null,
+    trial_entry: []const u8 = "",
+};
+
+/// whether a boot that isn't the trial's, though the one-shot that
+/// would have started it is gone, ran an entry picked by hand: that
+/// leaves the trial untried. a trial that didn't come up leaves the
+/// machine on the default, the generation before, which limine and
+/// systemd-boot name as this boot's entry; any other entry was picked.
+/// refind's trial boots its own copy of refind, through a firmware entry
+/// of its own, so this boot starting from that entry means an older one
+/// was picked there. a hand pick of the generation before itself looks
+/// just like a failed trial.
+fn byHand(loader: menu.Loader, b: Booted) bool {
+    return switch (loader) {
+        .limine, .@"systemd-boot" => {
+            const selected = b.selected orelse return false;
+            const default = b.default orelse return false;
+            return !std.mem.eql(u8, selected, default);
+        },
+        .refind => {
+            const current = b.boot_current orelse return false;
+            const entry = std.fmt.parseInt(u16, b.trial_entry, 16) catch return false;
+            return current == entry;
+        },
+        .grub => false,
+    };
+}
+
+/// the ascii text of an efi variable's bytes: 4 bytes of attributes,
+/// then utf-16 up to a nul. null for anything else.
+fn efiString(a: Allocator, bytes: []const u8) !?[]const u8 {
+    if (bytes.len < 4) return null;
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 4;
+    while (i + 1 < bytes.len) : (i += 2) {
+        const ch = std.mem.readInt(u16, bytes[i..][0..2], .little);
+        if (ch == 0) break;
+        if (ch >= 0x80) return null;
+        try out.append(a, @intCast(ch));
+    }
+    return out.items;
+}
+
+test "an older entry picked by hand isn't a failed trial" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // "yoq-gen-2.conf" as the boot loader interface stores it.
+    var bytes: std.ArrayList(u8) = .empty;
+    try bytes.appendSlice(a, &.{ 6, 0, 0, 0 });
+    for ("yoq-gen-2.conf") |ch| try bytes.appendSlice(a, &.{ ch, 0 });
+    try bytes.appendSlice(a, &.{ 0, 0 });
+    const gen2 = (try efiString(a, bytes.items)).?;
+    try std.testing.expectEqualStrings("yoq-gen-2.conf", gen2);
+    // the default, after a trial that didn't come up, or another entry.
+    try std.testing.expect(!byHand(.@"systemd-boot", .{ .selected = gen2, .default = "yoq-gen-2.conf" }));
+    try std.testing.expect(byHand(.@"systemd-boot", .{ .selected = "yoq-gen-1.conf", .default = "yoq-gen-2.conf" }));
+    try std.testing.expect(byHand(.limine, .{ .selected = "yoq-1-enable-rollback", .default = "yoq-2-add-fd" }));
+    // without the variables, nothing says it was.
+    try std.testing.expect(!byHand(.limine, .{ .default = "yoq-2-add-fd" }));
+    // refind: this boot started from the trial's firmware entry.
+    try std.testing.expect(byHand(.refind, .{ .boot_current = 4, .trial_entry = "0004" }));
+    try std.testing.expect(!byHand(.refind, .{ .boot_current = 1, .trial_entry = "0004" }));
+    try std.testing.expect(!byHand(.grub, .{ .selected = "x", .default = "y" }));
+}
+
+/// what's wrong with the boot file at `path`, a `kernel` or not (see
+/// bootcheck.problem), or null if it looks loadable.
+fn fileProblem(a: Allocator, io: std.Io, path: []const u8, kernel: bool) !?[]const u8 {
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return "it's missing";
+    defer file.close(io);
+    const size = (file.stat(io) catch return "it can't be read").size;
+    var head: [bootcheck.head_bytes]u8 = undefined;
+    const n = file.readPositionalAll(io, &head, 0) catch return "it can't be read";
+    var sum: ?[]const u8 = null;
+    if (!kernel and bootcheck.hashedName(path) != null) {
+        var h: std.crypto.hash.sha2.Sha256 = .init(.{});
+        var buf: [64 << 10]u8 = undefined;
+        var at: u64 = 0;
+        while (true) {
+            const got = file.readPositionalAll(io, &buf, at) catch return "it can't be read";
+            if (got == 0) break;
+            h.update(buf[0..got]);
+            at += got;
+        }
+        var digest: [32]u8 = undefined;
+        h.final(&digest);
+        sum = try a.dupe(u8, &std.fmt.bytesToHex(digest, .lower));
+    }
+    return bootcheck.problem(kernel, path, head[0..n], size, sum);
+}
+
+test "a trial's files that limine couldn't load" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const esp = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "yoq/boot");
+    const pe = bootcheck.testPe(0x200, 0x200);
+    var kernel: [0x400]u8 = undefined;
+    @memcpy(kernel[0..512], &pe);
+    @memset(kernel[512..], 0);
+    const initrd = "an initramfs";
+    const initrd_name = try std.fmt.allocPrint(a, "yoq/boot/{s}-initramfs-linux.img", .{facts.sha256Hex(initrd)[0..16]});
+    try tmp.dir.writeFile(io, .{ .sub_path = "yoq/boot/0123456789abcdef-vmlinuz-linux", .data = &kernel });
+    try tmp.dir.writeFile(io, .{ .sub_path = initrd_name, .data = initrd });
+    const conf = try std.fmt.allocPrint(a, "{s}\n/yoq trial boot\n    protocol: linux\n    path: boot():/yoq/boot/0123456789abcdef-vmlinuz-linux\n    module_path: boot():/{s}\n    cmdline: rw\n{s}\n", .{ menu.limine_begin, initrd_name, menu.limine_end });
+    try tmp.dir.writeFile(io, .{ .sub_path = "limine.conf", .data = conf });
+    const s: Store = .{ .a = a, .io = io, .loader = .limine, .esp = esp, .conf = try std.fmt.allocPrint(a, "{s}/limine.conf", .{esp}) };
+    try std.testing.expectEqual(null, try s.brokenFile());
+    // cut off, the kernel isn't whole.
+    try tmp.dir.writeFile(io, .{ .sub_path = "yoq/boot/0123456789abcdef-vmlinuz-linux", .data = kernel[0..0x300] });
+    try std.testing.expect(std.mem.endsWith(u8, (try s.brokenFile()).?, "0123456789abcdef-vmlinuz-linux: it isn't a whole efi binary"));
+    try tmp.dir.writeFile(io, .{ .sub_path = "yoq/boot/0123456789abcdef-vmlinuz-linux", .data = &kernel });
+    // an initramfs that changed after os named it.
+    try tmp.dir.writeFile(io, .{ .sub_path = initrd_name, .data = "something else" });
+    try std.testing.expect(std.mem.endsWith(u8, (try s.brokenFile()).?, "-initramfs-linux.img: its content doesn't match the hash in its name"));
+    try tmp.dir.deleteFile(io, initrd_name);
+    try std.testing.expect(std.mem.endsWith(u8, (try s.brokenFile()).?, "-initramfs-linux.img: it's missing"));
 }
 
 /// refind's efi binary in `dir`, like refind_x64.efi.

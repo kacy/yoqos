@@ -83,6 +83,74 @@ pub fn genId(a: Allocator, n: u32) ![]const u8 {
 /// systemd-boot.
 pub const trial_title = "yoq trial boot";
 
+/// a file an entry loads, as a path on the esp, and whether it's what the
+/// entry starts, a kernel or an image, or something it passes along,
+/// like an initramfs.
+pub const Loaded = struct { path: []const u8, kernel: bool };
+
+/// the files the trial entry loads, from os's part of limine.conf,
+/// `conf`.
+pub fn limineTrialFiles(a: Allocator, conf: []const u8) ![]const Loaded {
+    var out: std.ArrayList(Loaded) = .empty;
+    var in_trial = false;
+    var lines = std.mem.splitScalar(u8, conf, '\n');
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.eql(u8, t, limine_end)) break;
+        if (std.mem.startsWith(u8, t, "/")) {
+            in_trial = std.mem.eql(u8, t[1..], trial_title);
+            continue;
+        }
+        if (!in_trial) continue;
+        for ([_][]const u8{ "path: boot():", "module_path: boot():" }, [_]bool{ true, false }) |key, kernel| {
+            if (std.mem.startsWith(u8, t, key)) try out.append(a, .{ .path = t[key.len..], .kernel = kernel });
+        }
+    }
+    return out.items;
+}
+
+/// the files a systemd-boot entry, `text`, loads.
+pub fn sdbootFiles(a: Allocator, text: []const u8) ![]const Loaded {
+    var out: std.ArrayList(Loaded) = .empty;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        var words = std.mem.tokenizeAny(u8, line, " \t\r");
+        const key = words.next() orelse continue;
+        const initrd = std.mem.eql(u8, key, "initrd");
+        if (!initrd and !std.mem.eql(u8, key, "linux") and !std.mem.eql(u8, key, "efi")) continue;
+        try out.append(a, .{ .path = words.next() orelse continue, .kernel = !initrd });
+    }
+    return out.items;
+}
+
+/// the volume refind's trial entry loads from, a partition guid, and the
+/// files it loads there: its loader, and the initrds in its options.
+pub const RefindTrial = struct { volume: []const u8, files: []const Loaded };
+
+/// refind's trial entry in `conf`, the refind.conf of the trial's copy of
+/// refind, or null without one.
+pub fn refindTrialFiles(a: Allocator, conf: []const u8) !?RefindTrial {
+    const start = std.mem.indexOf(u8, conf, "menuentry \"" ++ trial_title ++ "\"") orelse return null;
+    const end = std.mem.indexOfScalarPos(u8, conf, start, '}') orelse conf.len;
+    var volume: ?[]const u8 = null;
+    var files: std.ArrayList(Loaded) = .empty;
+    var lines = std.mem.splitScalar(u8, conf[start..end], '\n');
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, t, "volume ")) volume = std.mem.trim(u8, t["volume ".len..], " ");
+        if (std.mem.startsWith(u8, t, "loader ")) try files.append(a, .{ .path = std.mem.trim(u8, t["loader ".len..], " "), .kernel = true });
+        if (!std.mem.startsWith(u8, t, "options ")) continue;
+        var words = std.mem.tokenizeAny(u8, t["options ".len..], " \"");
+        while (words.next()) |w| {
+            if (!std.mem.startsWith(u8, w, "initrd=")) continue;
+            const path = try a.dupe(u8, w["initrd=".len..]);
+            std.mem.replaceScalar(u8, path, '\\', '/');
+            try files.append(a, .{ .path = path, .kernel = false });
+        }
+    }
+    return .{ .volume = volume orelse return null, .files = files.items };
+}
+
 /// the command line a trial boots with: an entry's, and the argument that
 /// starts the watchdog.
 pub fn trialArgs(a: Allocator, args: []const u8) ![]const u8 {
@@ -319,8 +387,16 @@ pub fn sdbootName(a: Allocator, id: []const u8) ![]const u8 {
     return std.fmt.allocPrint(a, "yoq-{s}.conf", .{id});
 }
 
-/// the entry a trial boots on systemd-boot.
+/// the entry a trial boots on systemd-boot, as bootctl names it.
 pub const sdboot_trial = "yoq-trial.conf";
+
+/// the trial entry's file: its name with a boot counter of one try.
+/// when its kernel or image can't be loaded, systemd-boot (258 or later,
+/// with reboot-on-error at its default, auto) reboots instead of showing
+/// its menu, so the boot after gets the default, the generation before.
+/// the counter goes down when the trial boots, which changes the file's
+/// name, and the next menu write puts a fresh one back.
+pub const sdboot_trial_file = "yoq-trial+1.conf";
 
 /// os's entry files for systemd-boot, in loader/entries on the esp: one
 /// per generation, and the one a trial boots. versions put the newest
@@ -332,7 +408,7 @@ pub fn sdboot(a: Allocator, entries: []const Entry) ![]const Named {
         try out.append(a, .{ .name = try sdbootName(a, e.id), .text = try sdbootEntry(a, e, "yoq", entries.len - i) });
     }
     if (try trialEntry(a, entries)) |t| {
-        try out.append(a, .{ .name = sdboot_trial, .text = try sdbootEntry(a, t, "yoq-trial", entries.len) });
+        try out.append(a, .{ .name = sdboot_trial_file, .text = try sdbootEntry(a, t, "yoq-trial", entries.len) });
     }
     return out.items;
 }
@@ -586,6 +662,12 @@ test "limine's entries, and where they go in its config" {
         \\    cmdline: root=UUID=r rw yoq.trial
         \\
     ++ limine_end ++ "\n", section);
+    // what the trial entry loads, and nothing from the other entries.
+    const trial_files = try limineTrialFiles(a, try spliceLimine(a, "/Arch Linux\n    path: boot():/other\n", section));
+    try testing.expectEqual(3, trial_files.len);
+    try testing.expectEqualStrings("/vmlinuz-linux", trial_files[0].path);
+    try testing.expect(trial_files[0].kernel and !trial_files[1].kernel);
+    try testing.expectEqualStrings("/initramfs-linux.img", trial_files[2].path);
     const conf =
         \\timeout: 5
         \\default_entry: 2
@@ -611,7 +693,7 @@ test "systemd-boot's entry files" {
     try testing.expectEqual(3, files.len);
     try testing.expectEqualStrings("yoq-head.conf", files[0].name);
     try testing.expectEqualStrings("yoq-gen-1.conf", files[1].name);
-    try testing.expectEqualStrings(sdboot_trial, files[2].name);
+    try testing.expectEqualStrings(sdboot_trial_file, files[2].name);
     try testing.expectEqualStrings(
         \\# written by os. edits here are overwritten.
         \\title yoq 1 - enable-rollback
@@ -622,6 +704,11 @@ test "systemd-boot's entry files" {
         \\options root=UUID=r rootflags=subvol=/@roots/boot-1 rw
         \\
     , files[1].text);
+    const loaded = try sdbootFiles(arena.allocator(), files[1].text);
+    try testing.expectEqual(2, loaded.len);
+    try testing.expectEqualStrings("/yoq/boot/ab12-vmlinuz-linux", loaded[0].path);
+    try testing.expectEqualStrings("/yoq/boot/cd34-initramfs-linux.img", loaded[1].path);
+    try testing.expect(loaded[0].kernel and !loaded[1].kernel);
     try testing.expect(std.mem.indexOf(u8, files[2].text, "sort-key yoq-trial\n") != null);
     try testing.expect(std.mem.endsWith(u8, files[2].text, "options root=UUID=r rw yoq.trial\n"));
 }
@@ -689,7 +776,7 @@ test "entries that start unified kernel images" {
         \\options root=UUID=r rootflags=subvol=/@roots/3 rw yoq.trial
         \\
     , sd[2].text);
-    try testing.expectEqualStrings(sdboot_trial, sd[2].name);
+    try testing.expectEqualStrings(sdboot_trial_file, sd[2].name);
     // one options line, since systemd-boot joins several, and the trial's
     // argument once.
     try testing.expectEqual(1, std.mem.count(u8, sd[2].text, "\noptions "));
@@ -871,6 +958,14 @@ test "refind's entries, and its include" {
     try testing.expect(std.mem.startsWith(u8, trial, "timeout 3\n\n# written by os"));
     try testing.expect(std.mem.indexOf(u8, trial, "include yoq.conf") == null);
     try testing.expect(std.mem.endsWith(u8, trial, "default_selection \"yoq trial boot\"\n"));
+    // what the trial entry loads, from that config.
+    const loads = (try refindTrialFiles(a, trial)).?;
+    try testing.expectEqualStrings("esp-guid", loads.volume);
+    try testing.expectEqual(3, loads.files.len);
+    try testing.expectEqualStrings("/vmlinuz-linux", loads.files[0].path);
+    try testing.expect(loads.files[0].kernel and !loads.files[2].kernel);
+    try testing.expectEqualStrings("/initramfs-linux.img", loads.files[2].path);
+    try testing.expectEqual(null, try refindTrialFiles(a, "timeout 3\n"));
     try testing.expectEqualStrings("\"Arch Linux\" \"root=UUID=r rw initrd=\\amd-ucode.img initrd=\\initramfs-linux.img\"\n", try refindLinux(a, test_entries[0]));
     try testing.expectEqualStrings("timeout 20\n", try unspliceRefind(a, "timeout 20\ninclude yoq.conf\n"));
     const conf = "timeout 20\ninclude yoq.conf\ndefault_selection 1\n";

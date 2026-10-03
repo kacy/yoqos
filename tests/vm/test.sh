@@ -64,6 +64,7 @@ ext4)
 limine | sdboot)
     tests/vm/rollback.sh
     tests/vm/trial.sh
+    tests/vm/load-failures.sh
     # unified kernel images, started by each loader's own kind of entry.
     tests/vm/uki.sh
     # boot files live on the esp here, so it can run out of room.
@@ -84,6 +85,7 @@ snapper)
 refind)
     tests/vm/rollback.sh
     tests/vm/trial.sh
+    tests/vm/load-failures.sh
     tests/vm/leave.sh
     ;;
 *)
@@ -95,6 +97,9 @@ refind)
     # a drop-in built into a staged root, on one image of the two.
     if [ "${VM_IMAGE:-cloud}" = cloud ]; then tests/vm/initramfs.sh; fi
     tests/vm/trial.sh
+    # kernels grub can't load and early hangs, on one image of the two:
+    # the one whose run is shorter.
+    if [ "${VM_IMAGE:-cloud}" = archinstall ]; then tests/vm/load-failures.sh; fi
     tests/vm/desktop.sh
     tests/vm/ids.sh
     # failures with generations, on one image of the two.

@@ -142,6 +142,7 @@ test {
     _ = @import("uki.zig");
     _ = @import("secureboot.zig");
     _ = @import("modules.zig");
+    _ = @import("bootcheck.zig");
     _ = @import("trial.zig");
     _ = @import("uninstall.zig");
     _ = @import("install.zig");

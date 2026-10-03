@@ -67,7 +67,7 @@ on_trial yes
 before=$(second_newest)
 break_trial_boot
 show_env
-falls_back "$before"
+falls_back "$before" "console:Kernel panic"
 # a trial that comes up without a network, on a config that turns on
 # networkmanager: it manages no devices there, so there's no default
 # route, and the machine falls back to the generation before.

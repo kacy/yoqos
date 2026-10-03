@@ -40,12 +40,12 @@ on_trial yes
 check "pacman -Q systemd-ukify >/dev/null 2>&1 || echo not yet" "not yet"
 case $VM_LOADER in
 systemd-boot)
-    check "grep -c '^efi /yoq/boot/[0-9a-f]*-yoq.efi\$' $entries/yoq-trial.conf $entries/yoq-head.conf | cut -d: -f2 | tr '\\n' ' '" "1 1 "
-    check "grep -c -e '^linux ' -e '^initrd ' $entries/yoq-trial.conf || true" 0
+    check "grep -c '^efi /yoq/boot/[0-9a-f]*-yoq.efi\$' $entries/yoq-trial*.conf $entries/yoq-head.conf | cut -d: -f2 | tr '\\n' ' '" "1 1 "
+    check "grep -c -e '^linux ' -e '^initrd ' $entries/yoq-trial*.conf || true" 0
     # one options line, with the trial's argument once. "sort-key
     # yoq-trial" is in there too, so the dot has to be a dot.
-    check "grep -c '^options ' $entries/yoq-trial.conf" 1
-    check "grep -c '^options .* yoq\\.trial\$' $entries/yoq-trial.conf" 1
+    check "grep -c '^options ' $entries/yoq-trial*.conf" 1
+    check "grep -c '^options .* yoq\\.trial\$' $entries/yoq-trial*.conf" 1
     check "grep -c '^linux ' $entries/yoq-gen-$before.conf" 1
     ;;
 limine)
