@@ -1,5 +1,5 @@
 //! json documents. every document starts with a "schema" field that names
-//! its shape and version, like "yoq.version/1", so scripts can check what
+//! its shape and version, like "yos.version/1", so scripts can check what
 //! they got before reading the rest.
 
 const std = @import("std");
@@ -19,7 +19,7 @@ pub fn writeDoc(w: *std.Io.Writer, comptime schema: []const u8, payload: anytype
 }
 
 /// a writer that passes text on to `out` with its control characters
-/// written as escapes, like "\x1b", except newlines and tabs. os's output
+/// written as escapes, like "\x1b", except newlines and tabs. yos's output
 /// on a terminal holds text from places others control: a cloned config
 /// repository and its lock, aur recipes and what their builds print,
 /// file names on the esp. an escape sequence in any of them could move
@@ -98,10 +98,10 @@ test "control characters reach the terminal as escapes" {
 test "schema comes first" {
     var buf: [256]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    try writeDoc(&w, "yoq.test/1", .{ .name = "atlas", .count = 3 });
+    try writeDoc(&w, "yos.test/1", .{ .name = "atlas", .count = 3 });
     try std.testing.expectEqualStrings(
         \\{
-        \\  "schema": "yoq.test/1",
+        \\  "schema": "yos.test/1",
         \\  "name": "atlas",
         \\  "count": 3
         \\}

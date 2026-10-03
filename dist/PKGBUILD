@@ -1,64 +1,64 @@
-# the os command. by default, yoq-os-git from this repository's main
-# branch; with YOQ_VERSION=0.1.0, yoq-os from the tag v0.1.0. YOQ_SOURCE
+# the yos command. by default, yos-git from this repository's main
+# branch; with YOS_VERSION=0.1.0, yos from the tag v0.1.0. YOS_SOURCE
 # points either at another clone, like ci's own checkout:
-#   YOQ_SOURCE=file:///path/to/yoqos
-if [ -n "${YOQ_VERSION:-}" ]; then
-  pkgname=yoq-os
-  pkgver=$YOQ_VERSION
-  _ref="#tag=v$YOQ_VERSION"
-  conflicts=(yoq-os-git)
+#   YOS_SOURCE=file:///path/to/yos
+if [ -n "${YOS_VERSION:-}" ]; then
+  pkgname=yos
+  pkgver=$YOS_VERSION
+  _ref="#tag=v$YOS_VERSION"
+  conflicts=(yos-git)
 else
-  pkgname=yoq-os-git
+  pkgname=yos-git
   pkgver=r0
   _ref=
-  provides=(yoq-os)
-  conflicts=(yoq-os)
+  provides=(yos)
+  conflicts=(yos)
 fi
 pkgrel=1
 pkgdesc='declarative arch linux with rollback'
 arch=(x86_64)
 url='https://github.com/kacy/yoqos'
 license=(MIT)
-# what os links, and the tools it runs.
+# what yos links, and the tools it runs.
 depends=(glibc pacman systemd systemd-libs git shadow util-linux coreutils findutils diffutils procps-ng)
-optdepends=('grub: generations and rollback (os enable-rollback)'
+optdepends=('grub: generations and rollback (yos enable-rollback)'
             'efibootmgr: grub-install on machines that boot grub by name'
             'mkinitcpio: initramfs changes for gpu drivers')
 makedepends=(zig lowdown)
 # zig's own debug info stays in the binary; there's no separate package.
 options=(!debug)
-source=("yoqos::git+${YOQ_SOURCE:-https://github.com/kacy/yoqos.git}$_ref")
+source=("yos::git+${YOS_SOURCE:-https://github.com/kacy/yoqos.git}$_ref")
 sha256sums=(SKIP)
 
-if [ -z "${YOQ_VERSION:-}" ]; then
+if [ -z "${YOS_VERSION:-}" ]; then
   pkgver() {
-    cd yoqos
+    cd yos
     printf 'r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
   }
 fi
 
 build() {
-  cd yoqos
+  cd yos
   export ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache"
   # a baseline cpu, so the package runs on any x86_64 machine.
   zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline --prefix "$srcdir/out"
-  # os(1) and os-generations(7), from the docs.
+  # yos(1) and yos-generations(7), from the docs.
   dist/man.sh "$srcdir/man"
 }
 
 check() {
-  cd yoqos
+  cd yos
   export ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache"
   zig build test -Dalpm -Dsystemd
 }
 
 package() {
-  cd yoqos
-  install -Dm755 "$srcdir/out/bin/os" "$pkgdir/usr/bin/os"
-  install -Dm644 dist/yoq-drift.hook "$pkgdir/usr/share/libalpm/hooks/yoq-drift.hook"
-  install -Dm644 -t "$pkgdir/usr/share/yoq/profiles" dist/profiles/*.toml
+  cd yos
+  install -Dm755 "$srcdir/out/bin/yos" "$pkgdir/usr/bin/yos"
+  install -Dm644 dist/yos-drift.hook "$pkgdir/usr/share/libalpm/hooks/yos-drift.hook"
+  install -Dm644 -t "$pkgdir/usr/share/yos/profiles" dist/profiles/*.toml
   install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md docs/*.md
-  install -Dm644 "$srcdir/man/os.1" "$pkgdir/usr/share/man/man1/os.1"
-  install -Dm644 "$srcdir/man/os-generations.7" "$pkgdir/usr/share/man/man7/os-generations.7"
+  install -Dm644 "$srcdir/man/yos.1" "$pkgdir/usr/share/man/man1/yos.1"
+  install -Dm644 "$srcdir/man/yos-generations.7" "$pkgdir/usr/share/man/man7/yos-generations.7"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

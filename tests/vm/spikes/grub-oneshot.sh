@@ -3,7 +3,7 @@
 # stock grub-reboot, with grubenv on btrfs. b: an env file on the esp.
 # prints what happened; it doesn't fail.
 vm=tests/vm/vm.sh
-console=${VM_DIR:-$HOME/.cache/yoq-vm}/console.log
+console=${VM_DIR:-$HOME/.cache/yos-vm}/console.log
 
 # which entry this boot came from. a boot that never came back shows
 # grub's and the kernel's last words, and ends the spike.
@@ -13,14 +13,14 @@ booted() {
         tail -n 40 "$console" | tr -d '\r' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g'
         exit 0
     fi
-    "$vm" ssh "grep -q yoq.gen=test /proc/cmdline && echo test entry || echo default entry"
+    "$vm" ssh "grep -q yos.gen=test /proc/cmdline && echo test entry || echo default entry"
 }
 
 "$vm" copy tests/vm/spikes/grub-guest.sh /root/grub-guest.sh
 "$vm" ssh sh /root/grub-guest.sh setup
 
 echo "--- a: grub-reboot, grubenv on btrfs"
-"$vm" ssh "grub-reboot yoq-test && grub-editenv list"
+"$vm" ssh "grub-reboot yos-test && grub-editenv list"
 "$vm" reboot || true
 printf "first boot after:  "; booted
 "$vm" ssh "grub-editenv list"
@@ -30,9 +30,9 @@ printf "second boot after: "; booted
 "$vm" reboot
 
 echo "--- b: env on the esp"
-"$vm" ssh "grub-editenv /efi/yoq/grubenv set yoq_next=yoq-test && grub-editenv /efi/yoq/grubenv list"
+"$vm" ssh "grub-editenv /efi/yos/grubenv set yos_next=yos-test && grub-editenv /efi/yos/grubenv list"
 "$vm" reboot || true
 printf "first boot after:  "; booted
-"$vm" ssh "grub-editenv /efi/yoq/grubenv list"
+"$vm" ssh "grub-editenv /efi/yos/grubenv list"
 "$vm" reboot || true
 printf "second boot after: "; booted

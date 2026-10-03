@@ -1,9 +1,9 @@
 //! system accounts: the users and groups packages make, below id 1000.
 //! their ids end up on files in /var, which never rolls back, while
-//! /etc/passwd and /etc/group belong to a generation. so every root os
+//! /etc/passwd and /etc/group belong to a generation. so every root yos
 //! makes gets the newest root's system accounts it lacks, copied as they
 //! are, which keeps an id, once given out, from going to anyone else. and
-//! os keeps a history of every system id it has seen, to say when one
+//! yos keeps a history of every system id it has seen, to say when one
 //! changed anyway. this part is pure; gens.zig and apply do the writing.
 
 const std = @import("std");
@@ -108,8 +108,8 @@ fn lineFor(text: []const u8, name: []const u8) ?[]const u8 {
     return null;
 }
 
-/// where os keeps every system id it has seen, under a root.
-pub const history_path = "var/lib/yoq/system-ids";
+/// where yos keeps every system id it has seen, under a root.
+pub const history_path = "var/lib/yos/system-ids";
 
 /// the system accounts in a root's passwd and group files.
 pub fn systemIds(a: Allocator, passwd: []const u8, group: []const u8) ![]Id {
@@ -145,7 +145,7 @@ pub fn newHistory(a: Allocator, history: []const Id, now: []const Id) ![]const u
 
 /// what's different from the history: a system account whose id isn't
 /// the one it first had, or an id that went to another name. each is a
-/// sentence for `os status`.
+/// sentence for `yos status`.
 pub fn changes(a: Allocator, history: []const Id, now: []const Id) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     for (now) |s| {

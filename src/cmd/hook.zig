@@ -1,4 +1,4 @@
-//! `os record-pacman`: what the pacman hook in dist/ runs after every
+//! `yos record-pacman`: what the pacman hook in dist/ runs after every
 //! transaction, with the packages it touched on stdin, one per line. it
 //! never fails, since a failing hook would worry pacman's user for nothing.
 //! when the transaction changed the running root's boot files, it writes
@@ -15,7 +15,7 @@ const rollback = @import("rollback.zig");
 const Context = cli.Context;
 
 pub fn recordPacmanCmd(ctx: *Context, _: []const [:0]const u8) !u8 {
-    // os's own transactions run the hook too; those aren't drift.
+    // yos's own transactions run the hook too; those aren't drift.
     if (ctx.in_own_transaction) return 0;
     const in = ctx.in orelse return 0;
     var w: cli.Work = .init(ctx);
@@ -44,10 +44,10 @@ pub fn touchesBoot(packages: []const []const u8) bool {
 /// on a machine with generations, the menu's newest entry boots the
 /// running root, but with the esp elsewhere than /boot it boots copies of
 /// its boot files on the esp, or with `[boot] uki` an image of them, made
-/// when the menu was written. a kernel pacman installed outside os would
+/// when the menu was written. a kernel pacman installed outside yos would
 /// then boot only after the next generation, and the old kernel, whose
 /// modules pacman removed, boots meanwhile. so the menu is written again,
-/// as `os gc` would. with /boot as the esp and no image, the entry boots
+/// as `yos gc` would. with /boot as the esp and no image, the entry boots
 /// the esp's own files, which pacman changed already. a menu that can't
 /// sign goes on unsigned, with a warning, as on a way back.
 fn refreshMenu(ctx: *Context, w: *cli.Work) !void {
@@ -68,11 +68,11 @@ fn refreshMenu(ctx: *Context, w: *cli.Work) !void {
     // built from the root's own copies, as when a generation is recorded.
     const why = try m.keepBoot(running) orelse try m.writeMenu(running, records);
     if (why) |problem| {
-        try ctx.err.print("os: the boot menu still boots the kernel from before this transaction: {s}. `os gc` writes it again.\n", .{problem});
+        try ctx.err.print("yos: the boot menu still boots the kernel from before this transaction: {s}. `yos gc` writes it again.\n", .{problem});
         return;
     }
     try rollback.warnUnsigned(ctx, a, left.items);
-    try ctx.err.writeAll("os: wrote the boot menu again, so its newest entry boots the new boot files.\n");
+    try ctx.err.writeAll("yos: wrote the boot menu again, so its newest entry boots the new boot files.\n");
 }
 
 test "the hook's targets land in the drift log" {
@@ -91,7 +91,7 @@ test "the hook's targets land in the drift log" {
     try std.testing.expectEqualStrings("btop", got[0].packages[1]);
 }
 
-test "os's own transactions aren't drift" {
+test "yos's own transactions aren't drift" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);

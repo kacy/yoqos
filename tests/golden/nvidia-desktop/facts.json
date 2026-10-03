@@ -1,5 +1,5 @@
 {
-  "schema": "yoq.facts/1",
+  "schema": "yos.facts/1",
   "time": 1790294400,
   "hostname": "atlas",
   "packages": [

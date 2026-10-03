@@ -1,5 +1,5 @@
 # packages from beyond arch's own repositories. aur packages build in a
-# clean chroot; `os update` shows you each recipe (or what changed in it)
+# clean chroot; `yos update` shows you each recipe (or what changed in it)
 # before it builds anything. a repository like chaotic-aur is pinned like
 # arch's are, and its key is checked.
 version = 1

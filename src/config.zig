@@ -3,7 +3,7 @@
 //! merges parts into one `Config`, and `validate` checks the result.
 //!
 //! every value remembers the file, line, and column it came from, so errors
-//! and `os config show --resolved` can point at it.
+//! and `yos config show --resolved` can point at it.
 
 const std = @import("std");
 const toml = @import("toml.zig");
@@ -137,13 +137,13 @@ pub const Boot = struct {
     kernel: ?Str = null,
     /// kernel modules loaded at every boot, like i2c-dev.
     modules: Set = .{},
-    /// the root is on luks, so the initramfs has to unlock it. os adds
+    /// the root is on luks, so the initramfs has to unlock it. yos adds
     /// sd-encrypt to mkinitcpio's hooks when they can't already.
     encrypt: ?Val(bool) = null,
-    /// boot unified kernel images: os builds one from each generation's
+    /// boot unified kernel images: yos builds one from each generation's
     /// kernel, microcode, and initramfs, and its menu entries start them.
     uki: ?Val(bool) = null,
-    /// sign those images, and the loader files os installs, with sbctl's
+    /// sign those images, and the loader files yos installs, with sbctl's
     /// keys, for firmware that enforces secure boot. needs `uki`.
     secure_boot: ?Val(bool) = null,
 };
@@ -212,14 +212,14 @@ pub const Repo = struct {
     key: ?Str = null,
 };
 
-/// a file os writes whole, keyed by its absolute path.
+/// a file yos writes whole, keyed by its absolute path.
 pub const File = struct {
     src: Src,
     /// a file next to the config, relative to the one that names it.
     source: ?Str = null,
     /// or the content itself.
     text: ?Str = null,
-    /// or a secret's name: os writes the value `os secret set` keeps for
+    /// or a secret's name: yos writes the value `yos secret set` keeps for
     /// it, which never goes into the config.
     secret: ?Str = null,
     /// octal, like "0644", the default, or "0600" for a secret.
@@ -295,7 +295,7 @@ pub fn decode(a: Allocator, file: []const u8, root: *const toml.Table, diags: *d
     }
     if (part.config.version) |v| {
         if (v.v != supported_version) {
-            try diags.add(.bad_value, v.src, "config version {d} isn't supported", .{v.v}, "this os reads version 1");
+            try diags.add(.bad_value, v.src, "config version {d} isn't supported", .{v.v}, "this yos reads version 1");
         }
     }
     return part;
@@ -516,20 +516,20 @@ fn validateModules(c: *const Config, diags: *diag.List) !void {
 }
 
 fn validateFiles(c: *const Config, diags: *diag.List) !void {
-    // files os makes from other keys. a [files] entry for one of them
+    // files yos makes from other keys. a [files] entry for one of them
     // would fight it on every apply.
     const made = try desired.files(diags.arena.allocator(), c, &.{});
     for (c.files.entries.items) |e| {
         const f = &e.value;
-        if (filePathProblem(e.name)) |hint| try diags.add(.bad_value, f.src, "\"{s}\" isn't a path os can write", .{e.name}, hint);
+        if (filePathProblem(e.name)) |hint| try diags.add(.bad_value, f.src, "\"{s}\" isn't a path yos can write", .{e.name}, hint);
         for (made) |m| {
             const cause = m.cause orelse continue;
             if (!std.mem.eql(u8, m.path, e.name)) continue;
-            try diags.addHint(.bad_value, f.src, "os writes {s} itself", .{e.name}, "`{s}` in the config makes this file; drop the [files] entry", .{cause});
+            try diags.addHint(.bad_value, f.src, "yos writes {s} itself", .{e.name}, "`{s}` in the config makes this file; drop the [files] entry", .{cause});
         }
         const given = @as(u8, @intFromBool(f.source != null)) + @intFromBool(f.text != null) + @intFromBool(f.secret != null);
         if (given != 1) {
-            try diags.add(.bad_value, f.src, "{s} needs exactly one of source, text, or secret", .{e.name}, "source names a file next to the config, text is the content itself, and secret names a value `os secret set` keeps");
+            try diags.add(.bad_value, f.src, "{s} needs exactly one of source, text, or secret", .{e.name}, "source names a file next to the config, text is the content itself, and secret names a value `yos secret set` keeps");
         }
         if (f.secret) |s| {
             if (secrets.nameProblem(s.v)) |hint| try diags.add(.bad_value, s.src, "\"{s}\" isn't a secret's name", .{s.v}, hint);
@@ -555,7 +555,7 @@ fn validateUsers(c: *const Config, diags: *diag.List) !void {
             try diags.add(.bad_value, u.value.src, "\"{s}\" isn't a valid user name", .{u.name}, name_rule);
         }
         if (systemUser(u.name)) {
-            try diags.add(.bad_value, u.value.src, "os can't manage the system account \"{s}\"", .{u.name}, "os manages regular users, uid 1000 and up");
+            try diags.add(.bad_value, u.value.src, "yos can't manage the system account \"{s}\"", .{u.name}, "yos manages regular users, uid 1000 and up");
         }
         for (u.value.groups.items.items) |g| {
             if (!validUserName(g.name)) try diags.add(.bad_value, g.src, "\"{s}\" isn't a valid group name", .{g.name}, name_rule);
@@ -563,7 +563,7 @@ fn validateUsers(c: *const Config, diags: *diag.List) !void {
     }
 }
 
-/// a service os can set up: one the catalog knows, or one the config
+/// a service yos can set up: one the catalog knows, or one the config
 /// describes with its own unit and package.
 pub fn knownService(c: *const Config, name: []const u8) bool {
     if (catalog.service(name) != null) return true;
@@ -580,17 +580,17 @@ pub fn unknownService(diags: *diag.List, name: []const u8, at: ?diag.Span) !void
     }
 }
 
-/// why os can't write a file at `p`, or null if it can: it wants a plain
-/// absolute path, outside os's own state.
+/// why yos can't write a file at `p`, or null if it can: it wants a plain
+/// absolute path, outside yos's own state.
 pub fn filePathProblem(p: []const u8) ?[]const u8 {
     if (p.len < 2 or p[0] != '/' or p[p.len - 1] == '/') return "files are keyed by their full path, like \"/etc/motd\"";
     // a nul ends the path where the kernel reads it, so the plan would
-    // show one file and os write another, and other controls can hide
+    // show one file and yos write another, and other controls can hide
     // what the plan shows.
     if (hasControl(p)) return "control characters like newlines can't be in a path";
     if (hasOddSegment(p[1..])) return "write the path without //, . or .. in it";
-    for ([_][]const u8{ "/etc/yoq", "/var/lib/yoq" }) |own| {
-        if (std.mem.startsWith(u8, p, own) and (p.len == own.len or p[own.len] == '/')) return "os keeps its own state there";
+    for ([_][]const u8{ "/etc/yos", "/var/lib/yos" }) |own| {
+        if (std.mem.startsWith(u8, p, own) and (p.len == own.len or p[own.len] == '/')) return "yos keeps its own state there";
     }
     return null;
 }
@@ -623,7 +623,7 @@ fn isFingerprint(k: []const u8) bool {
 }
 
 /// a newline, tab, or other control character, which would start a new
-/// line or field in the files os writes from config values.
+/// line or field in the files yos writes from config values.
 fn hasControl(s: []const u8) bool {
     for (s) |ch| {
         if (std.ascii.isControl(ch)) return true;
@@ -931,11 +931,11 @@ test "a session's config needs a session" {
     try f.expectDiag(0, .bad_value, 2, "session_config needs a session");
 }
 
-test "[files] can't name a file os writes itself" {
+test "[files] can't name a file yos writes itself" {
     const f = try Fixture.init(
         \\[sysctl]
         \\"vm.swappiness" = 10
-        \\[files."/etc/sysctl.d/99-yoq.conf"]
+        \\[files."/etc/sysctl.d/99-yos.conf"]
         \\text = "vm.swappiness = 60\n"
         \\[files."/etc/motd"]
         \\text = "hi\n"
@@ -944,22 +944,22 @@ test "[files] can't name a file os writes itself" {
     defer f.deinit();
     try validate(&f.part.config, &f.diags);
     try testing.expectEqual(1, f.diags.items.items.len);
-    try f.expectDiag(0, .bad_value, 3, "os writes /etc/sysctl.d/99-yoq.conf itself");
+    try f.expectDiag(0, .bad_value, 3, "yos writes /etc/sysctl.d/99-yos.conf itself");
     try testing.expectEqualStrings("`sysctl` in the config makes this file; drop the [files] entry", f.diags.items.items[0].hint.?);
 }
 
-test "[files] paths are plain and stay out of os's own state" {
-    for ([_][]const u8{ "etc/motd", "/", "/etc/sudoers.d\x00.off/x", "/etc/motd\x1b[2K", "/etc/a\nb", "/etc/../../tmp/x", "/etc/./motd", "/etc//motd", "/etc/motd/", "/etc/yoq/machine.toml", "/var/lib/yoq", "/var/lib/yoq/ids" }) |p| {
+test "[files] paths are plain and stay out of yos's own state" {
+    for ([_][]const u8{ "etc/motd", "/", "/etc/sudoers.d\x00.off/x", "/etc/motd\x1b[2K", "/etc/a\nb", "/etc/../../tmp/x", "/etc/./motd", "/etc//motd", "/etc/motd/", "/etc/yos/machine.toml", "/var/lib/yos", "/var/lib/yos/ids" }) |p| {
         try testing.expect(filePathProblem(p) != null);
     }
-    for ([_][]const u8{ "/etc/motd", "/etc/yoqx", "/var/lib/yoq-other/x", "/etc/..hidden" }) |p| {
+    for ([_][]const u8{ "/etc/motd", "/etc/yosx", "/var/lib/yos-other/x", "/etc/..hidden" }) |p| {
         try testing.expectEqual(null, filePathProblem(p));
     }
     const f = try Fixture.init("[files.\"/etc/../../tmp/x\"]\ntext = \"x\"\n");
     defer f.deinit();
     try validate(&f.part.config, &f.diags);
     try testing.expectEqual(1, f.diags.items.items.len);
-    try f.expectDiag(0, .bad_value, 1, "\"/etc/../../tmp/x\" isn't a path os can write");
+    try f.expectDiag(0, .bad_value, 1, "\"/etc/../../tmp/x\" isn't a path yos can write");
 }
 
 test "a file takes exactly one of source, text, and secret" {
@@ -1034,7 +1034,7 @@ test "system accounts can't be declared" {
     defer f.deinit();
     try validate(&f.part.config, &f.diags);
     try testing.expectEqual(1, f.diags.items.items.len);
-    try f.expectDiag(0, .bad_value, 1, "os can't manage the system account \"root\"");
+    try f.expectDiag(0, .bad_value, 1, "yos can't manage the system account \"root\"");
 }
 
 test "package names follow pacman's rules" {

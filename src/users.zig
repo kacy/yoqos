@@ -2,8 +2,8 @@
 //! (useradd, usermod, gpasswd), which keep passwd, shadow, and group
 //! consistent and lock them properly.
 //!
-//! every uid os gives out is kept in an append-only map at
-//! /var/lib/yoq/ids, so a user created again gets the same uid, and files
+//! every uid yos gives out is kept in an append-only map at
+//! /var/lib/yos/ids, so a user created again gets the same uid, and files
 //! it owns in /home stay its own.
 
 const std = @import("std");
@@ -29,7 +29,7 @@ pub fn apply(a: Allocator, io: std.Io, root: []const u8, c: planner.Change, diag
     }
     if (std.mem.startsWith(u8, step, "join ")) return u.run(&.{ "gpasswd", "--root", root, "--add", name, step["join ".len..] });
     if (std.mem.startsWith(u8, step, "leave ")) return u.run(&.{ "gpasswd", "--root", root, "--delete", name, step["leave ".len..] });
-    try diags.add(.bad_value, null, "os doesn't know how to {s} for {s}", .{ step, name }, null);
+    try diags.add(.bad_value, null, "yos doesn't know how to {s} for {s}", .{ step, name }, null);
     return false;
 }
 
@@ -86,7 +86,7 @@ const Users = struct {
     }
 };
 
-const ids_path = "var/lib/yoq/ids";
+const ids_path = "var/lib/yos/ids";
 
 /// the uid the id map has for `name`. lines are "<name> <uid>".
 fn lookup(ids: []const u8, name: []const u8) ?[]const u8 {

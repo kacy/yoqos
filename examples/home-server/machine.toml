@@ -8,7 +8,7 @@ packages = [
 ]
 
 [providers]
-# arch has more than one package for these, and os asks instead of picking
+# arch has more than one package for these, and yos asks instead of picking
 # the first one the way pacman does. naming them here means it never has to.
 "libxtables.so" = "iptables"
 initramfs = "mkinitcpio"
@@ -33,7 +33,7 @@ firewalld = true
 fstrim = true
 resolved = true
 
-# a service os doesn't know by name: give its unit and package.
+# a service yos doesn't know by name: give its unit and package.
 [services.syncthing]
 unit = "syncthing@admin.service"
 package = "syncthing"

@@ -1,6 +1,6 @@
 //! whether a boot file looks like something a bootloader can load. limine
 //! stops at an error screen until someone presses a key when an entry's
-//! file is missing or broken, so os looks at a trial's files before the
+//! file is missing or broken, so yos looks at a trial's files before the
 //! reboot that tries them, and doesn't try them if they're broken.
 
 const std = @import("std");
@@ -14,7 +14,7 @@ pub const head_bytes = 4096;
 /// an entry starts, a kernel or an image, is a pe file (arch's kernels
 /// are, with their efi stub), and has to hold every section its headers
 /// name, so a cut-off copy fails. any other file, like an initramfs,
-/// can't be empty, and a copy os named "<hash>-<name>" has to still have
+/// can't be empty, and a copy yos named "<hash>-<name>" has to still have
 /// that hash, `sum`'s first 16 hex digits, which the caller works out
 /// only when `hashedName` says so.
 pub fn problem(kernel: bool, name: []const u8, head: []const u8, size: u64, sum: ?[]const u8) ?[]const u8 {
@@ -29,7 +29,7 @@ pub fn problem(kernel: bool, name: []const u8, head: []const u8, size: u64, sum:
     return null;
 }
 
-/// the hash in the name of a copy os put on the esp, "<16 hex>-<name>",
+/// the hash in the name of a copy yos put on the esp, "<16 hex>-<name>",
 /// or null for a name without one.
 pub fn hashedName(name: []const u8) ?[]const u8 {
     const base = std.fs.path.basenamePosix(name);
@@ -84,7 +84,7 @@ test "a kernel or image is whole, or it isn't" {
     try std.testing.expectEqualStrings("it's empty", problem(true, "vmlinuz-linux", "", 0, null).?);
 }
 
-test "a copy os named by its hash still has that hash" {
+test "a copy yos named by its hash still has that hash" {
     const name = "0123456789abcdef-initramfs-linux.img";
     try std.testing.expectEqualStrings("0123456789abcdef", hashedName(name).?);
     try std.testing.expectEqual(null, problem(false, name, "x", 1, "0123456789ABCDEF00"));

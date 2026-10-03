@@ -9,7 +9,7 @@ packages = [
 ]
 
 [providers]
-# arch has more than one package for these, and os asks instead of picking
+# arch has more than one package for these, and yos asks instead of picking
 # the first one the way pacman does. naming them here means it never has to.
 "libxtables.so" = "iptables"
 initramfs = "mkinitcpio"
@@ -41,8 +41,8 @@ tlp = true
 fstrim = true
 fwupd = true
 
-# wi-fi, with its password kept out of the config: `os secret set
-# wifi/home` asks for it once on this machine, and os writes the file
+# wi-fi, with its password kept out of the config: `yos secret set
+# wifi/home` asks for it once on this machine, and yos writes the file
 # from it, mode 0600.
 [files."/etc/NetworkManager/system-connections/home.nmconnection"]
 secret = "wifi/home"

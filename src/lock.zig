@@ -1,4 +1,4 @@
-//! machine.lock: exactly what the config resolved to. os writes it and reads
+//! machine.lock: exactly what the config resolved to. yos writes it and reads
 //! it back; nobody edits it by hand.
 //!
 //! the format is plain toml laid out for readable diffs: one table per
@@ -21,7 +21,7 @@ pub const Package = struct {
     /// names of the packages this one depends on, as resolved: a
     /// dependency on a virtual package names the provider that was picked.
     depends: []const []const u8 = &.{},
-    /// for a package os built from the aur: the commit of the recipe it
+    /// for a package yos built from the aur: the commit of the recipe it
     /// was built from.
     recipe: ?[]const u8 = null,
 };
@@ -52,7 +52,7 @@ pub const Lock = struct {
 };
 
 /// the keys at the top of the file, and in a package's table, which is
-/// keyed by the package's name. the reader and `os schema lock` both take
+/// keyed by the package's name. the reader and `yos schema lock` both take
 /// them from here.
 pub const top_keys = keyList(Lock, "version", null);
 pub const package_keys = keyList(Package, null, "name");
@@ -68,7 +68,7 @@ fn keyList(comptime T: type, comptime extra: ?[]const u8, comptime skip: ?[]cons
 }
 
 pub fn write(w: *std.Io.Writer, l: *const Lock) !void {
-    try w.print("# machine.lock: written by os. don't edit it by hand.\nversion = {d}\n", .{format_version});
+    try w.print("# machine.lock: written by yos. don't edit it by hand.\nversion = {d}\n", .{format_version});
     try writeField(w, "sync_date", l.sync_date);
     try writeField(w, "keyring", l.keyring);
 
@@ -187,7 +187,7 @@ pub fn parse(a: Allocator, path: []const u8, bytes: []const u8, diags: *diag.Lis
     };
 }
 
-const fix_hint = "restore it from git or run `os update`";
+const fix_hint = "restore it from git or run `yos update`";
 
 /// yyyy-mm-dd, the way sync dates are written. the date names a
 /// directory in the database cache, so nothing else gets through.
@@ -335,7 +335,7 @@ const hash_a = "a" ** 64;
 const hash_b = "0123456789abcdef" ** 4;
 
 const example =
-    \\# machine.lock: written by os. don't edit it by hand.
+    \\# machine.lock: written by yos. don't edit it by hand.
     \\version = 1
     \\sync_date = "2026-09-25"
     \\keyring = "20260901-1"
@@ -368,7 +368,7 @@ const example =
     \\
     \\[packages.yay-bin]
     \\version = "12.5.0-1"
-    \\repo = "yoq-aur"
+    \\repo = "yos-aur"
     \\sha256 = "
 ++ hash_b ++
     \\"

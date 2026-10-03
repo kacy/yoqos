@@ -1,9 +1,9 @@
 #!/bin/sh
-# spike: install a desktop's worth of packages into an empty root with os,
+# spike: install a desktop's worth of packages into an empty root with yos,
 # the way a staged generation would be built, and list the install scripts
 # and hooks that complained. prints what happened; it doesn't fail.
 set -u
-os=$1
+yos=$1
 root=/tmp/alt-root
 dir=$(mktemp -d)
 cfg=$dir/machine.toml
@@ -25,7 +25,7 @@ TOML
 # answer provider questions with the suggested option until the lock
 # resolves.
 for _ in 1 2 3 4 5; do
-    if "$os" --root "$root" --config "$cfg" update --no-apply 2> "$dir/err"; then break; fi
+    if "$yos" --root "$root" --config "$cfg" update --no-apply 2> "$dir/err"; then break; fi
     cat "$dir/err"
     answers=$(sed -n 's/.*like \(.*\) = "\(.*\)".*/"\1" = "\2"/p' "$dir/err")
     [ -n "$answers" ] || break
@@ -43,7 +43,7 @@ install_into() {
     cp /etc/pacman.d/mirrorlist "$target/etc/pacman.d/mirrorlist"
     echo "--- apply into $target"
     start=$(date +%s)
-    "$os" --root "$target" --config "$cfg" apply --yes > "$dir/apply.out" 2>&1
+    "$yos" --root "$target" --config "$cfg" apply --yes > "$dir/apply.out" 2>&1
     echo "exit $?, $(($(date +%s) - start))s"
     grep -E "^applied|^error" "$dir/apply.out"
     echo "--- scriptlet and hook trouble"

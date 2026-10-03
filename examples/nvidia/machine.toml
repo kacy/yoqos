@@ -11,7 +11,7 @@ packages = [
 ]
 
 [providers]
-# arch has more than one package for these, and os asks instead of picking
+# arch has more than one package for these, and yos asks instead of picking
 # the first one the way pacman does. kde and obs bring a few more choices
 # than a plain machine.
 "libxtables.so" = "iptables"

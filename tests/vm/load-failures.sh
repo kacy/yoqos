@@ -3,7 +3,7 @@
 # alone by an older entry picked by hand. a broken initramfs (trial.sh)
 # gets as far as a kernel panic, which reboots by itself; these stop in
 # the bootloader. grub falls back to the generation before by itself.
-# limine and refind would stop at an error screen, so os looks at the
+# limine and refind would stop at an error screen, so yos looks at the
 # trial's files at shutdown and doesn't try a trial with a broken one, on
 # systemd-boot too. a file that looks fine but won't start, a kernel for
 # another machine, makes systemd-boot reboot, and the boot after runs the
@@ -18,25 +18,25 @@ set -eu
 # and the trials after this one add intel-ucode.
 "$vm" reboot
 settled
-"$vm" ssh "if pacman -Q amd-ucode >/dev/null 2>&1; then /usr/local/bin/os remove --yes amd-ucode; else /usr/local/bin/os add --yes amd-ucode; fi" | tail -n 1
+"$vm" ssh "if pacman -Q amd-ucode >/dev/null 2>&1; then /usr/local/bin/yos remove --yes amd-ucode; else /usr/local/bin/yos add --yes amd-ucode; fi" | tail -n 1
 on_trial yes
 trial_n=$(newest)
 case $VM_LOADER in
-refind) "$vm" ssh "cp $VM_ESP/EFI/yoq-trial/refind.conf /root/trial-refind.conf && sed -i \"s|^default_selection .*|default_selection \\\"\$(grep -o '^menuentry \"yoq 1 [^\"]*' $(menu_file) | cut -c12-)\\\"|\" $VM_ESP/EFI/yoq-trial/refind.conf && grep ^default_selection $VM_ESP/EFI/yoq-trial/refind.conf" ;;
+refind) "$vm" ssh "cp $VM_ESP/EFI/yos-trial/refind.conf /root/trial-refind.conf && sed -i \"s|^default_selection .*|default_selection \\\"\$(grep -o '^menuentry \"yos 1 [^\"]*' $(menu_file) | cut -c12-)\\\"|\" $VM_ESP/EFI/yos-trial/refind.conf && grep ^default_selection $VM_ESP/EFI/yos-trial/refind.conf" ;;
 *) boot_once 1 ;;
 esac
 show_env
 "$vm" reboot || true
 wait_root /@roots/boot-1
 settled
-check "journalctl -b -u yoq-health --no-pager -o cat | grep -c \"generation $trial_n hasn't been tried yet\"" 1
+check "journalctl -b -u yos-health --no-pager -o cat | grep -c \"generation $trial_n hasn't been tried yet\"" 1
 on_trial yes
-check "ls /var/lib/yoq/generations | sort -n | tail -n 1 | cut -d. -f1" "$trial_n"
+check "ls /var/lib/yos/generations | sort -n | tail -n 1 | cut -d. -f1" "$trial_n"
 # a pick at refind's menu is for one boot; the edit above isn't.
-if [ "$VM_LOADER" = refind ]; then "$vm" ssh "cp /root/trial-refind.conf $VM_ESP/EFI/yoq-trial/refind.conf"; fi
+if [ "$VM_LOADER" = refind ]; then "$vm" ssh "cp /root/trial-refind.conf $VM_ESP/EFI/yos-trial/refind.conf"; fi
 "$vm" reboot
 settled
-check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'the default now'" 1
+check "journalctl -b -u yos-health --no-pager -o cat | grep -c 'the default now'" 1
 on_trial no
 echo "picked by hand ok"
 
@@ -54,7 +54,7 @@ cases="missing garbage"
 for how in $cases; do
     "$vm" reboot
     settled
-    "$vm" ssh "/usr/local/bin/os add --yes intel-ucode" | tail -n 1
+    "$vm" ssh "/usr/local/bin/yos add --yes intel-ucode" | tail -n 1
     on_trial yes
     before=$(second_newest)
     break_trial_kernel "$how"
@@ -65,7 +65,7 @@ for how in $cases; do
 done
 
 # trials that hang before the root's watchdog would ordinarily be there:
-# yoq-emergency.service reboots one that drops to an emergency shell, in
+# yos-emergency.service reboots one that drops to an emergency shell, in
 # the initramfs or the root, and the watchdog starts with the root's
 # systemd, so a unit that holds up sysinit.target can't stop it.
 for how in root fstab sysinit; do
@@ -77,7 +77,7 @@ for how in root fstab sysinit; do
     esac
     "$vm" reboot
     settled
-    "$vm" ssh "/usr/local/bin/os add --yes intel-ucode" | tail -n 1
+    "$vm" ssh "/usr/local/bin/yos add --yes intel-ucode" | tail -n 1
     on_trial yes
     before=$(second_newest)
     break_trial_early "$how"

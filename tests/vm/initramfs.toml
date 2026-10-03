@@ -1,8 +1,8 @@
 
 # a mkinitcpio drop-in that puts a marker file in the initramfs, for the
 # tests that check the initramfs is built after the drop-ins are written.
-[files."/etc/mkinitcpio.conf.d/50-yoq-test.conf"]
-text = "FILES+=(/etc/yoq-initramfs-marker)\n"
+[files."/etc/mkinitcpio.conf.d/50-yos-test.conf"]
+text = "FILES+=(/etc/yos-initramfs-marker)\n"
 
-[files."/etc/yoq-initramfs-marker"]
+[files."/etc/yos-initramfs-marker"]
 text = "marker\n"

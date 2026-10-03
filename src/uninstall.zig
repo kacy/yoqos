@@ -1,7 +1,7 @@
-//! what `os uninstall` checks and does, worked out from facts alone. it
+//! what `yos uninstall` checks and does, worked out from facts alone. it
 //! leaves plain arch on the generation that's running: the config stays in
-//! /etc/yoq, the bootloader boots this root the way arch sets it up, and
-//! os's own state goes. like enable.zig, it reads no files and runs nothing.
+//! /etc/yos, the bootloader boots this root the way arch sets it up, and
+//! yos's own state goes. like enable.zig, it reads no files and runs nothing.
 
 const std = @import("std");
 const enable = @import("enable.zig");
@@ -28,10 +28,10 @@ pub const Plan = struct {
     }
 };
 
-/// os's own package, if pacman installed it.
+/// yos's own package, if pacman installed it.
 pub fn ownPackage(f: *const facts.Facts) ?[]const u8 {
     for (f.packages) |p| {
-        if (std.mem.eql(u8, p.name, "yoq-os") or std.mem.eql(u8, p.name, "yoq-os-git")) return p.name;
+        if (std.mem.eql(u8, p.name, "yos") or std.mem.eql(u8, p.name, "yos-git")) return p.name;
     }
     return null;
 }
@@ -48,11 +48,11 @@ pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool, unsigne
     // a boot through systemd's stub, as every unified kernel image has,
     // adds an os separator to pcr 7, and arch's plain kernel boots without
     // one. a tpm key made while images booted doesn't match then.
-    if (tpm_unlock and b.uki and generation.running(b.root_subvol)) if (b.luks_uuid) |uuid| {
+    if (tpm_unlock and b.uki and generation.on(b)) if (b.luks_uuid) |uuid| {
         const device = b.luks_device orelse try std.fmt.allocPrint(a, "/dev/disk/by-uuid/{s}", .{uuid});
         try notes.append(a, try std.fmt.allocPrint(a, "the next boot asks for the passphrase once: the tpm's key was made while this machine booted unified kernel images, whose stub adds to pcr 7, and arch's plain kernel boots without one. after that boot, run `systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 {s}` and type the passphrase, and the tpm unlocks it again.", .{device}));
     };
-    if (generation.running(b.root_subvol)) {
+    if (generation.on(b)) {
         const loader = menu.Loader.of(b) orelse .grub;
         // a plain limine, refind, or systemd-boot finds arch's kernels in
         // /boot only when that's the esp, as archinstall sets them up.
@@ -60,9 +60,9 @@ pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool, unsigne
             .what = "esp",
             .ok = std.mem.eql(u8, b.esp orelse "", "/boot"),
             .found = b.esp orelse "not mounted",
-            .fix = try std.fmt.allocPrint(a, "without os, {s} boots the kernel arch installs in /boot, so the esp has to be mounted there.", .{@tagName(loader)}),
+            .fix = try std.fmt.allocPrint(a, "without yos, {s} boots the kernel arch installs in /boot, so the esp has to be mounted there.", .{@tagName(loader)}),
         });
-        // os's images are signed, but grub, systemd-boot, and refind
+        // yos's images are signed, but grub, systemd-boot, and refind
         // start arch's plain kernel through the firmware, which refuses
         // one without a signature while it enforces secure boot. limine
         // loads kernels itself. grub is installed again, and has to be
@@ -72,37 +72,37 @@ pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool, unsigne
             .what = "secure boot",
             .ok = b.sbctl_keys,
             .found = if (b.sbctl_keys) "enforced, and sbctl has keys to sign grub" else "enforced, and sbctl has no keys to sign grub with",
-            .fix = "grub is installed again without os, and the firmware starts it only signed. put sbctl's keys back in /var/lib/sbctl, or turn secure boot off in the firmware setup.",
+            .fix = "grub is installed again without yos, and the firmware starts it only signed. put sbctl's keys back in /var/lib/sbctl, or turn secure boot off in the firmware setup.",
         });
         if (sb and loader != .limine) try checks.append(a, .{
             .what = "secure boot",
             .ok = unsigned_kernels.len == 0,
             .found = if (unsigned_kernels.len == 0) "enforced, and the kernels in /boot are signed" else try std.fmt.allocPrint(a, "enforced, and {s} has no signature", .{try std.mem.join(a, ", ", unsigned_kernels)}),
-            .fix = try std.fmt.allocPrint(a, "without os, {s} boots arch's kernel in /boot, not os's signed images. sign it with `sbctl sign -s /boot/vmlinuz-linux`, and sbctl's pacman hook signs each new one too, or turn secure boot off in the firmware setup.", .{@tagName(loader)}),
+            .fix = try std.fmt.allocPrint(a, "without yos, {s} boots arch's kernel in /boot, not yos's signed images. sign it with `sbctl sign -s /boot/vmlinuz-linux`, and sbctl's pacman hook signs each new one too, or turn secure boot off in the firmware setup.", .{@tagName(loader)}),
         });
-        try steps.append(a, .{ .kind = .config_dir, .what = "move the config from " ++ enable.config_home ++ " back into /etc/yoq" });
-        try steps.append(a, .{ .kind = .units, .what = "remove os's units that run at boot and shutdown: yoq-health, yoq-watchdog, yoq-emergency, and yoq-carry, and its mkinitcpio hook" });
+        try steps.append(a, .{ .kind = .config_dir, .what = "move the config from " ++ enable.config_home ++ " back into /etc/yos" });
+        try steps.append(a, .{ .kind = .units, .what = "remove yos's units that run at boot and shutdown: yos-health, yos-watchdog, yos-emergency, and yos-carry, and its mkinitcpio hook" });
         if (b.pacman_moved) try steps.append(a, .{ .kind = .pacman_db, .what = "move the pacman database back to /var/lib/pacman" });
         try steps.append(a, .{ .kind = .boot_menu, .what = switch (loader) {
             .grub => try std.fmt.allocPrint(a, "reinstall grub with a menu from grub-mkconfig in /boot/grub, booting this root{s}{s}", .{
                 if (b.luks_uuid != null) ", with what unlocks it added to /etc/default/grub" else "",
                 if (sb) ", and sign grub with sbctl's keys" else "",
             }),
-            .limine => try std.fmt.allocPrint(a, "replace os's entries in {s} with one for this root", .{b.loader_conf orelse "limine.conf"}),
-            .refind => "remove os's entries from refind, and boot this root through /boot/refind_linux.conf",
-            .@"systemd-boot" => "replace os's entries in systemd-boot with one for this root, arch-linux.conf, as its default",
+            .limine => try std.fmt.allocPrint(a, "replace yos's entries in {s} with one for this root", .{b.loader_conf orelse "limine.conf"}),
+            .refind => "remove yos's entries from refind, and boot this root through /boot/refind_linux.conf",
+            .@"systemd-boot" => "replace yos's entries in systemd-boot with one for this root, arch-linux.conf, as its default",
         } });
         if (b.snapper_root) try steps.append(a, .{ .kind = .snap_pac, .what = "turn snap-pac's snapshots of the root back on" });
         if (drop_generations) try steps.append(a, .{ .kind = .generations, .what = "delete every generation but this one, and their boot copies" });
     }
     // before the state, since pacman's hook would write to it.
-    if (ownPackage(f)) |name| try steps.append(a, .{ .kind = .package, .what = try std.fmt.allocPrint(a, "remove the {s} package: os itself, and its pacman hook", .{name}) });
-    try steps.append(a, .{ .kind = .state, .what = "remove os's own state: /var/lib/yoq, and its files on the esp" });
+    if (ownPackage(f)) |name| try steps.append(a, .{ .kind = .package, .what = try std.fmt.allocPrint(a, "remove the {s} package: yos itself, and its pacman hook", .{name}) });
+    try steps.append(a, .{ .kind = .state, .what = "remove yos's own state: /var/lib/yos, and its files on the esp" });
     return .{ .checks = checks.items, .steps = steps.items, .notes = notes.items };
 }
 
 /// /etc/default/grub, as `text`, with a line that adds the kernel
-/// arguments os's entries passed and grub-mkconfig's wouldn't: what
+/// arguments yos's entries passed and grub-mkconfig's wouldn't: what
 /// unlocks a luks root, and the consoles. they come from `cmdline`, the
 /// running one, and only the ones the file doesn't name already. null
 /// when there are none to add.
@@ -123,7 +123,7 @@ pub fn grubDefaults(a: Allocator, text: []const u8, cmdline: []const u8) !?[]con
     }
     if (add.items.len == 0) return null;
     const sep: []const u8 = if (text.len > 0 and text[text.len - 1] != '\n') "\n" else "";
-    return try std.fmt.allocPrint(a, "{s}{s}\n# added by os uninstall: kernel arguments os's boot entries passed.\nGRUB_CMDLINE_LINUX=\"$GRUB_CMDLINE_LINUX{s}\"\n", .{ text, sep, add.items });
+    return try std.fmt.allocPrint(a, "{s}{s}\n# added by yos uninstall: kernel arguments yos's boot entries passed.\nGRUB_CMDLINE_LINUX=\"$GRUB_CMDLINE_LINUX{s}\"\n", .{ text, sep, add.items });
 }
 
 pub fn writeText(w: *std.Io.Writer, p: *const Plan) !void {
@@ -151,7 +151,7 @@ test "the steps on each rung" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var pkgs = [_]facts.Package{.{ .name = "yoq-os", .version = "0.1.0-1" }};
+    var pkgs = [_]facts.Package{.{ .name = "yos", .version = "0.1.0-1" }};
     const manage = try plan(a, &.{ .boot = .{ .root_subvol = "/@" }, .packages = &pkgs }, true, &.{}, false);
     try testing.expectEqual(2, manage.steps.len);
     try testing.expectEqual(Kind.package, manage.steps[0].kind);
@@ -197,17 +197,17 @@ test "the steps on each rung" {
     try testing.expectEqual(Kind.generations, limine.steps[limine.steps.len - 2].kind);
 }
 
-test "grub's defaults get what os's entries passed to unlock the root" {
+test "grub's defaults get what yos's entries passed to unlock the root" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    // what `os install --encrypt --tpm` boots with, from a serial console.
+    // what `yos install --encrypt --tpm` boots with, from a serial console.
     const cmdline = "root=UUID=b rootflags=subvol=/@roots/1 rw console=ttyS0,115200 rd.luks.name=0f7a=root rd.luks.options=tpm2-device=auto panic=10\n";
     const stock = "GRUB_DEFAULT=0\nGRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3 quiet\"\nGRUB_CMDLINE_LINUX=\"\"\n";
     const got = (try grubDefaults(a, stock, cmdline)).?;
     try testing.expectEqualStrings(stock ++
         \\
-        \\# added by os uninstall: kernel arguments os's boot entries passed.
+        \\# added by yos uninstall: kernel arguments yos's boot entries passed.
         \\GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX console=ttyS0,115200 rd.luks.name=0f7a=root rd.luks.options=tpm2-device=auto"
         \\
     , got);

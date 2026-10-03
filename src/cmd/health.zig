@@ -1,4 +1,4 @@
-//! `os health`: runs at boot from yoq-health.service. when a generation
+//! `yos health`: runs at boot from yos-health.service. when a generation
 //! is on trial and this boot runs it, it checks the machine came up
 //! healthy: systemd isn't in maintenance or on its way down, the display
 //! manager is up if there is one, and every service the config turns on is
@@ -23,15 +23,15 @@ const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
 pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (try cli.noArgs(ctx, args, "os health")) |code| return code;
+    if (try cli.noArgs(ctx, args, "yos health")) |code| return code;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
     const boot = try w.generations() orelse return 0;
     // the boot finished, so a trial's watchdog stands down. this runs on
     // every boot, so a stray one can't reboot a healthy machine.
-    _ = try exec.run(a, ctx.io, &.{ "systemctl", "stop", "yoq-watchdog.timer" });
-    // someone may run os as soon as they log in. ending a trial, falling
+    _ = try exec.run(a, ctx.io, &.{ "systemctl", "stop", "yos-watchdog.timer" });
+    // someone may run yos as soon as they log in. ending a trial, falling
     // back, or settling a kernel waits for that to finish, rather than
     // both writing the menu and records at once.
     if (try cli.refused(ctx, cli.waitForMachine(ctx))) return 1;
@@ -40,7 +40,7 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const t = try store.current() orelse {
         try ctx.out.writeAll("no generation on trial.\n");
         // a staged root that booted without a trial settles now.
-        if (try settleBoot(ctx, a, boot)) |why| try ctx.err.print("os: {s}\n", .{why});
+        if (try settleBoot(ctx, a, boot)) |why| try ctx.err.print("yos: {s}\n", .{why});
         return 0;
     };
     const record = generation.find(try gens.readRecords(a, ctx.io, "/var"), t.n) orelse {
@@ -58,7 +58,7 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         },
         .end_unnoted => {
             _ = try store.end();
-            try ctx.err.print("os: grub's env file on the esp says generation {d} is on trial, but os never armed one. the trial is ended, and nothing rolls back. `os rollback --to-booted` keeps the generation this boot runs.\n", .{t.n});
+            try ctx.err.print("yos: grub's env file on the esp says generation {d} is on trial, but yos never armed one. the trial is ended, and nothing rolls back. `yos rollback --to-booted` keeps the generation this boot runs.\n", .{t.n});
             return 1;
         },
         .fall_back => return fellBack(ctx, a, store, boot, t.n),
@@ -69,7 +69,7 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (problems.len == 0) {
         // noted first: the default moves in more than one step, and a
         // power cut between them mustn't look like a failed trial.
-        if (try store.pass()) |why| try ctx.err.print("os: couldn't note that generation {d} passed: {s}\n", .{ t.n, why });
+        if (try store.pass()) |why| try ctx.err.print("yos: couldn't note that generation {d} passed: {s}\n", .{ t.n, why });
         return finishPass(ctx, a, store, boot, record, true);
     }
     try ctx.out.print("generation {d} isn't healthy: {s}. going back to the generation before.\n", .{ t.n, try std.mem.join(a, "; ", problems) });
@@ -86,10 +86,10 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 /// what a boot does about a trial, by its note and whether this boot runs
 /// the trial's root.
 const Next = enum {
-    /// an earlier boot passed it, and a power cut stopped os before it
+    /// an earlier boot passed it, and a power cut stopped yos before it
     /// was the default.
     finish_pass,
-    /// a power cut stopped os before the bootloader was set up.
+    /// a power cut stopped yos before the bootloader was set up.
     rearm,
     /// the trial's boot hasn't happened, like when an older entry was
     /// picked by hand: the next boot tries it again.
@@ -115,7 +115,7 @@ fn next(t: trial.Trial, on_trial_root: bool) Next {
 }
 
 test "a trial that hasn't run is never fallen back from" {
-    // whatever os noted, a boot that didn't run the trial and didn't use
+    // whatever yos noted, a boot that didn't run the trial and didn't use
     // up its one-shot leaves it to the next boot.
     for ([_]trial.Phase{ .arming, .armed }) |phase| {
         const waiting: trial.Trial = .{ .n = 7, .fallback = 6, .tried = false, .phase = phase };
@@ -133,11 +133,11 @@ test "a trial that hasn't run is never fallen back from" {
 
 /// the trial passed: grub.cfg's default and the bootloader's choices
 /// move to it, and the trial ends. `fresh` is false when an earlier boot
-/// passed it and a power cut stopped os before it finished, and this boot
+/// passed it and a power cut stopped yos before it finished, and this boot
 /// may run another generation.
 fn finishPass(ctx: *Context, a: Allocator, store: trial.Store, boot: facts.Boot, record: generation.Record, fresh: bool) !u8 {
     const head = try std.fmt.allocPrint(a, "/{s}", .{record.root});
-    if (try headDefault(ctx, a, boot, head)) |why| try ctx.err.print("os: generation {d} is healthy, but couldn't make it grub.cfg's default: {s}. `os gc` writes the menu again.\n", .{ record.n, why });
+    if (try headDefault(ctx, a, boot, head)) |why| try ctx.err.print("yos: generation {d} is healthy, but couldn't make it grub.cfg's default: {s}. `yos gc` writes the menu again.\n", .{ record.n, why });
     if (try store.end()) |why| return cli.fail(ctx, "generation {d} is healthy, but couldn't make it the default: {s}", .{ record.n, why });
     const on_it = std.mem.eql(u8, boot.root_subvol.?, head);
     if (fresh) {
@@ -150,7 +150,7 @@ fn finishPass(ctx: *Context, a: Allocator, store: trial.Store, boot: facts.Boot,
         try ctx.out.print("generation {d} came up healthy, but the machine went down before it was the default. it is now; reboot to run it.\n", .{record.n});
         return 0;
     }
-    if (try settleBoot(ctx, a, boot)) |why| try ctx.err.print("os: {s}\n", .{why});
+    if (try settleBoot(ctx, a, boot)) |why| try ctx.err.print("yos: {s}\n", .{why});
     return 0;
 }
 
@@ -161,7 +161,7 @@ fn rearm(ctx: *Context, a: Allocator, store: trial.Store, boot: facts.Boot, t: t
     const records = try gens.readRecords(a, ctx.io, "/var");
     const fallback = generation.find(records, t.fallback) orelse {
         _ = try store.end();
-        try ctx.err.print("os: generation {d}'s trial was never set up, and the generation it falls back to, {d}, is gone. it's ended; the next boot runs {d}.\n", .{ t.n, t.fallback, t.n });
+        try ctx.err.print("yos: generation {d}'s trial was never set up, and the generation it falls back to, {d}, is gone. it's ended; the next boot runs {d}.\n", .{ t.n, t.fallback, t.n });
         return 1;
     };
     var why: []const u8 = "";
@@ -184,13 +184,13 @@ fn fellBack(ctx: *Context, a: Allocator, store: trial.Store, boot: facts.Boot, t
     const n = generation.bootCopyOf(running) orelse 0;
     const records = try gens.readRecords(a, ctx.io, "/var");
     const target = generation.find(records, n) orelse {
-        try ctx.err.print("os: generation {d} didn't start, and this boot isn't one os knows ({s}).\n", .{ tried, running });
+        try ctx.err.print("yos: generation {d} didn't start, and this boot isn't one yos knows ({s}).\n", .{ tried, running });
         _ = try store.end();
         return 1;
     };
     const reason = try std.fmt.allocPrint(a, "fell back from {d} to {d}", .{ tried, n });
     if (generation.made(records, tried, reason)) |made| {
-        if (try store.end()) |why| try ctx.err.print("os: couldn't end generation {d}'s trial: {s}\n", .{ tried, why });
+        if (try store.end()) |why| try ctx.err.print("yos: couldn't end generation {d}'s trial: {s}\n", .{ tried, why });
         return fellBackNotice(ctx, a, tried, n, made);
     }
     try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .trial, .step = .failed, .generation = tried });
@@ -203,8 +203,8 @@ fn fellBack(ctx: *Context, a: Allocator, store: trial.Store, boot: facts.Boot, t
 }
 
 fn fellBackNotice(ctx: *Context, a: Allocator, tried: u32, n: u32, made: u32) !u8 {
-    const notice = try std.fmt.allocPrint(a, "generation {d} didn't come up healthy, so this machine went back to generation {d}. it's generation {d} now, with its config. `os rollback {d}` tries {d} again.\n", .{ tried, n, made, tried, tried });
-    if (try gens.writeNotice(a, ctx.io, notice)) |why| try ctx.err.print("os: {s}\n", .{why});
+    const notice = try std.fmt.allocPrint(a, "generation {d} didn't come up healthy, so this machine went back to generation {d}. it's generation {d} now, with its config. `yos rollback {d}` tries {d} again.\n", .{ tried, n, made, tried, tried });
+    if (try gens.writeNotice(a, ctx.io, notice)) |why| try ctx.err.print("yos: {s}\n", .{why});
     try ctx.out.writeAll(notice);
     return 1;
 }
@@ -262,7 +262,7 @@ fn settleBoot(ctx: *Context, a: Allocator, boot: facts.Boot) !?[]const u8 {
 
 /// what to judge a trial by: the config and lock its generation was made
 /// with, from the config's history, or the config as it is when that's
-/// gone. after a staged apply, `os enable` and the like still edit the
+/// gone. after a staged apply, `yos enable` and the like still edit the
 /// config, and a service turned on since then isn't in the generation on
 /// trial. it's not running, but that's no reason to fall back.
 pub fn trialInputs(ctx: *Context, a: Allocator, r: generation.Record) !pipeline.Inputs {
@@ -282,7 +282,7 @@ pub fn trialInputs(ctx: *Context, a: Allocator, r: generation.Record) !pipeline.
 
 /// where the trial's config goes while it's checked. /run goes at the
 /// next boot.
-const health_dir = "/run/yoq/health";
+const health_dir = "/run/yos/health";
 
 /// what's wrong with the running machine, if anything, by the config in
 /// `in`.
@@ -367,19 +367,19 @@ test "a trial is judged by the config its generation was made with" {
     const a = arena.allocator();
     var t: cli.TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n");
     try t.exec(&.{ "add", "--no-apply", "ripgrep" });
     // made while the staged generation waits for its reboot.
     try t.exec(&.{ "enable", "--no-apply", "ssh" });
-    const r: generation.Record = .{ .n = 5, .time = 0, .root = "@roots/5", .reason = "update", .config_dir = "/etc/yoq", .config_rev = "1" };
+    const r: generation.Record = .{ .n = 5, .time = 0, .root = "@roots/5", .reason = "update", .config_dir = "/etc/yos", .config_rev = "1" };
     const in = try trialInputs(&t.ctx, a, r);
     try std.testing.expectEqualStrings(health_dir ++ "/machine.toml", in.config_path);
     const text = t.fs.get(in.config_path).?;
     try std.testing.expect(std.mem.indexOf(u8, text, "ripgrep") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "ssh") == null);
-    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.toml").?, "ssh") != null);
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yos/machine.toml").?, "ssh") != null);
     // a record from before configs were kept, or one whose commit is
     // gone, goes by the config as it is.
-    try std.testing.expectEqualStrings("/etc/yoq/machine.toml", (try trialInputs(&t.ctx, a, .{ .n = 5, .time = 0, .root = "@roots/5", .reason = "x" })).config_path);
-    try std.testing.expectEqualStrings("/etc/yoq/machine.toml", (try trialInputs(&t.ctx, a, .{ .n = 5, .time = 0, .root = "@roots/5", .reason = "x", .config_dir = "/etc/yoq", .config_rev = "9" })).config_path);
+    try std.testing.expectEqualStrings("/etc/yos/machine.toml", (try trialInputs(&t.ctx, a, .{ .n = 5, .time = 0, .root = "@roots/5", .reason = "x" })).config_path);
+    try std.testing.expectEqualStrings("/etc/yos/machine.toml", (try trialInputs(&t.ctx, a, .{ .n = 5, .time = 0, .root = "@roots/5", .reason = "x", .config_dir = "/etc/yos", .config_rev = "9" })).config_path);
 }

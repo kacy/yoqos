@@ -1,6 +1,6 @@
 //! arch's package databases: which repositories to use and where to get
 //! them, both read from pacman's own config, and a cache of downloaded
-//! databases per date under /var/cache/yoq/sync/<date>/.
+//! databases per date under /var/cache/yos/sync/<date>/.
 
 const std = @import("std");
 const rootfs = @import("rootfs.zig");
@@ -18,7 +18,7 @@ pub const Repo = struct {
     /// its packages are signed and checked: false for `SigLevel = Optional`
     /// or `Never`.
     signed: bool = true,
-    /// a repository os keeps in a local directory, like its aur builds: its
+    /// a repository yos keeps in a local directory, like its aur builds: its
     /// database is read where it is, not downloaded per date.
     local: bool = false,
 };
@@ -42,7 +42,7 @@ pub const arch = switch (builtin.cpu.arch) {
     else => @tagName(builtin.cpu.arch),
 };
 
-/// what `os` takes from the machine's pacman.conf: its repositories, in
+/// what `yos` takes from the machine's pacman.conf: its repositories, in
 /// order, with their servers, and how pacman downloads.
 pub const Pacman = struct {
     repos: []const Repo,
@@ -380,9 +380,9 @@ test "repositories and servers from pacman.conf" {
     try testing.expectEqualStrings("https://pkgs.omarchy.org/" ++ arch ++ "/omarchy.db", try dbUrl(a, rs[2].servers[0], "omarchy"));
 
     // an included file with sections of its own adds repositories, the
-    // way os's /etc/pacman.d/yoq-repos.conf does.
-    try fs.put("/inc/etc/pacman.d/yoq-repos.conf", "[chaotic-aur]\nServer = https://cdn.example/$repo/$arch\n");
-    try fs.put("/inc/etc/pacman.conf", "[options]\n[core]\nServer = https://a.example/$repo\nInclude = /etc/pacman.d/yoq-repos.conf\n");
+    // way yos's /etc/pacman.d/yos-repos.conf does.
+    try fs.put("/inc/etc/pacman.d/yos-repos.conf", "[chaotic-aur]\nServer = https://cdn.example/$repo/$arch\n");
+    try fs.put("/inc/etc/pacman.conf", "[options]\n[core]\nServer = https://a.example/$repo\nInclude = /etc/pacman.d/yos-repos.conf\n");
     const inc = (try pacmanConf(a, fs.files(), "/inc")).repos;
     try testing.expectEqual(2, inc.len);
     try testing.expectEqual(1, inc[0].servers.len);

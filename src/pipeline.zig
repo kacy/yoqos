@@ -46,7 +46,7 @@ pub fn load(gpa: Allocator, files: compose.Files, config_path: []const u8, lock_
         error.OutOfMemory => return error.OutOfMemory,
         else => blk: {
             const why = if (e == error.FileNotFound) "doesn't exist yet" else "can't be read";
-            try diags.add(.lock_stale, null, "{s} {s}", .{ path, why }, "run `os update` to resolve the config into a lock");
+            try diags.add(.lock_stale, null, "{s} {s}", .{ path, why }, "run `yos update` to resolve the config into a lock");
             break :blk null;
         },
     };

@@ -1,5 +1,5 @@
 //! generations on the rollback rung: where they live on btrfs, and what
-//! os keeps about each one. this part is pure; menu.zig has the boot menu,
+//! yos keeps about each one. this part is pure; menu.zig has the boot menu,
 //! and cmd/enable_rollback.zig and apply do the work.
 //!
 //! the layout, under the btrfs top level:
@@ -27,40 +27,47 @@ pub const data_dirs = [_]DataDir{
     .{ .dir = "usr/local", .subvol = "@usrlocal" },
 };
 
-/// where the btrfs top level is mounted while os works on it.
+/// where the btrfs top level is mounted while yos works on it.
 pub const top_mount = @import("rootfs.zig").private_dir ++ "/top";
 
 /// generation records, one json file each, under /var so they outlive
 /// every rollback. relative to a var directory.
-pub const records_dir = "lib/yoq/generations";
+pub const records_dir = "lib/yos/generations";
 
 /// where the rollback rung keeps the pacman database, in /usr beside the
 /// packages it describes. /var/lib/pacman links to it.
 pub const pacman_db = "usr/lib/sysimage/pacman";
 
 /// grub's env file, from the top of the esp.
-pub const grubenv = "yoq/grubenv";
+pub const grubenv = "yos/grubenv";
 
 /// where a staged root is noted until it has booted well: with /boot as
 /// the esp, it boots its own kernel till then, and moves it onto the esp.
 /// a rollback whose boot files didn't fit on the esp notes its root too.
-pub const unsettled_path = "/var/lib/yoq/unsettled";
+pub const unsettled_path = "/var/lib/yos/unsettled";
 
 /// where enable-rollback notes the root the next boot runs, in the /var
 /// the machine runs now, so nothing changes the root it's leaving.
-pub const pending_path = "/var/lib/yoq/pending";
+pub const pending_path = "/var/lib/yos/pending";
 
-/// the sha-256 of the grub binary os last built and signed for secure
+/// the sha-256 of the grub binary yos last built and signed for secure
 /// boot.
-pub const grub_signed_path = "/var/lib/yoq/grub-signed";
+pub const grub_signed_path = "/var/lib/yos/grub-signed";
 
-/// whether a machine runs a generation: its root is one of @roots.
+/// whether a root is one of @roots.
 pub fn running(root_subvol: ?[]const u8) bool {
     const sv = root_subvol orelse return false;
     return std.mem.startsWith(u8, sv, "/" ++ roots_dir ++ "/");
 }
 
-/// what os keeps about a generation.
+/// whether a machine runs a generation, from its boot facts: its root is
+/// one of @roots, and yos has records for it. a root an uninstall left in
+/// @roots, without them, is a plain machine's.
+pub fn on(boot: anytype) bool {
+    return running(boot.root_subvol) and !boot.left_root;
+}
+
+/// what yos keeps about a generation.
 pub const Record = struct {
     n: u32,
     /// unix seconds.
@@ -139,7 +146,7 @@ test "a trial falls back to the generation that booted last" {
 /// ctrl-c, a rollback between its snapshot and its record, or gc between
 /// a record and its snapshots. nothing would ever remove them, and a
 /// staged root can hold gigabytes. the root `running` runs stays, and so
-/// do names os doesn't make.
+/// do names yos doesn't make.
 pub fn strays(a: Allocator, records: []const Record, roots: []const []const u8, gens: []const []const u8, running_root: []const u8) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     if (records.len == 0) return out.items;
@@ -188,7 +195,7 @@ test "subvolumes no generation uses" {
         "boot-2",
         // the copy the machine runs, after a fallback took its record.
         "boot-7",
-        // not os's.
+        // not yos's.
         "mine",
     }, &.{ "1", "2", "3", "4", "keep" }, "/@roots/boot-7");
     try testing.expectEqual(4, got.len);
@@ -307,7 +314,7 @@ pub fn kernelArgs(a: Allocator, cmdline: []const u8, root_uuid: []const u8, subv
     while (words.next()) |w| {
         if (std.mem.startsWith(u8, w, "BOOT_IMAGE=") or std.mem.startsWith(u8, w, "initrd=") or std.mem.startsWith(u8, w, "root=")) continue;
         // a trial boot adds this; it's never part of an entry.
-        if (std.mem.eql(u8, w, "yoq.trial")) continue;
+        if (std.mem.eql(u8, w, "yos.trial")) continue;
         if (std.mem.startsWith(u8, w, "rootflags=")) {
             var opts = std.mem.tokenizeScalar(u8, w["rootflags=".len..], ',');
             while (opts.next()) |o| {
@@ -375,9 +382,9 @@ pub fn next(records: []const Record) u32 {
     return n;
 }
 
-/// "yoq 2 · 2026-09-26 · add fd".
+/// "yos 2 · 2026-09-26 · add fd".
 pub fn title(a: Allocator, r: Record) ![]const u8 {
-    return std.fmt.allocPrint(a, "yoq {d} · {s} · {s}", .{ r.n, try dateOf(a, r.time), r.reason });
+    return std.fmt.allocPrint(a, "yos {d} · {s} · {s}", .{ r.n, try dateOf(a, r.time), r.reason });
 }
 
 /// room left over on the esp besides new boot files: fat rounds every
@@ -394,7 +401,7 @@ pub fn fits(need: u64, free: u64) bool {
 /// null if new boot files of `need` bytes fit in the `free` bytes of the
 /// esp at `esp`, or else what to say: how far short it is, and how to
 /// make room. when older generations keep boot files there, that's which
-/// of `records` `os gc --keep 1` would remove (see `gcHint`).
+/// of `records` `yos gc --keep 1` would remove (see `gcHint`).
 pub fn espRoom(a: Allocator, esp: []const u8, need: u64, free: u64, records: anytype, running_root: []const u8, collectable: bool) !?[]const u8 {
     if (fits(need, free)) return null;
     const mib = 1 << 20;
@@ -402,7 +409,7 @@ pub fn espRoom(a: Allocator, esp: []const u8, need: u64, free: u64, records: any
     return try std.fmt.allocPrint(a, "the esp at {s} has {d} MiB free, and the new boot files need {d} MiB. {s}", .{ esp, free / mib, (need + mib - 1) / mib, hint });
 }
 
-/// which of `records` `os gc --keep 1` would remove, with the boot files
+/// which of `records` `yos gc --keep 1` would remove, with the boot files
 /// on the esp only they use: all but the first, the pinned ones, the
 /// newest, and the one whose root is `running_root`, the root this
 /// machine runs. `records` are sorted by number and have `n`, `root`, and
@@ -425,7 +432,7 @@ pub fn gcHint(a: Allocator, records: anytype, running_root: []const u8) ![]const
         const sep = if (i == 0) "" else if (n == 2) " and " else if (i == n - 1) ", and " else ", ";
         try list.print(a, "{s}{d}", .{ sep, g });
     }
-    return std.fmt.allocPrint(a, "`os gc --keep 1` removes generation{s} {s}, with the boot files only {s}", .{
+    return std.fmt.allocPrint(a, "`yos gc --keep 1` removes generation{s} {s}, with the boot files only {s}", .{
         if (n == 1) "" else "s",
         list.items,
         if (n == 1) "it uses" else "they use",
@@ -435,7 +442,7 @@ pub fn gcHint(a: Allocator, records: anytype, running_root: []const u8) ![]const
 /// what to do about a full esp that holds only the running root's boot
 /// files, as with grub or refind and the esp at /boot: older generations
 /// boot theirs from their own roots, so removing them frees nothing there.
-pub const manual_hint = "only the running system's boot files are there, so removing generations won't help. make room by hand, like removing the fallback initramfs images, which no entry in os's menu boots";
+pub const manual_hint = "only the running system's boot files are there, so removing generations won't help. make room by hand, like removing the fallback initramfs images, which no entry in yos's menu boots";
 
 /// a boot file to copy: its size, and the size of the file it replaces,
 /// 0 if none.
@@ -463,7 +470,7 @@ pub const build_room = 1 << 30;
 /// bytes left, or null when that's plenty.
 pub fn lowSpace(a: Allocator, free: u64) !?[]const u8 {
     if (free >= build_room) return null;
-    return try std.fmt.allocPrint(a, "the root filesystem has {d} MiB free, which is likely why. `os gc` removes old generations and the space only they use; make room and try again", .{free >> 20});
+    return try std.fmt.allocPrint(a, "the root filesystem has {d} MiB free, which is likely why. `yos gc` removes old generations and the space only they use; make room and try again", .{free >> 20});
 }
 
 /// "2026-09-26" for unix seconds.
@@ -509,21 +516,21 @@ test "boot files that don't fit on the esp name what gc would remove" {
     // the room to spare counts too.
     try testing.expect(try espRoom(a, "/boot", 30 * mib, 30 * mib, &recs, "/@roots/5", true) != null);
     try testing.expectEqualStrings(
-        "the esp at /boot has 2 MiB free, and the new boot files need 31 MiB. `os gc --keep 1` removes generations 2 and 4, with the boot files only they use",
+        "the esp at /boot has 2 MiB free, and the new boot files need 31 MiB. `yos gc --keep 1` removes generations 2 and 4, with the boot files only they use",
         (try espRoom(a, "/boot", 30 * mib + 1, 2 * mib + 5, &recs, "/@roots/5", true)).?,
     );
     // several generations share a root; the newest of them is the one running.
     try testing.expectEqualStrings(
-        "the esp at /boot has 0 MiB free, and the new boot files need 1 MiB. `os gc --keep 1` removes generations 2 and 5, with the boot files only they use",
+        "the esp at /boot has 0 MiB free, and the new boot files need 1 MiB. `yos gc --keep 1` removes generations 2 and 5, with the boot files only they use",
         (try espRoom(a, "/boot", 10, 0, &recs, "/@roots/1", true)).?,
     );
     try testing.expectEqualStrings(
-        "the esp at /boot has 0 MiB free, and the new boot files need 1 MiB. `os gc --keep 1` removes generations 2, 4, and 5, with the boot files only they use",
+        "the esp at /boot has 0 MiB free, and the new boot files need 1 MiB. `yos gc --keep 1` removes generations 2, 4, and 5, with the boot files only they use",
         (try espRoom(a, "/boot", 10, 0, &recs, "/@roots/6", true)).?,
     );
     recs[1].pinned = true;
     try testing.expectEqualStrings(
-        "the esp at /boot has 0 MiB free, and the new boot files need 1 MiB. `os gc --keep 1` removes generation 4, with the boot files only it uses",
+        "the esp at /boot has 0 MiB free, and the new boot files need 1 MiB. `yos gc --keep 1` removes generation 4, with the boot files only it uses",
         (try espRoom(a, "/boot", 10, 0, &recs, "/@roots/5", true)).?,
     );
     try testing.expectEqualStrings(
@@ -554,7 +561,7 @@ test "a build that failed on a nearly full filesystem says so" {
     const a = arena.allocator();
     try testing.expectEqual(null, try lowSpace(a, build_room));
     try testing.expectEqualStrings(
-        "the root filesystem has 12 MiB free, which is likely why. `os gc` removes old generations and the space only they use; make room and try again",
+        "the root filesystem has 12 MiB free, which is likely why. `yos gc` removes old generations and the space only they use; make room and try again",
         (try lowSpace(a, 12 << 20 | 5)).?,
     );
 }
@@ -562,7 +569,7 @@ test "a build that failed on a nearly full filesystem says so" {
 test "a generation's kernel command line" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const cmdline = "BOOT_IMAGE=/boot/vmlinuz-linux root=UUID=abc rw net.ifnames=0 rootflags=compress=zstd:1,subvol=/@ console=ttyS0,115200 yoq.trial\n";
+    const cmdline = "BOOT_IMAGE=/boot/vmlinuz-linux root=UUID=abc rw net.ifnames=0 rootflags=compress=zstd:1,subvol=/@ console=ttyS0,115200 yos.trial\n";
     try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/1,compress=zstd:1 rw net.ifnames=0 console=ttyS0,115200 panic=10", try kernelArgs(arena.allocator(), cmdline, "abc", "/@roots/1"));
     try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/ rw panic=30", try kernelArgs(arena.allocator(), "rw panic=30", "abc", "/"));
     // on luks, what unlocks the root comes along, for sd-encrypt and for

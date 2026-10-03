@@ -18,7 +18,7 @@ const Context = cli.Context;
 
 /// where the next root is mounted while it's built: a mount of its own
 /// subvolume, so mkinitcpio finds the root filesystem it's built for.
-const mount_point = "/run/yoq/next";
+const mount_point = "/run/yos/next";
 
 /// builds the next root from `in`, as the next generation will have it,
 /// and returns its subvolume, like "/@roots/7". null after saying why, with

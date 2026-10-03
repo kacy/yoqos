@@ -8,7 +8,7 @@
 //! wanted package and its dependencies to use, and everything installed
 //! that the lock doesn't need gets removed.
 //!
-//! desired.zig works out the files os writes, checks.zig checks a plan
+//! desired.zig works out the files yos writes, checks.zig checks a plan
 //! against the machine before anything is built, and planview.zig shows
 //! it. all three are pure too.
 
@@ -24,7 +24,7 @@ const secureboot = @import("secureboot.zig");
 const desired = @import("desired.zig");
 const Allocator = std.mem.Allocator;
 
-pub const schema = "yoq.plan/1";
+pub const schema = "yos.plan/1";
 
 pub const Op = enum { add, change, remove };
 
@@ -44,9 +44,9 @@ pub const Kind = enum {
     /// a repository's signing key, imported into pacman's keyring and
     /// trusted. the subject is its fingerprint.
     key,
-    /// pacman.conf, reading the file os writes the repositories to.
+    /// pacman.conf, reading the file yos writes the repositories to.
     pacman_conf,
-    /// a file os writes whole: its content, its mode, or both.
+    /// a file yos writes whole: its content, its mode, or both.
     file,
 };
 
@@ -257,7 +257,7 @@ fn planPackages(a: Allocator, c: *const config.Config, l: *const lock.Lock, f: *
     for (ws) |w| {
         if (l.package(w.name) != null) continue;
         stale = true;
-        try diags.add(.lock_stale, w.src, "{s} isn't in machine.lock yet", .{w.name}, "run `os update` to resolve it into the lock");
+        try diags.add(.lock_stale, w.src, "{s} isn't in machine.lock yet", .{w.name}, "run `yos update` to resolve it into the lock");
     }
     if (stale) return false;
 
@@ -461,7 +461,7 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
             .op = .remove,
             .kind = .file,
             .subject = p,
-            .to = "remove: os wrote it, and nothing asks for it now",
+            .to = "remove: yos wrote it, and nothing asks for it now",
             .reboot = desired.fileReboot(p),
         });
     }
@@ -480,7 +480,7 @@ fn exposure(d: desired.File, mode: []const u8) []const u8 {
 /// what a plan's `content` says for a file whose hash couldn't be taken.
 const unknown_hash = "unknown";
 
-/// the hash a file os writes should have: the sha-256 of its content, or
+/// the hash a file yos writes should have: the sha-256 of its content, or
 /// for a secret, the keyed hash of its value the facts carry, which is
 /// null when the observer couldn't read it. the planner never sees a
 /// secret's value.
@@ -505,7 +505,7 @@ fn planRepos(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
     for (c.repos.entries.items) |e| {
         if (!lists.contains(f.pacman.repos, e.name)) continue;
         twice = true;
-        try diags.add(.bad_value, e.value.src, "repos.{s} is in /etc/pacman.conf too", .{e.name}, "take it out of pacman.conf; os writes it to /etc/pacman.d/yoq-repos.conf");
+        try diags.add(.bad_value, e.value.src, "repos.{s} is in /etc/pacman.conf too", .{e.name}, "take it out of pacman.conf; yos writes it to /etc/pacman.d/yos-repos.conf");
     }
     if (twice) return false;
     if (!f.pacman.includes_repos) try changes.append(a, .{ .op = .change, .kind = .pacman_conf, .subject = "/etc/pacman.conf", .to = "add " ++ facts.repos_include, .cause = "repos" });
@@ -518,7 +518,7 @@ fn planRepos(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
 }
 
 /// what the observer should look at for this config: every file it might
-/// want or os may have generated, and the repositories' signing keys.
+/// want or yos may have generated, and the repositories' signing keys.
 pub fn wanted(a: Allocator, c: *const config.Config) !facts.Wanted {
     var keys: std.ArrayList([]const u8) = .empty;
     for (c.repos.entries.items) |e| {
@@ -755,7 +755,7 @@ test "files: written when missing, rewritten when different, and the sysctl file
 
     const sysctl = (try desired.files(t.a(), &c, &f))[3];
     try testing.expectEqualStrings(
-        \\# written by os from [sysctl] in the config. edits here are overwritten.
+        \\# written by yos from [sysctl] in the config. edits here are overwritten.
         \\kernel.printk = 3 3 3 3
         \\vm.swappiness = 10
         \\
@@ -787,15 +787,15 @@ test "the drop-in that unlocks a luks root, unless the hooks do already" {
     const plain: facts.Facts = .{ .boot = .{ .initramfs_hooks = &.{ "base", "systemd", "autodetect", "microcode", "modconf", "kms", "keyboard", "sd-vconsole", "block", "filesystems", "fsck" } } };
     const want = try desired.files(t.a(), &c, &plain);
     try testing.expectEqual(1, want.len);
-    try testing.expectEqualStrings("/etc/mkinitcpio.conf.d/90-yoq-encrypt.conf", want[0].path);
+    try testing.expectEqualStrings("/etc/mkinitcpio.conf.d/90-yos-encrypt.conf", want[0].path);
     try testing.expectEqualStrings("initramfs", want[0].reboot.?);
     try testing.expectEqualStrings("boot.encrypt", want[0].cause.?);
-    try testing.expect(std.mem.startsWith(u8, want[0].content, "# written by os from [boot] encrypt in the config."));
+    try testing.expect(std.mem.startsWith(u8, want[0].content, "# written by yos from [boot] encrypt in the config."));
     try testing.expect(std.mem.indexOf(u8, want[0].content, "    filesystems)\n") != null);
-    try testing.expect(std.mem.indexOf(u8, want[0].content, "_yoq_hooks+=(sd-encrypt)\n") != null);
+    try testing.expect(std.mem.indexOf(u8, want[0].content, "_yos_hooks+=(sd-encrypt)\n") != null);
     // autodetect finding no modules for a driver built into the kernel
     // isn't a failed build.
-    try testing.expect(std.mem.indexOf(u8, want[0].content, "_yoq_add_checked_modules \"$@\" || true\n") != null);
+    try testing.expect(std.mem.indexOf(u8, want[0].content, "_yos_add_checked_modules \"$@\" || true\n") != null);
 
     // busybox's encrypt, as an older archinstall sets up, or sd-encrypt.
     const unlocking = [_][]const []const u8{ &.{ "base", "udev", "encrypt", "filesystems" }, &.{ "base", "systemd", "sd-encrypt", "filesystems" } };
@@ -809,7 +809,7 @@ test "the drop-in that unlocks a luks root, unless the hooks do already" {
     try testing.expectEqual(0, (try desired.files(t.a(), &booster, &plain)).len);
 }
 
-test "[boot] uki brings ukify, and its config where os writes the menu" {
+test "[boot] uki brings ukify, and its config where yos writes the menu" {
     var t: T = .{};
     defer t.deinit();
     const a = t.a();
@@ -820,12 +820,12 @@ test "[boot] uki brings ukify, and its config where os writes the menu" {
     const on_gens: facts.Facts = .{ .boot = .{ .root_fs = "btrfs", .root_subvol = "/@roots/3" } };
     const want = try desired.files(a, &c, &on_gens);
     try testing.expectEqual(1, want.len);
-    try testing.expectEqualStrings("/etc/kernel/yoq-uki.conf", want[0].path);
+    try testing.expectEqualStrings("/etc/kernel/yos-uki.conf", want[0].path);
     try testing.expectEqualStrings("uki", want[0].reboot.?);
-    try testing.expect(std.mem.startsWith(u8, want[0].content, "# written by os from [boot] uki in the config."));
+    try testing.expect(std.mem.startsWith(u8, want[0].content, "# written by yos from [boot] uki in the config."));
     // a root being built, where mounts say nothing, gets it too.
     try testing.expectEqual(1, (try desired.files(a, &c, &.{})).len);
-    // without generations, os writes no menu.
+    // without generations, yos writes no menu.
     for ([_]facts.Boot{ .{ .root_fs = "ext4" }, .{ .root_fs = "btrfs", .root_subvol = "/@" } }) |b| {
         try testing.expectEqual(0, (try desired.files(a, &c, &.{ .boot = b })).len);
     }
@@ -833,9 +833,9 @@ test "[boot] uki brings ukify, and its config where os writes the menu" {
     try testing.expectEqual(null, findWant(try wants(a, &off), "systemd-ukify"));
     try testing.expectEqual(0, (try desired.files(a, &off, &on_gens)).len);
 
-    // turning it off takes os's config out, which needs a reboot too.
+    // turning it off takes yos's config out, which needs a reboot too.
     const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
-    var files = [_]facts.File{.{ .path = "/etc/kernel/yoq-uki.conf", .sha256 = &facts.sha256Hex(uki.config_content), .mode = "0644", .ours = true }};
+    var files = [_]facts.File{.{ .path = "/etc/kernel/yos-uki.conf", .sha256 = &facts.sha256Hex(uki.config_content), .mode = "0644", .ours = true }};
     const had: facts.Facts = .{ .files = &files, .boot = on_gens.boot };
     const p = (try plan(a, &off, &l, &had, &t.diags)).?;
     try testing.expectEqual(1, p.changes.len);
@@ -848,7 +848,7 @@ test "[boot] uki brings ukify, and its config where os writes the menu" {
     for ((try plan(a, &c, &with, &had, &t.diags)).?.changes) |ch| try testing.expect(ch.kind != .file);
 }
 
-test "[boot] secure_boot brings sbctl, and its file where os writes the menu" {
+test "[boot] secure_boot brings sbctl, and its file where yos writes the menu" {
     var t: T = .{};
     defer t.deinit();
     const a = t.a();
@@ -857,9 +857,9 @@ test "[boot] secure_boot brings sbctl, and its file where os writes the menu" {
     const on_gens: facts.Facts = .{ .boot = .{ .root_fs = "btrfs", .root_subvol = "/@roots/3", .sbctl_keys = true } };
     const want = try desired.files(a, &c, &on_gens);
     try testing.expectEqual(2, want.len);
-    try testing.expectEqualStrings("/etc/kernel/yoq-secure-boot.conf", want[1].path);
+    try testing.expectEqualStrings("/etc/kernel/yos-secure-boot.conf", want[1].path);
     try testing.expectEqualStrings("secure boot", want[1].reboot.?);
-    try testing.expect(std.mem.startsWith(u8, want[1].content, "# written by os from [boot] secure_boot in the config."));
+    try testing.expect(std.mem.startsWith(u8, want[1].content, "# written by yos from [boot] secure_boot in the config."));
     try testing.expectEqual(0, (try desired.files(a, &c, &.{ .boot = .{ .root_fs = "ext4" } })).len);
 
     // turning it off takes the file out, which needs a reboot too.
@@ -969,7 +969,7 @@ test "logging in on tty1 starts the session through uwsm" {
     const c = try t.cfg("[desktop]\nsession = \"hyprland\"\nlogin = \"tty\"\n");
     const want = try desired.files(t.a(), &c, &.{});
     try testing.expectEqual(1, want.len);
-    try testing.expectEqualStrings("/etc/profile.d/yoq-session.sh", want[0].path);
+    try testing.expectEqualStrings("/etc/profile.d/yos-session.sh", want[0].path);
     try testing.expect(std.mem.indexOf(u8, want[0].content, "exec uwsm start hyprland.desktop\n") != null);
 }
 
@@ -991,10 +991,10 @@ test "kernel modules to load at boot" {
     const want = try desired.files(t.a(), &c, &.{});
     try testing.expectEqual(1, want.len);
     try testing.expectEqualStrings(desired.modules_path, want[0].path);
-    try testing.expectEqualStrings("# written by os from [boot] modules in the config. edits here are overwritten.\ni2c-dev\nnct6775\n", want[0].content);
+    try testing.expectEqualStrings("# written by yos from [boot] modules in the config. edits here are overwritten.\ni2c-dev\nnct6775\n", want[0].content);
 }
 
-test "a file os generated goes when nothing asks for it, but one it didn't write stays" {
+test "a file yos generated goes when nothing asks for it, but one it didn't write stays" {
     var t: T = .{};
     defer t.deinit();
     const c = try t.cfg("[boot]\nkernel = \"none\"\n");
@@ -1059,9 +1059,9 @@ test "a repository from the config: its file, pacman.conf's include, and its key
     try planview.writeText(&out.writer, t.a(), &p, .{});
     try testing.expectEqualStrings(
         \\files
-        \\  + /etc/pacman.d/yoq-repos.conf: write, mode 0644  (repos)
+        \\  + /etc/pacman.d/yos-repos.conf: write, mode 0644  (repos)
         \\repositories
-        \\  ~ /etc/pacman.conf: add Include = /etc/pacman.d/yoq-repos.conf  (repos)
+        \\  ~ /etc/pacman.conf: add Include = /etc/pacman.d/yos-repos.conf  (repos)
         \\keys
         \\  + EF925EA60F33D0CB85C44AD13056513887B78AEB: import and trust  (repos.chaotic-aur)
         \\
@@ -1136,7 +1136,7 @@ test "a secret's file is planned by its keyed hash, never its value" {
     const d = t.diags.items.items[0];
     try testing.expectEqual(diag.Code.secret_missing, d.code);
     try testing.expectEqualStrings("files.\"/etc/wifi.psk\" needs the secret \"wifi/home\", and this machine doesn't have it", d.message);
-    try testing.expectEqualStrings("set it with `os secret set wifi/home`", d.hint.?);
+    try testing.expectEqualStrings("set it with `yos secret set wifi/home`", d.hint.?);
     try testing.expectEqualStrings("E0133", diag.entry(d.code).id);
 }
 

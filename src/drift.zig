@@ -1,7 +1,7 @@
-//! changes made with pacman directly. a pacman hook runs `os
+//! changes made with pacman directly. a pacman hook runs `yos
 //! record-pacman` after every transaction, which appends the packages it
-//! touched to /var/lib/yoq/drift. transactions os runs itself are left out,
-//! so what's recorded is what happened outside os.
+//! touched to /var/lib/yos/drift. transactions yos runs itself are left out,
+//! so what's recorded is what happened outside yos.
 
 const std = @import("std");
 const facts = @import("facts.zig");
@@ -9,10 +9,10 @@ const journal = @import("journal.zig");
 const rootfs = @import("rootfs.zig");
 const Allocator = std.mem.Allocator;
 
-pub const path = "var/lib/yoq/drift";
+pub const path = "var/lib/yos/drift";
 
 /// records a pacman transaction that touched `packages`. the hook leaves
-/// out os's own. a record that can't be written is dropped: the hook
+/// out yos's own. a record that can't be written is dropped: the hook
 /// mustn't fail pacman.
 pub fn record(a: Allocator, io: std.Io, root: []const u8, time: i64, packages: []const []const u8) !void {
     if (packages.len == 0) return;
@@ -23,7 +23,7 @@ pub fn record(a: Allocator, io: std.Io, root: []const u8, time: i64, packages: [
 /// they're the lines past where the log ended when the apply did, which
 /// its done line notes, so a clock set back since, say by ntp fixing one
 /// that ran ahead, doesn't hide them. a done line without that, from an
-/// older os or a run settled later, goes by time.
+/// older yos or a run settled later, goes by time.
 pub fn since(a: Allocator, io: std.Io, root: []const u8) ![]facts.PacmanChange {
     const last = try journal.lastDoneLine(a, io, root);
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };

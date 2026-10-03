@@ -46,12 +46,12 @@ pub fn lockPackage(name: []const u8, version: []const u8, depends: []const []con
     return .{ .name = name, .version = version, .repo = "core", .sha256 = "a" ** 64, .depends = depends };
 }
 
-/// the fixture sync databases, cached under `root` as if `os update`
+/// the fixture sync databases, cached under `root` as if `yos update`
 /// downloaded them on 2026-09-25. returns the cache directory.
 pub fn cacheFixtureDbs(a: std.mem.Allocator, root: []const u8) ![:0]const u8 {
     const io = std.testing.io;
     const cwd = std.Io.Dir.cwd();
-    const cache = try std.fs.path.joinZ(a, &.{ root, "var/cache/yoq/sync/2026-09-25" });
+    const cache = try std.fs.path.joinZ(a, &.{ root, "var/cache/yos/sync/2026-09-25" });
     try cwd.createDirPath(io, cache);
     for ([_][]const u8{ "core", "extra" }) |r| {
         const bytes = try cwd.readFileAlloc(io, try std.fmt.allocPrint(a, "tests/alpm/repos/{s}.db", .{r}), a, .limited(1 << 20));

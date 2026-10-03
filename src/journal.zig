@@ -1,17 +1,17 @@
-//! the apply journal, /var/lib/yoq/journal: a json line when an apply
+//! the apply journal, /var/lib/yos/journal: a json line when an apply
 //! starts and one when it ends, so a run that never finished shows up next
-//! time, and the pacman hook can tell os's own transactions from others.
-//! os's other events, like commits and generations, go in it too (see
+//! time, and the pacman hook can tell yos's own transactions from others.
+//! yos's other events, like commits and generations, go in it too (see
 //! events.zig); the readers here skip those.
 
 const std = @import("std");
 const rootfs = @import("rootfs.zig");
 const Allocator = std.mem.Allocator;
 
-pub const path = "var/lib/yoq/journal";
+pub const path = "var/lib/yos/journal";
 
-/// the most of a log os reads at once: its end, for what happened last,
-/// or a window at a time for `os events`. the logs only grow, and a few
+/// the most of a log yos reads at once: its end, for what happened last,
+/// or a window at a time for `yos events`. the logs only grow, and a few
 /// years of applies are far less.
 pub const window = 16 << 20;
 
@@ -34,8 +34,8 @@ pub fn record(a: Allocator, io: std.Io, root: []const u8, time: i64, event: []co
 
 /// appends `value` as a json line to `file` under `root`, or drops it if
 /// the file can't be written. the line goes on the end in place, in one
-/// write, so another os adding a line at the same time, like the health
-/// check at boot or an `os pin`, can't write over it, and a full disk
+/// write, so another yos adding a line at the same time, like the health
+/// check at boot or a `yos pin`, can't write over it, and a full disk
 /// only needs room for the line, not a copy of the whole log.
 pub fn appendLine(a: Allocator, io: std.Io, root: []const u8, file: []const u8, value: anytype) !void {
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
@@ -87,11 +87,11 @@ pub fn recordDone(a: Allocator, io: std.Io, root: []const u8, time: i64, hash: [
 }
 
 /// the drift log (see drift.zig).
-const drift_path = "var/lib/yoq/drift";
+const drift_path = "var/lib/yos/drift";
 
 /// records a run that was cut off after it made its changes as done. the
 /// line carries the run's own start time, not now: the run's pacman
-/// transactions never reached the drift log, and a pacman run outside os
+/// transactions never reached the drift log, and a pacman run outside yos
 /// after the cut-off should still count as drift.
 pub fn settle(a: Allocator, io: std.Io, root: []const u8, begin: Line) !void {
     try record(a, io, root, begin.time, "done", begin.plan);

@@ -1,7 +1,7 @@
-//! secure boot with sbctl's keys: os signs the unified kernel images it
+//! secure boot with sbctl's keys: yos signs the unified kernel images it
 //! puts on the esp, and the loader files it installs there, with
 //! `sbctl sign`. the keys are sbctl's own, in /var/lib/sbctl, which no
-//! generation holds, so they outlast every rollback. os never makes or
+//! generation holds, so they outlast every rollback. yos never makes or
 //! enrolls keys. this part is pure; images.zig signs.
 
 const std = @import("std");
@@ -10,20 +10,20 @@ const Allocator = std.mem.Allocator;
 /// the package with sbctl in it.
 pub const package = "sbctl";
 
-/// the file os writes into a root for `[boot] secure_boot`, relative to
+/// the file yos writes into a root for `[boot] secure_boot`, relative to
 /// the root. a menu written for a root that has it, or from a running one
 /// that has it, signs every image.
-pub const config_rel = "etc/kernel/yoq-secure-boot.conf";
+pub const config_rel = "etc/kernel/yos-secure-boot.conf";
 pub const config_path = "/" ++ config_rel;
 
 pub const config_content =
-    \\# written by os from [boot] secure_boot in the config. edits here are overwritten.
-    \\# os signs this root's unified kernel images with sbctl's keys in
+    \\# written by yos from [boot] secure_boot in the config. edits here are overwritten.
+    \\# yos signs this root's unified kernel images with sbctl's keys in
     \\# /var/lib/sbctl before they go on the esp.
     \\
 ;
 
-/// sbctl's signing key and certificate. their being there is all os
+/// sbctl's signing key and certificate. their being there is all yos
 /// checks; it never reads them.
 pub const keys_dir = "/var/lib/sbctl/keys";
 pub const db_key_rel = "var/lib/sbctl/keys/db/db.key";
@@ -84,7 +84,7 @@ pub fn goesOnUnsigned(way_back: bool) bool {
 
 /// the warning for files a way back left without a signature.
 pub fn unsignedWarning(a: Allocator, files: []const []const u8) ![]const u8 {
-    return std.fmt.allocPrint(a, "couldn't sign {s} for secure boot, so the boot menu uses them unsigned, and firmware that enforces secure boot won't start them. put sbctl's keys back in /var/lib/sbctl, or make new ones with `sbctl create-keys` and enroll them, then run `os gc`, which signs them.", .{try std.mem.join(a, ", ", files)});
+    return std.fmt.allocPrint(a, "couldn't sign {s} for secure boot, so the boot menu uses them unsigned, and firmware that enforces secure boot won't start them. put sbctl's keys back in /var/lib/sbctl, or make new ones with `sbctl create-keys` and enroll them, then run `yos gc`, which signs them.", .{try std.mem.join(a, ", ", files)});
 }
 
 /// the command that signs `file` in place with sbctl's db key. `signer`
@@ -193,7 +193,7 @@ const der_parse = struct {
     const Tlv = struct { tag: u8, all: []const u8, content: []const u8 };
 
     /// the first value in `bytes`, and what follows it. null if it's cut
-    /// short or its length is past what os reads.
+    /// short or its length is past what yos reads.
     fn next(bytes: []const u8) ?struct { tlv: Tlv, rest: []const u8 } {
         if (bytes.len < 2) return null;
         var len: usize = bytes[1];
@@ -211,18 +211,18 @@ const der_parse = struct {
     }
 };
 
-/// the paths in `unsigned` that os put on the esp at `esp` itself: its
-/// images, in yoq/boot.
+/// the paths in `unsigned` that yos put on the esp at `esp` itself: its
+/// images, in yos/boot.
 pub fn ours(a: Allocator, unsigned: []const []const u8, esp: []const u8) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
-    const dir = try std.fmt.allocPrint(a, "{s}/yoq/", .{std.mem.trimEnd(u8, esp, "/")});
+    const dir = try std.fmt.allocPrint(a, "{s}/yos/", .{std.mem.trimEnd(u8, esp, "/")});
     for (unsigned) |p| {
         if (std.mem.startsWith(u8, p, dir)) try out.append(a, p);
     }
     return out.items;
 }
 
-/// the firmware's secure boot state in a few words, for `os doctor`.
+/// the firmware's secure boot state in a few words, for `yos doctor`.
 pub fn describe(on: ?bool, setup: ?bool) []const u8 {
     const enforced = on orelse return "unknown: no efi variables for it";
     if (enforced) return "on";
@@ -234,11 +234,11 @@ const testing = std.testing;
 test "sbctl's arguments" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const argv = try signArgv(arena.allocator(), &.{package}, "/run/yoq/private/top/@roots/4/tmp/yoq-uki/yoq.efi");
+    const argv = try signArgv(arena.allocator(), &.{package}, "/run/yos/private/top/@roots/4/tmp/yos-uki/yos.efi");
     try testing.expectEqual(3, argv.len);
     try testing.expectEqualStrings("sbctl", argv[0]);
     try testing.expectEqualStrings("sign", argv[1]);
-    try testing.expectEqualStrings("/run/yoq/private/top/@roots/4/tmp/yoq-uki/yoq.efi", argv[2]);
+    try testing.expectEqualStrings("/run/yos/private/top/@roots/4/tmp/yos-uki/yos.efi", argv[2]);
 }
 
 /// a db variable with a list of hashes, then one list of `certs`, after
@@ -300,17 +300,17 @@ test "a way back goes on without signatures" {
     try testing.expect(!goesOnUnsigned(false));
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const w = try unsignedWarning(arena.allocator(), &.{ "/boot/yoq/boot/a-yoq.efi", "/boot/yoq/boot/b-yoq.efi" });
-    try testing.expect(std.mem.startsWith(u8, w, "couldn't sign /boot/yoq/boot/a-yoq.efi, /boot/yoq/boot/b-yoq.efi for secure boot"));
-    try testing.expect(std.mem.indexOf(u8, w, "`os gc`") != null);
+    const w = try unsignedWarning(arena.allocator(), &.{ "/boot/yos/boot/a-yos.efi", "/boot/yos/boot/b-yos.efi" });
+    try testing.expect(std.mem.startsWith(u8, w, "couldn't sign /boot/yos/boot/a-yos.efi, /boot/yos/boot/b-yos.efi for secure boot"));
+    try testing.expect(std.mem.indexOf(u8, w, "`yos gc`") != null);
 }
 
-test "os's own unsigned files" {
+test "yos's own unsigned files" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const got = try ours(arena.allocator(), &.{ "/boot/EFI/BOOT/BOOTX64.EFI", "/boot/yoq/boot/0123456789abcdef-yoq.efi", "/boot/yoqx/a.efi" }, "/boot");
+    const got = try ours(arena.allocator(), &.{ "/boot/EFI/BOOT/BOOTX64.EFI", "/boot/yos/boot/0123456789abcdef-yos.efi", "/boot/yosx/a.efi" }, "/boot");
     try testing.expectEqual(1, got.len);
-    try testing.expectEqualStrings("/boot/yoq/boot/0123456789abcdef-yoq.efi", got[0]);
+    try testing.expectEqualStrings("/boot/yos/boot/0123456789abcdef-yos.efi", got[0]);
 }
 
 /// pe headers with a certificate table of `size` bytes, as a 64-bit
@@ -369,7 +369,7 @@ test "a signature from sbctl's db key" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const db = try testCert(a, "yoq db", &.{ 0x01, 0x23, 0x45 });
+    const db = try testCert(a, "yos db", &.{ 0x01, 0x23, 0x45 });
     const key = (try signerKey(a, db.pem)).?;
     try testing.expectEqualSlices(u8, db.key, key);
     // a signer info names the issuer, then the serial number.
@@ -378,7 +378,7 @@ test "a signature from sbctl's db key" {
     try testing.expect(signedBy(table, key));
     // the same name with another serial number is another key, as after
     // `sbctl create-keys` again.
-    const other = try testCert(a, "yoq db", &.{ 0x01, 0x23, 0x46 });
+    const other = try testCert(a, "yos db", &.{ 0x01, 0x23, 0x46 });
     try testing.expect(!signedBy(table, (try signerKey(a, other.pem)).?));
     try testing.expect(!signedBy(table, ""));
     try testing.expectEqual(null, try signerKey(a, "not a certificate"));

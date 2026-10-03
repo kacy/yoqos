@@ -1,12 +1,12 @@
 #!/bin/sh
 # the tests that need a booted arch: systemd running, a real bootloader.
 # boots a fresh vm, runs the arch smoke test in it, and stops the vm.
-# usage: tests/vm/test.sh <path to os>
+# usage: tests/vm/test.sh <path to yos>
 set -eu
 set -o pipefail
 
 vm=tests/vm/vm.sh
-os=$1
+yos=$1
 
 # where the image keeps its esp, the root it boots before generations,
 # and its bootloader.
@@ -34,30 +34,30 @@ case ${VM_IMAGE:-cloud} in sdboot | archinstall | limine | refind | ext4) export
 trap '"$vm" stop' EXIT
 
 # the binary is built against today's arch; bring the image up to date.
-# git is what an os package would depend on, for the config's history.
+# git is what a yos package would depend on, for the config's history.
 # a new kernel needs a reboot before its modules load.
 "$vm" ssh pacman -Syu --noconfirm --noprogressbar --needed git >/dev/null
 # the journal goes to the serial console too, so when a boot never answers
 # over ssh, the console log shows what sshd and the network did. it's in
 # /etc, so every root made from this one has it.
-"$vm" ssh "mkdir -p /etc/systemd/journald.conf.d && printf '[Journal]\\nForwardToConsole=yes\\nTTYPath=/dev/ttyS0\\nMaxLevelConsole=info\\n' > /etc/systemd/journald.conf.d/yoq-test-console.conf"
+"$vm" ssh "mkdir -p /etc/systemd/journald.conf.d && printf '[Journal]\\nForwardToConsole=yes\\nTTYPath=/dev/ttyS0\\nMaxLevelConsole=info\\n' > /etc/systemd/journald.conf.d/yos-test-console.conf"
 "$vm" reboot
 
-# the upgrade from an older os runs on its own: os goes in /usr/bin there,
-# so nothing may shadow it in /usr/local/bin.
-if [ "${VM_SUITE:-}" = upgrade ]; then
-    tests/vm/upgrade.sh /tmp/old/0.1.0/zig-out/bin/os /tmp/old/0.1.3/zig-out/bin/os "$os"
+# the move from yoq os, yos's name before 0.2.0, runs on its own: yos goes
+# in /usr/bin there, as its package puts it.
+if [ "${VM_SUITE:-}" = switch ]; then
+    tests/vm/switch.sh /tmp/old/0.1.5 "$yos"
     exit 0
 fi
 
 # the serial console report a vm that stops answering gets, checked once
 # here so it works when it's needed.
 "$vm" diagnose 2>&1 | grep -a -c '^lo ' | grep -qx 1 || { echo "test: the serial console report came back empty"; exit 1; }
-"$vm" copy "$os" /usr/local/bin/os
+"$vm" copy "$yos" /usr/local/bin/yos
 "$vm" copy tests/arch/smoke.sh /root/smoke.sh
 "$vm" ssh mkdir -p /root/dist
-"$vm" copy dist/yoq-drift.hook /root/dist/yoq-drift.hook
-"$vm" ssh "cd /root && sh smoke.sh /usr/local/bin/os"
+"$vm" copy dist/yos-drift.hook /root/dist/yos-drift.hook
+"$vm" ssh "cd /root && sh smoke.sh /usr/local/bin/yos"
 case ${VM_IMAGE:-cloud} in
 ext4)
     tests/vm/build.sh

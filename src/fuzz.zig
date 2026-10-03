@@ -1,4 +1,4 @@
-//! fuzz tests for everything that reads text os didn't write itself, or
+//! fuzz tests for everything that reads text yos didn't write itself, or
 //! edits it. a plain `zig build test` runs each once over its seeds;
 //! `zig build test -Dfuzz --fuzz` keeps going (see build.zig). besides not
 //! crashing or leaking, each checks what should hold for any input it
@@ -84,7 +84,7 @@ const lock_pieces = toml_pieces ++ [_][]const u8{
 };
 
 const json_pieces = [_][]const u8{
-    "{",            "}",                    "[",           "]",           ",",              ":",           "\"schema\":\"yoq.facts/1\"",
+    "{",            "}",                    "[",           "]",           ",",              ":",           "\"schema\":\"yos.facts/1\"",
     "\"packages\"", "\"name\"",             "\"version\"", "\"reason\"",  "\"dependency\"", "\"units\"",   "\"users\"",
     "\"uid\"",      "\"groups\"",           "\"files\"",   "\"path\"",    "\"sha256\"",     "\"mode\"",    "\"boot\"",
     "\"pacman\"",   "\"keys\"",             "\"time\"",    "\"enabled\"", "1",              "-1",          "0.5",
@@ -216,7 +216,7 @@ test "fuzz config decode and validate" {
     try testing.fuzz({}, fuzzConfig, .{ .corpus = seeds.list.items });
 }
 
-const config_path = "/etc/yoq/machine.toml";
+const config_path = "/etc/yos/machine.toml";
 
 fn fuzzConfig(_: void, s: *Smith) !void {
     var buf: [max_input]u8 = undefined;
@@ -241,8 +241,8 @@ fn fuzzConfig(_: void, s: *Smith) !void {
     // `config show --resolved` prints toml that reads back as the same config.
     var shown: std.Io.Writer.Allocating = .init(a);
     try show.writeToml(&shown.writer, c, false);
-    try fs.put("/etc/yoq/shown.toml", shown.written());
-    var again = try compose.load(testing.allocator, fs.files(), "/etc/yoq/shown.toml", &diags);
+    try fs.put("/etc/yos/shown.toml", shown.written());
+    var again = try compose.load(testing.allocator, fs.files(), "/etc/yos/shown.toml", &diags);
     defer again.deinit();
     if (diags.items.items.len > 0) {
         std.debug.print("config show printed a config that doesn't load:\n{s}\n", .{shown.written()});
@@ -291,11 +291,11 @@ fn fuzzLock(_: void, s: *Smith) !void {
     try testing.expectEqual(0, diags.items.items.len);
     for (l.packages) |*p| try testing.expectEqual(p, l.package(p.name).?);
 
-    // what os writes, it reads back as the same lock.
+    // what yos writes, it reads back as the same lock.
     var first: std.Io.Writer.Allocating = .init(a);
     try lock.write(&first.writer, &l);
     const back = try lock.parse(a, "machine.lock", first.written(), &diags) orelse {
-        std.debug.print("a lock os wrote doesn't read back:\n{s}\n", .{first.written()});
+        std.debug.print("a lock yos wrote doesn't read back:\n{s}\n", .{first.written()});
         return error.TestUnexpectedResult;
     };
     var second: std.Io.Writer.Allocating = .init(a);
@@ -307,7 +307,7 @@ fn fuzzLock(_: void, s: *Smith) !void {
 
 test "fuzz facts parser" {
     var seeds: Seeds = try .init(&.{
-        "{\"schema\":\"yoq.facts/1\",\"time\":1,\"hostname\":\"h\",\"packages\":[{\"name\":\"a\",\"version\":\"1\",\"reason\":\"dependency\"}],\"units\":[{\"name\":\"u.service\",\"enabled\":true}],\"users\":[{\"name\":\"k\",\"uid\":1000,\"groups\":[\"wheel\"]}],\"files\":[{\"path\":\"/etc/x\",\"sha256\":\"00\",\"mode\":\"0644\"}],\"boot\":{\"uefi\":true},\"pacman\":{\"keys\":[\"K\"]}}",
+        "{\"schema\":\"yos.facts/1\",\"time\":1,\"hostname\":\"h\",\"packages\":[{\"name\":\"a\",\"version\":\"1\",\"reason\":\"dependency\"}],\"units\":[{\"name\":\"u.service\",\"enabled\":true}],\"users\":[{\"name\":\"k\",\"uid\":1000,\"groups\":[\"wheel\"]}],\"files\":[{\"path\":\"/etc/x\",\"sha256\":\"00\",\"mode\":\"0644\"}],\"boot\":{\"uefi\":true},\"pacman\":{\"keys\":[\"K\"]}}",
     }, "facts.json");
     defer seeds.deinit();
     try testing.fuzz({}, fuzzFacts, .{ .corpus = seeds.list.items });
@@ -421,7 +421,7 @@ fn fuzzEdits(_: void, s: *Smith) !void {
     }
 }
 
-/// paths `os adopt` might take, some of them ones the seeds name already.
+/// paths `yos adopt` might take, some of them ones the seeds name already.
 const file_paths = [_][]const u8{ "/etc/motd", "/etc/x", "/etc/ssh/sshd_config", "/etc/a b", "/etc/\"q\"" };
 const file_modes = [_]?[]const u8{ null, "0600" };
 

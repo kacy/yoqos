@@ -1,5 +1,5 @@
-//! `os events [--follow] [--since <when>]`: what os did on this machine,
-//! and what pacman did outside it, oldest first, one `yoq.event/1` json
+//! `yos events [--follow] [--since <when>]`: what yos did on this machine,
+//! and what pacman did outside it, oldest first, one `yos.event/1` json
 //! document a line. --follow keeps watching the logs and prints new events
 //! as they come. --since leaves out events from before a time.
 
@@ -14,7 +14,7 @@ const Context = cli.Context;
 const poll_ms = 500;
 
 pub fn eventsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os events [--follow] [--since <unix ms, yyyy-mm-dd, or yyyy-mm-ddThh:mm[:ss]>]";
+    const usage_text = "yos events [--follow] [--since <unix ms, yyyy-mm-dd, or yyyy-mm-ddThh:mm[:ss]>]";
     var follow = false;
     var since: i64 = std.math.minInt(i64);
     var it: cli.ArgIter = .{ .args = args };
@@ -46,7 +46,7 @@ fn write(out: *std.Io.Writer, batch: []const events.Event, since: i64) !void {
     try out.flush();
 }
 
-test "os events prints the logs as json lines" {
+test "yos events prints the logs as json lines" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
@@ -61,8 +61,8 @@ test "os events prints the logs as json lines" {
     try t.exec(&.{ "--root", root, "events" });
     try std.testing.expectEqual(0, t.code);
     try std.testing.expectEqualStrings(
-        \\{"schema":"yoq.event/1","time":1,"kind":"apply","step":"begin","plan":"abc"}
-        \\{"schema":"yoq.event/1","time":2,"kind":"apply","step":"done","plan":"abc"}
+        \\{"schema":"yos.event/1","time":1,"kind":"apply","step":"begin","plan":"abc"}
+        \\{"schema":"yos.event/1","time":2,"kind":"apply","step":"done","plan":"abc"}
         \\
     , t.out.buffered());
 
@@ -72,7 +72,7 @@ test "os events prints the logs as json lines" {
     try std.testing.expectEqual(2, t.code);
 }
 
-test "os events --since leaves out what came before" {
+test "yos events --since leaves out what came before" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
@@ -88,7 +88,7 @@ test "os events --since leaves out what came before" {
     try t.exec(&.{ "--root", root, "events", "--since", "2026-09-30" });
     try std.testing.expectEqual(0, t.code);
     try std.testing.expectEqualStrings(
-        \\{"schema":"yoq.event/1","time":1790726400000,"kind":"apply","step":"done","plan":"abc"}
+        \\{"schema":"yos.event/1","time":1790726400000,"kind":"apply","step":"done","plan":"abc"}
         \\
     , t.out.buffered());
 }

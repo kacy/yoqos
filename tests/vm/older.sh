@@ -4,7 +4,7 @@
 #   older.sh date   an archive day at least a week back whose core repo
 #                   has another linux than the one installed (and another
 #                   systemd, if a day in reach has one), and the same glibc
-#                   and pacman releases, so os, built against today's,
+#                   and pacman releases, so yos, built against today's,
 #                   still runs there. as yyyy-mm-dd.
 #   older.sh linux  the url of the newest linux package with an older
 #                   upstream version than the one installed.

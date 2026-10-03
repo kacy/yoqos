@@ -1,6 +1,6 @@
-//! json schemas for os's json documents and for machine.toml, worked out
+//! json schemas for yos's json documents and for machine.toml, worked out
 //! from the zig types that write and read them, so the two can't drift
-//! apart. `os schema <name>` prints one.
+//! apart. `yos schema <name>` prints one.
 
 const std = @import("std");
 const config = @import("config.zig");
@@ -21,17 +21,17 @@ pub const Doc = struct {
     write: *const fn (w: *std.Io.Writer) anyerror!void,
 };
 
-/// every schema, by the name `os schema` takes.
+/// every schema, by the name `yos schema` takes.
 pub const docs = [_]Doc{
     .{ .name = "config", .what = "machine.toml and the files it includes", .write = configSchema },
-    .{ .name = "errors", .what = "errors, as --json prints them", .write = docSchema(diag.JsonDoc, "yoq.errors/1") },
-    .{ .name = "events", .what = "a line of os events, as os events prints them", .write = docSchema(events.Event, events.schema) },
-    .{ .name = "facts", .what = "what os reads from a machine: os facts, and --facts", .write = docSchema(facts.Facts, facts.schema) },
+    .{ .name = "errors", .what = "errors, as --json prints them", .write = docSchema(diag.JsonDoc, "yos.errors/1") },
+    .{ .name = "events", .what = "a line of yos events, as yos events prints them", .write = docSchema(events.Event, events.schema) },
+    .{ .name = "facts", .what = "what yos reads from a machine: yos facts, and --facts", .write = docSchema(facts.Facts, facts.schema) },
     .{ .name = "lock", .what = "machine.lock", .write = lockSchema },
-    .{ .name = "plan", .what = "os plan --json, and the file os plan -o saves", .write = docSchema(planview.Doc, planner.schema) },
-    .{ .name = "secret", .what = "os secret set and rm --json", .write = docSchema(secrets.Entry, secrets.entry_schema) },
-    .{ .name = "secrets", .what = "os secret list --json", .write = docSchema(secrets.List, secrets.list_schema) },
-    .{ .name = "status", .what = "os status --json", .write = docSchema(status.Status, status.schema) },
+    .{ .name = "plan", .what = "yos plan --json, and the file yos plan -o saves", .write = docSchema(planview.Doc, planner.schema) },
+    .{ .name = "secret", .what = "yos secret set and rm --json", .write = docSchema(secrets.Entry, secrets.entry_schema) },
+    .{ .name = "secrets", .what = "yos secret list --json", .write = docSchema(secrets.List, secrets.list_schema) },
+    .{ .name = "status", .what = "yos status --json", .write = docSchema(status.Status, status.schema) },
 };
 
 pub fn find(name: []const u8) ?Doc {
@@ -90,7 +90,7 @@ fn docSchema(comptime T: type, comptime tag: []const u8) fn (*std.Io.Writer) any
 /// machine.toml: the config's keys, and the ones only a file has.
 fn configSchema(w: *std.Io.Writer) anyerror!void {
     var s = open(w);
-    try beginTop(&s, "yoq.config/1");
+    try beginTop(&s, "yos.config/1");
     try fields(&s, config.Config, .toml);
     inline for (.{ "include", "unset", "remove" }) |k| {
         try s.objectField(k);
@@ -105,7 +105,7 @@ fn configSchema(w: *std.Io.Writer) anyerror!void {
 /// `[packages.git]`, for what the lock holds as lists.
 fn lockSchema(w: *std.Io.Writer) anyerror!void {
     var s = open(w);
-    try beginTop(&s, "yoq.lock/1");
+    try beginTop(&s, "yos.lock/1");
     inline for (lock.top_keys) |k| {
         try s.objectField(k);
         if (comptime std.mem.eql(u8, k, "version")) {
@@ -280,7 +280,7 @@ test "every schema is json, with its id" {
     defer arena.deinit();
     for (docs) |d| {
         const p = try render(arena.allocator(), d.name);
-        try testing.expect(std.mem.startsWith(u8, p.value.object.get("$id").?.string, "yoq."));
+        try testing.expect(std.mem.startsWith(u8, p.value.object.get("$id").?.string, "yos."));
     }
 }
 
@@ -423,7 +423,7 @@ test "the lock's schema fits what the lock writer writes, and every golden lock"
         .providers = &.{.{ .name = "java-runtime", .chosen = "jre-openjdk" }},
         .packages = &.{
             .{ .name = "glibc", .version = "2.42-1", .repo = "core", .sha256 = hash },
-            .{ .name = "yay-bin", .version = "12.5.0-1", .repo = "yoq-aur", .sha256 = hash, .depends = &.{"glibc"}, .recipe = "0" ** 40 },
+            .{ .name = "yay-bin", .version = "12.5.0-1", .repo = "yos-aur", .sha256 = hash, .depends = &.{"glibc"}, .recipe = "0" ** 40 },
         },
     };
     var out: std.Io.Writer.Allocating = .init(a);
@@ -476,7 +476,7 @@ test "events fit their schema" {
         const v = try std.json.parseFromSliceLeaky(std.json.Value, a, out.written(), .{});
         try testing.expect(conforms(schema, v));
     }
-    const odd = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"schema\":\"yoq.event/1\",\"time\":1,\"kind\":\"reboot\"}", .{});
+    const odd = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"schema\":\"yos.event/1\",\"time\":1,\"kind\":\"reboot\"}", .{});
     try testing.expect(!conforms(schema, odd));
 }
 

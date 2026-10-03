@@ -1,4 +1,4 @@
-//! `os build --clean <dir>`: builds a root from nothing but the config and
+//! `yos build --clean <dir>`: builds a root from nothing but the config and
 //! the lock, the way pacstrap would, then lists what this machine has in
 //! /etc and /usr that the build doesn't explain. the installer will be the
 //! same build, aimed at a blank disk.
@@ -15,22 +15,22 @@ const applying = @import("apply.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
-const usage_text = "os build --clean <dir>";
+const usage_text = "yos build --clean <dir>";
 
 /// the mkinitcpio drop-in a build uses while it runs. the observer skips
-/// files named 10-yoq-, so it doesn't show up in a plan.
-const no_autodetect = "etc/mkinitcpio.conf.d/10-yoq-build.conf";
+/// files named 10-yos-, so it doesn't show up in a plan.
+const no_autodetect = "etc/mkinitcpio.conf.d/10-yos-build.conf";
 
 /// what a new root takes from this machine before anything installs: how
 /// pacman is set up, its keyring, the config, and the uid map, so users
-/// get the same ids. os's own repositories aren't among them: the config
+/// get the same ids. yos's own repositories aren't among them: the config
 /// brings those, and pacman.conf comes without the line that reads them.
 const seeded = [_][]const u8{
     "etc/pacman.conf",
     "etc/pacman.d/mirrorlist",
     "etc/pacman.d/gnupg",
-    "etc/yoq",
-    "var/lib/yoq/ids",
+    "etc/yos",
+    "var/lib/yos/ids",
 };
 
 /// files every build makes again, or that hold this machine's own state,
@@ -50,7 +50,7 @@ const ignored = [_][]const u8{
     "etc/ld.so.cache",
     "etc/pacman.d/gnupg/",
     "etc/ssh/ssh_host_",
-    "etc/yoq/",
+    "etc/yos/",
     "etc/.pwd.lock",
     "etc/.updated",
     "usr/.updated",
@@ -86,11 +86,11 @@ pub fn buildCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     // unmounting finds the mounts by this path in mountinfo, which has it
     // resolved and escapes spaces and the like, so it has to match that.
     const real = std.Io.Dir.cwd().realPathFileAlloc(ctx.io, dir, a) catch {
-        try ctx.err.print("os: can't resolve {s}.\n", .{dir});
+        try ctx.err.print("yos: can't resolve {s}.\n", .{dir});
         return 1;
     };
     if (std.mem.indexOfAny(u8, real, " \t\n\\") != null) {
-        try ctx.err.print("os: {s} can't have spaces or backslashes in it.\n", .{real});
+        try ctx.err.print("yos: {s} can't have spaces or backslashes in it.\n", .{real});
         return 1;
     }
     if (rootfs.privateMounts(ctx.io)) |why| return cli.fail(ctx, "{s}", .{why});
@@ -106,8 +106,8 @@ pub fn buildCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     return b.report();
 }
 
-/// a root built from the config and lock in a directory, by `os build
-/// --clean` here and by `os install` on a new disk.
+/// a root built from the config and lock in a directory, by `yos build
+/// --clean` here and by `yos install` on a new disk.
 pub const Builder = struct {
     ctx: *Context,
     a: Allocator,
@@ -139,15 +139,15 @@ pub const Builder = struct {
     }
 
     /// the new root's first files, and the filesystems package scripts and
-    /// hooks expect, mounted as pacstrap mounts them. os's caches are this
+    /// hooks expect, mounted as pacstrap mounts them. yos's caches are this
     /// machine's, so packages it has already come from there.
     pub fn prepare(b: *Builder) !?[]const u8 {
         if (b.staged) return b.mountAll(&(api_mounts ++ .{.{ "var", &.{ "--rbind", "--make-rslave", "/var" } }}));
-        for ([_][]const u8{ "var/lib/pacman", "var/cache/yoq", "proc", "sys", "dev", "run", "tmp", "etc/pacman.d" }) |d| {
+        for ([_][]const u8{ "var/lib/pacman", "var/cache/yos", "proc", "sys", "dev", "run", "tmp", "etc/pacman.d" }) |d| {
             if (try b.run(&.{ "mkdir", "-p", try b.in(d) })) |w| return w;
         }
         for (seeded) |rel| {
-            if (!b.seed_config and (std.mem.eql(u8, rel, "etc/yoq") or std.mem.eql(u8, rel, "var/lib/yoq/ids"))) continue;
+            if (!b.seed_config and (std.mem.eql(u8, rel, "etc/yos") or std.mem.eql(u8, rel, "var/lib/yos/ids"))) continue;
             const src = try std.fmt.allocPrint(b.a, "/{s}", .{rel});
             if (!rootfs.pathExists(b.ctx.io, src)) continue;
             const dest = try b.in(rel);
@@ -158,20 +158,20 @@ pub const Builder = struct {
         if (std.Io.Dir.cwd().readFileAlloc(b.ctx.io, conf, b.a, .limited(1 << 20)) catch null) |text| {
             rootfs.writeAtomic(b.ctx.io, conf, try withoutReposInclude(b.a, text), null) catch return "can't write the build's pacman.conf";
         }
-        if (try b.run(&.{ "mkdir", "-p", "/var/cache/yoq" })) |w| return w;
+        if (try b.run(&.{ "mkdir", "-p", "/var/cache/yos" })) |w| return w;
         // mkinitcpio's autodetect looks at the machine the build runs on,
         // not the root it builds, so the first initramfs leaves it out: a
         // generic image, which boots anywhere. `install` takes it away.
         rootfs.writeAtomic(b.ctx.io, try b.in(no_autodetect),
-            \\# written by os while it builds this root, and removed after.
-            \\_yoq_hooks=()
-            \\for _yoq_hook in "${HOOKS[@]}"; do [[ $_yoq_hook == autodetect ]] || _yoq_hooks+=("$_yoq_hook"); done
-            \\HOOKS=("${_yoq_hooks[@]}")
-            \\unset _yoq_hooks _yoq_hook
+            \\# written by yos while it builds this root, and removed after.
+            \\_yos_hooks=()
+            \\for _yos_hook in "${HOOKS[@]}"; do [[ $_yos_hook == autodetect ]] || _yos_hooks+=("$_yos_hook"); done
+            \\HOOKS=("${_yos_hooks[@]}")
+            \\unset _yos_hooks _yos_hook
             \\
         , null) catch return "can't write the build's mkinitcpio drop-in";
         return b.mountAll(if (b.share_cache)
-            &(api_mounts ++ .{.{ "var/cache/yoq", &.{ "--bind", "/var/cache/yoq" } }})
+            &(api_mounts ++ .{.{ "var/cache/yos", &.{ "--bind", "/var/cache/yos" } }})
         else
             &api_mounts);
     }
@@ -250,7 +250,7 @@ pub const Builder = struct {
             if (!try b.same(rel)) try differ.append(b.a, rel);
         }
         if (ctx.json) {
-            try output.writeDoc(ctx.out, "yoq.build/1", .{ .root = b.dir, .only_here = only_here.items, .differ = differ.items });
+            try output.writeDoc(ctx.out, "yos.build/1", .{ .root = b.dir, .only_here = only_here.items, .differ = differ.items });
             return 0;
         }
         try ctx.out.print("\nbuilt {s} from the config and the lock.\n", .{b.dir});
@@ -260,7 +260,7 @@ pub const Builder = struct {
         }
         try list(ctx, "only on this machine", only_here.items);
         try list(ctx, "different on this machine", differ.items);
-        try ctx.out.writeAll("nothing in the config or its packages explains these. `os build --clean <dir> --json` lists them all.\n");
+        try ctx.out.writeAll("nothing in the config or its packages explains these. `yos build --clean <dir> --json` lists them all.\n");
         return 0;
     }
 
@@ -367,13 +367,13 @@ fn processesIn(a: Allocator, io: std.Io, proc_path: []const u8, dir: []const u8)
     var out: std.ArrayList(std.posix.pid_t) = .empty;
     var proc = std.Io.Dir.cwd().openDir(io, proc_path, .{ .iterate = true }) catch return out.items;
     defer proc.close(io);
-    // the mounts under `dir` are only in os's own mount namespace, which
+    // the mounts under `dir` are only in yos's own mount namespace, which
     // it makes private before it mounts any (rootfs.privateMounts). a
     // process in another one holds none of them, like a shell in another
     // terminal sitting in the empty directory they're mounted on there.
     var ns_buf: [64]u8 = undefined;
     const ns_len = proc.readLink(io, "self/ns/mnt", &ns_buf) catch return out.items;
-    // os and the shells that started it are never stopped, even when
+    // yos and the shells that started it are never stopped, even when
     // they sit inside `dir`, like a build run from its own directory.
     const ours = try ancestors(a, io, proc_path);
     var it = proc.iterate();
@@ -469,7 +469,7 @@ fn mountsUnder(a: Allocator, text: []const u8, dir: []const u8, with_dir: bool) 
     return out.items;
 }
 
-/// pacman.conf without the line that includes os's repositories.
+/// pacman.conf without the line that includes yos's repositories.
 fn withoutReposInclude(a: Allocator, text: []const u8) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, text, "\n"), '\n');
@@ -526,33 +526,33 @@ test "mounts under a build, deepest first" {
     // an install's target goes too, after everything on it, and a mount
     // over a mount comes off first.
     const target =
-        \\40 1 0:40 /@roots/1 /mnt/yoq rw - btrfs /dev/mapper/yoq-install rw
-        \\41 40 0:40 /@var /mnt/yoq/var rw - btrfs /dev/mapper/yoq-install rw
-        \\42 41 0:5 / /mnt/yoq/var/lib/x rw - tmpfs t rw
-        \\43 40 254:1 / /mnt/yoq/boot rw - vfat /dev/vdc1 rw
-        \\44 1 0:41 / /mnt/yoqother rw - tmpfs t rw
+        \\40 1 0:40 /@roots/1 /mnt/yos rw - btrfs /dev/mapper/yos-install rw
+        \\41 40 0:40 /@var /mnt/yos/var rw - btrfs /dev/mapper/yos-install rw
+        \\42 41 0:5 / /mnt/yos/var/lib/x rw - tmpfs t rw
+        \\43 40 254:1 / /mnt/yos/boot rw - vfat /dev/vdc1 rw
+        \\44 1 0:41 / /mnt/yosother rw - tmpfs t rw
     ;
-    const all = try mountsUnder(arena.allocator(), target, "/mnt/yoq", true);
+    const all = try mountsUnder(arena.allocator(), target, "/mnt/yos", true);
     try std.testing.expectEqual(4, all.len);
-    try std.testing.expectEqualStrings("/mnt/yoq/var/lib/x", all[0]);
-    try std.testing.expectEqualStrings("/mnt/yoq/var", all[1]);
-    try std.testing.expectEqualStrings("/mnt/yoq/boot", all[2]);
-    try std.testing.expectEqualStrings("/mnt/yoq", all[3]);
+    try std.testing.expectEqualStrings("/mnt/yos/var/lib/x", all[0]);
+    try std.testing.expectEqualStrings("/mnt/yos/var", all[1]);
+    try std.testing.expectEqualStrings("/mnt/yos/boot", all[2]);
+    try std.testing.expectEqualStrings("/mnt/yos", all[3]);
 }
 
 test "a process inside a build, by its root or working directory" {
-    try std.testing.expect(inside("/mnt/yoq", "/mnt/yoq"));
-    try std.testing.expect(inside("/mnt/yoq/etc/pacman.d/gnupg", "/mnt/yoq"));
-    try std.testing.expect(!inside("/mnt/yoqother", "/mnt/yoq"));
-    try std.testing.expect(!inside("/", "/mnt/yoq"));
+    try std.testing.expect(inside("/mnt/yos", "/mnt/yos"));
+    try std.testing.expect(inside("/mnt/yos/etc/pacman.d/gnupg", "/mnt/yos"));
+    try std.testing.expect(!inside("/mnt/yosother", "/mnt/yos"));
+    try std.testing.expect(!inside("/", "/mnt/yos"));
     // gpg's daemons for a root's keyring run here, named by their home.
-    try std.testing.expect(argsInside("gpg-agent\x00--homedir\x00/mnt/yoq/etc/pacman.d/gnupg\x00--use-standard-socket\x00--daemon\x00", "/mnt/yoq"));
-    try std.testing.expect(argsInside("keyboxd\x00--homedir=/mnt/yoq/etc/pacman.d/gnupg\x00", "/mnt/yoq"));
-    try std.testing.expect(!argsInside("gpg-agent\x00--homedir\x00/root/.gnupg\x00", "/mnt/yoq"));
-    try std.testing.expect(!argsInside("sshd: root@pts/0\x00", "/mnt/yoq"));
+    try std.testing.expect(argsInside("gpg-agent\x00--homedir\x00/mnt/yos/etc/pacman.d/gnupg\x00--use-standard-socket\x00--daemon\x00", "/mnt/yos"));
+    try std.testing.expect(argsInside("keyboxd\x00--homedir=/mnt/yos/etc/pacman.d/gnupg\x00", "/mnt/yos"));
+    try std.testing.expect(!argsInside("gpg-agent\x00--homedir\x00/root/.gnupg\x00", "/mnt/yos"));
+    try std.testing.expect(!argsInside("sshd: root@pts/0\x00", "/mnt/yos"));
 }
 
-test "a build's pacman.conf leaves out os's repositories" {
+test "a build's pacman.conf leaves out yos's repositories" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings("[core]\nInclude = /etc/pacman.d/mirrorlist\n", try withoutReposInclude(arena.allocator(), "[core]\nInclude = /etc/pacman.d/mirrorlist\n" ++ facts.repos_include ++ "\n"));
@@ -561,12 +561,12 @@ test "a build's pacman.conf leaves out os's repositories" {
 test "paths a build can't explain or be explained by" {
     try std.testing.expect(ignoredPath("etc/machine-id"));
     try std.testing.expect(ignoredPath("etc/ssh/ssh_host_ed25519_key"));
-    try std.testing.expect(ignoredPath("usr/local/bin/os"));
+    try std.testing.expect(ignoredPath("usr/local/bin/yos"));
     try std.testing.expect(!ignoredPath("etc/hostname"));
     try std.testing.expect(!ignoredPath("usr/local"));
 }
 
-test "only processes in os's own mount namespace are stopped" {
+test "only processes in yos's own mount namespace are stopped" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -577,11 +577,11 @@ test "only processes in os's own mount namespace are stopped" {
     const fakes = [_]Fake{
         .{ .pid = "self", .ns = "mnt:[1]", .cwd = "/" },
         // a hook still running in the build.
-        .{ .pid = "100", .ns = "mnt:[1]", .cwd = "/mnt/yoq/etc" },
-        // a shell in another terminal, in the host's empty /mnt/yoq.
-        .{ .pid = "200", .ns = "mnt:[2]", .cwd = "/mnt/yoq" },
+        .{ .pid = "100", .ns = "mnt:[1]", .cwd = "/mnt/yos/etc" },
+        // a shell in another terminal, in the host's empty /mnt/yos.
+        .{ .pid = "200", .ns = "mnt:[2]", .cwd = "/mnt/yos" },
         // gpg's agent for the build's keyring, named by its home.
-        .{ .pid = "300", .ns = "mnt:[1]", .cwd = "/mnt/yoqother", .cmdline = "gpg-agent\x00--homedir\x00/mnt/yoq/etc/pacman.d/gnupg\x00" },
+        .{ .pid = "300", .ns = "mnt:[1]", .cwd = "/mnt/yosother", .cmdline = "gpg-agent\x00--homedir\x00/mnt/yos/etc/pacman.d/gnupg\x00" },
         .{ .pid = "400", .ns = "mnt:[1]", .cwd = "/home" },
     };
     for (fakes) |f| {
@@ -591,7 +591,7 @@ test "only processes in os's own mount namespace are stopped" {
         try tmp.dir.symLink(io, "/", try std.fmt.allocPrint(a, "{s}/root", .{f.pid}), .{});
         try tmp.dir.writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "{s}/cmdline", .{f.pid}), .data = f.cmdline });
     }
-    const got = try processesIn(a, io, try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}), "/mnt/yoq");
+    const got = try processesIn(a, io, try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}), "/mnt/yos");
     std.mem.sort(std.posix.pid_t, @constCast(got), {}, std.sort.asc(std.posix.pid_t));
     try std.testing.expectEqualSlices(std.posix.pid_t, &.{ 100, 300 }, got);
 }

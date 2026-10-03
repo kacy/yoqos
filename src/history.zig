@@ -1,4 +1,4 @@
-//! config history: every change os makes to the config directory becomes a
+//! config history: every change yos makes to the config directory becomes a
 //! git commit there, so there's a record without anyone remembering git.
 
 const std = @import("std");
@@ -8,7 +8,7 @@ const news = @import("news.zig");
 const Allocator = std.mem.Allocator;
 
 /// one commit in the config's history. `n` counts from 1 at the first,
-/// and is what `os rollback` takes.
+/// and is what `yos rollback` takes.
 pub const Entry = struct { n: usize, rev: []const u8, message: []const u8 };
 
 /// what a commit came to. `unchanged` is nothing to commit, like git.
@@ -84,13 +84,13 @@ pub const Git = struct {
         if (!try g.run(a, &.{ "git", "-C", dir, "add", "-A", "--", "." }, why)) return .failed;
         // nothing staged here means nothing changed: done.
         if (try g.succeeds(a, &.{ "git", "-C", dir, "diff", "--cached", "--quiet", "--", "." })) return .unchanged;
-        // root's config often has no identity. commit as os then, rather
+        // root's config often has no identity. commit as yos then, rather
         // than fail.
         const named = try g.succeeds(a, &.{ "git", "-C", dir, "config", "user.email" });
         const argv: []const []const u8 = if (named)
             &.{ "git", "-C", dir, "commit", "-q", "-m", message, "--", "." }
         else
-            &.{ "git", "-C", dir, "-c", "user.name=os", "-c", "user.email=os@localhost", "commit", "-q", "-m", message, "--", "." };
+            &.{ "git", "-C", dir, "-c", "user.name=yos", "-c", "user.email=yos@localhost", "commit", "-q", "-m", message, "--", "." };
         return if (try g.run(a, argv, why)) .made else .failed;
     }
 
@@ -118,7 +118,7 @@ pub const Git = struct {
 
 /// the commits in `git log --format="%H %s"` output. a subject loses its
 /// control characters, so one from a cloned repository can't move the
-/// cursor or rewrite the terminal when `os history` prints it.
+/// cursor or rewrite the terminal when `yos history` prints it.
 fn parseLog(a: Allocator, text: []const u8) ![]const Entry {
     var out: std.ArrayList(Entry) = .empty;
     var lines = std.mem.tokenizeScalar(u8, text, '\n');
@@ -142,7 +142,7 @@ test "commit subjects lose control characters" {
 }
 
 /// `argv` run without the variables that point git at another repository.
-/// os run from a git hook, or under `git rebase --exec`, inherits GIT_DIR,
+/// yos run from a git hook, or under `git rebase --exec`, inherits GIT_DIR,
 /// and git would then commit there instead of in the config directory.
 fn cleanEnv(a: Allocator, argv: []const []const u8) ![]const []const u8 {
     const prefix = [_][]const u8{ "env", "-u", "GIT_DIR", "-u", "GIT_WORK_TREE", "-u", "GIT_INDEX_FILE", "-u", "GIT_OBJECT_DIRECTORY", "-u", "GIT_COMMON_DIR", "--" };

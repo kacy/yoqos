@@ -1,4 +1,4 @@
-//! runs the few programs os uses as backends, like git and shadow's tools:
+//! runs the few programs yos uses as backends, like git and shadow's tools:
 //! fixed arguments, never a shell.
 
 const std = @import("std");
@@ -50,7 +50,7 @@ pub fn runLogged(a: Allocator, io: std.Io, argv: []const []const u8, log: []cons
     return try std.fmt.allocPrint(a, "{s} failed; its whole output is in {s}. the end of it:\n{s}", .{ argv[0], log, lastLines(both, 20) });
 }
 
-/// runs `argv` on the terminal os runs on, for a program that asks the
+/// runs `argv` on the terminal yos runs on, for a program that asks the
 /// person there something itself, like passwd. null when it succeeds.
 pub fn interactive(a: Allocator, io: std.Io, argv: []const []const u8) error{OutOfMemory}!?[]const u8 {
     var child = std.process.spawn(io, .{ .argv = argv }) catch |e| return try spawnFailed(a, argv, e);
@@ -59,7 +59,7 @@ pub fn interactive(a: Allocator, io: std.Io, argv: []const []const u8) error{Out
 
 /// runs `argv` with `input` written to its standard input, for a secret
 /// that mustn't go on its command line or into a file. what it prints
-/// goes nowhere, and what it says when it fails goes to os's standard
+/// goes nowhere, and what it says when it fails goes to yos's standard
 /// error.
 pub fn runInput(a: Allocator, io: std.Io, argv: []const []const u8, input: []const u8) error{OutOfMemory}!?[]const u8 {
     var child = std.process.spawn(io, .{ .argv = argv, .stdin = .pipe, .stdout = .ignore }) catch |e| return try spawnFailed(a, argv, e);
@@ -190,11 +190,11 @@ test "a missing program and a failing one" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    try std.testing.expectEqualStrings("can't run os-no-such-tool: it isn't installed", (try run(a, std.testing.io, &.{"os-no-such-tool"})).?);
+    try std.testing.expectEqualStrings("can't run yos-no-such-tool: it isn't installed", (try run(a, std.testing.io, &.{"yos-no-such-tool"})).?);
     try std.testing.expectEqual(null, try run(a, std.testing.io, &.{"true"}));
     try std.testing.expectEqualStrings("false failed", (try run(a, std.testing.io, &.{"false"})).?);
     try std.testing.expectEqualStrings("hi\n", (try output(a, std.testing.io, &.{ "echo", "hi" })).ok);
-    try std.testing.expectEqualStrings("false failed", (try runAll(a, std.testing.io, &.{ &.{"true"}, &.{"false"}, &.{"os-no-such-tool"} })).?);
+    try std.testing.expectEqualStrings("false failed", (try runAll(a, std.testing.io, &.{ &.{"true"}, &.{"false"}, &.{"yos-no-such-tool"} })).?);
 }
 
 test "input through a pipe, and output into a buffer" {

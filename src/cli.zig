@@ -6,6 +6,7 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 const output = @import("output.zig");
 const diag = @import("diag.zig");
+const lists = @import("lists.zig");
 const compose = @import("compose.zig");
 const pipeline = @import("pipeline.zig");
 const facts_mod = @import("facts.zig");
@@ -38,11 +39,11 @@ const secret_cmd = @import("cmd/secret.zig");
 const schemas = @import("schema.zig");
 const secrets = @import("secrets.zig");
 
-pub const default_config = "/etc/yoq/machine.toml";
+pub const default_config = "/etc/yos/machine.toml";
 
 /// where a repository for several machines keeps `host`'s config.
 pub fn hostConfigPath(a: std.mem.Allocator, host: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(a, "/etc/yoq/hosts/{s}/machine.toml", .{host});
+    return std.fmt.allocPrint(a, "/etc/yos/hosts/{s}/machine.toml", .{host});
 }
 
 pub const Context = struct {
@@ -55,7 +56,7 @@ pub const Context = struct {
     /// set by `--config <path>`.
     config_path: []const u8 = default_config,
     /// set by `--root <dir>`: where the machine's own files are, like
-    /// /etc/pacman.conf and /var/cache/yoq. "/" for the running machine.
+    /// /etc/pacman.conf and /var/cache/yos. "/" for the running machine.
     root: []const u8 = "/",
     /// set by `--facts <file>`: read facts from a file instead of observing
     /// the machine.
@@ -72,13 +73,13 @@ pub const Context = struct {
     /// stdin is a terminal, whatever stdout is and --json says. a secret's
     /// value typed there is read without echo.
     in_tty: bool = false,
-    /// this process runs under one of os's own transactions, as the drift
+    /// this process runs under one of yos's own transactions, as the drift
     /// hook does then.
     in_own_transaction: bool = false,
-    /// where aur recipes are fetched from; YOQ_AUR points it elsewhere, as
+    /// where aur recipes are fetched from; YOS_AUR points it elsewhere, as
     /// tests do.
     aur_url: []const u8 = @import("aur.zig").default_url,
-    /// what `os edit` opens the config with: $VISUAL, $EDITOR, or vi.
+    /// what `yos edit` opens the config with: $VISUAL, $EDITOR, or vi.
     editor: []const u8 = "vi",
     /// how package transactions show progress on `err`, unless --json is
     /// set. tests leave it off.
@@ -87,7 +88,7 @@ pub const Context = struct {
     /// redraws its line with an escape of its own. null means `err`.
     term: ?*std.Io.Writer = null,
     /// where secrets are kept: the machine's own, always, whatever --root
-    /// says, since a root os builds is for this machine too.
+    /// says, since a root yos builds is for this machine too.
     secrets: ?secrets.Store = null,
     /// turns echo on the terminal off and on again, while a secret's
     /// value is typed.
@@ -117,32 +118,32 @@ const commands = [_]Command{
     .{ .name = "enable", .summary = "turn services on in the config", .handler = edit.enableCmd },
     .{ .name = "disable", .summary = "turn services off in the config", .handler = edit.disableCmd },
     .{ .name = "edit", .summary = "open the config in $EDITOR, check it, and apply it", .handler = edit.editCmd },
-    .{ .name = "adopt", .summary = "put packages installed outside os, or a file in /etc, into the config", .handler = edit.adoptCmd },
+    .{ .name = "adopt", .summary = "put packages installed outside yos, or a file in /etc, into the config", .handler = edit.adoptCmd },
     .{ .name = "secret", .summary = "keep, list, or remove the values files name with secret", .handler = secret_cmd.secretCmd },
     .{ .name = "rollback", .summary = "go back to an earlier generation", .handler = rollback.rollbackCmd },
     .{ .name = "enable-rollback", .summary = "turn on generations of the whole system (btrfs)", .handler = enable_rollback.enableRollbackCmd },
     .{ .name = "install", .summary = "put the machine a config describes on a blank disk, from a live system", .handler = install_cmd.installCmd },
     .{ .name = "uninstall", .summary = "leave plain arch on the running system, keeping the config", .handler = uninstall.uninstallCmd },
-    .{ .name = "doctor", .summary = "check how os is set up here, and say what to fix", .handler = doctor.doctorCmd },
+    .{ .name = "doctor", .summary = "check how yos is set up here, and say what to fix", .handler = doctor.doctorCmd },
     .{ .name = "gc", .summary = "remove old generations, keeping the newest and pinned ones", .handler = rollback.gcCmd },
     .{ .name = "pin", .summary = "keep a generation through garbage collection", .handler = rollback.pinCmd },
     .{ .name = "history", .summary = "list the generations", .handler = rollback.historyCmd },
     .{ .name = "diff", .summary = "what differs between two generations: packages and config", .handler = diff_cmd.diffCmd },
     .{ .name = "why", .summary = "say which config line brings in a package, file, or unit", .handler = inspect.whyCmd },
     .{ .name = "config", .summary = "show the merged config (config show [--resolved])", .handler = inspect.configCmd },
-    .{ .name = "facts", .summary = "show what os knows about this machine", .handler = inspect.factsCmd },
+    .{ .name = "facts", .summary = "show what yos knows about this machine", .handler = inspect.factsCmd },
     .{ .name = "build", .summary = "build a root from the config and lock alone, and list what they don't explain here", .handler = build_cmd.buildCmd, .hidden = true },
-    .{ .name = "docs", .summary = "print the whole reference, as it came with this os", .handler = docs.docsCmd, .hidden = true },
-    .{ .name = "carry", .summary = "carry this machine's state into a generation waiting for the reboot (yoq-carry.service runs this)", .handler = rollback.carryCmd, .hidden = true },
-    .{ .name = "health", .summary = "check a generation on trial, at boot (yoq-health.service runs this)", .handler = health.healthCmd, .hidden = true },
+    .{ .name = "docs", .summary = "print the whole reference, as it came with this yos", .handler = docs.docsCmd, .hidden = true },
+    .{ .name = "carry", .summary = "carry this machine's state into a generation waiting for the reboot (yos-carry.service runs this)", .handler = rollback.carryCmd, .hidden = true },
+    .{ .name = "health", .summary = "check a generation on trial, at boot (yos-health.service runs this)", .handler = health.healthCmd, .hidden = true },
     .{ .name = "record-pacman", .summary = "record a pacman transaction (the drift hook runs this)", .handler = hook.recordPacmanCmd, .hidden = true },
     .{ .name = "explain", .summary = "explain an error code, like E0213", .handler = explain },
     .{ .name = "schema", .summary = "print the json schema for the config or a json document", .handler = schemaCmd, .hidden = true },
-    .{ .name = "events", .summary = "print what os did here, and pacman outside it, as json lines (--follow for new ones)", .handler = events_cmd.eventsCmd, .hidden = true },
+    .{ .name = "events", .summary = "print what yos did here, and pacman outside it, as json lines (--follow for new ones)", .handler = events_cmd.eventsCmd, .hidden = true },
 };
 
 /// walks a command's own arguments. after `--`, every argument is a
-/// name, even one that starts with `-`, like `os add -- -weird-name`.
+/// name, even one that starts with `-`, like `yos add -- -weird-name`.
 pub const ArgIter = struct {
     args: []const [:0]const u8,
     i: usize = 0,
@@ -190,7 +191,7 @@ pub fn eql(a: []const u8, b: []const u8) bool {
 pub fn run(ctx: *Context, raw: []const [:0]const u8) !u8 {
     const args = takeGlobalFlags(ctx, raw) catch |e| switch (e) {
         error.MissingFlagValue => {
-            try ctx.err.writeAll("os: --config, --root, and --facts need a path\n");
+            try ctx.err.writeAll("yos: --config, --root, and --facts need a path\n");
             return 2;
         },
         else => return e,
@@ -204,17 +205,44 @@ pub fn run(ctx: *Context, raw: []const [:0]const u8) !u8 {
     if (eql(name, "-h") or eql(name, "--help")) return help(ctx, args[1..]);
     if (eql(name, "--version")) return version(ctx, args[1..]);
 
+    if (ctx.facts_path == null and !lists.contains(&anywhere, name)) {
+        if (try legacyState(ctx)) |found| {
+            var w: Work = .init(ctx);
+            defer w.deinit();
+            try w.diags.add(.legacy_state, null, "this machine was set up by yoq os, the name yos had before 0.2.0: {s} is still here", .{found}, "with the old package installed, run `os uninstall`, then `mv /etc/yoq /etc/yos`. `yos explain E0138` has the rest");
+            return w.fail();
+        }
+    }
     for (commands) |c| {
         if (eql(c.name, name)) return c.handler(ctx, args[1..]);
     }
 
-    try ctx.err.print("os: unknown command '{s}'\n\n", .{name});
+    try ctx.err.print("yos: unknown command '{s}'\n\n", .{name});
     try usage(ctx.err);
     return 2;
 }
 
+/// commands that only print, and work on any machine.
+const anywhere = [_][]const u8{ "help", "version", "explain", "docs", "schema" };
+
+/// where yoq os, yos's name before 0.2.0, kept its config and its state.
+/// yos reads neither, so a machine that still has one isn't one it can
+/// plan for (E0138).
+const legacy_paths = [_][]const u8{ "/etc/yoq", "/var/lib/yoq" };
+
+/// the first of `legacy_paths` under the machine's root, or null.
+fn legacyState(ctx: *Context) !?[]const u8 {
+    for (legacy_paths) |p| {
+        const path = try std.fs.path.join(ctx.gpa, &.{ ctx.root, p[1..] });
+        defer ctx.gpa.free(path);
+        std.Io.Dir.cwd().access(ctx.io, path, .{}) catch continue;
+        return p;
+    }
+    return null;
+}
+
 /// pulls global flags out of the args wherever they appear before `--`, so
-/// `os --json status` and `os status --json` mean the same thing.
+/// `yos --json status` and `yos status --json` mean the same thing.
 fn takeGlobalFlags(ctx: *Context, raw: []const [:0]const u8) ![]const [:0]const u8 {
     var rest: std.ArrayList([:0]const u8) = .empty;
     errdefer rest.deinit(ctx.gpa);
@@ -262,7 +290,7 @@ fn valueFlag(ctx: *Context, arg: []const u8, it: *ArgIter) !bool {
 }
 
 fn usage(w: *std.Io.Writer) !void {
-    try w.writeAll("usage: os <command> [args]\n\ncommands:\n");
+    try w.writeAll("usage: yos <command> [args]\n\ncommands:\n");
     for (commands) |c| {
         if (!c.hidden) try w.print("  {s:<17}{s}\n", .{ c.name, c.summary });
     }
@@ -270,7 +298,7 @@ fn usage(w: *std.Io.Writer) !void {
         \\
         \\global flags:
         \\  --json           machine-readable output
-        \\  --config <path>  config file (default /etc/yoq/machine.toml)
+        \\  --config <path>  config file (default /etc/yos/machine.toml)
         \\  --root <dir>     the machine's files live under dir (default /)
         \\  --facts <file>   read the machine from a facts file instead
         \\
@@ -278,12 +306,12 @@ fn usage(w: *std.Io.Writer) !void {
 }
 
 fn help(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (try noArgs(ctx, args, "os help")) |code| return code;
+    if (try noArgs(ctx, args, "yos help")) |code| return code;
     if (ctx.json) {
         const Entry = struct { name: []const u8, summary: []const u8 };
         var entries: [commands.len]Entry = undefined;
         for (commands, &entries) |c, *e| e.* = .{ .name = c.name, .summary = c.summary };
-        try output.writeDoc(ctx.out, "yoq.help/1", .{ .commands = entries });
+        try output.writeDoc(ctx.out, "yos.help/1", .{ .commands = entries });
         return 0;
     }
     try usage(ctx.out);
@@ -291,29 +319,29 @@ fn help(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 fn version(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (try noArgs(ctx, args, "os version")) |code| return code;
+    if (try noArgs(ctx, args, "yos version")) |code| return code;
     if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.version/1", .{ .version = build_options.version });
+        try output.writeDoc(ctx.out, "yos.version/1", .{ .version = build_options.version });
         return 0;
     }
-    try ctx.out.print("os {s}\n", .{build_options.version});
+    try ctx.out.print("yos {s}\n", .{build_options.version});
     return 0;
 }
 
 fn schemaCmd(ctx: *Context, raw: []const [:0]const u8) !u8 {
     var buf: [1][]const u8 = undefined;
     var it: ArgIter = .{ .args = raw };
-    const args = it.names(&buf) orelse return usageError(ctx, "os schema [<name>]");
+    const args = it.names(&buf) orelse return usageError(ctx, "yos schema [<name>]");
     if (args.len == 0) {
         const Entry = struct { name: []const u8, what: []const u8 };
         var list: [schemas.docs.len]Entry = undefined;
         for (schemas.docs, &list) |d, *e| e.* = .{ .name = d.name, .what = d.what };
         if (ctx.json) {
-            try output.writeDoc(ctx.out, "yoq.schemas/1", .{ .schemas = &list });
+            try output.writeDoc(ctx.out, "yos.schemas/1", .{ .schemas = &list });
         } else for (list) |e| try ctx.out.print("{s: <8}{s}\n", .{ e.name, e.what });
         return 0;
     }
-    const d = schemas.find(args[0]) orelse return fail(ctx, "there's no schema called {s}. `os schema` lists them.", .{args[0]});
+    const d = schemas.find(args[0]) orelse return fail(ctx, "there's no schema called {s}. `yos schema` lists them.", .{args[0]});
     try d.write(ctx.out);
     return 0;
 }
@@ -321,23 +349,23 @@ fn schemaCmd(ctx: *Context, raw: []const [:0]const u8) !u8 {
 fn explain(ctx: *Context, raw: []const [:0]const u8) !u8 {
     var buf: [1][]const u8 = undefined;
     var it: ArgIter = .{ .args = raw };
-    const args = it.names(&buf) orelse return usageError(ctx, "os explain [code]");
+    const args = it.names(&buf) orelse return usageError(ctx, "yos explain [code]");
     if (args.len == 0) {
         if (ctx.json) {
             var all: [diag.table.len]diag.EntryJson = undefined;
             for (diag.table, &all) |e, *j| j.* = diag.entryJson(e);
-            try output.writeDoc(ctx.out, "yoq.explain/1", .{ .codes = all });
+            try output.writeDoc(ctx.out, "yos.explain/1", .{ .codes = all });
             return 0;
         }
         for (diag.table) |e| try ctx.out.print("{s}  {s}\n", .{ e.id, e.title });
         return 0;
     }
     const e = diag.byId(args[0]) orelse {
-        try ctx.err.print("os: no error code '{s}'. `os explain` lists them all.\n", .{args[0]});
+        try ctx.err.print("yos: no error code '{s}'. `yos explain` lists them all.\n", .{args[0]});
         return 2;
     };
     if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.explain/1", .{ .codes = [_]diag.EntryJson{diag.entryJson(e)} });
+        try output.writeDoc(ctx.out, "yos.explain/1", .{ .codes = [_]diag.EntryJson{diag.entryJson(e)} });
         return 0;
     }
     try ctx.out.print("{s}: {s}\n\n{s}\n", .{ e.id, e.title, e.explanation });
@@ -406,7 +434,7 @@ pub const Work = struct {
         if (!eql(w.ctx.root, "/") or w.ctx.facts_path != null) return null;
         // only how the machine boots: no packages or units to read.
         const f = try observe.observe(w.allocator(), w.ctx.io, .{ .packages = false, .units = false }, &w.diags);
-        return if (generation.running(f.boot.root_subvol)) f.boot else null;
+        return if (generation.on(f.boot)) f.boot else null;
     }
 
     /// the merged config, or null if it has problems.
@@ -441,11 +469,11 @@ pub fn record(ctx: *Context, a: std.mem.Allocator, top: []const u8, message: []c
     switch (try ctx.history.commit(a, dir, message, &why)) {
         .made => try note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .commit, .message = message }),
         .unchanged => {},
-        .failed => try ctx.err.print("os: saved, but couldn't record it in git: {s}\n", .{why}),
+        .failed => try ctx.err.print("yos: saved, but couldn't record it in git: {s}\n", .{why}),
     }
 }
 
-/// adds an event for `os events` to the machine's journal. tests never
+/// adds an event for `yos events` to the machine's journal. tests never
 /// write the machine they run on.
 pub fn note(ctx: *Context, a: std.mem.Allocator, e: events.Event) !void {
     if (builtin.is_test and eql(ctx.root, "/")) return;
@@ -458,7 +486,7 @@ pub fn writeFile(ctx: *Context, path: []const u8, bytes: []const u8) !bool {
     ctx.files.write(path, bytes) catch |e| switch (e) {
         error.OutOfMemory => return e,
         error.WriteFailed => {
-            try ctx.err.print("os: can't write {s}\n", .{path});
+            try ctx.err.print("yos: can't write {s}\n", .{path});
             return false;
         },
     };
@@ -470,7 +498,7 @@ pub fn readFile(ctx: *Context, a: std.mem.Allocator, path: []const u8) !?[]const
     return ctx.files.read(a, path) catch |e| switch (e) {
         error.OutOfMemory => return e,
         else => {
-            try ctx.err.print("os: can't read {s}\n", .{path});
+            try ctx.err.print("yos: can't read {s}\n", .{path});
             return null;
         },
     };
@@ -486,16 +514,16 @@ pub fn isYes(arg: []const u8) bool {
     return eql(arg, "--yes") or eql(arg, "-y");
 }
 
-/// says what went wrong, as "os: ...", and returns the exit code for a
+/// says what went wrong, as "yos: ...", and returns the exit code for a
 /// failed command.
 pub fn fail(ctx: *Context, comptime fmt: []const u8, args: anytype) !u8 {
-    try ctx.err.print("os: " ++ fmt ++ "\n", args);
+    try ctx.err.print("yos: " ++ fmt ++ "\n", args);
     return 1;
 }
 
 /// says `why`, if there is one, for commands that can't do anything else.
 pub fn refused(ctx: *Context, why: ?[]const u8) !bool {
-    try ctx.err.print("os: {s}.\n", .{why orelse return false});
+    try ctx.err.print("yos: {s}.\n", .{why orelse return false});
     return true;
 }
 
@@ -504,17 +532,17 @@ pub fn refused(ctx: *Context, why: ?[]const u8) !bool {
 pub fn openMachine(ctx: *Context, a: std.mem.Allocator, boot: facts_mod.Boot) !?gens.Machine {
     var why: []const u8 = "";
     return try gens.Machine.open(a, ctx.io, boot, &why) orelse {
-        try ctx.err.print("os: {s}\n", .{why});
+        try ctx.err.print("yos: {s}\n", .{why});
         return null;
     };
 }
 
 pub fn noGenerations(ctx: *Context) !u8 {
-    return fail(ctx, "this machine has no generations. `os enable-rollback` turns them on.", .{});
+    return fail(ctx, "this machine has no generations. `yos enable-rollback` turns them on.", .{});
 }
 
 pub fn noGeneration(ctx: *Context, n: u32) !u8 {
-    return fail(ctx, "there's no generation {d}. `os history` lists them.", .{n});
+    return fail(ctx, "there's no generation {d}. `yos history` lists them.", .{n});
 }
 
 /// says why facts couldn't be read.
@@ -522,8 +550,8 @@ fn factsError(ctx: *Context, e: pipeline.Error, path: ?[]const u8) !void {
     const from = path orelse "this machine";
     switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        error.FactsUnreadable => try ctx.err.print("os: can't read facts from {s}\n", .{from}),
-        error.BadFacts => try ctx.err.print("os: {s} isn't a facts document (yoq.facts/1)\n", .{from}),
+        error.FactsUnreadable => try ctx.err.print("yos: can't read facts from {s}\n", .{from}),
+        error.BadFacts => try ctx.err.print("yos: {s} isn't a facts document (yos.facts/1)\n", .{from}),
     }
 }
 
@@ -543,7 +571,7 @@ pub fn machinePath(ctx: *const Context, a: std.mem.Allocator, path: []const u8) 
 pub fn approve(ctx: *Context, yes: bool, what: []const u8, question: []const u8) !?u8 {
     if (yes) return null;
     if (!ctx.interactive) {
-        try ctx.err.print("os: pass --yes to {s} without a terminal.\n", .{what});
+        try ctx.err.print("yos: pass --yes to {s} without a terminal.\n", .{what});
         return 2;
     }
     try ctx.out.writeByte('\n');
@@ -558,19 +586,19 @@ pub fn approve(ctx: *Context, yes: bool, what: []const u8, question: []const u8)
 /// running machine".
 pub fn needsHost(ctx: *Context, what: []const u8) !bool {
     if (eql(ctx.root, "/") and std.os.linux.geteuid() == 0) return refused(ctx, lockMachine());
-    try ctx.err.print("os: {s}, so it needs root and no --root.\n", .{what});
+    try ctx.err.print("yos: {s}, so it needs root and no --root.\n", .{what});
     return true;
 }
 
 /// takes the machine lock before root edits the config or lock, or
 /// generations' records, so two runs can't both read the old file and
-/// each write over the other. says who has it when another os does.
+/// each write over the other. says who has it when another yos does.
 pub fn lockForEdit(ctx: *Context) ?[]const u8 {
     if (!eql(ctx.root, "/") or std.os.linux.geteuid() != 0) return null;
     return lockMachine();
 }
 
-/// `lockForEdit`, but waits for another os to finish instead of saying
+/// `lockForEdit`, but waits for another yos to finish instead of saying
 /// so: for the health check at boot, which has to end a trial however
 /// long a run someone started meanwhile takes.
 pub fn waitForMachine(ctx: *Context) ?[]const u8 {
@@ -578,14 +606,14 @@ pub fn waitForMachine(ctx: *Context) ?[]const u8 {
     return takeLock(true);
 }
 
-/// where os locks the running machine while it changes it.
+/// where yos locks the running machine while it changes it.
 const lock_path = rootfs.run_dir ++ "/lock";
 var lock_held = false;
 var lock_message: [128]u8 = undefined;
 
-/// makes this os the only one changing the running machine, until it
+/// makes this yos the only one changing the running machine, until it
 /// exits: the lock goes with the process, however it ends. says who has
-/// it when another os does.
+/// it when another yos does.
 pub fn lockMachine() ?[]const u8 {
     return takeLock(false);
 }
@@ -626,7 +654,7 @@ fn lockFile(path: [:0]const u8, wait: bool) union(enum) { held: std.os.linux.fd_
         const n = linux.read(fd, &pid_buf, pid_buf.len);
         const pid = if (linux.errno(n) == .SUCCESS) std.mem.trim(u8, pid_buf[0..n], " \n") else "";
         _ = linux.close(fd);
-        return .{ .refused = std.fmt.bufPrint(&lock_message, "another os, process {s}, is changing this machine. wait for it to finish", .{if (pid.len > 0) pid else "?"}) catch "another os is changing this machine" };
+        return .{ .refused = std.fmt.bufPrint(&lock_message, "another yos, process {s}, is changing this machine. wait for it to finish", .{if (pid.len > 0) pid else "?"}) catch "another yos is changing this machine" };
     }
     _ = linux.ftruncate(fd, 0);
     var buf: [32]u8 = undefined;
@@ -716,7 +744,7 @@ pub const TestRun = struct {
     fetcher: ?sync.Fetcher = null,
     /// the commits commands made.
     recorder: history.Recorder = .{ .gpa = std.testing.allocator },
-    /// run as if under one of os's own transactions.
+    /// run as if under one of yos's own transactions.
     in_own_transaction: bool = false,
     /// the secrets commands see, if any.
     secrets: ?*secrets.Memory = null,
@@ -811,30 +839,45 @@ test "no args prints usage" {
     var t: TestRun = .{};
     try t.exec(&.{});
     try std.testing.expectEqual(0, t.code);
-    try std.testing.expect(std.mem.startsWith(u8, t.out.buffered(), "usage: os"));
+    try std.testing.expect(std.mem.startsWith(u8, t.out.buffered(), "usage: yos"));
 }
 
 test "version prints the build version" {
     var t: TestRun = .{};
     try t.exec(&.{"version"});
-    try std.testing.expectEqualStrings("os " ++ build_options.version ++ "\n", t.out.buffered());
+    try std.testing.expectEqualStrings("yos " ++ build_options.version ++ "\n", t.out.buffered());
 
     try t.exec(&.{"--version"});
-    try std.testing.expectEqualStrings("os " ++ build_options.version ++ "\n", t.out.buffered());
+    try std.testing.expectEqualStrings("yos " ++ build_options.version ++ "\n", t.out.buffered());
+}
+
+test "a machine yoq os set up stops with E0138, but help still works" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "var/lib/yoq");
+    var buf: [256]u8 = undefined;
+    const root = try std.fmt.bufPrintZ(&buf, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var t: TestRun = .{};
+    try t.exec(&.{ "--root", root, "status" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "error[E0138]: this machine was set up by yoq os, the name yos had before 0.2.0: /var/lib/yoq is still here") != null);
+    var v: TestRun = .{};
+    try v.exec(&.{ "--root", root, "version" });
+    try std.testing.expectEqual(0, v.code);
 }
 
 test "unknown command is a usage error" {
     var t: TestRun = .{};
     try t.exec(&.{"frobnicate"});
     try std.testing.expectEqual(2, t.code);
-    try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "os: unknown command 'frobnicate'"));
+    try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "yos: unknown command 'frobnicate'"));
     try std.testing.expectEqual(0, t.out.buffered().len);
 }
 
 test "--json works before or after the command" {
     const want =
         \\{
-        \\  "schema": "yoq.version/1",
+        \\  "schema": "yos.version/1",
         \\  "version": "
     ++ build_options.version ++
         \\"
@@ -883,7 +926,7 @@ test "help --json lists every command" {
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, t.out.buffered(), .{});
     defer parsed.deinit();
     const obj = parsed.value.object;
-    try std.testing.expectEqualStrings("yoq.help/1", obj.get("schema").?.string);
+    try std.testing.expectEqualStrings("yos.help/1", obj.get("schema").?.string);
     try std.testing.expectEqual(commands.len, obj.get("commands").?.array.items.len);
 }
 
@@ -927,10 +970,10 @@ test "a config commit is an event, and one with nothing to commit isn't" {
     const root = try std.fmt.allocPrintSentinel(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}, 0);
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "packages = []\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = []\n");
     try t.exec(&.{ "--root", root, "version" });
-    try record(&t.ctx, a, "/etc/yoq/machine.toml", "add fd");
-    try record(&t.ctx, a, "/etc/yoq/machine.toml", "nothing new");
+    try record(&t.ctx, a, "/etc/yos/machine.toml", "add fd");
+    try record(&t.ctx, a, "/etc/yos/machine.toml", "nothing new");
     var offsets: events.Offsets = @splat(0);
     const got = try events.poll(a, std.testing.io, root, &offsets);
     try std.testing.expectEqual(1, got.len);

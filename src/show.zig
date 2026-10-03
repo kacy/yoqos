@@ -344,7 +344,7 @@ test "paths from an include point at the same file without sources" {
     defer fs.deinit();
     var diags: diag.List = .init(testing.allocator);
     defer diags.deinit();
-    try fs.put("/etc/yoq/profiles/base.toml",
+    try fs.put("/etc/yos/profiles/base.toml",
         \\[desktop]
         \\session = "hyprland"
         \\session_config = "hyprland.conf"
@@ -352,22 +352,22 @@ test "paths from an include point at the same file without sources" {
         \\source = "motd"
         \\
     );
-    try fs.put("/etc/yoq/profiles/hyprland.conf", "");
-    try fs.put("/etc/yoq/profiles/motd", "hi\n");
-    try fs.put("/etc/yoq/machine.toml", "include = [\"profiles/base.toml\"]\n");
-    var loaded = try compose.load(testing.allocator, fs.files(), "/etc/yoq/machine.toml", &diags);
+    try fs.put("/etc/yos/profiles/hyprland.conf", "");
+    try fs.put("/etc/yos/profiles/motd", "hi\n");
+    try fs.put("/etc/yos/machine.toml", "include = [\"profiles/base.toml\"]\n");
+    var loaded = try compose.load(testing.allocator, fs.files(), "/etc/yos/machine.toml", &diags);
     defer loaded.deinit();
     try testing.expectEqual(0, diags.items.items.len);
 
     var out: Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
     try writeToml(&out.writer, &loaded.config, false);
-    try testing.expect(std.mem.indexOf(u8, out.written(), "session_config = \"/etc/yoq/profiles/hyprland.conf\"\n") != null);
-    try testing.expect(std.mem.indexOf(u8, out.written(), "source = \"/etc/yoq/profiles/motd\"\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "session_config = \"/etc/yos/profiles/hyprland.conf\"\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "source = \"/etc/yos/profiles/motd\"\n") != null);
 
     // with sources, the comment names the file the path is relative to.
     var resolved: Writer.Allocating = .init(testing.allocator);
     defer resolved.deinit();
     try writeToml(&resolved.writer, &loaded.config, true);
-    try testing.expect(std.mem.indexOf(u8, resolved.written(), "source = \"motd\"  # /etc/yoq/profiles/base.toml:5\n") != null);
+    try testing.expect(std.mem.indexOf(u8, resolved.written(), "source = \"motd\"  # /etc/yos/profiles/base.toml:5\n") != null);
 }
