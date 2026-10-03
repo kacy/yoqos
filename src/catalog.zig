@@ -99,7 +99,7 @@ pub fn loginUnit(login: anytype) ?[]const u8 {
     };
 }
 
-/// the display managers os knows. a login choice turns off every one it
+/// the display managers yos knows. a login choice turns off every one it
 /// doesn't use, since only one can be the display manager.
 pub const display_managers = [_][]const u8{ "gdm.service", "greetd.service", "lightdm.service", "ly.service", "sddm.service" };
 
@@ -116,7 +116,7 @@ pub const default_kernel = "linux";
 /// container.
 pub const no_kernel = "none";
 
-/// whether os offers to restart a unit that runs replaced files. the
+/// whether yos offers to restart a unit that runs replaced files. the
 /// plumbing a session hangs on, like d-bus, logins, and display managers,
 /// waits for a reboot instead.
 pub fn restartable(unit: []const u8) bool {
@@ -126,7 +126,7 @@ pub fn restartable(unit: []const u8) bool {
 /// arch's kernel packages.
 pub const kernels = [_][]const u8{ "linux", "linux-lts", "linux-zen", "linux-hardened" };
 
-/// packages `os` won't remove unless a `[remove]` names them: without
+/// packages `yos` won't remove unless a `[remove]` names them: without
 /// them the machine can't boot or can't manage packages.
 pub const protected = [_][]const u8{ "base", "filesystem", "glibc", "pacman", "systemd" };
 

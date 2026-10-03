@@ -6,7 +6,7 @@ const std = @import("std");
 const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 
-pub const schema = "yoq.facts/1";
+pub const schema = "yos.facts/1";
 
 pub const Package = struct {
     name: []const u8,
@@ -55,14 +55,14 @@ pub const User = struct {
     }
 };
 
-/// a file os manages, as it is on the machine.
+/// a file yos manages, as it is on the machine.
 pub const File = struct {
     path: []const u8,
     /// hex sha256 of the content.
     sha256: []const u8,
     /// octal permission bits, like "0644".
     mode: []const u8,
-    /// os wrote it: its first line says so.
+    /// yos wrote it: its first line says so.
     ours: bool = false,
     /// it holds a secret, so `sha256` is the keyed hash instead, or ""
     /// when that couldn't be taken.
@@ -94,7 +94,7 @@ pub const Boot = struct {
     esp_device: ?[]const u8 = null,
     /// "grub", "systemd-boot", "limine", or "refind".
     loader: ?[]const u8 = null,
-    /// the config limine or refind reads, which os adds its entries to.
+    /// the config limine or refind reads, which yos adds its entries to.
     loader_conf: ?[]const u8 = null,
     /// the btrfs default subvolume is the top level, where refind's
     /// driver starts its paths.
@@ -118,13 +118,13 @@ pub const Boot = struct {
     /// the other data directories (home, root, srv, usr/local) that are
     /// mounted apart from the root.
     data_apart: []const []const u8 = &.{},
-    /// mkinitcpio's HOOKS, without os's own drop-ins.
+    /// mkinitcpio's HOOKS, without yos's own drop-ins.
     initramfs_hooks: []const []const u8 = &.{},
-    /// os's drop-in that adds sd-encrypt to them is there.
+    /// yos's drop-in that adds sd-encrypt to them is there.
     encrypt_dropin: bool = false,
     /// the machine boots unified kernel images already: mkinitcpio's
     /// presets build them, the esp has some in EFI/Linux, or the root has
-    /// os's ukify config from `[boot] uki`.
+    /// yos's ukify config from `[boot] uki`.
     uki: bool = false,
     /// sbctl's signing key and certificate are in /var/lib/sbctl.
     sbctl_keys: bool = false,
@@ -137,8 +137,8 @@ pub const Boot = struct {
     /// sbctl's db certificate is in the firmware's db, so images signed
     /// with sbctl's key start. null without both to compare.
     db_enrolled: ?bool = null,
-    /// efi binaries on the esp without a signature: os's images in
-    /// yoq/boot, which count as unsigned unless sbctl's db key signed
+    /// efi binaries on the esp without a signature: yos's images in
+    /// yos/boot, which count as unsigned unless sbctl's db key signed
     /// them, and everything under EFI, which any signature will do for.
     unsigned: []const []const u8 = &.{},
     /// the pacman database lives in /usr/lib/sysimage/pacman.
@@ -146,7 +146,7 @@ pub const Boot = struct {
     /// snapper has a config for the root, which snap-pac snapshots.
     snapper_root: bool = false,
     /// on a machine with generations: the file the bootloader reads that
-    /// has lost os's entries, like a limine.conf another tool rewrote.
+    /// has lost yos's entries, like a limine.conf another tool rewrote.
     menu_missing: ?[]const u8 = null,
     /// bytes free on the esp, and its size, when it's mounted.
     esp_free: ?u64 = null,
@@ -158,7 +158,7 @@ pub const Boot = struct {
     generations: []const Generation = &.{},
 
     /// whether the initramfs can unlock a luks root: mkinitcpio's hooks
-    /// have encrypt or sd-encrypt, or os's drop-in adds sd-encrypt.
+    /// have encrypt or sd-encrypt, or yos's drop-in adds sd-encrypt.
     pub fn unlocksLuks(b: *const Boot) bool {
         return b.encrypt_dropin or hasEncryptHook(b.initramfs_hooks);
     }
@@ -173,26 +173,26 @@ pub fn hasEncryptHook(hooks: []const []const u8) bool {
 /// where mkinitcpio's drop-ins are.
 pub const initramfs_dropins = "/etc/mkinitcpio.conf.d";
 
-/// os's drop-in that unlocks a luks root. mkinitcpio reads drop-ins in
+/// yos's drop-in that unlocks a luks root. mkinitcpio reads drop-ins in
 /// name order, so it comes after most and adds to the hooks they leave;
 /// one named after it that sets HOOKS again would undo it.
-pub const encrypt_dropin = "90-yoq-encrypt.conf";
+pub const encrypt_dropin = "90-yos-encrypt.conf";
 
-/// os's drop-in, in every root with generations, that adds the hook
+/// yos's drop-in, in every root with generations, that adds the hook
 /// rebooting a trial from an emergency shell in the initramfs. it comes
 /// after the luks one, which sets HOOKS whole.
-pub const trial_dropin = "95-yoq-trial.conf";
+pub const trial_dropin = "95-yos-trial.conf";
 
-/// whether a mkinitcpio drop-in, by name, is one os makes. facts leave
+/// whether a mkinitcpio drop-in, by name, is one yos makes. facts leave
 /// these out of the hooks and modules they list, since the planner
-/// decides from those whether os's are needed.
+/// decides from those whether yos's are needed.
 pub fn osDropIn(name: []const u8) bool {
-    return std.mem.startsWith(u8, name, "10-yoq-") or std.mem.eql(u8, name, encrypt_dropin) or std.mem.eql(u8, name, trial_dropin);
+    return std.mem.startsWith(u8, name, "10-yos-") or std.mem.eql(u8, name, encrypt_dropin) or std.mem.eql(u8, name, trial_dropin);
 }
 
 pub const BootFile = struct { name: []const u8, size: u64 };
 
-/// a recorded generation, as far as `os gc` is concerned.
+/// a recorded generation, as far as `yos gc` is concerned.
 pub const Generation = struct {
     n: u32,
     /// its writable root, under the btrfs top level.
@@ -200,18 +200,18 @@ pub const Generation = struct {
     pinned: bool = false,
 };
 
-/// the file os writes the config's repositories to, and the line in
+/// the file yos writes the config's repositories to, and the line in
 /// pacman.conf that reads it.
-pub const repos_conf = "/etc/pacman.d/yoq-repos.conf";
+pub const repos_conf = "/etc/pacman.d/yos-repos.conf";
 pub const repos_include = "Include = " ++ repos_conf;
 
 /// how pacman is set up for the config's own repositories.
 pub const Pacman = struct {
-    /// pacman.conf includes the file os writes them to.
+    /// pacman.conf includes the file yos writes them to.
     includes_repos: bool = false,
     /// the signing keys the config names that pacman's keyring has.
     keys: []const []const u8 = &.{},
-    /// the repositories pacman.conf declares itself, not through os's file.
+    /// the repositories pacman.conf declares itself, not through yos's file.
     repos: []const []const u8 = &.{},
 };
 
@@ -243,7 +243,7 @@ pub fn sha256Hex(bytes: []const u8) [64]u8 {
     return std.fmt.bytesToHex(digest, .lower);
 }
 
-/// packages a pacman transaction outside os touched, and when.
+/// packages a pacman transaction outside yos touched, and when.
 pub const PacmanChange = struct {
     /// unix milliseconds, like the apply journal's.
     time: i64,
@@ -251,7 +251,7 @@ pub const PacmanChange = struct {
 };
 
 pub const Facts = struct {
-    /// the document's schema tag, first in the json like every document os
+    /// the document's schema tag, first in the json like every document yos
     /// writes.
     schema: []const u8 = schema,
     /// unix seconds when the facts were read.
@@ -273,7 +273,7 @@ pub const Facts = struct {
     /// running system since it was built, which stays behind. files in
     /// /etc, and packages pacman touched.
     staged_changes: []const []const u8 = &.{},
-    /// system accounts whose id isn't the one os first saw them with, or
+    /// system accounts whose id isn't the one yos first saw them with, or
     /// ids that went to another name, as sentences.
     id_changes: []const []const u8 = &.{},
     /// the files the config manages that exist.
@@ -281,7 +281,7 @@ pub const Facts = struct {
     /// the secrets the config names.
     secrets: []Secret = &.{},
     /// modules mkinitcpio puts in the initramfs, from mkinitcpio.conf and
-    /// its drop-ins, leaving out the ones os writes.
+    /// its drop-ins, leaving out the ones yos writes.
     initramfs_modules: []const []const u8 = &.{},
     /// files under /etc with a new upstream default beside them, as
     /// `<path>.pacnew`, by the path of the file itself.
@@ -374,16 +374,16 @@ test "round trip" {
 test "rejects other documents" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    try testing.expectError(error.BadFacts, parse(arena.allocator(), "{\"schema\":\"yoq.plan/1\"}"));
+    try testing.expectError(error.BadFacts, parse(arena.allocator(), "{\"schema\":\"yos.plan/1\"}"));
     try testing.expectError(error.BadFacts, parse(arena.allocator(), "not json"));
-    try testing.expectError(error.BadFacts, parse(arena.allocator(), "{\"schema\":\"yoq.facts/1\",\"bogus\":1}"));
+    try testing.expectError(error.BadFacts, parse(arena.allocator(), "{\"schema\":\"yos.facts/1\",\"bogus\":1}"));
 }
 
 test "parse sorts what it reads" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const f = try parse(arena.allocator(),
-        \\{"schema":"yoq.facts/1","units":[{"name":"sshd.service","enabled":true},{"name":"bluetooth.service"}]}
+        \\{"schema":"yos.facts/1","units":[{"name":"sshd.service","enabled":true},{"name":"bluetooth.service"}]}
     );
     try testing.expectEqualStrings("bluetooth.service", f.units[0].name);
     try testing.expect(f.unit("sshd.service").?.enabled);

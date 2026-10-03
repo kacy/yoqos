@@ -1,22 +1,22 @@
 #!/bin/sh
 # a kernel that changes, through generations. the machine goes back a few
-# weeks with `os update --date`, linux with it, then forward with a plain
-# `os update`: the weekly update, with a new kernel and systemd. each is
+# weeks with `yos update --date`, linux with it, then forward with a plain
+# `yos update`: the weekly update, with a new kernel and systemd. each is
 # staged, tried once, and blessed, and every boot runs a kernel whose
-# modules are in its root. then `os rollback` across the change, and back.
+# modules are in its root. then `yos rollback` across the change, and back.
 # the generation with the older kernel stays pinned, for failures.sh's
 # restore. runs after rollback.sh, in the same vm.
 set -eu
 . tests/vm/lib.sh
 
-os=/usr/local/bin/os
+yos=/usr/local/bin/yos
 on_failure="uname -r; pacman -Q linux systemd; ls /usr/lib/modules; ls -l $VM_ESP; cat /proc/cmdline; $os history | tail -n 5"
 
 # a boot that came up healthy after a trial.
 blessed() {
     "$vm" reboot
     settled
-    check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'the default now'" 1
+    check "journalctl -b -u yos-health --no-pager -o cat | grep -c 'the default now'" 1
     on_trial no
 }
 
@@ -58,7 +58,7 @@ check "$os plan" "nothing to do. this machine matches its config."
 settled
 check "uname -r" "$old_kernel"
 kernel_matches
-check "grep -c '^sync_date = \"$then\"' /etc/yoq/machine.lock" 1
+check "grep -c '^sync_date = \"$then\"' /etc/yos/machine.lock" 1
 check "$os plan" "nothing to do. this machine matches its config."
 
 # and forward again, to today's.

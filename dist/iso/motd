@@ -14,13 +14,13 @@
     2. find the disk to install on. everything on it is erased:
          lsblk
     3. no config yet? write one, from a few questions:
-         os --config /root/machines/machine.toml init --new
+         yos --config /root/machines/machine.toml init --new
     4. install from a config repository, a url or a directory:
-         os install /root/machines --disk /dev/nvme0n1 --update
+         yos install /root/machines --disk /dev/nvme0n1 --update
        it shows what it will do and asks first, then asks for passwords.
        for a disk in luks2, add --encrypt to both commands, and --tpm to
        have the tpm unlock it at boot.
     5. reboot, and take the drive out.
 
-  `os help` lists every command. `os docs | less` is the whole manual,
+  `yos help` lists every command. `yos docs | less` is the whole manual,
   and "installing a new machine" in it has the details.

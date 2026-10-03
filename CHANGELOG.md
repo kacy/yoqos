@@ -4,7 +4,7 @@
 
 ### new
 
-- man pages: `man os` and `man os-generations`, made from docs/usage.md
+- man pages: `man yos` and `man yos-generations`, made from docs/usage.md
   and docs/generations.md with lowdown when the package builds, so
   they're never out of step with the docs. the release tarball and the
   live iso have them too, and ci lints them with mandoc.

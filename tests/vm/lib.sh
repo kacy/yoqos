@@ -18,15 +18,15 @@ check() {
 }
 
 # puts the serial port in the boot menu an install wrote on the esp at $1,
-# so a first boot that fails shows in the console log. os install only
+# so a first boot that fails shows in the console log. yos install only
 # passes on the live system's consoles, and a live iso may have none.
 serial_console() {
-    "$vm" ssh "mkdir -p /run/yoq-esp && mount $1 /run/yoq-esp && sed -i '/^[[:space:]]*linux /{/console=ttyS0/!s/\$/ console=ttyS0,115200/}' /run/yoq-esp/grub/grub.cfg && grep -c 'console=ttyS0' /run/yoq-esp/grub/grub.cfg; umount /run/yoq-esp"
+    "$vm" ssh "mkdir -p /run/yos-esp && mount $1 /run/yos-esp && sed -i '/^[[:space:]]*linux /{/console=ttyS0/!s/\$/ console=ttyS0,115200/}' /run/yos-esp/grub/grub.cfg && grep -c 'console=ttyS0' /run/yos-esp/grub/grub.cfg; umount /run/yos-esp"
 }
 
-# check, with the btrfs top level mounted at /run/yoq-top for the command.
+# check, with the btrfs top level mounted at /run/yos-top for the command.
 check_top() {
-    check "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && { $1; }; umount /run/yoq-top" "$2"
+    check "mkdir -p /run/yos-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yos-top && { $1; }; umount /run/yos-top" "$2"
 }
 
 # a command that prints one of the firmware's secure boot variables,
@@ -35,18 +35,18 @@ efivar() {
     echo "tail -c 1 /sys/firmware/efi/efivars/$1-8be4df61-93ca-11d2-aa0d-00e098032b8c | od -An -tu1 | tr -d ' '"
 }
 
-# yoq-health runs once per boot, after the rest; wait until it has run
+# yos-health runs once per boot, after the rest; wait until it has run
 # this boot, but not forever.
 settled() {
-    "$vm" ssh "for i in \$(seq 150); do [ \"\$(systemctl show -p ExecMainExitTimestampMonotonic --value yoq-health)\" != 0 ] && exit 0; sleep 2; done; echo 'no yoq-health run after 5 minutes'; exit 1"
+    "$vm" ssh "for i in \$(seq 150); do [ \"\$(systemctl show -p ExecMainExitTimestampMonotonic --value yos-health)\" != 0 ] && exit 0; sleep 2; done; echo 'no yos-health run after 5 minutes'; exit 1"
 }
 
 # what the bootloader will boot next, on one line.
 show_env() {
     case $VM_LOADER in
-    grub) "$vm" ssh "grub-editenv $VM_ESP/yoq/grubenv list | grep ^yoq_ | sort | tr '\\n' ' '" ;;
-    limine | systemd-boot) "$vm" ssh "cat /var/lib/yoq/trial 2>/dev/null; ls /sys/firmware/efi/efivars | grep ^LoaderEntry | tr '\\n' ' '" ;;
-    refind) "$vm" ssh "cat /var/lib/yoq/trial 2>/dev/null; efibootmgr | head -n 3 | tr '\\n' ' '" ;;
+    grub) "$vm" ssh "grub-editenv $VM_ESP/yos/grubenv list | grep ^yos_ | sort | tr '\\n' ' '" ;;
+    limine | systemd-boot) "$vm" ssh "cat /var/lib/yos/trial 2>/dev/null; ls /sys/firmware/efi/efivars | grep ^LoaderEntry | tr '\\n' ' '" ;;
+    refind) "$vm" ssh "cat /var/lib/yos/trial 2>/dev/null; efibootmgr | head -n 3 | tr '\\n' ' '" ;;
     *) ;;
     esac
 }
@@ -54,17 +54,17 @@ show_env() {
 # "yes" while a generation is on trial, or "no".
 on_trial() {
     case $VM_LOADER in
-    grub) check "grub-editenv $VM_ESP/yoq/grubenv list | grep -q -e ^yoq_trial -e ^yoq_default && echo yes || echo no" "$1" ;;
-    *) check "test -e /var/lib/yoq/trial && echo yes || echo no" "$1" ;;
+    grub) check "grub-editenv $VM_ESP/yos/grubenv list | grep -q -e ^yos_trial -e ^yos_default && echo yes || echo no" "$1" ;;
+    *) check "test -e /var/lib/yos/trial && echo yes || echo no" "$1" ;;
     esac
 }
 
-# the loader's config with os's entries.
+# the loader's config with yos's entries.
 menu_file() {
     case $VM_LOADER in
     grub) echo "$VM_ESP/grub/grub.cfg" ;;
     limine) "$vm" ssh "ls $VM_ESP/EFI/*/limine.conf $VM_ESP/limine.conf 2>/dev/null | head -n 1" ;;
-    refind) "$vm" ssh "ls $VM_ESP/EFI/*/yoq.conf | head -n 1" ;;
+    refind) "$vm" ssh "ls $VM_ESP/EFI/*/yos.conf | head -n 1" ;;
     systemd-boot) echo "$VM_ESP/loader/entries" ;;
     esac
 }
@@ -74,9 +74,9 @@ menu_count() {
     f=$(menu_file)
     case $VM_LOADER in
     grub) echo "grep -c -e '--id head' -e '--id gen-' $f" ;;
-    limine) echo "grep -c '^/yoq [0-9]' $f" ;;
-    refind) echo "grep -c '^menuentry \"yoq [0-9]' $f" ;;
-    systemd-boot) echo "ls $f | grep -c -e '^yoq-head.conf' -e '^yoq-gen-'" ;;
+    limine) echo "grep -c '^/yos [0-9]' $f" ;;
+    refind) echo "grep -c '^menuentry \"yos [0-9]' $f" ;;
+    systemd-boot) echo "ls $f | grep -c -e '^yos-head.conf' -e '^yos-gen-'" ;;
     esac
 }
 
@@ -105,15 +105,15 @@ crash() {
     exit 1
 }
 
-# takes os's entries out of the boot menu, the way another tool that
+# takes yos's entries out of the boot menu, the way another tool that
 # rewrites the bootloader's config would.
 drop_menu() {
     f=$(menu_file)
     case $VM_LOADER in
     grub) "$vm" ssh "echo '# someone else' > $f" ;;
-    limine) "$vm" ssh "sed -i '/^# yoq: generations/,/^# yoq: end/d' $f" ;;
-    refind) "$vm" ssh "sed -i '/^include yoq.conf/d' \$(dirname $f)/refind.conf" ;;
-    systemd-boot) "$vm" ssh "rm $f/yoq-head.conf" ;;
+    limine) "$vm" ssh "sed -i '/^# yos: generations/,/^# yos: end/d' $f" ;;
+    refind) "$vm" ssh "sed -i '/^include yos.conf/d' \$(dirname $f)/refind.conf" ;;
+    systemd-boot) "$vm" ssh "rm $f/yos-head.conf" ;;
     esac
 }
 
@@ -122,12 +122,12 @@ drop_menu() {
 # boot_done moves it back.
 boot_once() {
     case $VM_LOADER in
-    grub) "$vm" ssh "grub-editenv $VM_ESP/yoq/grubenv set yoq_next=gen-$1" ;;
-    systemd-boot) "$vm" ssh "bootctl set-oneshot yoq-gen-$1.conf" ;;
-    limine) "$vm" ssh "bootctl set-oneshot \"\$(grep '^/yoq $1 ' $(menu_file) | cut -c2- | sed 's/[^A-Za-z0-9+_.@-]/-/g')\"" ;;
+    grub) "$vm" ssh "grub-editenv $VM_ESP/yos/grubenv set yos_next=gen-$1" ;;
+    systemd-boot) "$vm" ssh "bootctl set-oneshot yos-gen-$1.conf" ;;
+    limine) "$vm" ssh "bootctl set-oneshot \"\$(grep '^/yos $1 ' $(menu_file) | cut -c2- | sed 's/[^A-Za-z0-9+_.@-]/-/g')\"" ;;
     refind)
         f=$(menu_file)
-        "$vm" ssh "cp $f /root/yoq.conf.saved && sed -i \"s|^default_selection .*|default_selection \\\"\$(grep -o '^menuentry \"yoq $1 [^\"]*' $f | cut -c12-)\\\"|\" $f && grep ^default_selection $f"
+        "$vm" ssh "cp $f /root/yos.conf.saved && sed -i \"s|^default_selection .*|default_selection \\\"\$(grep -o '^menuentry \"yos $1 [^\"]*' $f | cut -c12-)\\\"|\" $f && grep ^default_selection $f"
         ;;
     esac
 }
@@ -135,7 +135,7 @@ boot_once() {
 # after boot_once, the next boot is the newest generation again.
 boot_done() {
     [ "$VM_LOADER" = refind ] || return 0
-    "$vm" ssh "cp /root/yoq.conf.saved $(menu_file)"
+    "$vm" ssh "cp /root/yos.conf.saved $(menu_file)"
 }
 
 # waits up to 10 minutes for the vm to come up running the root $1. a boot
@@ -148,20 +148,20 @@ wait_root() {
         sleep 10
     done
     echo "$name: no boot into $1 after 10 minutes; the machine shows:"
-    "$vm" ssh "findmnt -no FSROOT /; cat /proc/cmdline; systemctl is-active yoq-watchdog.timer multi-user.target; journalctl -b -u yoq-health -u yoq-watchdog.timer -u yoq-watchdog.service --no-pager -o cat | tail -n 10" || true
+    "$vm" ssh "findmnt -no FSROOT /; cat /proc/cmdline; systemctl is-active yos-watchdog.timer multi-user.target; journalctl -b -u yos-health -u yos-watchdog.timer -u yos-watchdog.service --no-pager -o cat | tail -n 10" || true
     if [ -n "${on_failure:-}" ]; then "$vm" ssh "$on_failure" || true; fi
     exit 1
 }
 
 # the vm's serial console, as vm.sh logs it on this side. reboots keep
 # writing to the same file.
-console=${VM_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/yoq-vm}/console.log
+console=${VM_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/yos-vm}/console.log
 
 # after a trial that shouldn't come up: the next boot runs generation $1
-# from its copy, and os took it on as the newest generation. the trial
+# from its copy, and yos took it on as the newest generation. the trial
 # has to have been tried, or a machine that never left the default would
 # pass too. by default the boot before this one is the trial's, whose
-# kernel logged its command line with the trial's root and yoq.trial. a
+# kernel logged its command line with the trial's root and yos.trial. a
 # trial that leaves no journal names its own proof in $2:
 # "console:<pattern>", for what the bootloader or a panicking kernel
 # printed, or "journal:<pattern>", for the boot before this one.
@@ -169,13 +169,13 @@ falls_back() {
     proof=${2:-}
     if [ -z "$proof" ]; then
         trial_root=$(newest_root)
-        proof="journal:Command line:.*subvol=/$trial_root[ ,].*yoq\\.trial"
+        proof="journal:Command line:.*subvol=/$trial_root[ ,].*yos\\.trial"
     fi
     mark=$(wc -c < "$console" 2>/dev/null || echo 0)
     "$vm" reboot || true
     wait_root "/@roots/boot-$1"
     settled
-    check "/usr/local/bin/os history | tail -n 1 | grep -c 'fell back from'" 1
+    check "/usr/local/bin/yos history | tail -n 1 | grep -c 'fell back from'" 1
     case $proof in
     console:*)
         # grep reads it all, not -q: an early exit would kill tail with
@@ -196,7 +196,7 @@ falls_back() {
 
 # the newest generation's number.
 newest() {
-    "$vm" ssh "ls /var/lib/yoq/generations | sort -n | tail -n 1 | cut -d. -f1"
+    "$vm" ssh "ls /var/lib/yos/generations | sort -n | tail -n 1 | cut -d. -f1"
 }
 
 # makes the next trial boot's initramfs garbage, so its kernel can't
@@ -207,11 +207,11 @@ newest() {
 # there, the trial entry points at a garbage file of its own.
 break_trial_boot() {
     case $VM_LOADER in
-    limine) "$vm" ssh "echo not an initramfs > $VM_ESP/yoq/boot/garbage.img && sed -i '/^\/yoq trial boot/,/cmdline/ s|module_path: boot():[^ ]*initramfs[^ ]*|module_path: boot():/yoq/boot/garbage.img|' $(menu_file) && grep -A5 '^/yoq trial boot' $(menu_file)" ;;
-    systemd-boot) "$vm" ssh "echo not an initramfs > $VM_ESP/yoq/boot/garbage.img && sed -i 's|^initrd .*initramfs.*|initrd /yoq/boot/garbage.img|' $VM_ESP/loader/entries/yoq-trial*.conf && cat $VM_ESP/loader/entries/yoq-trial*.conf" ;;
+    limine) "$vm" ssh "echo not an initramfs > $VM_ESP/yos/boot/garbage.img && sed -i '/^\/yos trial boot/,/cmdline/ s|module_path: boot():[^ ]*initramfs[^ ]*|module_path: boot():/yos/boot/garbage.img|' $(menu_file) && grep -A5 '^/yos trial boot' $(menu_file)" ;;
+    systemd-boot) "$vm" ssh "echo not an initramfs > $VM_ESP/yos/boot/garbage.img && sed -i 's|^initrd .*initramfs.*|initrd /yos/boot/garbage.img|' $VM_ESP/loader/entries/yos-trial*.conf && cat $VM_ESP/loader/entries/yos-trial*.conf" ;;
     *)
         staged=$(newest_root)
-        "$vm" ssh "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && echo not an initramfs > /run/yoq-top/$staged/boot/initramfs-linux.img; umount /run/yoq-top"
+        "$vm" ssh "mkdir -p /run/yos-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yos-top && echo not an initramfs > /run/yos-top/$staged/boot/initramfs-linux.img; umount /run/yos-top"
         ;;
     esac
 }
@@ -223,27 +223,27 @@ break_trial_boot() {
 # from the staged root's /boot; limine and systemd-boot get a path of
 # their own on the esp, so the fallback's copies stay whole.
 break_trial_kernel() {
-    esp_file=/yoq/boot/$1-kernel
+    esp_file=/yos/boot/$1-kernel
     case $VM_LOADER in
-    limine) "$vm" ssh "echo not a kernel > $VM_ESP/yoq/boot/garbage-kernel && sed -i '/^\/yoq trial boot/,/cmdline/ s|^    path: boot():.*|    path: boot():$esp_file|' $(menu_file) && grep -A5 '^/yoq trial boot' $(menu_file)" ;;
+    limine) "$vm" ssh "echo not a kernel > $VM_ESP/yos/boot/garbage-kernel && sed -i '/^\/yos trial boot/,/cmdline/ s|^    path: boot():.*|    path: boot():$esp_file|' $(menu_file) && grep -A5 '^/yos trial boot' $(menu_file)" ;;
     systemd-boot)
         if [ "$1" = foreign ]; then
             # the pe header's machine field, after "PE\0\0", says arm64.
-            "$vm" ssh "f=$VM_ESP$esp_file && cp $VM_ESP\$(sed -n 's|^linux ||p' $VM_ESP/loader/entries/yoq-trial*.conf) \$f && pe=\$(od -An -tu4 -j60 -N4 \$f | tr -d ' ') && printf '\\144\\252' | dd of=\$f bs=1 seek=\$((pe + 4)) conv=notrunc 2>/dev/null && od -An -tx2 -j\$((pe + 4)) -N2 \$f"
+            "$vm" ssh "f=$VM_ESP$esp_file && cp $VM_ESP\$(sed -n 's|^linux ||p' $VM_ESP/loader/entries/yos-trial*.conf) \$f && pe=\$(od -An -tu4 -j60 -N4 \$f | tr -d ' ') && printf '\\144\\252' | dd of=\$f bs=1 seek=\$((pe + 4)) conv=notrunc 2>/dev/null && od -An -tx2 -j\$((pe + 4)) -N2 \$f"
         else
-            "$vm" ssh "echo not a kernel > $VM_ESP/yoq/boot/garbage-kernel"
+            "$vm" ssh "echo not a kernel > $VM_ESP/yos/boot/garbage-kernel"
         fi
-        "$vm" ssh "sed -i 's|^linux .*|linux $esp_file|' $VM_ESP/loader/entries/yoq-trial*.conf && cat $VM_ESP/loader/entries/yoq-trial*.conf"
+        "$vm" ssh "sed -i 's|^linux .*|linux $esp_file|' $VM_ESP/loader/entries/yos-trial*.conf && cat $VM_ESP/loader/entries/yos-trial*.conf"
         ;;
     *)
         staged=$(newest_root)
-        if [ "$1" = missing ]; then breakage="mv /run/yoq-top/$staged/boot/vmlinuz-linux /run/yoq-top/$staged/boot/vmlinuz-linux.gone"; else breakage="echo not a kernel > /run/yoq-top/$staged/boot/vmlinuz-linux"; fi
-        "$vm" ssh "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && $breakage; umount /run/yoq-top"
+        if [ "$1" = missing ]; then breakage="mv /run/yos-top/$staged/boot/vmlinuz-linux /run/yos-top/$staged/boot/vmlinuz-linux.gone"; else breakage="echo not a kernel > /run/yos-top/$staged/boot/vmlinuz-linux"; fi
+        "$vm" ssh "mkdir -p /run/yos-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yos-top && $breakage; umount /run/yos-top"
         ;;
     esac
 }
 
-# makes the next trial boot hang before os's watchdog would ordinarily
+# makes the next trial boot hang before yos's watchdog would ordinarily
 # be there: the initramfs can't mount the root ($1 = root, the trial's
 # command line names a subvolume that isn't there), the root's fstab has
 # a mount that never comes ($1 = fstab, so it drops to an emergency
@@ -253,29 +253,29 @@ break_trial_early() {
         sub="s|subvol=/@roots/[0-9]*|subvol=/@roots/999|"
         case $VM_LOADER in
         grub) "$vm" ssh "sed -i '/--id head/,/^}/ $sub' $(menu_file) && sed -n '/--id head/,/^}/p' $(menu_file)" ;;
-        limine) "$vm" ssh "sed -i '/^\/yoq trial boot/,/cmdline/ $sub' $(menu_file) && grep -A5 '^/yoq trial boot' $(menu_file)" ;;
-        systemd-boot) "$vm" ssh "sed -i '/^options / $sub' $VM_ESP/loader/entries/yoq-trial*.conf && cat $VM_ESP/loader/entries/yoq-trial*.conf" ;;
-        refind) "$vm" ssh "sed -i '/menuentry \"yoq trial boot\"/,/^}/ $sub' $VM_ESP/EFI/yoq-trial/refind.conf && grep -A4 'menuentry \"yoq trial boot\"' $VM_ESP/EFI/yoq-trial/refind.conf" ;;
+        limine) "$vm" ssh "sed -i '/^\/yos trial boot/,/cmdline/ $sub' $(menu_file) && grep -A5 '^/yos trial boot' $(menu_file)" ;;
+        systemd-boot) "$vm" ssh "sed -i '/^options / $sub' $VM_ESP/loader/entries/yos-trial*.conf && cat $VM_ESP/loader/entries/yos-trial*.conf" ;;
+        refind) "$vm" ssh "sed -i '/menuentry \"yos trial boot\"/,/^}/ $sub' $VM_ESP/EFI/yos-trial/refind.conf && grep -A4 'menuentry \"yos trial boot\"' $VM_ESP/EFI/yos-trial/refind.conf" ;;
         esac
         return
     fi
     staged=$(newest_root)
     case $1 in
-    fstab) breakage="echo 'UUID=00000000-0000-4000-8000-000000000000 /mnt/yoq-missing ext4 defaults 0 2' >> /run/yoq-top/$staged/etc/fstab" ;;
-    sysinit) breakage="printf '[Unit]\\nDescription=hang before sysinit\\nDefaultDependencies=no\\nBefore=sysinit.target\\n[Service]\\nType=oneshot\\nTimeoutStartSec=infinity\\nExecStart=/usr/bin/sleep infinity\\n[Install]\\nWantedBy=sysinit.target\\n' > /run/yoq-top/$staged/etc/systemd/system/yoq-test-hang.service && mkdir -p /run/yoq-top/$staged/etc/systemd/system/sysinit.target.wants && ln -sf ../yoq-test-hang.service /run/yoq-top/$staged/etc/systemd/system/sysinit.target.wants/" ;;
+    fstab) breakage="echo 'UUID=00000000-0000-4000-8000-000000000000 /mnt/yos-missing ext4 defaults 0 2' >> /run/yos-top/$staged/etc/fstab" ;;
+    sysinit) breakage="printf '[Unit]\\nDescription=hang before sysinit\\nDefaultDependencies=no\\nBefore=sysinit.target\\n[Service]\\nType=oneshot\\nTimeoutStartSec=infinity\\nExecStart=/usr/bin/sleep infinity\\n[Install]\\nWantedBy=sysinit.target\\n' > /run/yos-top/$staged/etc/systemd/system/yos-test-hang.service && mkdir -p /run/yos-top/$staged/etc/systemd/system/sysinit.target.wants && ln -sf ../yos-test-hang.service /run/yos-top/$staged/etc/systemd/system/sysinit.target.wants/" ;;
     esac
-    "$vm" ssh "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && $breakage; umount /run/yoq-top"
+    "$vm" ssh "mkdir -p /run/yos-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yos-top && $breakage; umount /run/yos-top"
 }
 
 # the newest generation's root, like @roots/7.
 newest_root() {
     n=$(newest)
-    "$vm" ssh "sed -n 's/.*\"root\":\"\\([^\"]*\\)\".*/\\1/p' /var/lib/yoq/generations/$n.json"
+    "$vm" ssh "sed -n 's/.*\"root\":\"\\([^\"]*\\)\".*/\\1/p' /var/lib/yos/generations/$n.json"
 }
 
 # the number of the generation before the newest.
 second_newest() {
-    "$vm" ssh "ls /var/lib/yoq/generations | sort -n | tail -n 2 | head -n 1 | cut -d. -f1"
+    "$vm" ssh "ls /var/lib/yos/generations | sort -n | tail -n 2 | head -n 1 | cut -d. -f1"
 }
 
 # the running kernel is the root's own linux, and its modules are there.

@@ -3,7 +3,7 @@
 //! the old /usr/lib/modules/<release> away with the old package, and the
 //! kernel that's still running can't load anything new until the reboot,
 //! like a usb stick's driver. a copy goes back in its place, marked, and
-//! the first `os apply` after a reboot into another kernel removes it.
+//! the first `yos apply` after a reboot into another kernel removes it.
 
 const std = @import("std");
 const planner = @import("planner.zig");
@@ -13,9 +13,9 @@ const Allocator = std.mem.Allocator;
 
 const dir_rel = "usr/lib/modules";
 /// where the copy waits during the transaction.
-const backup_name = ".yoq-running";
-/// the file in a modules directory os put back, which no package owns.
-const marker = ".yoq-kept";
+const backup_name = ".yos-running";
+/// the file in a modules directory yos put back, which no package owns.
+const marker = ".yos-kept";
 
 /// the running kernel's release, as `uname -r` prints it.
 pub fn running(buf: *std.os.linux.utsname) []const u8 {
@@ -54,7 +54,7 @@ pub fn keep(a: Allocator, io: std.Io, root: []const u8, release: []const u8, cha
 }
 
 /// puts the copy back if the transaction took the running kernel's
-/// modules away, marked as os's, and removes the copy. when the package
+/// modules away, marked as yos's, and removes the copy. when the package
 /// still has them, as after reinstalling the same version, they stay
 /// the package's.
 pub fn restore(a: Allocator, io: std.Io, root: []const u8, k: Kept) !void {
@@ -71,7 +71,7 @@ pub fn restore(a: Allocator, io: std.Io, root: []const u8, k: Kept) !void {
     _ = try exec.run(a, io, &.{ "rm", "-rf", backup });
 }
 
-/// removes the modules os kept for kernels other than `release`, the
+/// removes the modules yos kept for kernels other than `release`, the
 /// running one.
 pub fn dropKept(a: Allocator, io: std.Io, root: []const u8, release: []const u8) !void {
     const path = try std.fs.path.join(a, &.{ root, dir_rel });

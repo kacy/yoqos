@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) void {
     const systemd = b.option(bool, "systemd", "link libsystemd for reading unit state") orelse false;
     options.addOption(bool, "systemd", systemd);
     root.addOptions("build_options", options);
-    // `os docs` prints these, as they were when this os was built.
+    // `yos docs` prints these, as they were when this yos was built.
     for ([_][]const u8{ "README.md", "docs/usage.md", "docs/generations.md" }) |doc| {
         root.addAnonymousImport(doc, .{ .root_source_file = b.path(doc) });
     }
@@ -33,13 +33,13 @@ pub fn build(b: *std.Build) void {
         root.linkSystemLibrary("systemd", .{ .use_pkg_config = .no });
     }
 
-    const exe = b.addExecutable(.{ .name = "os", .root_module = root });
+    const exe = b.addExecutable(.{ .name = "yos", .root_module = root });
     b.installArtifact(exe);
 
     const run = b.addRunArtifact(exe);
     run.step.dependOn(b.getInstallStep());
     if (b.args) |args| run.addArgs(args);
-    b.step("run", "run os").dependOn(&run.step);
+    b.step("run", "run yos").dependOn(&run.step);
 
     // `zig build test -Dfuzz --fuzz=<n> -Dtest-filter="fuzz toml"` runs one
     // fuzz test from src/fuzz.zig for n inputs; plain `--fuzz` runs until

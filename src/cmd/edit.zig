@@ -33,7 +33,7 @@ pub fn disableCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
 fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
     const usage_text = switch (op) {
-        inline else => |o| "os " ++ @tagName(o) ++ (if (o == .add or o == .remove) " [--aur] <package>..." else " <service>...") ++ " [--yes] [--no-apply]",
+        inline else => |o| "yos " ++ @tagName(o) ++ (if (o == .add or o == .remove) " [--aur] <package>..." else " <service>...") ++ " [--yes] [--no-apply]",
     };
     var then: Then = .{ .apply = true };
     var aur = false;
@@ -53,10 +53,10 @@ fn run(ctx: *Context, args: []const [:0]const u8, op: change.Op) !u8 {
 
 const Then = applying.Then;
 
-const adopt_usage = "os adopt [<package>...] | os adopt <path> [--yes] [--no-apply]";
+const adopt_usage = "yos adopt [<package>...] | yos adopt <path> [--yes] [--no-apply]";
 
-/// `os adopt [package...]`: puts packages installed outside the config into
-/// it, all of them or the ones named. `os adopt <path>` takes a file.
+/// `yos adopt [package...]`: puts packages installed outside the config into
+/// it, all of them or the ones named. `yos adopt <path>` takes a file.
 pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     for (args) |arg| {
         if (arg.len > 0 and arg[0] == '/') return adoptFile(ctx, args);
@@ -78,7 +78,7 @@ pub fn adoptCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const names = if (wanted.len > 0) wanted else extra;
     if (names.len == 0) {
         if (ctx.json) {
-            try output.writeDoc(ctx.out, "yoq.change/1", .{ .file = ctx.config_path, .changed = false, .notes = &[_]change.Note{} });
+            try output.writeDoc(ctx.out, "yos.change/1", .{ .file = ctx.config_path, .changed = false, .notes = &[_]change.Note{} });
         } else try ctx.out.writeAll("nothing to adopt: every installed package is in the config.\n");
         return 0;
     }
@@ -122,7 +122,7 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
     var locked: Relocked = .skipped;
     if (outcome.changed()) {
         if (!try cli.writeFile(ctx, top, outcome.text)) return 1;
-        if (!ctx.json) try ctx.out.print("\nsaved {s}.{s}\n", .{ top, if (build_first) " `os update` reviews and builds aur packages, and applies them." else "" });
+        if (!ctx.json) try ctx.out.print("\nsaved {s}.{s}\n", .{ top, if (build_first) " `yos update` reviews and builds aur packages, and applies them." else "" });
         // services and packages both change what's wanted. a change the
         // lock can't follow, like a package that doesn't exist, is taken
         // back: the config stays one that plans.
@@ -130,7 +130,7 @@ fn editConfig(ctx: *Context, op: change.Op, names: []const []const u8, then: The
         if (locked == .failed) return putBack(ctx, top, text);
         try cli.record(ctx, a, top, message);
     }
-    if (ctx.json) try output.writeDoc(ctx.out, "yoq.change/1", .{ .file = top, .changed = outcome.changed(), .notes = outcome.notes });
+    if (ctx.json) try output.writeDoc(ctx.out, "yos.change/1", .{ .file = top, .changed = outcome.changed(), .notes = outcome.notes });
     if (outcome.changed() and locked != .locked) return 0;
     if (!now) return 0;
     // a name already in the config applies too: the machine may be behind.
@@ -144,8 +144,8 @@ fn applyAfter(ctx: *Context, then: Then, message: []const u8) !u8 {
     return applying.recordGeneration(ctx, done, message);
 }
 
-/// `os adopt <path>`: copies a file from /etc next to the config and adds
-/// a `[files]` entry for it, so os keeps it as it is now.
+/// `yos adopt <path>`: copies a file from /etc next to the config and adds
+/// a `[files]` entry for it, so yos keeps it as it is now.
 fn adoptFile(ctx: *Context, args: []const [:0]const u8) !u8 {
     const usage_text = adopt_usage;
     var then: Then = .{ .apply = true };
@@ -181,12 +181,12 @@ fn adoptFile(ctx: *Context, args: []const [:0]const u8) !u8 {
     const message = try std.fmt.allocPrint(a, "adopt {s}", .{p});
     try cli.record(ctx, a, top, message);
     if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.change/1", .{ .file = top, .changed = true, .notes = &notes });
+        try output.writeDoc(ctx.out, "yos.change/1", .{ .file = top, .changed = true, .notes = &notes });
         return 0;
     }
     try ctx.out.print("+ files.\"{s}\"  (source {s}{s}{s})\n\nsaved {s}.\n", .{ p, source, if (mode != null) ", mode " else "", mode orelse "", top });
     // the file itself doesn't change. applying brings the rest of the
-    // machine along, as it does after `os add`.
+    // machine along, as it does after `yos add`.
     if (!then.applies(ctx)) return 0;
     return applyAfter(ctx, then, message);
 }
@@ -203,7 +203,7 @@ const Adoptable = struct { content: []const u8, mode: u32 };
 fn readAdoptable(ctx: *Context, a: std.mem.Allocator, path: []const u8) !?Adoptable {
     const linux = std.os.linux;
     const full = try a.dupeZ(u8, try cli.machinePath(ctx, a, path));
-    // nonblocking, so a fifo there can't hold os up.
+    // nonblocking, so a fifo there can't hold yos up.
     const opened = linux.open(full, .{ .ACCMODE = .RDONLY, .NOFOLLOW = true, .NONBLOCK = true, .CLOEXEC = true }, 0);
     const fd: linux.fd_t = switch (linux.errno(opened)) {
         .SUCCESS => @intCast(opened),
@@ -243,18 +243,18 @@ fn adoptFailed(ctx: *Context, path: []const u8, why: []const u8) !?Adoptable {
 /// the config loader reads sources up to this size.
 const max_adopt_bytes = 1 << 20;
 
-/// `os edit`: opens the config in $EDITOR, checks it once it's saved, and
-/// then saves, relocks, and applies it like `os add` does. a config that
+/// `yos edit`: opens the config in $EDITOR, checks it once it's saved, and
+/// then saves, relocks, and applies it like `yos add` does. a config that
 /// doesn't load can be edited again, or put back as it was.
 pub fn editCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os edit [--no-apply]";
+    const usage_text = "yos edit [--no-apply]";
     var then: Then = .{ .apply = true };
     var it: cli.ArgIter = .{ .args = args };
     while (it.next()) |arg| {
         if (!it.isFlag(arg) or !then.flag(arg)) return cli.usageError(ctx, usage_text);
     }
     if (!ctx.interactive) {
-        try ctx.err.writeAll("os: edit opens an editor, so it needs a terminal. edit the config yourself, then `os apply`.\n");
+        try ctx.err.writeAll("yos: edit opens an editor, so it needs a terminal. edit the config yourself, then `yos apply`.\n");
         return 2;
     }
     if (try cli.refused(ctx, cli.lockForEdit(ctx))) return 1;
@@ -321,7 +321,7 @@ const Relocked = enum { locked, skipped, failed };
 
 /// brings the lock in line with a changed config, using the
 /// databases cached for the lock's own date, so nothing else moves. with
-/// no cache for that date, it says to run `os update` instead. `next` says
+/// no cache for that date, it says to run `yos update` instead. `next` says
 /// what comes after, when applying doesn't follow.
 fn relock(ctx: *Context, top: []const u8, next: bool) !Relocked {
     var w: cli.Work = .init(ctx);
@@ -330,7 +330,7 @@ fn relock(ctx: *Context, top: []const u8, next: bool) !Relocked {
     // under --json, stdout has the change document; notes go beside it.
     const say = if (ctx.json) ctx.err else ctx.out;
     const old = try locking.readLock(ctx, a, top) orelse {
-        try say.writeAll("no machine.lock yet: `os update` resolves one.\n");
+        try say.writeAll("no machine.lock yet: `yos update` resolves one.\n");
         return .skipped;
     };
     if (!alpm.available) {
@@ -339,7 +339,7 @@ fn relock(ctx: *Context, top: []const u8, next: bool) !Relocked {
     }
     const loaded = try w.config() orelse return failed(&w);
     const dbs = try sync.cached(a, ctx.io, try locking.repos(ctx, a, &loaded.config), try locking.cacheDir(ctx, a), old.sync_date) orelse {
-        try say.print("no package databases cached for {s}: `os update` resolves against today's.\n", .{old.sync_date});
+        try say.print("no package databases cached for {s}: `yos update` resolves against today's.\n", .{old.sync_date});
         return .skipped;
     };
     var l = try locking.resolveLock(ctx, &w, &loaded.config, top, dbs, old.sync_date, &.{}) orelse return failed(&w);
@@ -363,8 +363,8 @@ const TestRun = cli.TestRun;
 test "add, remove, enable, and disable edit the config file" {
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/base.toml", "packages = [\"nano\", \"git\"]\n");
-    try t.fs.put("/etc/yoq/machine.toml",
+    try t.fs.put("/etc/yos/base.toml", "packages = [\"nano\", \"git\"]\n");
+    try t.fs.put("/etc/yos/machine.toml",
         \\# my laptop
         \\include = ["base.toml"]
         \\packages = ["git", "neovim"]  # editors
@@ -375,7 +375,7 @@ test "add, remove, enable, and disable edit the config file" {
     );
     try t.exec(&.{ "add", "ripgrep", "neovim" });
     try std.testing.expectEqual(0, t.code);
-    try std.testing.expect(std.mem.startsWith(u8, t.out.buffered(), "+ packages \"ripgrep\"\n  neovim is already set that way  (/etc/yoq/machine.toml:3)\n"));
+    try std.testing.expect(std.mem.startsWith(u8, t.out.buffered(), "+ packages \"ripgrep\"\n  neovim is already set that way  (/etc/yos/machine.toml:3)\n"));
 
     try t.exec(&.{ "remove", "nano", "git" });
     try std.testing.expectEqual(0, t.code);
@@ -397,17 +397,17 @@ test "add, remove, enable, and disable edit the config file" {
         \\[remove]
         \\packages = ["nano", "git"]
         \\
-    , t.fs.get("/etc/yoq/machine.toml").?);
+    , t.fs.get("/etc/yos/machine.toml").?);
 }
 
 test "change refuses what it can't do" {
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n[services]\nssh = true\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n[services]\nssh = true\n");
     try t.exec(&.{ "remove", "openssh" });
     try std.testing.expectEqual(1, t.code);
     try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "openssh comes from services.ssh") != null);
-    try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "run `os disable ssh`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "run `yos disable ssh`") != null);
 
     try t.exec(&.{ "remove", "vim" });
     try std.testing.expectEqual(1, t.code);
@@ -416,7 +416,7 @@ test "change refuses what it can't do" {
     try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "did you mean \"ssh\"?") != null);
     try t.exec(&.{"add"});
     try std.testing.expectEqual(2, t.code);
-    try std.testing.expectEqualStrings("packages = [\"git\"]\n[services]\nssh = true\n", t.fs.get("/etc/yoq/machine.toml").?);
+    try std.testing.expectEqualStrings("packages = [\"git\"]\n[services]\nssh = true\n", t.fs.get("/etc/yos/machine.toml").?);
 }
 
 test "edits update the lock from the cached databases" {
@@ -432,69 +432,69 @@ test "edits update the lock from the cached databases" {
 
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n");
     try t.exec(&.{ "--root", root, "update", "--dbs", cache, "--date", "2026-09-25" });
     try std.testing.expectEqual(0, t.code);
 
     try t.exec(&.{ "--root", root, "add", "neovim" });
     try std.testing.expectEqualStrings("", t.err.buffered());
-    try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: +3. next: os plan, then os apply\n"));
-    const locked = t.fs.get("/etc/yoq/machine.lock").?;
+    try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: +3. next: yos plan, then yos apply\n"));
+    const locked = t.fs.get("/etc/yos/machine.lock").?;
     try std.testing.expect(std.mem.indexOf(u8, locked, "[packages.luajit]") != null);
     try std.testing.expect(std.mem.indexOf(u8, locked, "sync_date = \"2026-09-25\"") != null);
 
     try t.exec(&.{ "--root", root, "remove", "git" });
-    try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: -5. next: os plan, then os apply\n"));
-    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "perl-error") == null);
+    try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: -5. next: yos plan, then yos apply\n"));
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yos/machine.lock").?, "perl-error") == null);
 
     // a service brings its package into the lock, and takes it out again.
     try t.exec(&.{ "--root", root, "enable", "ssh" });
-    try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: +2. next: os plan, then os apply\n"));
-    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.openssh]") != null);
+    try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: +2. next: yos plan, then yos apply\n"));
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yos/machine.lock").?, "[packages.openssh]") != null);
     try t.exec(&.{ "--root", root, "disable", "ssh" });
-    try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: -2. next: os plan, then os apply\n"));
+    try std.testing.expect(std.mem.endsWith(u8, t.out.buffered(), "updated machine.lock: -2. next: yos plan, then yos apply\n"));
 
     // a package that needs a provider picked, with no one to ask: the
     // choices are listed, and the config and lock stay as they were.
-    const config_was = try a.dupe(u8, t.fs.get("/etc/yoq/machine.toml").?);
-    const lock_was = try a.dupe(u8, t.fs.get("/etc/yoq/machine.lock").?);
+    const config_was = try a.dupe(u8, t.fs.get("/etc/yos/machine.toml").?);
+    const lock_was = try a.dupe(u8, t.fs.get("/etc/yos/machine.lock").?);
     const listed = "java-runtime has more than one provider: jre-openjdk, jre17-openjdk";
     try t.exec(&.{ "--root", root, "add", "jdk-tool" });
     try std.testing.expectEqual(1, t.code);
     try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0123]: " ++ listed));
     try t.exec(&.{ "--root", root, "--json", "add", "jdk-tool" });
     try std.testing.expectEqual(1, t.code);
-    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "\"schema\": \"yoq.errors/1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "\"schema\": \"yos.errors/1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "\"code\": \"E0123\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), listed) != null);
-    try std.testing.expectEqualStrings(config_was, t.fs.get("/etc/yoq/machine.toml").?);
-    try std.testing.expectEqualStrings(lock_was, t.fs.get("/etc/yoq/machine.lock").?);
+    try std.testing.expectEqualStrings(config_was, t.fs.get("/etc/yos/machine.toml").?);
+    try std.testing.expectEqualStrings(lock_was, t.fs.get("/etc/yos/machine.lock").?);
 }
 
 test "adopt puts extra packages into the config" {
     var t: TestRun = .{};
     defer t.deinit();
     const h = "a" ** 64;
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
-    try t.fs.put("/etc/yoq/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n" ++
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n");
+    try t.fs.put("/etc/yos/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n" ++
         "[packages.git]\nversion = \"1\"\nrepo = \"extra\"\nsha256 = \"" ++ h ++ "\"\n" ++
         "[packages.linux]\nversion = \"1\"\nrepo = \"core\"\nsha256 = \"" ++ h ++ "\"\n");
     try t.fs.put("f.json",
-        \\{"schema":"yoq.facts/1","packages":[
+        \\{"schema":"yos.facts/1","packages":[
         \\ {"name":"git","version":"1"},{"name":"linux","version":"1"},
         \\ {"name":"htop","version":"3.4-1"},{"name":"btop","version":"1.4-1"},
         \\ {"name":"ncurses","version":"6.5","reason":"dependency"}]}
     );
     try t.exec(&.{ "--facts", "f.json", "adopt", "nano" });
     try std.testing.expectEqual(1, t.code);
-    try std.testing.expectEqualStrings("os: nano isn't installed outside the config\n", t.err.buffered());
+    try std.testing.expectEqualStrings("yos: nano isn't installed outside the config\n", t.err.buffered());
 
     try t.exec(&.{ "--facts", "f.json", "adopt", "htop" });
     try std.testing.expectEqual(0, t.code);
-    try std.testing.expectEqualStrings("packages = [\"git\", \"htop\"]\n", t.fs.get("/etc/yoq/machine.toml").?);
+    try std.testing.expectEqualStrings("packages = [\"git\", \"htop\"]\n", t.fs.get("/etc/yos/machine.toml").?);
 
     try t.exec(&.{ "--facts", "f.json", "adopt" });
-    try std.testing.expectEqualStrings("packages = [\"git\", \"htop\", \"btop\"]\n", t.fs.get("/etc/yoq/machine.toml").?);
+    try std.testing.expectEqualStrings("packages = [\"git\", \"htop\", \"btop\"]\n", t.fs.get("/etc/yos/machine.toml").?);
 }
 
 test "adopt takes a file from /etc into the config" {
@@ -511,11 +511,11 @@ test "adopt takes a file from /etc into the config" {
 
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "# laptop\npackages = [\"git\"]\n");
+    try t.fs.put("/etc/yos/machine.toml", "# laptop\npackages = [\"git\"]\n");
     try t.exec(&.{ "--root", root, "adopt", "/etc/ssh/sshd_config" });
     try std.testing.expectEqual(0, t.code);
-    try std.testing.expectEqualStrings("+ files.\"/etc/ssh/sshd_config\"  (source files/etc/ssh/sshd_config)\n\nsaved /etc/yoq/machine.toml.\n", t.out.buffered());
-    try std.testing.expectEqualStrings("PasswordAuthentication no\n", t.fs.get("/etc/yoq/files/etc/ssh/sshd_config").?);
+    try std.testing.expectEqualStrings("+ files.\"/etc/ssh/sshd_config\"  (source files/etc/ssh/sshd_config)\n\nsaved /etc/yos/machine.toml.\n", t.out.buffered());
+    try std.testing.expectEqualStrings("PasswordAuthentication no\n", t.fs.get("/etc/yos/files/etc/ssh/sshd_config").?);
     try std.testing.expectEqualStrings(
         \\# laptop
         \\packages = ["git"]
@@ -523,12 +523,12 @@ test "adopt takes a file from /etc into the config" {
         \\[files."/etc/ssh/sshd_config"]
         \\source = "files/etc/ssh/sshd_config"
         \\
-    , t.fs.get("/etc/yoq/machine.toml").?);
+    , t.fs.get("/etc/yos/machine.toml").?);
     try std.testing.expectEqualStrings("adopt /etc/ssh/sshd_config", t.recorder.messages.items[0]);
 
     try t.exec(&.{ "--root", root, "adopt", "/etc/ssh/sshd_config" });
     try std.testing.expectEqual(1, t.code);
-    try std.testing.expectEqualStrings("os: can't adopt /etc/ssh/sshd_config: os writes it already, for files.\"/etc/ssh/sshd_config\"\n", t.err.buffered());
+    try std.testing.expectEqualStrings("yos: can't adopt /etc/ssh/sshd_config: yos writes it already, for files.\"/etc/ssh/sshd_config\"\n", t.err.buffered());
     try t.exec(&.{ "--root", root, "adopt", "/etc/hosts" });
     try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "may hold secrets") != null);
     try t.exec(&.{ "--root", root, "adopt", "/etc/hosts.link" });
@@ -554,7 +554,7 @@ test "adopt takes a file from /etc into the config" {
 test "empty and flag-like names are usage errors, not crashes" {
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "packages = []\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = []\n");
     try t.exec(&.{ "add", "" });
     try std.testing.expect(t.code != 0);
     try t.exec(&.{ "why", "" });
@@ -570,10 +570,10 @@ test "empty and flag-like names are usage errors, not crashes" {
 test "add --aur puts a package in the aur list and leaves building to update" {
     var t: cli.TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "version = 1\npackages = [\"git\"]\n");
+    try t.fs.put("/etc/yos/machine.toml", "version = 1\npackages = [\"git\"]\n");
     try t.exec(&.{ "add", "--aur", "yay-bin" });
     try std.testing.expectEqual(0, t.code);
-    try std.testing.expectEqualStrings("version = 1\naur = [\"yay-bin\"]\npackages = [\"git\"]\n", t.fs.map.get("/etc/yoq/machine.toml").?);
+    try std.testing.expectEqualStrings("version = 1\naur = [\"yay-bin\"]\npackages = [\"git\"]\n", t.fs.map.get("/etc/yos/machine.toml").?);
     try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "+ aur \"yay-bin\"") != null);
     try std.testing.expectEqualStrings("add yay-bin (aur)", t.recorder.messages.items[0]);
 

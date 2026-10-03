@@ -1,7 +1,7 @@
-//! what os did, and what pacman did outside it, as `os events` prints it:
-//! one `yoq.event/1` json document a line. there's no store of its own.
-//! the events come from the two logs os keeps anyway: the journal, which
-//! has applies and os's other changes, and the drift log of pacman runs.
+//! what yos did, and what pacman did outside it, as `yos events` prints it:
+//! one `yos.event/1` json document a line. there's no store of its own.
+//! the events come from the two logs yos keeps anyway: the journal, which
+//! has applies and yos's other changes, and the drift log of pacman runs.
 
 const std = @import("std");
 const facts = @import("facts.zig");
@@ -12,29 +12,29 @@ const lock = @import("lock.zig");
 const status = @import("status.zig");
 const Allocator = std.mem.Allocator;
 
-pub const schema = "yoq.event/1";
+pub const schema = "yos.event/1";
 
 pub const Kind = enum {
     /// an apply began, finished, or failed.
     apply,
-    /// os committed the config.
+    /// yos committed the config.
     commit,
     /// a new generation was recorded.
     generation,
-    /// `os rollback` went back to an earlier generation.
+    /// `yos rollback` went back to an earlier generation.
     rollback,
     /// a generation on trial was set up for the next boot, came up
     /// healthy, or didn't.
     trial,
-    /// pacman ran outside os.
+    /// pacman ran outside yos.
     pacman,
-    /// old generations were removed, by `os gc` or after an apply.
+    /// old generations were removed, by `yos gc` or after an apply.
     gc,
-    /// `os pin` pinned a generation, or stopped keeping it.
+    /// `yos pin` pinned a generation, or stopped keeping it.
     pin,
-    /// `os enable-rollback` set up generation 1.
+    /// `yos enable-rollback` set up generation 1.
     @"enable-rollback",
-    /// `os install` put this machine on its disk, as generation 1.
+    /// `yos install` put this machine on its disk, as generation 1.
     install,
 };
 
@@ -52,7 +52,7 @@ pub const Event = struct {
     plan: ?[]const u8 = null,
     /// generation, trial, rollback, pin, enable-rollback, and install: the
     /// generation's number. without generations, a rollback's is the config
-    /// commit's, as `os history` numbers them.
+    /// commit's, as `yos history` numbers them.
     generation: ?u32 = null,
     /// commit: its message. generation: what made it. install: the host.
     message: ?[]const u8 = null,
@@ -162,10 +162,10 @@ fn merge(a: Allocator, x: []const Event, y: []const Event) ![]Event {
     return out;
 }
 
-/// whether the journal under `root` says os armed a trial of generation
+/// whether the journal under `root` says yos armed a trial of generation
 /// `n` and nothing has happened to trials or generations since: its last
 /// trial or generation event is that trial's `armed`. before 0.1.4, that
-/// event was all os noted of a grub trial.
+/// event was all yos noted of a grub trial.
 pub fn armedLast(a: Allocator, io: std.Io, root: []const u8, n: u32) !bool {
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
     var last: ?Event = null;
@@ -226,7 +226,7 @@ test "an event goes out as one line, without its empty fields, and comes back" {
     const a = arena.allocator();
     const line = try encoded(a, .{ .time = 5, .kind = .trial, .step = .armed, .generation = 4 });
     try testing.expectEqualStrings(
-        \\{"schema":"yoq.event/1","time":5,"kind":"trial","step":"armed","generation":4}
+        \\{"schema":"yos.event/1","time":5,"kind":"trial","step":"armed","generation":4}
         \\
     , line);
     const back = decode(a, line[0 .. line.len - 1]).?;
@@ -242,19 +242,19 @@ test "the newer kinds go out with their own fields" {
     const a = arena.allocator();
     const cases = [_]struct { e: Event, line: []const u8 }{
         .{ .e = .{ .time = 1, .kind = .gc, .generations = &.{ 2, 3 } }, .line =
-        \\{"schema":"yoq.event/1","time":1,"kind":"gc","generations":[2,3]}
+        \\{"schema":"yos.event/1","time":1,"kind":"gc","generations":[2,3]}
         },
         .{ .e = .{ .time = 2, .kind = .pin, .step = .pinned, .generation = 4 }, .line =
-        \\{"schema":"yoq.event/1","time":2,"kind":"pin","step":"pinned","generation":4}
+        \\{"schema":"yos.event/1","time":2,"kind":"pin","step":"pinned","generation":4}
         },
         .{ .e = .{ .time = 3, .kind = .pin, .step = .unpinned, .generation = 4 }, .line =
-        \\{"schema":"yoq.event/1","time":3,"kind":"pin","step":"unpinned","generation":4}
+        \\{"schema":"yos.event/1","time":3,"kind":"pin","step":"unpinned","generation":4}
         },
         .{ .e = .{ .time = 4, .kind = .@"enable-rollback", .step = .done, .generation = 1 }, .line =
-        \\{"schema":"yoq.event/1","time":4,"kind":"enable-rollback","step":"done","generation":1}
+        \\{"schema":"yos.event/1","time":4,"kind":"enable-rollback","step":"done","generation":1}
         },
         .{ .e = .{ .time = 5, .kind = .install, .generation = 1, .message = "atlas" }, .line =
-        \\{"schema":"yoq.event/1","time":5,"kind":"install","generation":1,"message":"atlas"}
+        \\{"schema":"yos.event/1","time":5,"kind":"install","generation":1,"message":"atlas"}
         },
     };
     for (cases) |c| {
@@ -282,7 +282,7 @@ test "an event recorded under a /var of its own is in that /var's journal" {
     try testing.expectEqual(.@"enable-rollback", got[0].kind);
 }
 
-test "a trial armed last, as os before 0.1.4 noted a grub trial" {
+test "a trial armed last, as yos before 0.1.4 noted a grub trial" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
@@ -291,10 +291,10 @@ test "a trial armed last, as os before 0.1.4 noted a grub trial" {
     const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     try testing.expect(!try armedLast(a, testing.io, root, 4));
     // a line as 0.1.3 wrote it.
-    try tmp.dir.createDirPath(testing.io, "var/lib/yoq");
+    try tmp.dir.createDirPath(testing.io, "var/lib/yos");
     try tmp.dir.writeFile(testing.io, .{ .sub_path = journal.path, .data =
-        \\{"schema":"yoq.event/1","time":1,"kind":"generation","generation":4,"message":"add amd-ucode"}
-        \\{"schema":"yoq.event/1","time":2,"kind":"trial","step":"armed","generation":4}
+        \\{"schema":"yos.event/1","time":1,"kind":"generation","generation":4,"message":"add amd-ucode"}
+        \\{"schema":"yos.event/1","time":2,"kind":"trial","step":"armed","generation":4}
         \\{"time":3,"event":"done","plan":"abc"}
         \\
     });
@@ -317,7 +317,7 @@ test "the journal's apply lines and the drift log's lines are events too" {
     try testing.expectEqual(.done, apply.step.?);
     try testing.expectEqualStrings("abc", apply.plan.?);
     try testing.expectEqualStrings(
-        \\{"schema":"yoq.event/1","time":1,"kind":"apply","step":"done","plan":"abc"}
+        \\{"schema":"yos.event/1","time":1,"kind":"apply","step":"done","plan":"abc"}
         \\
     , try encoded(a, apply));
 

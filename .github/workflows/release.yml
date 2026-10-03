@@ -15,10 +15,10 @@ permissions:
 # connections. these give it others to fall back to.
 env:
   MIRRORLIST: |
-    Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
-    Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch
-    Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
-    Server = https://mirrors.mit.edu/archlinux/$repo/os/$arch
+    Server = https://geo.mirror.pkgbuild.com/$repo/yos/$arch
+    Server = https://mirrors.kernel.org/archlinux/$repo/yos/$arch
+    Server = https://mirror.rackspace.com/archlinux/$repo/yos/$arch
+    Server = https://mirrors.mit.edu/archlinux/$repo/yos/$arch
 
 jobs:
   release:
@@ -51,18 +51,18 @@ jobs:
       - name: build the release binary
         run: zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline --prefix out
       - name: the binary says its version
-        run: '[ "$(out/bin/os version)" = "os ${{ steps.version.outputs.version }}" ]'
+        run: '[ "$(out/bin/yos version)" = "yos ${{ steps.version.outputs.version }}" ]'
       - name: a tarball, laid out like /usr
         run: |
-          dir=yoq-os-${{ steps.version.outputs.version }}-x86_64
-          install -Dm755 out/bin/os "$dir/bin/os"
-          install -Dm644 dist/yoq-drift.hook "$dir/share/libalpm/hooks/yoq-drift.hook"
-          install -Dm644 -t "$dir/share/yoq/profiles" dist/profiles/*.toml
-          install -Dm644 -t "$dir/share/doc/yoq-os" README.md CHANGELOG.md docs/*.md
+          dir=yos-${{ steps.version.outputs.version }}-x86_64
+          install -Dm755 out/bin/yos "$dir/bin/yos"
+          install -Dm644 dist/yos-drift.hook "$dir/share/libalpm/hooks/yos-drift.hook"
+          install -Dm644 -t "$dir/share/yos/profiles" dist/profiles/*.toml
+          install -Dm644 -t "$dir/share/doc/yos" README.md CHANGELOG.md docs/*.md
           dist/man.sh man
-          install -Dm644 man/os.1 "$dir/share/man/man1/os.1"
-          install -Dm644 man/os-generations.7 "$dir/share/man/man7/os-generations.7"
-          install -Dm644 LICENSE "$dir/share/licenses/yoq-os/LICENSE"
+          install -Dm644 man/yos.1 "$dir/share/man/man1/yos.1"
+          install -Dm644 man/yos-generations.7 "$dir/share/man/man7/yos-generations.7"
+          install -Dm644 LICENSE "$dir/share/licenses/yos/LICENSE"
           tar -czf "$dir.tar.gz" "$dir"
       - name: the arch package
         run: |
@@ -70,14 +70,14 @@ jobs:
           install -d -o builder /home/builder/pkg
           install -m644 -o builder dist/PKGBUILD /home/builder/pkg/PKGBUILD
           git config --system --add safe.directory '*'
-          su builder -c "cd ~/pkg && YOQ_SOURCE=file://$GITHUB_WORKSPACE YOQ_VERSION=${{ steps.version.outputs.version }} makepkg --noconfirm"
-          cp /home/builder/pkg/yoq-os-*.pkg.tar.zst .
-          pacman -U --noconfirm yoq-os-*.pkg.tar.zst
-          [ "$(os version)" = "os ${{ steps.version.outputs.version }}" ]
+          su builder -c "cd ~/pkg && YOS_SOURCE=file://$GITHUB_WORKSPACE YOS_VERSION=${{ steps.version.outputs.version }} makepkg --noconfirm"
+          cp /home/builder/pkg/yos-*.pkg.tar.zst .
+          pacman -U --noconfirm yos-*.pkg.tar.zst
+          [ "$(yos version)" = "yos ${{ steps.version.outputs.version }}" ]
       - name: the live iso
         run: |
-          dist/iso/build.sh out/bin/os iso
-          mv iso/yoq-os-*.iso yoq-os-${{ steps.version.outputs.version }}-x86_64.iso
+          dist/iso/build.sh out/bin/yos iso
+          mv iso/yos-*.iso yos-${{ steps.version.outputs.version }}-x86_64.iso
       - name: notes from the changelog
         run: |
           awk -v v="## ${{ steps.version.outputs.version }}" '$0 == v { on = 1; next } /^## / { on = 0 } on' CHANGELOG.md > notes.md
@@ -87,6 +87,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          sha256sum yoq-os-*.tar.gz yoq-os-*.pkg.tar.zst yoq-os-*.iso > sha256sums.txt
+          sha256sum yos-*.tar.gz yos-*.pkg.tar.zst yos-*.iso > sha256sums.txt
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "${{ steps.version.outputs.version }}" --notes-file notes.md \
-            yoq-os-*.tar.gz yoq-os-*.pkg.tar.zst yoq-os-*.iso sha256sums.txt
+            yos-*.tar.gz yos-*.pkg.tar.zst yos-*.iso sha256sums.txt

@@ -1,4 +1,4 @@
-//! `os history` and `os rollback`. on a machine with generations they're
+//! `yos history` and `yos rollback`. on a machine with generations they're
 //! about generations: a rollback starts a new one from an older one's
 //! record, and the next boot runs it. without generations they're about
 //! the config's git history: a rollback applies an older config and lock,
@@ -21,14 +21,14 @@ const news = @import("../news.zig");
 const Context = cli.Context;
 
 pub fn historyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (try cli.noArgs(ctx, args, "os history")) |code| return code;
+    if (try cli.noArgs(ctx, args, "yos history")) |code| return code;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     if (try w.generations()) |boot| return listGenerations(ctx, w.allocator(), boot);
     // the config needn't load: history is how to find a good one.
     const entries = try logOf(ctx, w.allocator(), ctx.config_path) orelse return 1;
     if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.history/1", .{ .entries = entries });
+        try output.writeDoc(ctx.out, "yos.history/1", .{ .entries = entries });
         return 0;
     }
     for (entries, 1..) |e, i| {
@@ -38,7 +38,7 @@ pub fn historyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os rollback [n | --to-booted] [--yes]";
+    const usage_text = "yos rollback [n | --to-booted] [--yes]";
     var yes = false;
     var to_booted = false;
     var wanted: ?u32 = null;
@@ -60,7 +60,7 @@ pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer w.deinit();
     const a = w.allocator();
     if (try w.generations()) |boot| return rollbackGeneration(ctx, a, boot, wanted, to_booted, yes);
-    if (to_booted) return cli.fail(ctx, "--to-booted keeps an older generation booted from the menu. this machine has no generations; `os enable-rollback` turns them on.", .{});
+    if (to_booted) return cli.fail(ctx, "--to-booted keeps an older generation booted from the menu. this machine has no generations; `yos enable-rollback` turns them on.", .{});
     // the config needn't load: going back is how to fix one that doesn't.
     const top = ctx.config_path;
     const dir = std.fs.path.dirnamePosix(top) orelse ".";
@@ -81,7 +81,7 @@ pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
     // stage that generation's files, and apply them from there. the config
     // directory changes only once the machine has.
-    const staging = try cli.machinePath(ctx, a, "/var/lib/yoq/rollback");
+    const staging = try cli.machinePath(ctx, a, "/var/lib/yos/rollback");
     for (files) |f| {
         if (!try cli.writeFile(ctx, try std.fs.path.join(a, &.{ staging, f.path }), f.bytes)) return 1;
     }
@@ -102,7 +102,7 @@ pub fn rollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 fn listGenerations(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot) !u8 {
     const records = try gens.readRecords(a, ctx.io, "/var");
     if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.history/1", .{ .generations = records, .running = boot.root_subvol });
+        try output.writeDoc(ctx.out, "yos.history/1", .{ .generations = records, .running = boot.root_subvol });
         return 0;
     }
     // the running root may be shared by several records; the newest of
@@ -121,7 +121,7 @@ fn listGenerations(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot) !u8 {
 /// that's running, and puts it first in the boot menu.
 fn rollbackGeneration(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, wanted: ?u32, to_booted: bool, yes: bool) !u8 {
     const records = try gens.readRecords(a, ctx.io, "/var");
-    if (records.len == 0) return cli.fail(ctx, "no generations are recorded in /var/lib/yoq/generations.", .{});
+    if (records.len == 0) return cli.fail(ctx, "no generations are recorded in /var/lib/yos/generations.", .{});
     const newest = records[records.len - 1];
     const n: u32 = if (to_booted)
         generation.bootCopyOf(boot.root_subvol.?) orelse
@@ -137,7 +137,7 @@ fn rollbackGeneration(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, wan
     var left: std.ArrayList([]const u8) = .empty;
     const m = try openWayBack(ctx, a, boot, &left) orelse return 1;
     defer m.close();
-    if (secureBootWarning(m.loader, boot.secure_boot, try m.bootsImage(source))) |w| try ctx.err.print("os: {s}\n", .{w});
+    if (secureBootWarning(m.loader, boot.secure_boot, try m.bootsImage(source))) |w| try ctx.err.print("yos: {s}\n", .{w});
     if (try cli.approve(ctx, yes, "roll back", "roll back?")) |code| return code;
     const made = try startFrom(ctx, a, &m, boot, target, source, reason) orelse return 1;
     try warnUnsigned(ctx, a, left.items);
@@ -158,14 +158,14 @@ pub fn openWayBack(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, left: 
 /// warns about files a way back left without a signature, if any.
 pub fn warnUnsigned(ctx: *Context, a: std.mem.Allocator, left: []const []const u8) !void {
     if (left.len == 0) return;
-    try ctx.err.print("os: warning: {s}\n", .{try secureboot.unsignedWarning(a, left)});
+    try ctx.err.print("yos: warning: {s}\n", .{try secureboot.unsignedWarning(a, left)});
 }
 
 /// what to say before rolling back to a generation that boots its kernel
 /// and initramfs files, from before `[boot] uki`, while the firmware
 /// enforces secure boot: those have no signature, so it won't start.
 /// limine loads a kernel itself, without the firmware's check, as long
-/// as its config's checksum isn't enrolled, which os's edits rule out.
+/// as its config's checksum isn't enrolled, which yos's edits rule out.
 fn secureBootWarning(loader: menu.Loader, enforced: ?bool, boots_image: bool) ?[]const u8 {
     if (loader == .limine or boots_image or !(enforced orelse false)) return null;
     return "that generation is from before [boot] uki, and boots a kernel without a signature, which the firmware refuses while it enforces secure boot. turn secure boot off in the firmware setup before the next boot.";
@@ -179,13 +179,13 @@ pub fn startFrom(ctx: *Context, a: std.mem.Allocator, m: *const gens.Machine, bo
     var made: u32 = 0;
     var later: ?[]const u8 = null;
     if (try m.start(source, .{ .reason = reason, .time = std.Io.Timestamp.now(ctx.io, .real).toSeconds(), .config = config }, &made, &later)) |w| {
-        try ctx.err.print("os: {s}\n", .{w});
+        try ctx.err.print("yos: {s}\n", .{w});
         return null;
     }
-    if (later) |w| try ctx.err.print("os: generation {d}'s boot files don't fit on the esp, so nothing was copied there, and it boots the kernel in its own root until they do. {s}. the first good boot once there's room puts them there.\n", .{ made, w });
+    if (later) |w| try ctx.err.print("yos: generation {d}'s boot files don't fit on the esp, so nothing was copied there, and it boots the kernel in its own root until they do. {s}. the first good boot once there's room puts them there.\n", .{ made, w });
     try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .generation, .generation = made, .message = reason });
     // a trial still waiting is overtaken: the next boot runs this.
-    if (trial.Store.of(a, ctx.io, boot)) |store| if (try store.end()) |w| try ctx.err.print("os: couldn't end the pending trial: {s}\n", .{w});
+    if (trial.Store.of(a, ctx.io, boot)) |store| if (try store.end()) |w| try ctx.err.print("yos: couldn't end the pending trial: {s}\n", .{w});
     if (config) |c| {
         if (!try restoreConfig(ctx, a, c, try restoreMessage(a, reason, made))) return null;
     }
@@ -194,12 +194,12 @@ pub fn startFrom(ctx: *Context, a: std.mem.Allocator, m: *const gens.Machine, bo
     return made;
 }
 
-/// `os carry`, run by yoq-carry.service as the machine shuts down: a
+/// `yos carry`, run by yos-carry.service as the machine shuts down: a
 /// generation waiting for this reboot gets the running machine's
 /// passwords, host keys, and the rest of its state once more, so a
-/// password changed after `os rollback` isn't left behind.
+/// password changed after `yos rollback` isn't left behind.
 pub fn carryCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (try cli.noArgs(ctx, args, "os carry")) |code| return code;
+    if (try cli.noArgs(ctx, args, "yos carry")) |code| return code;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
@@ -210,7 +210,7 @@ pub fn carryCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const t = if (store) |s| try s.current() else null;
     const untried = if (t) |tr| !tr.tried else false;
     if (next == null and !untried) return 0;
-    // an os still changing the machine as it shuts down could be removing
+    // a yos still changing the machine as it shuts down could be removing
     // that root; the carry made when it was started stands then.
     if (try cli.refused(ctx, cli.lockForEdit(ctx))) return 1;
     const m = try cli.openMachine(ctx, a, boot) orelse return 1;
@@ -236,9 +236,9 @@ fn waitingRoot(ctx: *Context, a: std.mem.Allocator, running: []const u8) !?[]con
     return if (std.mem.eql(u8, root, running)) null else root;
 }
 
-/// `os gc [--keep n]`: removes old generations now.
+/// `yos gc [--keep n]`: removes old generations now.
 pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os gc [--keep n]";
+    const usage_text = "yos gc [--keep n]";
     var keep: usize = generation.default_keep;
     var it: cli.ArgIter = .{ .args = args };
     while (it.next()) |arg| {
@@ -262,7 +262,7 @@ pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var removed: std.ArrayList(u32) = .empty;
     if (try m.collect(keep, &removed)) |problem| return cli.fail(ctx, "{s}", .{problem});
     // the menu is written again even with nothing to remove: a menu
-    // another tool dropped os's entries from gets them back, with secure
+    // another tool dropped yos's entries from gets them back, with secure
     // boot, images left unsigned, like ones from before sbctl had keys,
     // get signed, and copies on the esp of boot files changed by hand,
     // like with mkinitcpio, are made again.
@@ -288,10 +288,10 @@ pub fn gcCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     return 0;
 }
 
-/// `os pin <n>` and `os pin --remove <n>`: keep a generation through
+/// `yos pin <n>` and `yos pin --remove <n>`: keep a generation through
 /// garbage collection, or stop keeping it.
 pub fn pinCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os pin [--remove] <n>";
+    const usage_text = "yos pin [--remove] <n>";
     var pin = true;
     var wanted: ?u32 = null;
     var it: cli.ArgIter = .{ .args = args };
@@ -351,7 +351,7 @@ pub fn unrestored(a: std.mem.Allocator, newest: generation.Record, running: []co
 
 /// at boot: puts back the config of the generation this machine runs, if
 /// the way back that made it was cut off before it could (see
-/// `unrestored`). `os apply` refuses until that boot, so nothing applies
+/// `unrestored`). `yos apply` refuses until that boot, so nothing applies
 /// the newer config to it first.
 pub fn finishRestore(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot) !void {
     const records = try gens.readRecords(a, ctx.io, "/var");
@@ -380,7 +380,7 @@ fn finishRestoreOf(ctx: *Context, a: std.mem.Allocator, newest: generation.Recor
 fn restoreConfig(ctx: *Context, a: std.mem.Allocator, c: generation.Config, message: []const u8) !bool {
     var why: []const u8 = "";
     const files = try ctx.history.files(a, c.dir, c.rev, &why) orelse {
-        try ctx.err.print("os: the new generation is ready, but {s} couldn't go back with it: {s}\n", .{ c.dir, why });
+        try ctx.err.print("yos: the new generation is ready, but {s} couldn't go back with it: {s}\n", .{ c.dir, why });
         return false;
     };
     for (files) |f| {
@@ -394,11 +394,11 @@ fn logOf(ctx: *Context, a: std.mem.Allocator, top: []const u8) !?[]const history
     const dir = std.fs.path.dirnamePosix(top) orelse ".";
     var why: []const u8 = "";
     const entries = try ctx.history.log(a, dir, &why) orelse {
-        try ctx.err.print("os: can't read the history of {s}: {s}\n", .{ dir, why });
+        try ctx.err.print("yos: can't read the history of {s}: {s}\n", .{ dir, why });
         return null;
     };
     if (entries.len == 0) {
-        try ctx.err.print("os: {s} has no history yet. os records one with every change it makes.\n", .{dir});
+        try ctx.err.print("yos: {s} has no history yet. yos records one with every change it makes.\n", .{dir});
         return null;
     }
     return entries;
@@ -424,28 +424,28 @@ test "a rollback cut off before its config went back finishes at the next boot" 
     const a = arena.allocator();
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n");
     try t.exec(&.{ "add", "--no-apply", "ripgrep" });
     try t.exec(&.{ "add", "--no-apply", "fd" });
     // generation 3 is generation 1 again, and its config never came back.
-    const back: generation.Record = .{ .n = 3, .time = 0, .root = "@roots/3", .reason = "rollback to 1: add ripgrep", .config_dir = "/etc/yoq", .config_rev = "1" };
+    const back: generation.Record = .{ .n = 3, .time = 0, .root = "@roots/3", .reason = "rollback to 1: add ripgrep", .config_dir = "/etc/yos", .config_rev = "1" };
     try finishRestoreOf(&t.ctx, a, back, "/@roots/3");
-    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.toml").?, "fd") == null);
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yos/machine.toml").?, "fd") == null);
     try std.testing.expectEqualStrings("rollback to 1: add ripgrep (generation 3)", t.recorder.messages.items[2]);
     // done once; edits made after it stay.
     try t.exec(&.{ "add", "--no-apply", "tree" });
     try finishRestoreOf(&t.ctx, a, back, "/@roots/3");
-    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.toml").?, "tree") != null);
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yos/machine.toml").?, "tree") != null);
     try std.testing.expectEqual(4, t.recorder.messages.items.len);
     // a generation an apply made, one booted from a copy, and a rollback
-    // from an older os, whose commit has the reason alone, are left be.
+    // from an older yos, whose commit has the reason alone, are left be.
     var log = [_]history.Entry{.{ .n = 1, .rev = "1", .message = "rollback to 1: add ripgrep" }};
     try std.testing.expectEqual(null, try unrestored(a, back, "/@roots/3", &log));
-    try std.testing.expectEqual(null, try unrestored(a, .{ .n = 3, .time = 0, .root = "@roots/3", .reason = "add fd", .config_dir = "/etc/yoq", .config_rev = "2" }, "/@roots/3", &.{}));
+    try std.testing.expectEqual(null, try unrestored(a, .{ .n = 3, .time = 0, .root = "@roots/3", .reason = "add fd", .config_dir = "/etc/yos", .config_rev = "2" }, "/@roots/3", &.{}));
     try std.testing.expectEqual(null, try unrestored(a, back, "/@roots/boot-1", &.{}));
-    try std.testing.expect(try unrestored(a, .{ .n = 4, .time = 0, .root = "@roots/4", .reason = "fell back from 5 to 3", .config_dir = "/etc/yoq", .config_rev = "1" }, "/@roots/4", &log) != null);
+    try std.testing.expect(try unrestored(a, .{ .n = 4, .time = 0, .root = "@roots/4", .reason = "fell back from 5 to 3", .config_dir = "/etc/yos", .config_rev = "1" }, "/@roots/4", &log) != null);
     // a config that's as the generation had it already gets no commit.
-    const same: generation.Record = .{ .n = 5, .time = 0, .root = "@roots/5", .reason = "keep 4: add tree", .config_dir = "/etc/yoq", .config_rev = "4" };
+    const same: generation.Record = .{ .n = 5, .time = 0, .root = "@roots/5", .reason = "keep 4: add tree", .config_dir = "/etc/yos", .config_rev = "4" };
     try finishRestoreOf(&t.ctx, a, same, "/@roots/5");
     try std.testing.expectEqual(4, t.recorder.messages.items.len);
 }
@@ -453,9 +453,9 @@ test "a rollback cut off before its config went back finishes at the next boot" 
 test "history lists generations, and rollback needs one to go back to" {
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n");
     try t.exec(&.{"history"});
-    try std.testing.expectEqualStrings("os: /etc/yoq has no history yet. os records one with every change it makes.\n", t.err.buffered());
+    try std.testing.expectEqualStrings("yos: /etc/yos has no history yet. yos records one with every change it makes.\n", t.err.buffered());
 
     try t.exec(&.{ "add", "--no-apply", "ripgrep" });
     try t.exec(&.{ "add", "--no-apply", "fd" });
@@ -470,7 +470,7 @@ test "history lists generations, and rollback needs one to go back to" {
     // past the checks for root and libalpm, the number has to exist.
     if (!@import("../alpm.zig").available) return;
     try t.exec(&.{ "--root", "/nonexistent", "rollback", "7" });
-    try std.testing.expectEqualStrings("os: there's no generation 7. `os history` lists them.\n", t.err.buffered());
+    try std.testing.expectEqualStrings("yos: there's no generation 7. `yos history` lists them.\n", t.err.buffered());
 }
 
 test "rollback goes back a generation, and forward again" {
@@ -488,7 +488,7 @@ test "rollback goes back a generation, and forward again" {
     var t: TestRun = .{};
     defer t.deinit();
     try t.fs.put(m.conf_path, m.conf);
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n");
     try t.exec(&.{ "--root", m.root, "update", "--yes", "--dbs", m.cache, "--date", "2026-09-25" });
     try std.testing.expectEqual(0, t.code);
     try t.exec(&.{ "--root", m.root, "add", "--yes", "neovim" });
@@ -501,8 +501,8 @@ test "rollback goes back a generation, and forward again" {
     try std.testing.expectEqual(0, t.code);
     try std.testing.expect(std.mem.startsWith(u8, t.out.buffered(), "rolling back to 1: update packages to 2026-09-25\n"));
     if (cwd.access(std.testing.io, neovim, .{})) |_| return error.TestUnexpectedResult else |_| {}
-    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.toml").?, "neovim") == null);
-    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.neovim]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yos/machine.toml").?, "neovim") == null);
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yos/machine.lock").?, "[packages.neovim]") == null);
 
     // and forward again: rollback with no number goes to the one before.
     try t.exec(&.{ "--root", m.root, "rollback", "--yes" });

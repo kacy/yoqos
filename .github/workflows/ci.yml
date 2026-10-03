@@ -7,10 +7,10 @@ on:
 # connections. these give it others to fall back to.
 env:
   MIRRORLIST: |
-    Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
-    Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch
-    Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
-    Server = https://mirrors.mit.edu/archlinux/$repo/os/$arch
+    Server = https://geo.mirror.pkgbuild.com/$repo/yos/$arch
+    Server = https://mirrors.kernel.org/archlinux/$repo/yos/$arch
+    Server = https://mirror.rackspace.com/archlinux/$repo/yos/$arch
+    Server = https://mirrors.mit.edu/archlinux/$repo/yos/$arch
 
 # each job has a time limit about twice its usual length, so a step that
 # hangs, like a stuck download, fails in minutes and can be run again.
@@ -25,8 +25,8 @@ jobs:
           version: 0.16.0
       - run: zig build fmt
       - run: zig build test --summary all
-      - name: the example configs load and pass os's checks
-        run: zig build && tests/examples.sh ./zig-out/bin/os
+      - name: the example configs load and pass yos's checks
+        run: zig build && tests/examples.sh ./zig-out/bin/yos
 
   native:
     # debian trixie ships libalpm 15, the same as arch, and libsystemd.
@@ -60,9 +60,9 @@ jobs:
       - run: zig build test -Dalpm -Dsystemd --summary all
       - run: zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline
       - name: init, lock, status, and plan against this machine
-        run: tests/arch/smoke.sh ./zig-out/bin/os
+        run: tests/arch/smoke.sh ./zig-out/bin/yos
       - name: the example configs resolve against today's arch packages
-        run: tests/examples.sh ./zig-out/bin/os --resolve
+        run: tests/examples.sh ./zig-out/bin/yos --resolve
       - name: the man pages render, and mandoc finds nothing wrong in them
         run: dist/man.sh man && mandoc -T lint -W unsupp man/*
 
@@ -75,7 +75,7 @@ jobs:
       matrix:
         image: [cloud, archinstall, ext4, limine, refind, sdboot, snapper]
         suite: [full]
-        # os upgraded from 0.1.0, on a machine 0.1.0 set up.
+        # yos upgraded from 0.1.0, on a machine 0.1.0 set up.
         include:
           - image: cloud
             suite: upgrade
@@ -92,7 +92,7 @@ jobs:
         with:
           version: 0.16.0
       - run: zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline
-      # the older os the upgrade runs, each built from its tag.
+      # the older yos the upgrade runs, each built from its tag.
       - if: matrix.suite == 'upgrade'
         run: |
           git config --global --add safe.directory "$PWD"
@@ -111,27 +111,27 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: |
-            ~/.cache/yoq-vm/${{ matrix.image }}.qcow2
-            ~/.cache/yoq-vm/${{ matrix.image }}.vars
-            ~/.cache/yoq-vm/key
-            ~/.cache/yoq-vm/key.pub
+            ~/.cache/yos-vm/${{ matrix.image }}.qcow2
+            ~/.cache/yos-vm/${{ matrix.image }}.vars
+            ~/.cache/yos-vm/key
+            ~/.cache/yos-vm/key.pub
           key: vm2-${{ matrix.image }}-${{ steps.week.outputs.week }}-${{ hashFiles('tests/vm/vm.sh', 'tests/vm/archinstall.json') }}
       - run: tests/vm/vm.sh image
       - if: steps.image.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
-            ~/.cache/yoq-vm/${{ matrix.image }}.qcow2
-            ~/.cache/yoq-vm/${{ matrix.image }}.vars
-            ~/.cache/yoq-vm/key
-            ~/.cache/yoq-vm/key.pub
+            ~/.cache/yos-vm/${{ matrix.image }}.qcow2
+            ~/.cache/yos-vm/${{ matrix.image }}.vars
+            ~/.cache/yos-vm/key
+            ~/.cache/yos-vm/key.pub
           key: vm2-${{ matrix.image }}-${{ steps.week.outputs.week }}-${{ hashFiles('tests/vm/vm.sh', 'tests/vm/archinstall.json') }}
-      - run: tests/vm/test.sh ./zig-out/bin/os
+      - run: tests/vm/test.sh ./zig-out/bin/yos
       - if: failure()
-        run: sed 's/\x1b\[[0-9;?=!]*[a-zA-Z]//g' ~/.cache/yoq-vm/console.log | tail -n 800 || true
+        run: sed 's/\x1b\[[0-9;?=!]*[a-zA-Z]//g' ~/.cache/yos-vm/console.log | tail -n 800 || true
 
   iso:
-    # yoq os's live iso, built with archiso, then booted in a vm with a
+    # yos's live iso, built with archiso, then booted in a vm with a
     # blank disk that it installs a machine on. privileged, since mkarchiso
     # mounts the root it builds.
     runs-on: ubuntu-latest
@@ -146,10 +146,10 @@ jobs:
         with:
           version: 0.16.0
       - run: zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline
-      - run: dist/iso/build.sh ./zig-out/bin/os out
-      - run: tests/vm/iso.sh out/yoq-os-*.iso
+      - run: dist/iso/build.sh ./zig-out/bin/yos out
+      - run: tests/vm/iso.sh out/yos-*.iso
       - if: failure()
-        run: sed 's/\x1b\[[0-9;?=!]*[a-zA-Z]//g' ~/.cache/yoq-vm/console.log | tail -n 800 || true
+        run: sed 's/\x1b\[[0-9;?=!]*[a-zA-Z]//g' ~/.cache/yos-vm/console.log | tail -n 800 || true
 
   package:
     # the pkgbuild in dist/, built from this checkout and installed the way
@@ -169,10 +169,10 @@ jobs:
           install -d -o builder /home/builder/pkg
           install -m644 -o builder dist/PKGBUILD /home/builder/pkg/PKGBUILD
           git config --system --add safe.directory '*'
-          su builder -c "cd ~/pkg && YOQ_SOURCE=file://$GITHUB_WORKSPACE makepkg --noconfirm"
-          pacman -U --noconfirm /home/builder/pkg/yoq-os-git-*.pkg.tar.zst
-          os version
-          test -f /usr/share/libalpm/hooks/yoq-drift.hook
-          test -f /usr/share/yoq/profiles/omarchy.toml
-          test -f /usr/share/man/man1/os.1.gz && test -f /usr/share/man/man7/os-generations.7.gz
-          pacman -Qi yoq-os-git
+          su builder -c "cd ~/pkg && YOS_SOURCE=file://$GITHUB_WORKSPACE makepkg --noconfirm"
+          pacman -U --noconfirm /home/builder/pkg/yos-git-*.pkg.tar.zst
+          yos version
+          test -f /usr/share/libalpm/hooks/yos-drift.hook
+          test -f /usr/share/yos/profiles/omarchy.toml
+          test -f /usr/share/man/man1/yos.1.gz && test -f /usr/share/man/man7/yos-generations.7.gz
+          pacman -Qi yos-git

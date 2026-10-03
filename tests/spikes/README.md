@@ -15,19 +15,19 @@ root and `/boot` on btrfs, the esp at `/efi`.
   never cleared: the "one-shot" entry boots every time. a broken
   generation would never fall back. don't use it on btrfs roots.
 - an env file on the esp works. a script in `/etc/grub.d` loads
-  `yoq_next` from `(esp)/yoq/grubenv`, boots it, and clears it with
+  `yos_next` from `(esp)/yos/grubenv`, boots it, and clears it with
   `save_env`. grub writes fat fine: the entry booted once, and the next
   boot was the default again.
 - `/efi` may be an automount. `findmnt` lists the autofs mount first,
   without a uuid.
 
 what shipped goes one step further: grub's files are reinstalled onto the
-esp and `os` writes the whole `grub.cfg` there, with the env file beside
+esp and `yos` writes the whole `grub.cfg` there, with the env file beside
 it, so no `/etc/grub.d` script is needed (`src/menu.zig`).
 
 ## packages into an alternate root (2026-09-26)
 
-`tests/spikes/alt-root.sh`: `os apply` of 21 packages, 481 with
+`tests/spikes/alt-root.sh`: `yos apply` of 21 packages, 481 with
 dependencies, 4.4 gb, into an empty root, in about 40 seconds.
 
 - as a plain chroot, packages and most scripts work, and sysusers creates
@@ -39,7 +39,7 @@ dependencies, 4.4 gb, into an empty root, in about 40 seconds.
 - in both, one package's install script trips over an arithmetic error,
   and systemd skips its "running in chroot" steps as designed.
 
-what shipped: every root `os` builds into gets the api filesystems mounted
+what shipped: every root `yos` builds into gets the api filesystems mounted
 the way pacstrap mounts them, for a staged generation, a clean build, and
 an install alike (`src/cmd/build.zig`). a clean build or an install leaves
 autodetect out of its first initramfs. a staged root is a snapshot of the

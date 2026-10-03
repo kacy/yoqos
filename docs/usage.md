@@ -1,6 +1,6 @@
-# using yoq os
+# using yos
 
-yoq os keeps an arch linux machine in one short file, and shows you
+yos keeps an arch linux machine in one short file, and shows you
 exactly what would change to make the machine match it before it changes
 anything. this page is the manual: installing it, every command, and the
 config format. if you just want the feel of it, the
@@ -8,61 +8,61 @@ config format. if you just want the feel of it, the
 
 ## five words
 
-everything `os` prints uses these, and nothing else you need to learn:
+everything `yos` prints uses these, and nothing else you need to learn:
 
 | word | what it means |
 | --- | --- |
 | config | `machine.toml` and the files it includes: what you want |
 | lock | `machine.lock`: the exact package versions your config resolved to |
-| plan | what `os` is about to do, shown before it does it |
+| plan | what `yos` is about to do, shown before it does it |
 | generation | a recorded version of the system you can boot or go back to |
 | rollback | going back to an earlier generation, recorded as a new one |
 
 ## what works today
 
-`os` reads a machine, writes a config for it, keeps that config and its
+`yos` reads a machine, writes a config for it, keeps that config and its
 lock up to date, tells you what's different, and applies the difference.
-on any arch install, `os apply` handles packages, the `[system]` settings,
+on any arch install, `yos apply` handles packages, the `[system]` settings,
 services, users and their groups, files, secrets, and sysctl. on a btrfs
-root with grub, limine, refind, or systemd-boot, `os enable-rollback` adds
+root with grub, limine, refind, or systemd-boot, `yos enable-rollback` adds
 whole-system generations: a change that needs a reboot is built beside the
 running system, boots once on trial, and falls back by itself if it
 doesn't come up healthy (see [generations.md](generations.md)).
 generations can boot unified kernel images signed for secure boot, and
-`os install` can put a new machine on an encrypted disk.
+`yos install` can put a new machine on an encrypted disk.
 
 | command | what it does |
 | --- | --- |
-| `os init` | writes a config that describes this machine |
-| `os status` | what matches the config, what changed, what's failing |
-| `os plan` | every change applying would make; `-o <file>` saves it |
-| `os apply` | makes those changes, after asking; `os apply <file>` applies a saved plan |
-| `os history` | the generations |
-| `os rollback` | goes back to an earlier generation |
-| `os enable-rollback` | turns on whole-system generations (btrfs, with grub, limine, refind, or systemd-boot) |
-| `os gc`, `os pin` | clean up old generations, or keep one |
-| `os uninstall` | takes `os` off the machine, leaving plain arch |
-| `os install` | puts the machine a config describes on a blank disk |
-| `os update` | resolves the config against today's arch packages into the lock |
-| `os add`, `os remove` | edit the package list, and the lock with it |
-| `os edit` | opens the config in your editor, checks it, and applies it |
-| `os diff` | what differs between two generations |
-| `os doctor` | checks how `os` is set up on the machine |
-| `os enable`, `os disable` | turn services on or off in the config |
-| `os adopt` | puts packages installed outside the config into it, or a file from `/etc` |
-| `os secret` | keeps, lists, or removes the values `[files]` entries name with `secret` |
-| `os why` | which config line brings a package, file, or unit in |
-| `os config show` | the config with all its includes merged |
-| `os facts` | what `os` sees on this machine |
-| `os explain` | the long explanation of an error code |
-| `os help`, `os version` | the command list, and the version |
-| `os schema` | json schemas for the config and for what `--json` prints |
-| `os events` | what `os` did on this machine, as json lines |
-| `os docs` | this page, the readme, and generations.md, as one document |
-| `os build --clean` | builds a root from the config and the lock alone |
+| `yos init` | writes a config that describes this machine |
+| `yos status` | what matches the config, what changed, what's failing |
+| `yos plan` | every change applying would make; `-o <file>` saves it |
+| `yos apply` | makes those changes, after asking; `yos apply <file>` applies a saved plan |
+| `yos history` | the generations |
+| `yos rollback` | goes back to an earlier generation |
+| `yos enable-rollback` | turns on whole-system generations (btrfs, with grub, limine, refind, or systemd-boot) |
+| `yos gc`, `yos pin` | clean up old generations, or keep one |
+| `yos uninstall` | takes `yos` off the machine, leaving plain arch |
+| `yos install` | puts the machine a config describes on a blank disk |
+| `yos update` | resolves the config against today's arch packages into the lock |
+| `yos add`, `yos remove` | edit the package list, and the lock with it |
+| `yos edit` | opens the config in your editor, checks it, and applies it |
+| `yos diff` | what differs between two generations |
+| `yos doctor` | checks how `yos` is set up on the machine |
+| `yos enable`, `yos disable` | turn services on or off in the config |
+| `yos adopt` | puts packages installed outside the config into it, or a file from `/etc` |
+| `yos secret` | keeps, lists, or removes the values `[files]` entries name with `secret` |
+| `yos why` | which config line brings a package, file, or unit in |
+| `yos config show` | the config with all its includes merged |
+| `yos facts` | what `yos` sees on this machine |
+| `yos explain` | the long explanation of an error code |
+| `yos help`, `yos version` | the command list, and the version |
+| `yos schema` | json schemas for the config and for what `--json` prints |
+| `yos events` | what `yos` did on this machine, as json lines |
+| `yos docs` | this page, the readme, and generations.md, as one document |
+| `yos build --clean` | builds a root from the config and the lock alone |
 
-`os help` doesn't list the last four. `os carry`, `os health`, and `os
-record-pacman` don't show up either: `os`'s own units and its pacman hook
+`yos help` doesn't list the last four. `yos carry`, `yos health`, and `yos
+record-pacman` don't show up either: `yos`'s own units and its pacman hook
 run them, and you don't need to.
 
 ## installing
@@ -71,24 +71,24 @@ each release on github has an arch package and a tarball, with a
 `sha256sums.txt` beside them:
 
 ```
-sudo pacman -U yoq-os-0.1.5-1-x86_64.pkg.tar.zst
+sudo pacman -U yos-0.1.5-1-x86_64.pkg.tar.zst
 ```
 
-the package holds the `os` command, a pacman hook that records direct
-`pacman` use for `os status`, the profiles in `/usr/share/yoq/profiles`,
-these docs, and man pages made from them: `man os` is this page, and `man
-os-generations` is [generations.md](generations.md). the tarball holds the
+the package holds the `yos` command, a pacman hook that records direct
+`pacman` use for `yos status`, the profiles in `/usr/share/yos/profiles`,
+these docs, and man pages made from them: `man yos` is this page, and `man
+yos-generations` is [generations.md](generations.md). the tarball holds the
 same files, laid out like `/usr`.
 
-to build it yourself, `dist/PKGBUILD` makes `yoq-os-git` from the
-repository's `main` branch, or `yoq-os` from a release tag with
-`YOQ_VERSION`. `YOQ_SOURCE` points it at a local clone instead of github:
+to build it yourself, `dist/PKGBUILD` makes `yos-git` from the
+repository's `main` branch, or `yos` from a release tag with
+`YOS_VERSION`. `YOS_SOURCE` points it at a local clone instead of github:
 
 ```
 cd dist
-makepkg -si                              # yoq-os-git, from main
-YOQ_VERSION=0.1.5 makepkg -si            # yoq-os 0.1.5, from v0.1.5
-YOQ_SOURCE=file://$PWD/.. makepkg -si    # this checkout
+makepkg -si                              # yos-git, from main
+YOS_VERSION=0.1.5 makepkg -si            # yos 0.1.5, from v0.1.5
+YOS_SOURCE=file://$PWD/.. makepkg -si    # this checkout
 ```
 
 ## building by hand
@@ -97,13 +97,13 @@ you need zig 0.16.
 
 ```
 zig build -Dalpm -Dsystemd
-./zig-out/bin/os help
+./zig-out/bin/yos help
 ```
 
 `-Dalpm` links libalpm, pacman's library. it's what reads installed packages
 and resolves the config into a lock. `-Dsystemd` links libsystemd, for
 reading which services are enabled and running. both are already on any arch
-machine. without them, `os` still builds and runs, but it can't see packages
+machine. without them, `yos` still builds and runs, but it can't see packages
 or services, and it can't resolve a lock.
 
 `zig build test` runs every test, including the fuzz tests in `src/fuzz.zig`,
@@ -116,14 +116,14 @@ zig build test -Dfuzz --fuzz=1M -Dtest-filter="fuzz lock"
 
 ## getting started
 
-the first step only writes files under `/etc/yoq`, so it's fine to take
+the first step only writes files under `/etc/yos`, so it's fine to take
 on the machine you use every day. on an arch machine, as root:
 
 ```
-os init
+yos init
 ```
 
-`init` reads the machine and writes its config to `/etc/yoq`:
+`init` reads the machine and writes its config to `/etc/yos`:
 
 - `machine.toml` holds the machine's own settings: hostname, timezone,
   locale, users, and enabled services. it names the cpu and gpu only when
@@ -133,15 +133,15 @@ os init
   `machine.toml` includes it.
 - `machine.lock` records the exact version of every package, resolved
   against today's arch packages. `init` writes it when it can reach the
-  package mirrors; otherwise `os update` does it later. when a package
+  package mirrors; otherwise `yos update` does it later. when a package
   depends on something several packages provide, and one of them is
   installed, `init` records that one in `[providers]`.
 
 `init` changes nothing else on the machine. then:
 
 ```
-os status
-os plan
+yos status
+yos plan
 ```
 
 on an up-to-date machine the plan is empty, or close to it. if the machine is
@@ -149,7 +149,7 @@ behind, the plan shows the upgrades.
 
 from there, the idea is to make the config yours. move the packages you care
 about from `imported.toml` into `packages` in `machine.toml`, and delete the
-ones you don't. `os plan` shows what that would remove, and `os apply`
+ones you don't. `yos plan` shows what that would remove, and `yos apply`
 removes it.
 
 ## the everyday commands
@@ -160,41 +160,41 @@ here's each one with what it prints.
 ### status
 
 ```
-$ os status
+$ yos status
 archlinux · lock from 2026-09-25 (today)
 
 ok        11 packages
-changed   installed but not in the config: nano  -> os adopt keeps them, os plan removes them
-          14 packages aren't installed yet  -> os plan
-          settings differ: system.hostname, system.timezone, system.locale  -> os plan
-          services not as configured: sshd.service, tailscaled.service  -> os plan
+changed   installed but not in the config: nano  -> yos adopt keeps them, yos plan removes them
+          14 packages aren't installed yet  -> yos plan
+          settings differ: system.hostname, system.timezone, system.locale  -> yos plan
+          services not as configured: sshd.service, tailscaled.service  -> yos plan
 failing   none
 ```
 
 each "changed" line ends with the command that deals with it. with the
-pacman hook that comes with `os` in place, a direct `pacman -S` or `pacman
+pacman hook that comes with `yos` in place, a direct `pacman -S` or `pacman
 -R` also shows up, as "touched with pacman since the last apply", until the
-next `os apply`. the hook records nothing for os's own transactions.
+next `yos apply`. the hook records nothing for yos's own transactions.
 
 when an upgrade leaves a new default beside a config file you changed, as
-`<file>.pacnew`, status lists it too. for files `os` writes itself, `os`
+`<file>.pacnew`, status lists it too. for files `yos` writes itself, `yos`
 keeps its version and the `.pacnew` is only there to read. status also
 lists services still running files an upgrade replaced, services the
 config turns on whose unit has no `[Install]` section (they start, but
 `enable` does nothing for them, so they won't come back at boot unless
 another unit pulls them in), and on a machine
-with generations, a `note:` line when `os` fell back from a generation
+with generations, a `note:` line when `yos` fell back from a generation
 that didn't come up healthy.
 
-`os status` warns when the lock is more than 14 days old, since an old lock
+`yos status` warns when the lock is more than 14 days old, since an old lock
 holds back security fixes. a secret the config names that this machine
-doesn't have, or can't decrypt, is failing, with the `os secret set` that
+doesn't have, or can't decrypt, is failing, with the `yos secret set` that
 fixes it. it exits with 1 when something is failing.
 
 ### plan
 
 ```
-$ os plan
+$ yos plan
 packages
   + amd-ucode 20250917-1  (hardware.cpu)
   + git 2.51.0-1
@@ -225,11 +225,11 @@ another lock file.
 on a machine with generations, a plan that changes a kernel, its
 initramfs, or microcode also checks that the new boot files fit on the
 esp, and stops with E0131 if they don't (see
-[generations](generations.md)). `os apply` checks the same before it
+[generations](generations.md)). `yos apply` checks the same before it
 builds anything.
 
 `-o <file>` (or `--output <file>`) also saves the plan, as the same json
-`--json` prints. `os apply <file>` then applies that plan and nothing
+`--json` prints. `yos apply <file>` then applies that plan and nothing
 else: if the config, the lock, or the machine changed since, so that the
 plan would be different, it refuses with E0128 and changes nothing. that's useful when one person or
 script writes the plan and another looks it over before it runs.
@@ -237,7 +237,7 @@ script writes the plan and another looks it over before it runs.
 ### apply
 
 ```
-$ os apply
+$ yos apply
 packages
   + tree 2.3.2-1
 
@@ -270,7 +270,7 @@ it installs exactly the versions in the lock, checks each package against
 the lock's checksum and arch's signatures, and marks packages as explicit or
 dependencies to match the config. it uses the machine's own pacman.conf for
 mirrors and download settings. packages come from the lock's date, so run
-`os update` first to move to today's. mirrors keep only today's packages,
+`yos update` first to move to today's. mirrors keep only today's packages,
 so for a lock from an earlier day, anything the cache doesn't have comes
 from the arch linux archive, which is slower.
 
@@ -283,7 +283,7 @@ managers, are left for a reboot.
 `--yes` (or `-y`) skips the question; without a terminal, `apply` needs it.
 it needs root and a build with libalpm. on a machine with generations, it
 refuses to run on a copy of an older generation booted from the menu, since
-that copy is remade from its record (`os rollback --to-booted` keeps it
+that copy is remade from its record (`yos rollback --to-booted` keeps it
 first), and while a new generation is waiting for the next boot.
 
 a pacman hook or package script that fails after the packages changed makes
@@ -303,7 +303,7 @@ long one also gets a line at each quarter, so a big update stays short.
 `--json` shows none of it. `update`, `rollback`, `add`, and `install` do
 the same when they apply.
 
-`apply` keeps a journal in `/var/lib/yoq/journal`. if an apply is cut off
+`apply` keeps a journal in `/var/lib/yos/journal`. if an apply is cut off
 halfway, the next one says so and starts from the machine as it is. if it
 was cut off after it made its changes, the next one has nothing to do, so
 it records the old apply as done, and on a machine with generations,
@@ -312,10 +312,10 @@ records the generation it missed.
 ### add, remove, enable, disable
 
 ```
-$ os add fd
+$ yos add fd
 + packages "fd"
 
-saved /etc/yoq/machine.toml.
+saved /etc/yos/machine.toml.
 updated machine.lock: +1.
 
 packages
@@ -329,17 +329,17 @@ applied 1 change.
 ```
 
 these edit `machine.toml` for you, keep its comments and formatting, and
-then apply the change the way `os apply` does: the plan, a question, and
+then apply the change the way `yos apply` does: the plan, a question, and
 the change. `--yes` skips the question, and `--no-apply` stops after the
 edit. they also stop after the edit with `--json`, without a terminal
 unless `--yes` is given, and when apply can't run here (not root, or a build
-without libalpm). `os apply` makes the change later.
+without libalpm). `yos apply` makes the change later.
 
 they also update the lock, since a service brings its package. they
 resolve against the package date the lock already has, so adding one
 package never upgrades anything else. that needs the package databases for
-that date, which `os update` downloads. if they aren't there, `add` says
-so and doesn't apply, and `os update` brings the lock up to date later. a
+that date, which `yos update` downloads. if they aren't there, `add` says
+so and doesn't apply, and `yos update` brings the lock up to date later. a
 change the lock can't follow, like a package that doesn't exist, is taken
 back: the file stays as it was, and nothing is committed.
 
@@ -350,36 +350,36 @@ a hardware choice, `remove` tells you which one to change instead.
 ### edit
 
 ```
-os edit
+yos edit
 ```
 
 opens the config in `$VISUAL` or `$EDITOR`, or `vi` if neither is set.
-when you save and quit, `os` loads it again. if it doesn't load, you see
+when you save and quit, `yos` loads it again. if it doesn't load, you see
 why and can edit it again; say no and the file goes back to how it was.
-once it loads, `os` relocks it if it needs to, commits it as "edit", and
-shows the plan and asks, the same as `os add`. `--no-apply` stops after
+once it loads, `yos` relocks it if it needs to, commits it as "edit", and
+shows the plan and asks, the same as `yos add`. `--no-apply` stops after
 the commit. it needs a terminal.
 
 ### update
 
 ```
-os update
+yos update
 ```
 
 downloads today's package databases, using the repositories and mirrors in
 `/etc/pacman.conf`, and resolves the config against them. then it applies
-the result like `os apply`: the plan, a question, and the change.
+the result like `yos apply`: the plan, a question, and the change.
 `machine.lock` moves to the new packages only once the machine has, so
 saying no, or an apply that fails, leaves the lock as it was. `--yes` skips
 the question. with `--no-apply`, with `--json`, or without a terminal and
-`--yes`, it only writes the new lock, and `os apply` makes the change
+`--yes`, it only writes the new lock, and `yos apply` makes the change
 later.
 
 the config's aur packages are fetched and built first, each new or changed
 recipe after a review of its own; see [aur packages](#aur-packages).
 
 when a package depends on something several packages provide, like
-`initramfs` (mkinitcpio, booster, or dracut), `os update` asks which one you
+`initramfs` (mkinitcpio, booster, or dracut), `yos update` asks which one you
 want and saves the answer in `[providers]` as a commit of its own, so it
 only asks once. without a terminal, it stops and says which choices to make.
 
@@ -402,27 +402,27 @@ plan: 3 to add, 142 to change, 1 to remove · reboot needed: kernel
 
 notable upgrades are the ones that need a reboot, graphics and boot
 packages, and new major versions, in that order. past eight, the rest are
-counted on an `and N more` line, so the screen stays short. `os update -v`
+counted on an `and N more` line, so the screen stays short. `yos update -v`
 lists every package.
 
 without generations, a new kernel goes on right away, and the one that's
 running keeps its modules until the reboot, as arch's kernel-modules-hook
 does: something plugged in before the reboot still finds its driver. the
-first `os apply` after the reboot removes them.
+first `yos apply` after the reboot removes them.
 
 before the plan, `update` lists the arch news posted since the lock's
 last date. arch posts there when an update needs a hand, so read those
 items before saying yes.
 
-databases are cached in `/var/cache/yoq/sync/<date>/`, so running it again
+databases are cached in `/var/cache/yos/sync/<date>/`, so running it again
 the same day doesn't download anything.
 
 ### adopt
 
 ```
-os adopt                        # everything installed but not in the config
-os adopt htop                   # just htop
-os adopt /etc/ssh/sshd_config   # a file, as it is now
+yos adopt                        # everything installed but not in the config
+yos adopt htop                   # just htop
+yos adopt /etc/ssh/sshd_config   # a file, as it is now
 ```
 
 `adopt` is the other way to settle drift: instead of removing a package you
@@ -431,8 +431,8 @@ installed with `pacman -S`, it puts it in the config.
 given a path, it takes a file you edited in `/etc`, or one with a `.pacnew`
 beside it, into the config. the file is copied to `files/<path>` next to the
 config, like `files/etc/ssh/sshd_config`, and gets a `[files]` entry with
-that `source` and its mode. then it applies like `os add` does, with
-`--yes` and `--no-apply`. it won't take files outside `/etc`, files `os`
+that `source` and its mode. then it applies like `yos add` does, with
+`--yes` and `--no-apply`. it won't take files outside `/etc`, files `yos`
 writes already, or symlinks. it also leaves out machine state like
 `/etc/shadow` and ssh host keys, and files not everyone can read: those may
 hold secrets, and the config should stay safe to publish.
@@ -440,35 +440,35 @@ hold secrets, and the config should stay safe to publish.
 ### why
 
 ```
-$ os why perl-error
+$ yos why perl-error
 perl-error: needed by git -> perl-error
-git: in packages  (/etc/yoq/machine.toml:2)
+git: in packages  (/etc/yos/machine.toml:2)
 ```
 
 `why` follows the lock's dependency graph back to the config line that
 brings a package in. it exits with 1 when nothing in the config needs the
 package.
 
-it takes files and units too. a path says which key makes `os` write the
-file, or, for one `os` leaves alone, which package ships it. a unit, or a
+it takes files and units too. a path says which key makes `yos` write the
+file, or, for one `yos` leaves alone, which package ships it. a unit, or a
 service name like `ssh` that isn't a package, says which key enables or
 disables it:
 
 ```
-$ os why /etc/sysctl.d/99-yoq.conf
-/etc/sysctl.d/99-yoq.conf: os writes it for sysctl  (/etc/yoq/machine.toml:9)
-$ os why /etc/ssh/sshd_config
-/etc/ssh/sshd_config: not managed by os; it comes with openssh
-`os adopt /etc/ssh/sshd_config` takes it into the config
-$ os why sshd.service
-sshd.service: enabled by services.ssh  (/etc/yoq/machine.toml:12)
+$ yos why /etc/sysctl.d/99-yos.conf
+/etc/sysctl.d/99-yos.conf: yos writes it for sysctl  (/etc/yos/machine.toml:9)
+$ yos why /etc/ssh/sshd_config
+/etc/ssh/sshd_config: not managed by yos; it comes with openssh
+`yos adopt /etc/ssh/sshd_config` takes it into the config
+$ yos why sshd.service
+sshd.service: enabled by services.ssh  (/etc/yos/machine.toml:12)
 ```
 
 a file that holds a secret names the secret, never its value:
-`/etc/wifi.psk: os writes it for files."/etc/wifi.psk" secret =
+`/etc/wifi.psk: yos writes it for files."/etc/wifi.psk" secret =
 "wifi/home"`.
 
-with `--json`, files print `yoq.why-file/1` and units `yoq.why-unit/1`.
+with `--json`, files print `yos.why-file/1` and units `yos.why-unit/1`.
 
 ## history and rollback
 
@@ -476,48 +476,48 @@ this section is about machines without generations. with them, history and
 rollback work on whole copies of the system instead; see
 [generations.md](generations.md).
 
-`/etc/yoq` is a git repository. every change `os` makes there, from `init`,
+`/etc/yos` is a git repository. every change `yos` makes there, from `init`,
 `add`, `remove`, `enable`, `disable`, `adopt`, `edit`, `update`, and
 `rollback`, is a commit with a short message, like `add fd`. adopting
 packages commits as `add`, and adopting a file as `adopt <path>`. if
-the config lives inside another repository, like a dotfiles one, `os`
+the config lives inside another repository, like a dotfiles one, `yos`
 commits there, and only what's in the config's own directory. each commit
 is a generation of the machine's config, numbered from the first, and `*`
 marks the newest:
 
 ```
-$ os history
+$ yos history
     1  init: atlas as found on 2026-09-25
     2  update packages to 2026-09-25
     3  add fd
 *   4  enable tailscale
 ```
 
-`os rollback` goes back one generation, and `os rollback 2` goes back to
-generation 2. it applies that generation's config and lock like `os apply`
+`yos rollback` goes back one generation, and `yos rollback 2` goes back to
+generation 2. it applies that generation's config and lock like `yos apply`
 does, with the plan and a question first, installing the older package
 versions from the local cache, or from the arch linux archive when the
 cache doesn't have them any more. once the machine matches, it writes
-those files back to `/etc/yoq` as a new generation, `rollback to 2: ...`,
-so nothing is lost and `os rollback` again undoes the rollback.
+those files back to `/etc/yos` as a new generation, `rollback to 2: ...`,
+so nothing is lost and `yos rollback` again undoes the rollback.
 
 this rolls back packages, settings, services, users, and the files the
-config names, not files that package scripts changed, or anything else `os`
+config names, not files that package scripts changed, or anything else `yos`
 doesn't manage.
 
-edits you make to the config by hand aren't committed by `os apply`. `os
+edits you make to the config by hand aren't committed by `yos apply`. `yos
 rollback` commits them first, as "local edits before rollback", so going
 back never loses them.
 
 ## generations (early)
 
-on a btrfs root with grub, limine, refind, or systemd-boot, `os
+on a btrfs root with grub, limine, refind, or systemd-boot, `yos
 enable-rollback` turns the machine's history into generations: whole
 copies of the system you can boot from the menu. it shows its checks and
-steps and asks first; `--yes` skips the question. there, `os rollback [n]`
-starts an older generation as a new one for the next boot, `os rollback
---to-booted` keeps the one you booted from the menu, `os gc [--keep n]`
-removes old ones and writes the boot menu again, and `os pin <n>` keeps one. `os diff 3 5` shows what
+steps and asks first; `--yes` skips the question. there, `yos rollback [n]`
+starts an older generation as a new one for the next boot, `yos rollback
+--to-booted` keeps the one you booted from the menu, `yos gc [--keep n]`
+removes old ones and writes the boot menu again, and `yos pin <n>` keeps one. `yos diff 3 5` shows what
 changed between two generations: packages added, removed, and at other
 versions, then the config between their commits. with one number, it
 compares that generation with the newest. it reads each generation's
@@ -528,21 +528,21 @@ do yet.
 ## checking the setup
 
 ```
-$ os doctor
+$ yos doctor
 checks
-  ok  config: /etc/yoq/machine.toml
-  ok  config history: /etc/yoq
+  ok  config: /etc/yos/machine.toml
+  ok  config history: /etc/yos
   ok  lock: from 2026-09-25
   ok  pacman hook: installed
   ok  last apply: finished
-  ok  boot menu: has os's generations
+  ok  boot menu: has yos's generations
   ok  units: all in place
   ok  esp space: 612 MiB free on /boot
 
 nothing to fix.
 ```
 
-`os doctor` looks at how `os` is set up and changes nothing. it checks
+`yos doctor` looks at how `yos` is set up and changes nothing. it checks
 that:
 
 - the config loads, and its directory is a git repository;
@@ -551,7 +551,7 @@ that:
 - no apply stopped partway.
 
 it also checks that the esp has room for another kernel, and with
-generations, that the boot menu has them and that os's units are there. with
+generations, that the boot menu has them and that yos's units are there. with
 the root on luks, it checks that the initramfs can unlock it, and warns
 when the tpm unlocks it while secure boot is off, or with limine, which
 loads kernels without secure boot's check. a warning shows as
@@ -568,27 +568,27 @@ and the exit code is 1 when one does.
 
 ## leaving
 
-no hard feelings. `os uninstall` takes `os` off the machine and leaves plain arch running the
+no hard feelings. `yos uninstall` takes `yos` off the machine and leaves plain arch running the
 system you have now. like `enable-rollback`, it lists its steps and asks
 first; `--yes` skips the question.
 
-on a machine with generations, it moves the config back into `/etc/yoq`
-and the pacman database back to `/var/lib/pacman`, and removes `os`'s
+on a machine with generations, it moves the config back into `/etc/yos`
+and the pacman database back to `/var/lib/pacman`, and removes `yos`'s
 units that run at boot. if `enable-rollback` turned off snap-pac's
 snapshots of the root, they come back on. the bootloader gets set up to
-boot the running root without `os`:
+boot the running root without `yos`:
 
 - grub reads a menu from `grub-mkconfig` in `/boot/grub` again. what
   unlocks a luks root, and the consoles, go in `/etc/default/grub` first
   when it doesn't have them, since `grub-mkconfig` takes the kernel's
   arguments from there.
-- limine gets one plain entry where `os`'s section was.
+- limine gets one plain entry where `yos`'s section was.
 - refind boots the kernel in `/boot` through `refind_linux.conf`.
 - systemd-boot gets one entry of its own, `arch-linux.conf`, as its
-  default, where os's were.
+  default, where yos's were.
 
 on a luks root the tpm unlocks, a machine that boots unified kernel
-images boots arch's plain kernel after `os uninstall`, which leaves pcr 7
+images boots arch's plain kernel after `yos uninstall`, which leaves pcr 7
 without the os separator systemd's stub adds, so the tpm's key doesn't
 match. the plan says so: the next boot asks for the passphrase once, and
 `systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7
@@ -597,7 +597,7 @@ match. the plan says so: the next boot asks for the passphrase once, and
 limine, refind, and systemd-boot need the esp mounted at `/boot` for this,
 since that's where arch installs the kernel. while the firmware enforces
 secure boot, grub, refind, and systemd-boot also need that kernel signed, since
-`os`'s signed images go: `sbctl sign -s /boot/vmlinuz-linux` does it, and
+`yos`'s signed images go: `sbctl sign -s /boot/vmlinuz-linux` does it, and
 keeps doing it for each new kernel. otherwise turn secure boot off first.
 the grub it installs again has to be signed too, so on grub it needs
 sbctl's keys, and signs grub with `sbctl sign -s`.
@@ -606,11 +606,11 @@ the other generations stay as btrfs subvolumes unless you say yes when it
 asks, or pass `--delete-generations`. the running root stays where it is,
 in `@roots/<n>`, and so do `@var`, `@home`, and the other data subvolumes.
 
-last, it removes the `yoq-os` package if pacman installed it, `os`'s own
-state in `/var/lib/yoq`, and its files on the esp. that state includes the
-values `os secret set` kept, though the files `os` wrote them to stay. the
+last, it removes the `yos` package if pacman installed it, `yos`'s own
+state in `/var/lib/yos`, and its files on the esp. that state includes the
+values `yos secret set` kept, though the files `yos` wrote them to stay. the
 config and its git history stay in
-`/etc/yoq`. if a step fails, running `os uninstall` again picks up where
+`/etc/yos`. if a step fails, running `yos uninstall` again picks up where
 it stopped.
 
 ## installing a new machine
@@ -622,8 +622,8 @@ again once the new machine runs.
 
 ### what you need
 
-- the live iso, `yoq-os-<version>-x86_64.iso`, from a release. it's arch's
-  own live iso, built from the same profile, with `os` and everything `os
+- the live iso, `yos-<version>-x86_64.iso`, from a release. it's arch's
+  own live iso, built from the same profile, with `yos` and everything `yos
   install` runs added.
 - a usb drive of 2 gb or more.
 - a disk of 16 gib or more for the new machine.
@@ -631,7 +631,7 @@ again once the new machine runs.
   isn't signed for it, and a new machine has no keys to sign with yet.
   [secure boot](#secure-boot) covers turning it on once the machine runs.
 - a config repository that describes the machine, or nothing at all:
-  `os init --new` writes one on the live system. see [a config for a new
+  `yos init --new` writes one on the live system. see [a config for a new
   machine](#a-config-for-a-new-machine).
 
 ### step by step
@@ -640,11 +640,11 @@ again once the new machine runs.
    drive is erased; `lsblk` says which one it is.
 
    ```
-   sudo dd if=yoq-os-0.1.5-x86_64.iso of=/dev/sdX bs=4M status=progress oflag=sync
+   sudo dd if=yos-0.1.5-x86_64.iso of=/dev/sdX bs=4M status=progress oflag=sync
    ```
 
 2. boot the new machine from the drive, in uefi mode. its boot menu says
-   "yoq os live medium". it comes up at a root shell, like arch's iso,
+   "yos live medium". it comes up at a root shell, like arch's iso,
    with a banner and a short version of these steps on the screen.
 
 3. get online. a wired connection comes up by itself. for wi-fi:
@@ -662,7 +662,7 @@ again once the new machine runs.
 5. if you don't have a config for this machine yet, write one:
 
    ```
-   os --config /root/machines/machine.toml init --new
+   yos --config /root/machines/machine.toml init --new
    ```
 
    it asks for a name for the machine, your user name, and a time zone,
@@ -677,8 +677,8 @@ again once the new machine runs.
 6. install from the config repository:
 
    ```
-   os install /root/machines --disk /dev/nvme0n1 --update
-   os install https://github.com/you/machines --host atlas --disk /dev/nvme0n1 --update
+   yos install /root/machines --disk /dev/nvme0n1 --update
+   yos install https://github.com/you/machines --host atlas --disk /dev/nvme0n1 --update
    ```
 
    the first argument is the repository, as a url or a directory. a
@@ -686,14 +686,14 @@ again once the new machine runs.
    committed comes along. a url has to be https or ssh: over plain http
    or git's own protocol, anything on the way could change the config.
    `--host atlas` picks `hosts/atlas/machine.toml` in a repository for
-   several machines; without it, `os` uses the repository's own
+   several machines; without it, `yos` uses the repository's own
    `machine.toml`. for a private repository, git asks for your name and a
    token, as it would anywhere else.
 
    `--update` resolves the config against today's packages first, and
-   commits the new lock to the repository `os` fetched; it ends up in
-   `/etc/yoq` on the new machine, so you can push it back from there.
-   without it, `os` installs the lock as it is. mirrors only keep today's
+   commits the new lock to the repository `yos` fetched; it ends up in
+   `/etc/yos` on the new machine, so you can push it back from there.
+   without it, `yos` installs the lock as it is. mirrors only keep today's
    packages, so for a lock from an earlier day they come from the arch
    linux archive, which is slower, but gives you exactly what the lock
    says.
@@ -726,20 +726,20 @@ again once the new machine runs.
 9. reboot, and take the drive out.
 
 the new machine runs generation 1, with generations from its first boot.
-`/etc/yoq` is the repository you installed from, and a machine whose
+`/etc/yos` is the repository you installed from, and a machine whose
 hostname matches a directory under `hosts/` reads its config from there.
-`os` itself comes along as `/usr/local/bin/os`; installing the `yoq-os`
+`yos` itself comes along as `/usr/local/bin/yos`; installing the `yos`
 package on the new machine puts the packaged one, and its pacman hook, in
 place.
 
 ### what it does
 
-`os install` partitions the disk, then builds the machine the way `os
+`yos install` partitions the disk, then builds the machine the way `yos
 build --clean` builds a root. it records the machine as generation 1 of
 the layout `enable-rollback` makes. grub goes on the disk's removable boot
 path, which every firmware checks, and gets a boot entry of its own too.
 with `--yes`, it doesn't ask anything, and the accounts stay locked until
-you give them a password with `passwd -R /mnt/yoq <user>` before
+you give them a password with `passwd -R /mnt/yos <user>` before
 rebooting.
 
 it checks first that the firmware is uefi and that the disk is a whole
@@ -751,19 +751,19 @@ and that every secret it names is set on the live system. with
 way to give the passphrase, and with `--tpm`, the tpm and `tpm2-tss`.
 nothing on the disk changes until all of that passes.
 
-arch's own iso works too, with `os` added: `pacman -U` the release
+arch's own iso works too, with `yos` added: `pacman -U` the release
 package, or copy the binary. on another live system, `pacman -S dosfstools
 btrfs-progs grub git` first, plus `cryptsetup` for `--encrypt` and
 `tpm2-tss` for `--tpm`.
 
 aur packages wait until the machine is running: install without them,
-then add them back and run `os update` there.
+then add them back and run `yos update` there.
 
 ### an encrypted disk
 
 ```
-os install /root/machines --disk /dev/nvme0n1 --update --encrypt
-os install /root/machines --disk /dev/nvme0n1 --update --tpm
+yos install /root/machines --disk /dev/nvme0n1 --update --encrypt
+yos install /root/machines --disk /dev/nvme0n1 --update --tpm
 ```
 
 `--encrypt` puts luks2 on the btrfs partition, with btrfs inside it. the
@@ -777,7 +777,7 @@ encrypt   luks2 under btrfs, opened at boot as /dev/mapper/root
 
 cryptsetup asks for the passphrase itself, on the terminal: twice when it
 sets up the partition, once more with `--tpm` to add the tpm's key, and
-once more to open it for the install. `os` never sees it. for scripts and
+once more to open it for the install. `yos` never sees it. for scripts and
 tests, `--passphrase-file <file>` reads it from a file instead, once. it's
 one line of up to 4096 bytes, since it has to be typed at boot too, and a
 newline at the end of the file isn't part of it. it goes to cryptsetup on
@@ -788,7 +788,7 @@ without a terminal, `--encrypt` needs `--passphrase-file`.
 --tpm2-device=auto --tpm2-pcrs=7`, so the machine unlocks at boot without
 anyone typing. the `--tpm2-pcrs=7` matters: since systemd 258,
 systemd-cryptenroll seals a key to nothing by default, and the tpm then
-hands it to anything that boots. `os doctor` fails on a key like that.
+hands it to anything that boots. `yos doctor` fails on a key like that.
 the passphrase still works for when the tpm can't unlock it, like after
 some firmware updates or with the disk in another machine, so keep it
 somewhere safe. `--tpm` means `--encrypt` too, and needs a tpm 2.0; a
@@ -800,27 +800,27 @@ unlocks the disk for whatever boots. without secure boot, someone who can
 change the files on the esp, or an entry's command line, can boot a shell
 with the disk unlocked. so `--tpm` keeps a powered-off disk safe, like a
 stolen laptop's, but not a machine left alone. the install plan notes
-this, and `os doctor` warns about it on the running machine. with `uki`
+this, and `yos doctor` warns about it on the running machine. with `uki`
 and `secure_boot` on (see [secure boot](#secure-boot)), the firmware
 starts only images signed with your keys, and each image has its command
 line built in, so nobody can swap the image or edit its command line.
 that holds on grub, systemd-boot, and refind, which start every kernel
 through the firmware. limine loads a kernel itself without that check, so
 with limine the tpm keeps a powered-off disk safe and no more, secure boot
-or not, and `os doctor` says so.
+or not, and `yos doctor` says so.
 turning secure boot on changes pcr 7, so the tpm won't unlock the disk
 until its key is enrolled again: type the passphrase once, then run
 `systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 <partition>`.
-`os doctor` warns until then. the same happens the first time a machine
+`yos doctor` warns until then. the same happens the first time a machine
 boots a unified kernel image (`uki`), and the first time it boots a plain
 kernel after that, like a generation from before `uki` or the machine
-after `os uninstall`: systemd's stub has the initramfs add an os
+after `yos uninstall`: systemd's stub has the initramfs add an yos
 separator to pcr 7, and a plain kernel's boot doesn't.
 
 a boot waits at the passphrase as long as it takes: every generation on a
 luks root has `x-systemd.device-timeout=infinity` in its `rootflags`,
 since the initramfs otherwise gives up on the root after 90 seconds and
-lands in emergency mode. `os uninstall` leaves that out, so plain arch
+lands in emergency mode. `yos uninstall` leaves that out, so plain arch
 waits 90 seconds again. a trial's watchdog only starts counting once the
 root is up.
 
@@ -828,7 +828,7 @@ the config has to say the root is encrypted, or the new machine's
 initramfs can't unlock it: `[boot] encrypt = true` (see [encrypted
 roots](#encrypted-roots)). with `--tpm`, it also needs `tpm2-tss` in
 `packages`, which the initramfs unlocks with. the install checks both
-before it changes anything, and `os init --new --encrypt`, or `--tpm`,
+before it changes anything, and `yos init --new --encrypt`, or `--tpm`,
 writes them.
 
 the new machine's boot entries name the luks volume and the btrfs inside
@@ -836,20 +836,20 @@ it, `rd.luks.name=<luks uuid>=root root=UUID=<btrfs uuid>`, with
 `rd.luks.options=tpm2-device=auto` for `--tpm`. there's no line for the
 root in `/etc/crypttab`; sd-encrypt reads the command line. on the live
 system, the install runs `cryptsetup`, and `systemd-cryptenroll` with
-`tpm2-tss` for `--tpm`. yoq os's iso has them all.
+`tpm2-tss` for `--tpm`. yos's iso has them all.
 
 ### a config for a new machine
 
-`os init --new` writes a small config for a machine with nothing on it
+`yos init --new` writes a small config for a machine with nothing on it
 yet. it has what a new machine can't do without: a kernel and grub,
 `linux-firmware` on real hardware, the cpu's microcode and the gpu's
 driver from what the live system sees, networkmanager, a user in `wheel`,
 and sudo for them. `--hostname`, `--user`, `--timezone`, and `--ssh` answer
 its questions ahead of time, and without a terminal the first three are
-required. `--encrypt` and `--tpm` add what `os install --encrypt` and
+required. `--encrypt` and `--tpm` add what `yos install --encrypt` and
 `--tpm` need: `[boot] encrypt = true`, and `tpm2-tss` for the tpm.
 
-a config written for another machine only has what it lists, and `os`
+a config written for another machine only has what it lists, and `yos`
 doesn't add anything. the install plan notes what a new machine usually
 needs and the config lacks, so check that it has:
 
@@ -863,26 +863,26 @@ needs and the config lacks, so check that it has:
   run anything;
 - `[hardware] cpu`, so the right microcode loads.
 
-a config doesn't need a lock yet to be installed: `os install --update`
+a config doesn't need a lock yet to be installed: `yos install --update`
 makes one.
 
 ## clean builds
 
 ```
-sudo os build --clean /var/tmp/clean
+sudo yos build --clean /var/tmp/clean
 ```
 
 builds a whole root in a new directory from the config and the lock
 alone, the way pacstrap would: the locked packages, then everything else
 the config sets. it takes this machine's pacman setup, keyring, and uid
-map, and packages come from `os`'s own cache when it has them. afterwards
+map, and packages come from `yos`'s own cache when it has them. afterwards
 it lists what this machine has in `/etc` and `/usr` that the build
 doesn't: files nothing in the config or its packages explains, and files
 in `/etc` whose content differs. machine state like `/etc/shadow`, the
 machine id, and ssh host keys is left out of the comparison. `--json` gives
 the whole list.
 
-the directory can't exist yet. `os` makes it itself, writable only by
+the directory can't exist yet. `yos` makes it itself, writable only by
 root, since the build runs package scripts as root inside it, and nobody
 else should have been able to put anything there first. everything the
 build mounts inside it is unmounted when it ends, however it ends.
@@ -946,7 +946,7 @@ bluetooth = false
 | `[desktop]` | `session`: `hyprland`. `audio`: `pipewire`. `login`: `greetd`, `sddm`, or `tty`. these bring in their packages; see [the desktop](#the-desktop). |
 | `[users.<name>]` | `shell`, and `groups`: the full list of groups beyond the user's own |
 | `[services]` | `<name> = true` or `false`, for the services listed below |
-| `[files."<path>"]` | a file `os` writes whole: `text` or `source`, and `mode` |
+| `[files."<path>"]` | a file `yos` writes whole: `text` or `source`, and `mode` |
 | `[sysctl]` | kernel settings, like `"vm.swappiness" = 10` |
 | `[repos.<name>]` | a package repository beyond arch's own: `server`, and `key` |
 | `aur` | packages to build from the aur; see [aur packages](#aur-packages) |
@@ -995,7 +995,7 @@ package = "syncthing"
 services the config doesn't mention are left alone, and so are users.
 
 [examples/home-server](../examples/home-server/machine.toml) turns on a
-handful, and names two that `os` doesn't know.
+handful, and names two that `yos` doesn't know.
 
 ### users
 
@@ -1012,10 +1012,10 @@ be installed, so add it to `packages`. `groups` is the whole list: `apply`
 adds the user to the groups missing and takes it out of the others. with
 no `groups` at all, its groups are left alone.
 
-`os` manages people's accounts, not system ones: `root`, and accounts like
+`yos` manages people's accounts, not system ones: `root`, and accounts like
 `bin` or `systemd-*`, can't be declared. user and group names follow
-useradd's rules. `os` never deletes a user, and passwords stay yours to set
-with `passwd`. every uid `os` gives out is kept in `/var/lib/yoq/ids`, so a
+useradd's rules. `yos` never deletes a user, and passwords stay yours to set
+with `passwd`. every uid `yos` gives out is kept in `/var/lib/yos/ids`, so a
 user created again gets its old uid back, and its files in `/home` are
 still its own.
 
@@ -1034,26 +1034,26 @@ text = "welcome to atlas\n"
 "net.ipv4.ip_forward" = 1
 ```
 
-a `[files]` entry is a file `os` writes whole. `text` is the content itself;
+a `[files]` entry is a file `yos` writes whole. `text` is the content itself;
 `source` names a file next to the config, relative to the config file that
 names it, so a repository can keep them together; and `secret` names a
 value that stays out of the config (see secrets, below). an entry has
 exactly one of the three. `mode` is octal, and `0644` unless you say
-otherwise, or `0600` for a secret. `os plan` shows a file that's missing, has
+otherwise, or `0600` for a secret. `yos plan` shows a file that's missing, has
 different content, or has a different mode. files the config doesn't name
-are left alone, and so is a file you take out of the config. `os adopt
+are left alone, and so is a file you take out of the config. `yos adopt
 <path>` writes an entry for a file that's already there.
 
 a file under `/etc/mkinitcpio.conf.d`, yours or nvidia's drop-in, changes
 the initramfs, so the plan says it needs a reboot, and on a machine with
 generations it's built into the next one like a kernel is. `apply` runs
 `mkinitcpio -P` once, after every file is in place. a staged generation, a
-clean build, and `os install` run it inside the root they're building,
+clean build, and `yos install` run it inside the root they're building,
 through chroot, the way pacman runs the kernel's own hook there, so that
 root boots with the drop-in. a root without mkinitcpio is skipped.
 
 a path is absolute and plain: no `.` or `..` parts, no trailing `/`, and
-nothing under `/etc/yoq` or `/var/lib/yoq`, which are `os`'s own. it also
+nothing under `/etc/yos` or `/var/lib/yos`, which are `yos`'s own. it also
 can't be a file another key writes, like the sysctl file below. `apply`
 walks down to the file one directory at a time. it follows root's
 symlinks, like `/bin`, and refuses a directory on the way that another
@@ -1062,13 +1062,13 @@ also refuses a symlink another user owns, since either one could send the
 write somewhere else. so a file in someone's home needs that home to be
 root's, or the write stops with the path and the reason.
 
-`[sysctl]` becomes one file, `/etc/sysctl.d/99-yoq.conf`, and `apply` loads
+`[sysctl]` becomes one file, `/etc/sysctl.d/99-yos.conf`, and `apply` loads
 it right away when systemd runs the machine.
 
-files `os` makes from other keys (the sysctl file, the module list, the
+files `yos` makes from other keys (the sysctl file, the module list, the
 greetd and tty login files, the initramfs drop-ins for nvidia and for
 encrypted roots, and the `uki` and `secure_boot` files in `/etc/kernel`)
-start with a "written by os" line. once nothing asks for one, `apply`
+start with a "written by yos" line. once nothing asks for one, `apply`
 removes it. a file without that line, one you wrote yourself, is never
 removed.
 
@@ -1080,24 +1080,24 @@ secret = "wifi/home"
 ```
 
 ```
-sudo os secret set wifi/home     # asks for the value twice, without echo
-printf '%s' "$psk" | sudo os secret set wifi/home   # or reads it from stdin
-sudo os secret list              # the names, and the files that use each
-sudo os secret rm wifi/home
+sudo yos secret set wifi/home     # asks for the value twice, without echo
+printf '%s' "$psk" | sudo yos secret set wifi/home   # or reads it from stdin
+sudo yos secret list              # the names, and the files that use each
+sudo yos secret rm wifi/home
 ```
 
 some files hold a password or a key, and those don't belong in a config you
 might push somewhere. a `secret` key names the value instead, and the value
-lives on the machine: `os secret set` encrypts it with `systemd-creds`, with
+lives on the machine: `yos secret set` encrypts it with `systemd-creds`, with
 its default keys (the tpm2 and the host's credential key when there's a
-tpm2, else the host key alone), into `/var/lib/yoq/secrets/<name>.cred`.
+tpm2, else the host key alone), into `/var/lib/yos/secrets/<name>.cred`.
 the tpm2 part isn't bound to any pcrs, so a value stays readable when what
 the machine boots changes, like turning secure boot on. that directory is
-root's alone, so every `os secret` command needs root. `apply` decrypts a
+root's alone, so every `yos secret` command needs root. `apply` decrypts a
 value right before it writes the file, and wipes it from memory once it's
 written.
 
-`os secret set` on a name that's already set encrypts the value again.
+`yos secret set` on a name that's already set encrypts the value again.
 
 a name is letters, digits, `-`, `_`, and `.`, with `/` to group them, like
 `wifi/home`; no part of it starts with a dot. a value comes from stdin byte
@@ -1110,29 +1110,29 @@ others read it is allowed, but the plan says so next to the file.
 
 values are machine state, not config. `/var` never rolls back, so a
 rollback keeps today's values, and they don't move with the config: another
-machine can't decrypt them, so a new machine, or one `os install` puts on a
-disk, needs each one set again. until then, `os plan` and `os apply` stop
-with E0133 and the `os secret set` to run, and `os status` lists the secret
-as failing. `os install` writes the files from the live system's values,
+machine can't decrypt them, so a new machine, or one `yos install` puts on a
+disk, needs each one set again. until then, `yos plan` and `yos apply` stop
+with E0133 and the `yos secret set` to run, and `yos status` lists the secret
+as failing. `yos install` writes the files from the live system's values,
 so it checks that each one is set there before it touches the disk.
 
-no value ever shows up in what `os` prints or records: not in the config,
+no value ever shows up in what `yos` prints or records: not in the config,
 the lock, the plan, facts, status, events, the journal, error messages, or
 a generation's json record. to tell whether a file needs rewriting, the
 observer hashes the file and the value with hmac-sha256, under a random key
-made on the first `os secret set` and kept beside the values in
-`/var/lib/yoq/secrets/.key`, and the plan compares those. anyone can check
+made on the first `yos secret set` and kept beside the values in
+`/var/lib/yos/secrets/.key`, and the plan compares those. anyone can check
 guesses against a plain sha-256 of a short password, but not against an
 hmac without the key, so a plan or facts document is still safe to share.
-the plan's hash covers the keyed hash, so `os apply <file>` won't write a
+the plan's hash covers the keyed hash, so `yos apply <file>` won't write a
 value other than the one the plan was made for.
 
 the file itself is another matter: a generation's root holds it as it was
 written, readable by root only. so a rollback brings that file back until
-the next apply writes the current value, and `os secret rm` doesn't remove
-the copies in older generations. `os gc` does, when it removes them.
+the next apply writes the current value, and `yos secret rm` doesn't remove
+the copies in older generations. `yos gc` does, when it removes them.
 
-reading values needs root, so `os plan` without root can't tell whether a
+reading values needs root, so `yos plan` without root can't tell whether a
 file holds the current value, and only shows it when it's missing or its
 mode differs. `apply` runs as root and sees all of it.
 
@@ -1157,27 +1157,27 @@ pipewire with pipewire-pulse and wireplumber.
 `login` picks how you get to the session:
 
 - `greetd` runs tuigreet on tty1, offering every installed wayland session.
-  `os` writes `/etc/greetd/config.toml`.
+  `yos` writes `/etc/greetd/config.toml`.
 - `sddm` runs sddm, which finds hyprland's session on its own.
 - `tty` has no display manager. with a `session`, logging in on tty1
-  starts it through uwsm, from `/etc/profile.d/yoq-session.sh`; without
+  starts it through uwsm, from `/etc/profile.d/yos-session.sh`; without
   one, it's a plain console login.
 
 a login choice owns the display manager. its own is enabled, and every
-other one `os` knows (gdm, greetd, lightdm, ly, sddm) is disabled, since
+other one `yos` knows (gdm, greetd, lightdm, ly, sddm) is disabled, since
 only one can be the display manager. the switch happens at the next boot:
 starting or stopping a display manager during `apply` would end the session
 you're applying from, so the plan says a reboot is needed. with
 generations, that boot is a trial, and the health check wants the new
-display manager running. with no `login`, `os` leaves login alone.
+display manager running. with no `login`, `yos` leaves login alone.
 
 `session_config` names a hyprland config next to the machine's config.
-`os` copies it unchanged to `/etc/xdg/hypr/`, keeping its extension
+`yos` copies it unchanged to `/etc/xdg/hypr/`, keeping its extension
 (`hyprland.conf`, or `hyprland.lua` for newer hyprland). hyprland reads it
 for anyone without a config of their own in `~/.config/hypr`, and a user
 config can include it with `source = /etc/xdg/hypr/hyprland.conf`. that
 makes it the machine's default, and part of every generation. everything
-else in your home directory is yours; `os` doesn't touch it.
+else in your home directory is yours; `yos` doesn't touch it.
 
 [examples/hyprland](../examples/hyprland) is a whole hyprland desktop,
 `hyprland.conf` included, and [examples/nvidia](../examples/nvidia/machine.toml)
@@ -1189,18 +1189,18 @@ the package ships a profile with the system side of an omarchy machine:
 hyprland with pipewire, sddm for login, and the services omarchy's
 installer turns on (avahi, bluetooth, cups, docker's socket, networkmanager,
 power-profiles-daemon, resolved, systemd-oomd, and ufw). it leaves packages
-to `os init`, which imports the ones the machine has:
+to `yos init`, which imports the ones the machine has:
 
 ```toml
-include = ["/usr/share/yoq/profiles/omarchy.toml", "imported.toml"]
+include = ["/usr/share/yos/profiles/omarchy.toml", "imported.toml"]
 ```
 
 on an omarchy install, that plans nothing. omarchy's own updates
 (`omarchy-update` and its migrations) still change the machine behind
-`os`'s back, so `os status` shows them as drift until `os adopt` or the next
+`yos`'s back, so `yos status` shows them as drift until `yos adopt` or the next
 apply settles it. generations work with omarchy's limine, but omarchy's own
-limine tools can drop `os`'s entries from `limine.conf`. `os status`
-notices, and `os gc` writes them again; see
+limine tools can drop `yos`'s entries from `limine.conf`. `yos status`
+notices, and `yos gc` writes them again; see
 [generations.md](generations.md#bootloaders).
 
 ### kernel modules
@@ -1210,7 +1210,7 @@ notices, and `os gc` writes them again; see
 modules = ["i2c-dev", "nct6775"]
 ```
 
-`modules` becomes `/etc/modules-load.d/99-yoq.conf`, which systemd reads at
+`modules` becomes `/etc/modules-load.d/99-yos.conf`, which systemd reads at
 every boot, and `apply` loads the list right away on a running machine.
 
 ### encrypted roots
@@ -1221,9 +1221,9 @@ encrypt = true
 ```
 
 a root on luks has to be unlocked by the initramfs before anything else
-runs. with `encrypt = true`, `os` makes sure mkinitcpio's hooks can do
+runs. with `encrypt = true`, `yos` makes sure mkinitcpio's hooks can do
 that. when they have neither `encrypt` nor `sd-encrypt`, it writes
-`/etc/mkinitcpio.conf.d/90-yoq-encrypt.conf`, which adds `sd-encrypt`
+`/etc/mkinitcpio.conf.d/90-yos-encrypt.conf`, which adds `sd-encrypt`
 before `filesystems` and swaps busybox's hooks, like `udev` and `keymap`,
 for systemd's, which sd-encrypt needs. with autodetect, mkinitcpio also counts
 it as a failed build, without saying why, when it looks for a kind of
@@ -1233,14 +1233,14 @@ sd-encrypt looks for the tpm's on every build, so the drop-in stops
 finding none from counting. like any change to the
 initramfs, it waits for a reboot.
 
-`os init` sets the key when the root is on luks. an encrypted archinstall
-machine has the hooks already, so no drop-in comes with it. `os install
+`yos init` sets the key when the root is on luks. an encrypted archinstall
+machine has the hooks already, so no drop-in comes with it. `yos install
 --encrypt` needs the key, since a new machine starts from mkinitcpio's own
 hooks. the key holds nothing secret and doesn't say how the disk unlocks:
 that's in the luks header and on the kernel's command line.
 
 taking the key out, or setting it to false, removes the drop-in. on a luks
-root whose own hooks can't unlock it, `os plan` and `os apply` stop with
+root whose own hooks can't unlock it, `yos plan` and `yos apply` stop with
 E0135 instead, since the next initramfs couldn't open the root. add
 `sd-encrypt` to HOOKS in `/etc/mkinitcpio.conf` first, if that's the plan.
 
@@ -1253,14 +1253,14 @@ uki = true
 
 on a machine with generations, `uki = true` makes every new generation
 boot a unified kernel image: its kernel, microcode, and initramfs in one
-efi file, which `os` builds with ukify and puts on the esp. it works with
+efi file, which `yos` builds with ukify and puts on the esp. it works with
 all four bootloaders, and it brings `systemd-ukify` with it. turning it on
 or off changes what the menu boots, so the change waits for a reboot and
 the next boot tries it once, like a new kernel. see
 [generations.md](generations.md#unified-kernel-images).
 
-without generations, `os` doesn't write the boot menu, so the key only
-installs ukify. `os init` sets it on a machine that boots unified kernel
+without generations, `yos` doesn't write the boot menu, so the key only
+installs ukify. `yos init` sets it on a machine that boots unified kernel
 images already, like omarchy, when ukify is installed there.
 
 ### secure boot
@@ -1271,22 +1271,22 @@ uki = true
 secure_boot = true
 ```
 
-with `secure_boot = true`, `os` signs every unified kernel image it puts
+with `secure_boot = true`, `yos` signs every unified kernel image it puts
 on the esp, so firmware that enforces secure boot will start them. it
 needs `uki = true`: a kernel and a separate initramfs can't be signed as
-one. it signs only on a machine with generations, where `os` writes the
+one. it signs only on a machine with generations, where `yos` writes the
 boot menu. it brings `sbctl` and signs with sbctl's keys.
 
-the keys are yours to make and enroll; `os` does neither. it's a one-time
+the keys are yours to make and enroll; `yos` does neither. it's a one-time
 job, in this order:
 
 1. install sbctl and make the keys: `pacman -S sbctl`, then
    `sbctl create-keys`. they go in `/var/lib/sbctl`.
 2. set `uki = true` and `secure_boot = true` under `[boot]`, and run
-   `os apply`. like a new kernel, the change waits for a reboot. the next
+   `yos apply`. like a new kernel, the change waits for a reboot. the next
    generation's images are signed, and so is every image the menu boots.
-3. sign the bootloader. on grub, `os` did it in step 2. otherwise
-   `os doctor` lists the efi files on the esp that have no signature.
+3. sign the bootloader. on grub, `yos` did it in step 2. otherwise
+   `yos doctor` lists the efi files on the esp that have no signature.
    `sbctl sign -s <file>` signs one, and the `-s` has sbctl's pacman
    hook sign it again whenever its package updates it.
 4. in the firmware setup, clear the secure boot keys, which puts it in
@@ -1298,18 +1298,18 @@ job, in this order:
 
 if the firmware enforces secure boot already, with keys of its own, like
 on a machine that boots through shim, enroll sbctl's keys before step 2.
-`os plan` and `os apply` stop with E0137 while the firmware enforces
+`yos plan` and `yos apply` stop with E0137 while the firmware enforces
 secure boot without sbctl's key, and so they do after `sbctl create-keys`
 makes new ones: images signed with a key the firmware doesn't have won't
 start. grub falls back from one to the generation before, but limine
-halts and refind waits for a key, for good, so os checks first.
+halts and refind waits for a key, for good, so yos checks first.
 
-without the keys, `os plan` and `os apply` stop with E0134. a way back
-doesn't: `os rollback`, a fallback from a failed trial, and `os gc` write
+without the keys, `yos plan` and `yos apply` stop with E0134. a way back
+doesn't: `yos rollback`, a fallback from a failed trial, and `yos gc` write
 the boot menu even when they can't sign, keep the images that are signed
 already, and warn about the ones that aren't, which firmware enforcing
 secure boot won't start. put the keys back, or make and enroll new ones,
-and `os gc` signs them.
+and `yos gc` signs them.
 
 with secure boot, each image has its entry's command line built in: the
 root, `rootflags=subvol=`, the console and luks arguments. the entries
@@ -1317,11 +1317,11 @@ pass none. systemd's stub ignores a command line from the bootloader for
 an image that has one while secure boot is on, and the signature covers
 it, so nobody who can write the esp can add `init=/bin/sh`. images are
 per entry then, shared only by entries with the same command line, and a
-trial boots a twin of the newest one with `yoq.trial` in it. that takes
-more room on the esp than shared images, and `os plan` counts it.
+trial boots a twin of the newest one with `yos.trial` in it. that takes
+more room on the esp than shared images, and `yos plan` counts it.
 
 a signed image never takes its kernel or initramfs from the esp, even
-through the copies `os` keeps in each root. the kernel comes from the
+through the copies `yos` keeps in each root. the kernel comes from the
 root's package, in `/usr/lib/modules/<version>/vmlinuz`, and the
 initramfs is built for it inside the root with `mkinitcpio`, from the
 root's own config and modules. autodetect stays on, since a signed image
@@ -1333,19 +1333,19 @@ image costs one mkinitcpio run, so a menu write that needs new images
 takes a little longer. one already on the esp under its name, with a
 signature from your key, is reused.
 
-what `os` signs: its images in `yoq/boot` on the esp, grub, and refind's
+what `yos` signs: its images in `yos/boot` on the esp, grub, and refind's
 btrfs driver, which it installs. each image is signed in a work directory
 inside the generation's root, then copied onto the esp, so the esp never
-has it unsigned. grub runs without shim: `os` installs it with shim's
+has it unsigned. grub runs without shim: `yos` installs it with shim's
 check off and grub's `tpm` module built in, which grub's lockdown wants
 before it loads anything, and signs it. that module only works with a tpm
 2.0, so on a machine without one, or with it off in the firmware, grub
-stops at its rescue prompt under secure boot, and `os plan` stops first
+stops at its rescue prompt under secure boot, and `yos plan` stops first
 with E0136. when grub's binary isn't the one
-`os` signed last, `os` installs grub again and signs that. the other
+`yos` signed last, `yos` installs grub again and signs that. the other
 bootloaders come from their own install (`bootctl install`, limine's,
 `refind-install`), so their signatures are yours to add, as in step 3,
-and `os doctor` flags them until then. the vm tests cover systemd-boot
+and `yos doctor` flags them until then. the vm tests cover systemd-boot
 and grub.
 
 the keys live in `/var`, outside every generation, so a rollback keeps
@@ -1354,14 +1354,14 @@ generation or the new one has `secure_boot`, every menu write signs
 whatever images the menu boots, so the generation a failed trial falls
 back to starts too. a generation from before `uki` boots a plain kernel,
 which firmware enforcing secure boot refuses on grub, systemd-boot, and
-refind; turn secure boot off in the firmware before you boot one. `os
+refind; turn secure boot off in the firmware before you boot one. `yos
 rollback` says so before it goes back to one. limine loads a plain kernel
 itself, without asking the firmware, as long as its config's checksum
 isn't enrolled. turning `secure_boot` off stops the signing only once the firmware stops enforcing secure boot: until then,
 as long as sbctl has keys, every menu write still signs, so a generation
 without the key starts too.
 
-`os install` won't install a config with `secure_boot = true`: a new
+`yos install` won't install a config with `secure_boot = true`: a new
 machine has no keys yet. install without it, then follow the steps above
 there.
 
@@ -1378,20 +1378,20 @@ key = "EF925EA60F33D0CB85C44AD13056513887B78AEB"
 
 a repository here works like one in pacman.conf, and travels with the
 config to a new machine. it can't be in both: move it out of pacman.conf
-when you move it into the config, or `os plan` says so. `os` writes every
-configured repository to `/etc/pacman.d/yoq-repos.conf` and adds one line
+when you move it into the config, or `yos plan` says so. `yos` writes every
+configured repository to `/etc/pacman.d/yos-repos.conf` and adds one line
 to the end of pacman.conf that includes it, so plain `pacman` sees them
 too, after arch's own.
 
 `key` is the full fingerprint of the key its packages are signed with:
-`os` imports it into pacman's keyring and signs it locally, and packages
+`yos` imports it into pacman's keyring and signs it locally, and packages
 from the repository must then be signed by it. without a key, its
 packages aren't checked, the way pacman's `SigLevel = Optional TrustAll`
 works. that's fine over https, or for a `file://` repository on the
 machine itself, but a plain `http://` server needs a key: otherwise anyone
 between you and it could hand you their own packages.
 
-`os update` resolves against a new repository before any apply, so adding
+`yos update` resolves against a new repository before any apply, so adding
 one and updating is enough. the lock pins each package by hash, but a
 repository like this keeps no history, so going back to an older lock
 relies on the packages still being in the local cache.
@@ -1402,38 +1402,38 @@ relies on the packages still being in the local cache.
 aur = ["yay-bin"]
 ```
 
-`os add --aur yay-bin` adds one for you, and `os remove --aur yay-bin`
-takes it out. adding one saves the config and stops there; the next `os
+`yos add --aur yay-bin` adds one for you, and `yos remove --aur yay-bin`
+takes it out. adding one saves the config and stops there; the next `yos
 update` reviews and builds it.
 
-`os update` fetches each recipe from the aur with git and builds it with
+`yos update` fetches each recipe from the aur with git and builds it with
 devtools' `makechrootpkg` in a clean chroot of its own, under
-`/var/cache/yoq/aur`, as an unprivileged `yoq-build` user. what it builds
-goes into a local repository, `yoq-aur`, that `os` reads like any other,
+`/var/cache/yos/aur`, as an unprivileged `yos-build` user. what it builds
+goes into a local repository, `yos-aur`, that `yos` reads like any other,
 and the lock pins each package by hash and by the recipe commit it was
 built from. a recipe that hasn't changed isn't built again.
 
-aur recipes run as code when they build, so `os update` shows a recipe
+aur recipes run as code when they build, so `yos update` shows a recipe
 before building it: the first time, every file in it in full (binary
 files by name only), and after that, what changed since the locked
 commit. control characters show as escapes like `\x1b`, so a recipe can't
 move the cursor and hide a line from you. each recipe is a question of its
 own; `--yes` alone doesn't build an unreviewed one. without a terminal,
-`os update` stops, unless `--trust-aur` says to build them as they are.
+`yos update` stops, unless `--trust-aur` says to build them as they are.
 
 a recipe builds only under its own name: one whose `.SRCINFO` gives a
 different pkgbase is refused. from a split recipe, which builds several
-packages, only the one named after the recipe goes into `yoq-aur`, and a
+packages, only the one named after the recipe goes into `yos-aur`, and a
 split recipe with no package of that name is refused.
 
 an aur package that needs another aur package needs that one in `aur` too,
-and `os` builds them in order. before it builds anything, `os update` reads
+and `yos` builds them in order. before it builds anything, `yos update` reads
 what each recipe's `.SRCINFO` needs. a need that's in neither the arch
 repositories nor `aur` stops it with E0130, which names the package to add.
 an `aur` list brings in devtools, which the builds need. builds get their
 arch packages as of the lock's date, from the arch linux archive when that
-isn't today, so they match what the lock installs. `os add`, `os
-remove`, and the like keep the recipes the lock already has; only `os
+isn't today, so they match what the lock installs. `yos add`, `yos
+remove`, and the like keep the recipes the lock already has; only `yos
 update` builds.
 
 [examples/aur](../examples/aur/machine.toml) has aur packages beside
@@ -1464,11 +1464,11 @@ includes merge in order, and the including file always wins.
   work as written, `sysctl.vm.swappiness`, or quoted,
   `sysctl."vm.swappiness"`.
 
-`os config show` prints the merged config, and `--resolved` adds the file
+`yos config show` prints the merged config, and `--resolved` adds the file
 and line every value came from:
 
 ```
-$ os config show --resolved
+$ yos config show --resolved
 version = 1  # hosts/atlas/machine.toml:1
 packages = [
   "base",  # base.toml:1
@@ -1487,19 +1487,19 @@ file and line:
 
 ```
 error[E0213]: unknown service "sshd"
-  --> /etc/yoq/machine.toml:3:1
-   | did you mean "ssh"?  (os explain E0213)
+  --> /etc/yos/machine.toml:3:1
+   | did you mean "ssh"?  (yos explain E0213)
 ```
 
-`os explain E0213` prints the long explanation, and `os explain` lists every
+`yos explain E0213` prints the long explanation, and `yos explain` lists every
 code:
 
 | code | what's wrong |
 | --- | --- |
 | E0001 | the toml doesn't parse |
-| E0002 | a toml feature `os` doesn't read yet, like a date; write it as a string |
+| E0002 | a toml feature `yos` doesn't read yet, like a date; write it as a string |
 | E0003 | a key set twice in one file |
-| E0100 | no config file where `--config` points, `/etc/yoq/machine.toml` by default |
+| E0100 | no config file where `--config` points, `/etc/yos/machine.toml` by default |
 | E0101 | a key the config format doesn't have |
 | E0102 | a value of the wrong type |
 | E0103 | a value of the right type that isn't allowed, like an empty hostname |
@@ -1525,30 +1525,30 @@ code:
 ## scripting
 
 every command takes `--json` and prints one json document. each document
-starts with a `schema` field, like `"schema": "yoq.plan/1"`, that names its
-shape and version. errors with a code come out as a `yoq.errors/1`
+starts with a `schema` field, like `"schema": "yos.plan/1"`, that names its
+shape and version. errors with a code come out as a `yos.errors/1`
 document on stdout under `--json`; other problems, like a file that can't
-be written, are an `os: ...` line on stderr either way.
+be written, are an `yos: ...` line on stderr either way.
 
-`os schema <name>` prints the json schema for a document: `plan`, `facts`,
-`status`, `errors`, `events`, `secret` (what `os secret set` and `rm`
-print), or `secrets` (`os secret list`). `os schema config` describes
+`yos schema <name>` prints the json schema for a document: `plan`, `facts`,
+`status`, `errors`, `events`, `secret` (what `yos secret set` and `rm`
+print), or `secrets` (`yos secret list`). `yos schema config` describes
 `machine.toml`, which editors that check toml against a json schema, like
-taplo, can use, and `os schema lock` describes `machine.lock`. `os schema`
+taplo, can use, and `yos schema lock` describes `machine.lock`. `yos schema`
 alone lists them. the schemas come from the same code that writes and reads
 the documents, so they can't fall out of date.
 
-`os events` prints what `os` has done on this machine, oldest first, as one
-`yoq.event/1` json document a line. that covers applies with their plan's
+`yos events` prints what `yos` has done on this machine, oldest first, as one
+`yos.event/1` json document a line. that covers applies with their plan's
 hash, config commits, new generations, rollbacks, trial boots, and pacman
-runs outside `os` that the drift hook caught. it also has `gc` with the
-`generations` removed (by `os gc` or after an apply), `pin` with a `step`
+runs outside `yos` that the drift hook caught. it also has `gc` with the
+`generations` removed (by `yos gc` or after an apply), `pin` with a `step`
 of `pinned` or `unpinned`, `enable-rollback` when generation 1 is set up,
-and `install` on a machine `os install` put on its disk. `os uninstall`
-removes `/var/lib/yoq`, events included, so it leaves none. `--follow` keeps
+and `install` on a machine `yos install` put on its disk. `yos uninstall`
+removes `/var/lib/yos`, events included, so it leaves none. `--follow` keeps
 watching and prints new events as they land, like `tail -f`. every event has
 a `time` in unix milliseconds and a `kind`, and the other fields depend on
-the kind; `os schema events` has them all.
+the kind; `yos schema events` has them all.
 
 `--since <when>` leaves out events from before a time, with or without
 `--follow`. it takes unix milliseconds, a date (`2026-09-30`), or a date and
@@ -1556,15 +1556,15 @@ time (`2026-09-30T14:00` or `2026-09-30T14:00:05`), all in utc, with an
 optional trailing `Z`. `-f` is short for `--follow`.
 
 ```
-$ os events --follow
-{"schema":"yoq.event/1","time":1790380800000,"kind":"pacman","packages":["htop"]}
-{"schema":"yoq.event/1","time":1790380860000,"kind":"apply","step":"begin","plan":"e4bd7044..."}
-{"schema":"yoq.event/1","time":1790380900000,"kind":"apply","step":"done","plan":"e4bd7044..."}
+$ yos events --follow
+{"schema":"yos.event/1","time":1790380800000,"kind":"pacman","packages":["htop"]}
+{"schema":"yos.event/1","time":1790380860000,"kind":"apply","step":"begin","plan":"e4bd7044..."}
+{"schema":"yos.event/1","time":1790380900000,"kind":"apply","step":"done","plan":"e4bd7044..."}
 ```
 
 the events don't have a store of their own. they come from the apply
-journal, `/var/lib/yoq/journal`, where `os` also notes its other events,
-and the drift log, `/var/lib/yoq/drift`.
+journal, `/var/lib/yos/journal`, where `yos` also notes its other events,
+and the drift log, `/var/lib/yos/drift`.
 
 exit codes:
 
@@ -1574,9 +1574,9 @@ exit codes:
 | 1 | the command ran into a problem, or found one: `status` with something failing, `why` with nothing needing the package |
 | 2 | the command line was wrong |
 
-`os docs` prints this reference, the readme, and
+`yos docs` prints this reference, the readme, and
 [generations.md](generations.md) as one markdown document: the version
-that came with the installed `os`.
+that came with the installed `yos`.
 
 global flags work before or after the command, as `--config path` or
 `--config=path`. a flag's value can't be empty or start with `-`:
@@ -1584,22 +1584,22 @@ global flags work before or after the command, as `--config path` or
 | flag | meaning |
 | --- | --- |
 | `--json` | machine-readable output |
-| `--config <path>` | the config file, instead of `/etc/yoq/machine.toml` |
+| `--config <path>` | the config file, instead of `/etc/yos/machine.toml` |
 | `--root <dir>` | the machine's files live under `dir`, like a mounted install |
 | `--facts <file>` | read the machine from a facts file instead of looking at it |
 
 everything after `--` is a name, not a flag, even when it starts with `-`:
-`os why -- -x`. global flags after `--` don't count either.
+`yos why -- -x`. global flags after `--` don't count either.
 
 ## trying it without an arch machine
 
-`os facts --json` saves what `os` sees on a machine, and `--facts` reads that
+`yos facts --json` saves what `yos` sees on a machine, and `--facts` reads that
 back in, so you can plan against a saved machine anywhere. the repository's
 test cases work too:
 
 ```
 zig build
-./zig-out/bin/os --config tests/golden/fresh-install/machine.toml \
+./zig-out/bin/yos --config tests/golden/fresh-install/machine.toml \
     --facts tests/golden/fresh-install/facts.json status
 ```
 

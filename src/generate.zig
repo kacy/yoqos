@@ -1,5 +1,5 @@
 //! writes a config that describes a machine as it is: the start of
-//! `os init`. the machine's own settings go into machine.toml; packages it
+//! `yos init`. the machine's own settings go into machine.toml; packages it
 //! has installed on purpose go into imported.toml, which machine.toml
 //! includes, so the main file stays short.
 
@@ -18,7 +18,7 @@ const uki = @import("uki.zig");
 const Allocator = std.mem.Allocator;
 
 /// the config for what `f` describes, without its packages. values the
-/// config couldn't hold, like a user name shadow allows but os doesn't,
+/// config couldn't hold, like a user name shadow allows but yos doesn't,
 /// are left out.
 pub fn fromFacts(a: Allocator, f: *const facts.Facts) !config.Config {
     const at: config.Src = .{ .file = "machine.toml", .line = 0, .column = 0 };
@@ -39,7 +39,7 @@ pub fn fromFacts(a: Allocator, f: *const facts.Facts) !config.Config {
     // drop-in. it keeps one in a clean build, which starts from
     // mkinitcpio's own hooks.
     if (f.boot.luks_uuid != null) c.boot.encrypt = .{ .v = true, .src = at };
-    // only with ukify there to build os's own: the key would plan its
+    // only with ukify there to build yos's own: the key would plan its
     // install otherwise, and init mustn't plan anything.
     if (f.boot.uki and f.package(uki.package) != null) c.boot.uki = .{ .v = true, .src = at };
     // hardware is written only when its packages are already installed:
@@ -95,7 +95,7 @@ pub fn machineToml(a: Allocator, c: *const config.Config, date: []const u8) ![]c
     var out: std.Io.Writer.Allocating = .init(a);
     const w = &out.writer;
     try w.print(
-        \\# this machine, as `os init` found it on {s}. packages installed on
+        \\# this machine, as `yos init` found it on {s}. packages installed on
         \\# purpose are in imported.toml: move the ones you care about into
         \\# `packages` here, and drop the rest from there.
         \\include = ["imported.toml"]
@@ -111,7 +111,7 @@ pub fn importedToml(a: Allocator, packages: []const []const u8, date: []const u8
     var out: std.Io.Writer.Allocating = .init(a);
     const w = &out.writer;
     try w.print(
-        \\# packages that were installed on purpose when `os init` ran on {s}.
+        \\# packages that were installed on purpose when `yos init` ran on {s}.
         \\# their dependencies aren't listed; the lock records those. anything
         \\# deleted from here gets removed by the next apply.
         \\
@@ -180,7 +180,7 @@ test "a config from facts" {
     };
     const c = try fromFacts(a, &f);
     try testing.expectEqualStrings(
-        \\# this machine, as `os init` found it on 2026-09-25. packages installed on
+        \\# this machine, as `yos init` found it on 2026-09-25. packages installed on
         \\# purpose are in imported.toml: move the ones you care about into
         \\# `packages` here, and drop the rest from there.
         \\include = ["imported.toml"]
@@ -217,7 +217,7 @@ test "a config from facts" {
     try testing.expectEqualStrings("base", imported[0]);
     try testing.expectEqualStrings("neovim", imported[1]);
     try testing.expectEqualStrings(
-        \\# packages that were installed on purpose when `os init` ran on 2026-09-25.
+        \\# packages that were installed on purpose when `yos init` ran on 2026-09-25.
         \\# their dependencies aren't listed; the lock records those. anything
         \\# deleted from here gets removed by the next apply.
         \\packages = [
@@ -254,7 +254,7 @@ test "unified kernel images set [boot] uki, when ukify is there" {
     const c = try fromFacts(a, &f);
     try testing.expect(c.boot.uki.?.v);
     try testing.expect(std.mem.endsWith(u8, try machineToml(a, &c, "2026-10-01"), "\n[boot]\nuki = true\n"));
-    // without generations, os makes no menu, so ukify is all the key wants.
+    // without generations, yos makes no menu, so ukify is all the key wants.
     try testing.expectEqual(0, (try desired.files(a, &c, &.{ .packages = &pkgs, .boot = .{ .uki = true, .root_fs = "ext4" } })).len);
     // with no ukify to build them, the key would plan an install.
     try testing.expectEqual(null, (try fromFacts(a, &.{ .packages = pkgs[0..1], .boot = .{ .uki = true } })).boot.uki);

@@ -1,4 +1,4 @@
-//! `os enable-rollback`: moves a machine to the rollback rung. it shows
+//! `yos enable-rollback`: moves a machine to the rollback rung. it shows
 //! the checks and the steps, asks, and then builds generation 1 from one
 //! snapshot of the running root, which becomes the root at the next boot.
 
@@ -24,7 +24,7 @@ pub fn enableRollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var yes = false;
     var it: cli.ArgIter = .{ .args = args };
     while (it.next()) |arg| {
-        if (it.isFlag(arg) and cli.isYes(arg)) yes = true else return cli.usageError(ctx, "os enable-rollback [--yes]");
+        if (it.isFlag(arg) and cli.isYes(arg)) yes = true else return cli.usageError(ctx, "yos enable-rollback [--yes]");
     }
     var w: cli.Work = .init(ctx);
     defer w.deinit();
@@ -32,7 +32,7 @@ pub fn enableRollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const f = try w.facts() orelse return w.fail();
     const p = try enable.plan(a, &f);
     if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.enable-rollback/1", .{ .ready = p.ready(), .running = p.running, .checks = p.checks, .steps = p.steps });
+        try output.writeDoc(ctx.out, "yos.enable-rollback/1", .{ .ready = p.ready(), .running = p.running, .checks = p.checks, .steps = p.steps });
         return if (p.ready() or p.running != null) 0 else 1;
     }
     if (p.running) |root| {
@@ -70,13 +70,13 @@ const Enabler = struct {
     moved_config: bool = false,
     /// how to take back what the steps did, newest last.
     undo: std.ArrayList(Undo) = .empty,
-    /// /etc/yoq's commit before it moves, for generation 1's record.
+    /// /etc/yos's commit before it moves, for generation 1's record.
     config: ?generation.Config = null,
 
     fn run(e: *Enabler, p: *const enable.Plan) !bool {
         var why: []const u8 = "";
-        const entries = try e.ctx.history.log(e.a, "/etc/yoq", &why) orelse &.{};
-        if (entries.len > 0) e.config = .{ .dir = "/etc/yoq", .rev = entries[entries.len - 1].rev };
+        const entries = try e.ctx.history.log(e.a, "/etc/yos", &why) orelse &.{};
+        if (entries.len > 0) e.config = .{ .dir = "/etc/yos", .rev = entries[entries.len - 1].rev };
         e.m = try gens.Machine.open(e.a, e.ctx.io, e.boot, &why) orelse return e.failed("{s}", .{why});
         defer e.m.close();
 
@@ -133,17 +133,17 @@ const Enabler = struct {
                 .subvol => |path| {
                     btrfs.setReadOnly(path, false) catch {};
                     btrfs.delete(path) catch |err| {
-                        try e.ctx.err.print("os: couldn't remove {s}: {s}\n", .{ path, @errorName(err) });
+                        try e.ctx.err.print("yos: couldn't remove {s}: {s}\n", .{ path, @errorName(err) });
                         clean = false;
                     };
                 },
                 .run => |argv| if (try exec.run(e.a, e.ctx.io, argv)) |why| {
-                    try e.ctx.err.print("os: couldn't undo with {s}: {s}\n", .{ argv[0], why });
+                    try e.ctx.err.print("yos: couldn't undo with {s}: {s}\n", .{ argv[0], why });
                     clean = false;
                 },
             }
         }
-        try e.ctx.err.writeAll(if (clean) "os: took back the steps above; the machine is as it was.\n" else "os: took back what it could; see the lines above.\n");
+        try e.ctx.err.writeAll(if (clean) "yos: took back the steps above; the machine is as it was.\n" else "yos: took back what it could; see the lines above.\n");
     }
 
     const new_root = "/" ++ generation.roots_dir ++ "/1";
@@ -229,11 +229,11 @@ const Enabler = struct {
         return e.sh(&.{ "ln", "-s", "/" ++ generation.pacman_db, db });
     }
 
-    /// generation 1's /etc/yoq moves into its /var, and fstab mounts it
+    /// generation 1's /etc/yos moves into its /var, and fstab mounts it
     /// back where it was.
     fn moveConfig(e: *Enabler) !bool {
-        const src = try e.m.at(&.{ new_root, "etc/yoq" });
-        const dest = try std.fs.path.join(e.a, &.{ e.var_dir, "lib/yoq/config" });
+        const src = try e.m.at(&.{ new_root, "etc/yos" });
+        const dest = try std.fs.path.join(e.a, &.{ e.var_dir, "lib/yos/config" });
         if (!try e.sh(&.{ "mkdir", "-p", std.fs.path.dirnamePosix(dest).? })) return false;
         if (rootfs.pathExists(e.ctx.io, src)) {
             if (!try e.sh(&.{ "mv", src, dest })) return false;
@@ -302,8 +302,8 @@ const Enabler = struct {
 
     /// the units generation 1 gets (see enable.units), turned on.
     fn healthUnit(e: *Enabler) !bool {
-        // the packaged os outlasts a copy run from a build directory.
-        const os_path = if (rootfs.pathExists(e.ctx.io, "/usr/bin/os")) "/usr/bin/os" else try std.process.executablePathAlloc(e.ctx.io, e.a);
+        // the packaged yos outlasts a copy run from a build directory.
+        const os_path = if (rootfs.pathExists(e.ctx.io, "/usr/bin/yos")) "/usr/bin/yos" else try std.process.executablePathAlloc(e.ctx.io, e.a);
         const why = try gens.writeUnits(e.a, e.ctx.io, try e.m.at(&.{new_root}), os_path) orelse return true;
         return e.failed("{s}", .{why});
     }
@@ -313,15 +313,15 @@ const Enabler = struct {
     fn bootFiles(e: *Enabler) !bool {
         const esp = e.boot.esp.?;
         // what the firmware boots now, kept until grub-install is done.
-        if (!try e.keep(try std.fs.path.join(e.a, &.{ esp, "EFI" }), "/run/yoq/efi-backup")) return false;
+        if (!try e.keep(try std.fs.path.join(e.a, &.{ esp, "EFI" }), "/run/yos/efi-backup")) return false;
         return e.sh(try bootmenu.grubInstall(e.a, e.ctx.io, esp, esp));
     }
 
     /// the menu, with generation 1 and the system as it is now. grub's goes
     /// where grub-install will point grub, with the env file for one-shot
     /// boots; nothing reads it until then. limine and refind read theirs
-    /// already, so for them this is the switch. systemd-boot gets os's
-    /// entries beside its own, and the switch is making os's newest the
+    /// already, so for them this is the switch. systemd-boot gets yos's
+    /// entries beside its own, and the switch is making yos's newest the
     /// default.
     fn bootEntry(e: *Enabler) !bool {
         const esp = e.boot.esp.?;
@@ -329,21 +329,21 @@ const Enabler = struct {
             .grub => {
                 // with the esp at /boot, grub's own menu is already there.
                 const grub_dir = try std.fs.path.join(e.a, &.{ esp, "grub" });
-                if (!try e.keep(grub_dir, "/run/yoq/grub-backup")) return false;
+                if (!try e.keep(grub_dir, "/run/yos/grub-backup")) return false;
                 if (!try e.sh(&.{ "mkdir", "-p", grub_dir })) return false;
             },
-            .limine => if (!try e.keep(e.boot.loader_conf.?, "/run/yoq/loader-backup")) return false,
-            .@"systemd-boot" => if (!try e.keep(try e.m.sdbootEntries(), "/run/yoq/entries-backup")) return false,
+            .limine => if (!try e.keep(e.boot.loader_conf.?, "/run/yos/loader-backup")) return false,
+            .@"systemd-boot" => if (!try e.keep(try e.m.sdbootEntries(), "/run/yos/entries-backup")) return false,
             .refind => {
                 const dir = std.fs.path.dirnamePosix(e.boot.loader_conf.?).?;
-                if (!try e.keep(e.boot.loader_conf.?, "/run/yoq/loader-backup")) return false;
-                if (!try e.keep(try std.fs.path.join(e.a, &.{ dir, "yoq.conf" }), "/run/yoq/yoq-conf-backup")) return false;
-                if (!try e.keep(try std.fs.path.join(e.a, &.{ dir, "drivers_x64" }), "/run/yoq/drivers-backup")) return false;
+                if (!try e.keep(e.boot.loader_conf.?, "/run/yos/loader-backup")) return false;
+                if (!try e.keep(try std.fs.path.join(e.a, &.{ dir, "yos.conf" }), "/run/yos/yos-conf-backup")) return false;
+                if (!try e.keep(try std.fs.path.join(e.a, &.{ dir, "drivers_x64" }), "/run/yos/drivers-backup")) return false;
             },
         }
         // the env file, and limine's copies of boot files.
-        const own_dir = try std.fs.path.join(e.a, &.{ esp, "yoq" });
-        if (!try e.keep(own_dir, "/run/yoq/esp-backup")) return false;
+        const own_dir = try std.fs.path.join(e.a, &.{ esp, "yos" });
+        if (!try e.keep(own_dir, "/run/yos/esp-backup")) return false;
         const records = try gens.readRecords(e.a, e.ctx.io, e.var_dir);
         if (try e.m.writeMenu(new_root, records)) |why| return e.failed("{s}", .{why});
         if (e.m.loader == .@"systemd-boot") {
@@ -381,7 +381,7 @@ const Enabler = struct {
     }
 
     fn failed(e: *Enabler, comptime fmt: []const u8, args: anytype) !bool {
-        try e.ctx.err.print("os: " ++ fmt ++ "\n", args);
+        try e.ctx.err.print("yos: " ++ fmt ++ "\n", args);
         return false;
     }
 };

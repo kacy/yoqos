@@ -1,7 +1,7 @@
-//! `os install <config> --disk <dev>`: puts the machine a config
+//! `yos install <config> --disk <dev>`: puts the machine a config
 //! repository describes on a blank disk, from a live arch system. it
 //! fetches the config, shows what it will do, asks, and then builds the
-//! new machine the way `os build --clean` builds a root, as generation 1
+//! new machine the way `yos build --clean` builds a root, as generation 1
 //! of the layout enable-rollback makes, with grub booting it. with
 //! --encrypt, the btrfs filesystem goes inside luks2.
 
@@ -29,11 +29,11 @@ const secrets = @import("../secrets.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
-const usage_text = "os install <config repository or directory> --disk <device> [--host <name>] [--update] [--encrypt] [--tpm] [--passphrase-file <file>] [--yes]";
+const usage_text = "yos install <config repository or directory> --disk <device> [--host <name>] [--update] [--encrypt] [--tpm] [--passphrase-file <file>] [--yes]";
 
 /// where the config is fetched to before the disk is ready for it: in
 /// the directory only root can go into, since git writes a url's password
-/// or token into the clone's .git/config before os takes it out again.
+/// or token into the clone's .git/config before yos takes it out again.
 const staging = rootfs.private_dir ++ "/install/config";
 /// the kernels arch ships, one of which the lock has to name.
 const kernels = [_][]const u8{ "linux", "linux-lts", "linux-zen", "linux-hardened", "linux-rt", "linux-rt-lts" };
@@ -189,8 +189,8 @@ const steps = [_]Step{
     .{ .what = "make the filesystems and their subvolumes", .run = Installer.filesystems },
     .{ .what = "mount them at " ++ install.target, .run = Installer.mount },
     .{ .what = "build the machine from the config and the lock", .run = Installer.build },
-    .{ .what = "move the pacman database into /usr, write fstab, and add os's units", .run = Installer.settle },
-    .{ .what = "put the config in /var/lib/yoq/config, mounted at /etc/yoq", .run = Installer.config },
+    .{ .what = "move the pacman database into /usr, write fstab, and add yos's units", .run = Installer.settle },
+    .{ .what = "put the config in /var/lib/yos/config, mounted at /etc/yos", .run = Installer.config },
 };
 
 const Installer = struct {
@@ -265,7 +265,7 @@ const Installer = struct {
         };
         const c = &loaded.config;
         const l = try locking.readLock(ctx, in.a, ctx.config_path) orelse {
-            try ctx.err.writeAll("os: the config has no machine.lock beside it. make one with `os update` on a machine it describes, or install with --update.\n");
+            try ctx.err.writeAll("yos: the config has no machine.lock beside it. make one with `yos update` on a machine it describes, or install with --update.\n");
             return null;
         };
         var users: std.ArrayList([]const u8) = .empty;
@@ -337,7 +337,7 @@ const Installer = struct {
     }
 
     fn partition(in: *Installer) !?[]const u8 {
-        const script = "/run/yoq/install/partitions";
+        const script = "/run/yos/install/partitions";
         rootfs.writeAtomic(in.ctx.io, script, try install.partitionScript(in.a), null) catch return "can't write the partition table's script";
         // an earlier run that stopped may have left its luks volume open,
         // which holds the disk.
@@ -413,7 +413,7 @@ const Installer = struct {
             why = (exec.run(in.a, in.ctx.io, &.{ "cryptsetup", "close", install.luks_install_name }) catch return) orelse return;
             in.ctx.io.sleep(.fromSeconds(1), .awake) catch {};
         }
-        in.ctx.err.print("os: {s} is still open ({s}). `cryptsetup close {s}` closes it once nothing uses it.\n", .{ mapped, why, install.luks_install_name }) catch {};
+        in.ctx.err.print("yos: {s} is still open ({s}). `cryptsetup close {s}` closes it once nothing uses it.\n", .{ mapped, why, install.luks_install_name }) catch {};
     }
 
     const close_tries = 5;
@@ -421,10 +421,10 @@ const Installer = struct {
     /// the esp, and btrfs with every subvolume generation 1 and its data
     /// live in.
     fn filesystems(in: *Installer) !?[]const u8 {
-        const top = "/run/yoq/install/top";
+        const top = "/run/yos/install/top";
         if (try exec.runAll(in.a, in.ctx.io, &.{
             &.{ "mkfs.fat", "-F", "32", "-n", "ESP", in.esp },
-            &.{ "mkfs.btrfs", "-q", "-f", "-L", "yoq", in.root },
+            &.{ "mkfs.btrfs", "-q", "-f", "-L", "yos", in.root },
             &.{ "mkdir", "-p", top },
             &.{ "mount", "-o", "subvolid=5", in.root, top },
         })) |w| return w;
@@ -478,7 +478,7 @@ const Installer = struct {
     }
 
     /// what enable-rollback would have done: the pacman database beside
-    /// the /usr it describes, fstab, os's units, and os itself.
+    /// the /usr it describes, fstab, yos's units, and yos itself.
     fn settle(in: *Installer) !?[]const u8 {
         const db = try in.at("var/lib/pacman");
         const moved = try in.at(generation.pacman_db);
@@ -497,16 +497,16 @@ const Installer = struct {
             .esp = .{ .uuid = try in.uuid(in.esp, &why) orelse return why, .point = "/boot" },
         });
         rootfs.writeAtomic(in.ctx.io, try in.at("etc/fstab"), fstab, null) catch return "can't write fstab";
-        // os comes along as it runs here, in /usr/local, which is data.
+        // yos comes along as it runs here, in /usr/local, which is data.
         const self = try std.process.executablePathAlloc(in.ctx.io, in.a);
-        const os_path = "/usr/local/bin/os";
+        const os_path = "/usr/local/bin/yos";
         if (try in.run(&.{ "install", "-D", "-m", "0755", self, try in.at(os_path[1..]) })) |w| return w;
         return gens.writeUnits(in.a, in.ctx.io, install.target, os_path);
     }
 
     fn config(in: *Installer) !?[]const u8 {
         return exec.runAll(in.a, in.ctx.io, &.{
-            &.{ "mkdir", "-p", try in.at("etc/yoq"), try in.at(enable.config_home[1..]) },
+            &.{ "mkdir", "-p", try in.at("etc/yos"), try in.at(enable.config_home[1..]) },
             &.{ "cp", "-a", staging ++ "/.", try in.at(enable.config_home[1..]) },
         });
     }
@@ -524,7 +524,7 @@ const Installer = struct {
             try in.ctx.out.print("\na password for {s}:\n", .{n});
             try in.ctx.out.flush();
             if (try exec.interactive(in.a, in.ctx.io, &.{ "passwd", "-R", install.target, n })) |why| {
-                try in.ctx.err.print("os: {s}; {s} has no password yet. `passwd {s}` sets one later.\n", .{ why, n, n });
+                try in.ctx.err.print("yos: {s}; {s} has no password yet. `passwd {s}` sets one later.\n", .{ why, n, n });
             }
         }
     }
@@ -552,20 +552,20 @@ const Installer = struct {
             .time = std.Io.Timestamp.now(in.ctx.io, .real).toSeconds(),
             .root = boot.root_subvol.?[1..],
             .reason = "install",
-            .config_dir = try std.fs.path.join(in.a, &.{ "/etc/yoq", std.fs.path.dirnamePosix(in.config_rel) orelse "" }),
+            .config_dir = try std.fs.path.join(in.a, &.{ "/etc/yos", std.fs.path.dirnamePosix(in.config_rel) orelse "" }),
             .config_rev = rev,
         };
         if (try gens.writeRecord(in.a, in.ctx.io, try in.at("var"), record)) |w| return w;
         if (try m.writeMenu(boot.root_subvol.?, &.{record})) |w| return w;
         const esp = boot.esp.?;
         if (try exec.runAll(in.a, in.ctx.io, &.{
-            &.{ "mkdir", "-p", try std.fs.path.join(in.a, &.{ esp, "yoq" }) },
+            &.{ "mkdir", "-p", try std.fs.path.join(in.a, &.{ esp, "yos" }) },
             &.{ "grub-editenv", try std.fs.path.join(in.a, &.{ esp, generation.grubenv }), "create" },
             try bootmenu.grubInstallAt(in.a, esp, esp, "--removable"),
         })) |w| return w;
         if (try in.run(&.{ "efibootmgr", "--version" }) == null) {
-            if (try in.run(try bootmenu.grubInstallAt(in.a, esp, esp, "--bootloader-id=yoq"))) |w| {
-                try in.ctx.err.print("os: no boot entry of its own ({s}); the disk still boots from the removable path.\n", .{w});
+            if (try in.run(try bootmenu.grubInstallAt(in.a, esp, esp, "--bootloader-id=yos"))) |w| {
+                try in.ctx.err.print("yos: no boot entry of its own ({s}); the disk still boots from the removable path.\n", .{w});
             }
         }
         return null;
@@ -615,7 +615,7 @@ const Installer = struct {
         // what the install said goes out before any warning from here.
         in.ctx.out.flush() catch {};
         const lazy = building.unmountTree(in.a, in.ctx.io, install.target, &.{}, true) catch &.{};
-        for (lazy) |p| in.ctx.err.print("os: {s} was busy, so it was detached lazily; its disk stays in use until whatever holds it stops.\n", .{p}) catch {};
+        for (lazy) |p| in.ctx.err.print("yos: {s} was busy, so it was detached lazily; its disk stays in use until whatever holds it stops.\n", .{p}) catch {};
         in.closeLuks();
     }
 };

@@ -84,7 +84,7 @@ const Loader = struct {
     /// the most files a config reads, counting one read again for each
     /// include of it. a file may be included more than once, so a few
     /// files that each include the next twice would be read millions of
-    /// times, and a plan, say of a config `os install` cloned, would
+    /// times, and a plan, say of a config `yos install` cloned, would
     /// never come.
     const max_reads = 256;
 
@@ -130,7 +130,7 @@ const Loader = struct {
                 if (from) |f| {
                     try l.diags.add(.include_missing, f, "included file {s} {s}", .{ path, why }, null);
                 } else {
-                    try l.diags.add(.config_missing, null, "{s} {s}", .{ path, why }, "run `os init`, or point at a config with --config");
+                    try l.diags.add(.config_missing, null, "{s} {s}", .{ path, why }, "run `yos init`, or point at a config with --config");
                 }
                 return null;
             },
@@ -371,7 +371,7 @@ const compose = @This();
 test "includes merge with the including file winning" {
     var r: Run = .{};
     defer r.deinit();
-    try r.fs.put("/etc/yoq/base.toml",
+    try r.fs.put("/etc/yos/base.toml",
         \\packages = ["git", "nano"]
         \\[system]
         \\timezone = "UTC"
@@ -383,14 +383,14 @@ test "includes merge with the including file winning" {
         \\ssh = true
         \\
     );
-    try r.fs.put("/etc/yoq/profiles/desktop.toml",
+    try r.fs.put("/etc/yos/profiles/desktop.toml",
         \\packages = ["ghostty"]
         \\[desktop]
         \\session = "hyprland"
         \\audio = "pipewire"
         \\
     );
-    try r.fs.put("/etc/yoq/machine.toml",
+    try r.fs.put("/etc/yos/machine.toml",
         \\include = ["base.toml", "profiles/desktop.toml"]
         \\packages = ["neovim", "git"]
         \\[system]
@@ -403,17 +403,17 @@ test "includes merge with the including file winning" {
         \\enabled = false
         \\
     );
-    const c = try r.load("/etc/yoq/machine.toml");
+    const c = try r.load("/etc/yos/machine.toml");
     try r.expectClean();
 
     const pkgs = c.packages.items.items;
     try testing.expectEqual(4, pkgs.len);
     try testing.expectEqualStrings("git", pkgs[0].name);
-    try testing.expectEqualStrings("/etc/yoq/base.toml", pkgs[0].src.file);
+    try testing.expectEqualStrings("/etc/yos/base.toml", pkgs[0].src.file);
     try testing.expectEqualStrings("neovim", pkgs[3].name);
 
     try testing.expectEqualStrings("America/New_York", c.system.timezone.?.v);
-    try testing.expectEqualStrings("/etc/yoq/machine.toml", c.system.timezone.?.src.file);
+    try testing.expectEqualStrings("/etc/yos/machine.toml", c.system.timezone.?.src.file);
     try testing.expectEqualStrings("en_US.UTF-8", c.system.locale.?.v);
     try testing.expectEqualStrings("zsh", c.users.get("kacy").?.shell.?.v);
     try testing.expect(c.users.get("kacy").?.groups.contains("wheel"));
@@ -481,7 +481,7 @@ test "missing include and missing config" {
 
     var r2: Run = .{};
     defer r2.deinit();
-    _ = try r2.load("/etc/yoq/machine.toml");
+    _ = try r2.load("/etc/yos/machine.toml");
     try testing.expectEqual(diag.Code.config_missing, r2.diags.items.items[0].code);
 }
 
@@ -623,13 +623,13 @@ test "unset rejects paths that aren't keys" {
 test "files read their source next to the file that names them" {
     var r: Run = .{};
     defer r.deinit();
-    try r.fs.put("/etc/yoq/profiles/base.toml",
+    try r.fs.put("/etc/yos/profiles/base.toml",
         \\[files."/etc/motd"]
         \\source = "motd"
         \\
     );
-    try r.fs.put("/etc/yoq/profiles/motd", "welcome\n");
-    try r.fs.put("/etc/yoq/machine.toml",
+    try r.fs.put("/etc/yos/profiles/motd", "welcome\n");
+    try r.fs.put("/etc/yos/machine.toml",
         \\include = ["profiles/base.toml"]
         \\[files."/etc/issue"]
         \\text = "atlas\n"
@@ -639,7 +639,7 @@ test "files read their source next to the file that names them" {
         \\"kernel.printk" = "3 3 3 3"
         \\
     );
-    const c = try r.load("/etc/yoq/machine.toml");
+    const c = try r.load("/etc/yos/machine.toml");
     try r.expectClean();
     try testing.expectEqualStrings("welcome\n", c.files.get("/etc/motd").?.content.?);
     try testing.expectEqualStrings("atlas\n", c.files.get("/etc/issue").?.content.?);
@@ -647,23 +647,23 @@ test "files read their source next to the file that names them" {
     try testing.expectEqualStrings("10", c.sysctl.get("vm.swappiness").?.v.text);
     try testing.expectEqualStrings("3 3 3 3", c.sysctl.get("kernel.printk").?.v.text);
 
-    try r.fs.put("/etc/yoq/machine.toml", "[files.\"/etc/motd\"]\nsource = \"gone\"\n");
-    _ = try r.load("/etc/yoq/machine.toml");
+    try r.fs.put("/etc/yos/machine.toml", "[files.\"/etc/motd\"]\nsource = \"gone\"\n");
+    _ = try r.load("/etc/yos/machine.toml");
     try testing.expectEqual(diag.Code.source_missing, r.diags.items.items[0].code);
 }
 
 test "the session's config is read next to the file that names it" {
     var r: Run = .{};
     defer r.deinit();
-    try r.fs.put("/etc/yoq/profiles/desktop.toml",
+    try r.fs.put("/etc/yos/profiles/desktop.toml",
         \\[desktop]
         \\session = "hyprland"
         \\session_config = "hyprland.conf"
         \\
     );
-    try r.fs.put("/etc/yoq/profiles/hyprland.conf", "monitor = , preferred, auto, 1\n");
-    try r.fs.put("/etc/yoq/machine.toml", "include = [\"profiles/desktop.toml\"]\n");
-    const c = try r.load("/etc/yoq/machine.toml");
+    try r.fs.put("/etc/yos/profiles/hyprland.conf", "monitor = , preferred, auto, 1\n");
+    try r.fs.put("/etc/yos/machine.toml", "include = [\"profiles/desktop.toml\"]\n");
+    const c = try r.load("/etc/yos/machine.toml");
     try r.expectClean();
     try testing.expectEqualStrings("monitor = , preferred, auto, 1\n", c.desktop.session_content.?);
 }

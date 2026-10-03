@@ -1,8 +1,8 @@
 //! secrets: values a managed file holds that stay out of the config and
 //! the lock, like a wifi password. `[files."<path>"] secret = "<name>"`
-//! names one, and `os secret set <name>` keeps its value here.
+//! names one, and `yos secret set <name>` keeps its value here.
 //!
-//! values are encrypted with systemd-creds under /var/lib/yoq/secrets.
+//! values are encrypted with systemd-creds under /var/lib/yos/secrets.
 //! /var never rolls back, so they outlive every generation, and they're
 //! this machine's: another machine can't decrypt them, so a new one needs
 //! them set again.
@@ -18,12 +18,12 @@ const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 const linux = std.os.linux;
 
-pub const default_dir = "/var/lib/yoq/secrets";
+pub const default_dir = "/var/lib/yos/secrets";
 /// the key keyed hashes are made with, beside the values. no secret's
 /// name can start with a dot, so none can be called that.
 const key_file = ".key";
 const ext = ".cred";
-/// the largest value os keeps.
+/// the largest value yos keeps.
 pub const max_len = 64 << 10;
 
 pub const Key = [32]u8;
@@ -64,8 +64,8 @@ pub fn wipe(value: []u8) void {
     std.crypto.secureZero(u8, value);
 }
 
-/// a secret as `os secret` reports it, never with its value. `os secret
-/// set` and `rm` print one with --json, and `os secret list` a list.
+/// a secret as `yos secret` reports it, never with its value. `yos secret
+/// set` and `rm` print one with --json, and `yos secret list` a list.
 pub const Entry = struct {
     name: []const u8,
     /// this machine keeps a value for it.
@@ -74,15 +74,15 @@ pub const Entry = struct {
     files: []const []const u8 = &.{},
 };
 
-pub const entry_schema = "yoq.secret/1";
-pub const list_schema = "yoq.secrets/1";
+pub const entry_schema = "yos.secret/1";
+pub const list_schema = "yos.secrets/1";
 pub const List = struct { secrets: []const Entry };
 
 /// what looking a secret up found.
 pub const Lookup = union(enum) {
     /// the value, in a buffer the caller wipes when it's done.
     value: []u8,
-    /// `os secret set` hasn't kept one by that name.
+    /// `yos secret set` hasn't kept one by that name.
     missing,
     /// it's there, but can't be decrypted here: systemd-creds' reason.
     unreadable: []const u8,
@@ -146,7 +146,7 @@ pub const Store = struct {
 };
 
 fn noSecret(a: Allocator, name: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(a, "there's no secret called {s}. `os secret list` lists them", .{name});
+    return std.fmt.allocPrint(a, "there's no secret called {s}. `yos secret list` lists them", .{name});
 }
 
 /// the real store: one systemd-creds file per secret under `dir`, made
@@ -176,7 +176,7 @@ pub const System = struct {
 
     /// the name sealed into the credential, which decrypting checks, so a
     /// file renamed to another secret's name won't decrypt. systemd's
-    /// names can't hold a /, and @ can't be in os's names.
+    /// names can't hold a /, and @ can't be in yos's names.
     fn nameFlag(a: Allocator, name: []const u8) ![]const u8 {
         const flag = try std.fmt.allocPrint(a, "--name={s}", .{name});
         std.mem.replaceScalar(u8, flag, '/', '@');

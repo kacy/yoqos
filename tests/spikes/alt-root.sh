@@ -1,9 +1,9 @@
 #!/bin/sh
-# spike: install a desktop's worth of packages into an empty root with os,
+# spike: install a desktop's worth of packages into an empty root with yos,
 # the way a staged generation would be built, and list the install scripts
 # and hooks that complained. prints what happened; it doesn't fail.
 set -u
-os=$1
+yos=$1
 root=/tmp/alt-root
 dir=$(mktemp -d)
 cfg=$dir/machine.toml

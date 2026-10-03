@@ -5,17 +5,17 @@
 set -eu
 set -o pipefail
 
-os=$1
+yos=$1
 dir=$(mktemp -d)
 cfg=$dir/machine.toml
 
-# runs `os <args>` on the config and checks what it printed has $1. os
+# runs `yos <args>` on the config and checks what it printed has $1. yos
 # failing fails the test.
 says() {
     want=$1
     shift
     "$os" --config "$cfg" "$@" > "$dir/out"
-    grep -q "$want" "$dir/out" || { echo "smoke: os $* didn't say '$want':"; cat "$dir/out"; exit 1; }
+    grep -q "$want" "$dir/out" || { echo "smoke: yos $* didn't say '$want':"; cat "$dir/out"; exit 1; }
 }
 
 # whether status says $1. status exits 1 when something is failing, which
@@ -30,7 +30,7 @@ status_says() {
 "$os" --config "$cfg" init 2> "$dir/init.err"
 cat "$dir/init.err" >&2
 # init answers provider choices from what's installed. for the rest, take
-# the suggested option, as pressing enter at `os update`'s prompt would.
+# the suggested option, as pressing enter at `yos update`'s prompt would.
 sed -n 's/.*like \(.*\) = "\(.*\)".*/"\1" = "\2"/p' "$dir/init.err" > "$dir/answers"
 if [ -s "$dir/answers" ]; then
     if grep -q '^\[providers\]' "$cfg"; then
@@ -79,7 +79,7 @@ pacman -Q tree
 "$os" --config "$cfg" remove --yes tree
 
 # a package that needs something several packages provide, with no one to
-# ask which: os lists the choices and fails, and puts the config back.
+# ask which: yos lists the choices and fails, and puts the config back.
 # ant needs a java environment, which each jdk provides.
 config=$(sha256sum < "$cfg")
 lock=$(sha256sum < "$dir/machine.lock")
@@ -88,34 +88,34 @@ for json in "" --json; do
     # shellcheck disable=SC2086
     "$os" --config "$cfg" $json add --no-apply ant < /dev/null > "$dir/out" 2> "$dir/err" || rc=$?
     if [ "$rc" != 1 ] || ! grep -q "E0123" "$dir/out" "$dir/err" || ! grep -q "java-environment has more than one provider: .*jdk" "$dir/out" "$dir/err"; then
-        echo "smoke: os $json add ant didn't list the providers and fail (exit $rc):"
+        echo "smoke: yos $json add ant didn't list the providers and fail (exit $rc):"
         cat "$dir/out" "$dir/err"
         exit 1
     fi
-    if [ -n "$json" ] && ! grep -q "yoq.errors/1" "$dir/out"; then echo "smoke: os --json add ant printed no errors document"; cat "$dir/out"; exit 1; fi
-    [ "$(sha256sum < "$cfg")" = "$config" ] || { echo "smoke: os $json add ant left the config changed"; exit 1; }
-    [ "$(sha256sum < "$dir/machine.lock")" = "$lock" ] || { echo "smoke: os $json add ant changed the lock"; exit 1; }
+    if [ -n "$json" ] && ! grep -q "yos.errors/1" "$dir/out"; then echo "smoke: yos --json add ant printed no errors document"; cat "$dir/out"; exit 1; fi
+    [ "$(sha256sum < "$cfg")" = "$config" ] || { echo "smoke: yos $json add ant left the config changed"; exit 1; }
+    [ "$(sha256sum < "$dir/machine.lock")" = "$lock" ] || { echo "smoke: yos $json add ant changed the lock"; exit 1; }
 done
 
 # a user: created with its shell and groups, then moved between groups.
-printf '\n[users.yoqtest]\nshell = "bash"\ngroups = ["wheel"]\n' >> "$cfg"
+printf '\n[users.yostest]\nshell = "bash"\ngroups = ["wheel"]\n' >> "$cfg"
 "$os" --config "$cfg" apply --yes
-getent passwd yoqtest | grep -q ':/usr/bin/bash$'
-id -nG yoqtest | grep -qw wheel
+getent passwd yostest | grep -q ':/usr/bin/bash$'
+id -nG yostest | grep -qw wheel
 says "nothing to do" plan
 sed -i 's/^groups = \["wheel"\]$/groups = ["video"]/' "$cfg"
 "$os" --config "$cfg" apply --yes
-id -nG yoqtest | grep -qw video
-if id -nG yoqtest | grep -qw wheel; then echo "yoqtest is still in wheel"; exit 1; fi
+id -nG yostest | grep -qw video
+if id -nG yostest | grep -qw wheel; then echo "yostest is still in wheel"; exit 1; fi
 says "nothing to do" plan
 
 # files and sysctl: written with their mode, and sysctl loaded where
 # systemd runs the machine.
-printf '\n[files."/etc/motd"]\ntext = "managed by os\\n"\nmode = "0600"\n\n[sysctl]\n"vm.swappiness" = 17\n' >> "$cfg"
+printf '\n[files."/etc/motd"]\ntext = "managed by yos\\n"\nmode = "0600"\n\n[sysctl]\n"vm.swappiness" = 17\n' >> "$cfg"
 "$os" --config "$cfg" apply --yes
-grep -qx "managed by os" /etc/motd
+grep -qx "managed by yos" /etc/motd
 [ "$(stat -c %a /etc/motd)" = 600 ]
-grep -qx "vm.swappiness = 17" /etc/sysctl.d/99-yoq.conf
+grep -qx "vm.swappiness = 17" /etc/sysctl.d/99-yos.conf
 if [ -d /run/systemd/system ]; then [ "$(sysctl -n vm.swappiness)" = 17 ]; fi
 says "nothing to do" plan
 
@@ -156,10 +156,10 @@ fi
 # update applies what it resolved; on the same day there's nothing to do.
 says "nothing to do" update --yes
 
-# drift: with os and its pacman hook installed the way a package would,
-# a direct `pacman -S` shows in status until os applies again.
-install -Dm755 "$os" /usr/bin/os
-install -Dm644 dist/yoq-drift.hook /usr/share/libalpm/hooks/yoq-drift.hook
+# drift: with yos and its pacman hook installed the way a package would,
+# a direct `pacman -S` shows in status until yos applies again.
+install -Dm755 "$os" /usr/bin/yos
+install -Dm644 dist/yos-drift.hook /usr/share/libalpm/hooks/yos-drift.hook
 pacman -S --noconfirm --noprogressbar htop >/dev/null
 status_says "touched with pacman since the last apply: htop"
 "$os" --config "$cfg" --json plan > "$dir/drift-plan.json"
@@ -173,10 +173,10 @@ if status_says "touched with pacman"; then echo "drift survived an apply"; exit 
 grep '"kind":"pacman"' "$dir/events" | grep -q '"htop"' || { echo "smoke: no pacman event for htop"; cat "$dir/events"; exit 1; }
 grep '"kind":"apply"' "$dir/events" | tail -n 1 | grep -q "\"step\":\"done\",\"plan\":\"$hash\"" || { echo "smoke: the last apply event isn't plan $hash"; cat "$dir/events"; exit 1; }
 grep -q '"kind":"commit"' "$dir/events" || { echo "smoke: no commit events"; exit 1; }
-if grep -v '^{"schema":"yoq.event/1",' "$dir/events"; then echo "smoke: a line of os events isn't an event"; exit 1; fi
+if grep -v '^{"schema":"yos.event/1",' "$dir/events"; then echo "smoke: a line of yos events isn't an event"; exit 1; fi
 [ "$("$os" events --since 2000-01-01T00:00Z | wc -l)" = "$(wc -l < "$dir/events")" ] || { echo "smoke: --since 2000 left events out"; exit 1; }
 [ "$("$os" events --since 99999999999999 | wc -l)" = 0 ] || { echo "smoke: --since the far future printed events"; exit 1; }
-rm /usr/share/libalpm/hooks/yoq-drift.hook
+rm /usr/share/libalpm/hooks/yos-drift.hook
 
 # a config that leaves out base doesn't get to remove it.
 bare=$dir/bare.toml
@@ -188,7 +188,7 @@ grep -q E0126 "$dir/bare.err"
 rc=0
 "$os" --json enable-rollback > "$dir/enable.json" || rc=$?
 [ "$rc" -le 1 ] || { echo "smoke: enable-rollback exited $rc"; exit 1; }
-grep -q "yoq.enable-rollback/1" "$dir/enable.json"
+grep -q "yos.enable-rollback/1" "$dir/enable.json"
 
 git -C "$dir" log --format=%s
 echo "smoke ok"

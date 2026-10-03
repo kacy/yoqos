@@ -17,22 +17,22 @@ const Allocator = std.mem.Allocator;
 
 pub const available = build_options.alpm;
 
-/// set in the environment of os's own transactions, so the drift hook,
+/// set in the environment of yos's own transactions, so the drift hook,
 /// which pacman runs as a child, can tell them from pacman run by hand.
-pub const own_env = "YOQ_APPLY";
+pub const own_env = "YOS_APPLY";
 const impl = if (available) @import("alpm_c.zig") else struct {};
 
-/// package hooks os turns off in a transaction into a root other than the
+/// package hooks yos turns off in a transaction into a root other than the
 /// running system: a staged generation, a clean build, an install.
 /// sbctl's signs the files in its database at their paths on the esp,
-/// which isn't mounted in such a root, so it fails there; and os signs
+/// which isn't mounted in such a root, so it fails there; and yos signs
 /// everything it puts on the esp itself.
 pub const masked_hooks = [_][]const u8{"zz-sbctl.hook"};
 
 /// where the links that mask them go, under the target root, in a hook
 /// directory libalpm reads after the root's own. a link to /dev/null is
 /// pacman's way to turn a hook off.
-pub const masked_dir = "run/yoq-masked-hooks";
+pub const masked_dir = "run/yos-masked-hooks";
 
 /// the hooks masked in a transaction into `root`: none for the running
 /// system, where the esp is mounted and the hooks work.
@@ -48,10 +48,10 @@ pub const SyncDb = struct {
     /// a `<name>.db` file.
     path: []const u8,
     /// where the repository's packages download from, most preferred first:
-    /// directories like https://geo.mirror.pkgbuild.com/core/os/x86_64.
+    /// directories like https://geo.mirror.pkgbuild.com/core/yos/x86_64.
     servers: []const []const u8 = &.{},
     /// its packages are signed and checked. a repository that isn't, like
-    /// os's own aur builds, is read as pacman's `Optional TrustAll`.
+    /// yos's own aur builds, is read as pacman's `Optional TrustAll`.
     signed: bool = true,
 };
 
@@ -124,7 +124,7 @@ pub const Target = struct {
     progress: ?*progress.Progress = null,
 };
 
-/// a change to the packages installed in a root: what `os apply` does.
+/// a change to the packages installed in a root: what `yos apply` does.
 pub const Transaction = struct {
     target: Target,
     /// packages to install or upgrade, at exactly these versions.
@@ -539,7 +539,7 @@ test "a package replaces one it conflicts with that the plan removes" {
 test "hooks masked in other roots" {
     try testing.expectEqual(0, maskedFor("/").len);
     try testing.expectEqual(0, maskedFor("//").len);
-    for ([_][]const u8{ "/run/yoq/next", "/mnt/yoq", "/var/tmp/clean/" }) |root| {
+    for ([_][]const u8{ "/run/yos/next", "/mnt/yos", "/var/tmp/clean/" }) |root| {
         try testing.expectEqual(1, maskedFor(root).len);
         try testing.expectEqualStrings("zz-sbctl.hook", maskedFor(root)[0]);
     }

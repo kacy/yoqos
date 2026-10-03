@@ -1,15 +1,15 @@
 #!/bin/sh
 # checks every config in examples/: its includes merge and every value
-# passes os's checks. with --resolve, each one also resolves against
+# passes yos's checks. with --resolve, each one also resolves against
 # today's arch packages into a lock, which catches a package arch doesn't
 # have, or a provider the config should choose. that needs an arch machine
 # and a build with -Dalpm, and it changes nothing there. examples with aur
 # packages or repositories of their own are only checked, since resolving
 # them builds aur packages or trusts another repository's key.
-# usage: tests/examples.sh <path to os> [--resolve]
+# usage: tests/examples.sh <path to yos> [--resolve]
 set -eu
 
-os=$(realpath "$1")
+yos=$(realpath "$1")
 resolve=${2:-}
 failed=0
 

@@ -1,4 +1,4 @@
-//! `os diff <a> [<b>]`: what differs between two generations, generation
+//! `yos diff <a> [<b>]`: what differs between two generations, generation
 //! `b` against `a`, the newest if there's no `b`: packages added, removed,
 //! and at other versions, from each one's own pacman database, and the
 //! config between their commits.
@@ -13,7 +13,7 @@ const output = @import("../output.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
-const usage_text = "os diff <generation> [<generation>]";
+const usage_text = "yos diff <generation> [<generation>]";
 
 pub const Package = struct { name: []const u8, version: []const u8 };
 pub const Changed = struct { name: []const u8, from: []const u8, to: []const u8 };
@@ -45,7 +45,7 @@ pub fn diffCmd(ctx: *Context, all: []const [:0]const u8) !u8 {
     const d = try compare(a, try packagesOf(&m, from.n), try packagesOf(&m, to.n));
     const config = try configDiff(ctx, a, from, to);
     if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.diff/1", .{ .from = from.n, .to = to.n, .added = d.added, .removed = d.removed, .changed = d.changed, .config = config });
+        try output.writeDoc(ctx.out, "yos.diff/1", .{ .from = from.n, .to = to.n, .added = d.added, .removed = d.removed, .changed = d.changed, .config = config });
         return 0;
     }
     try ctx.out.print("generation {d} ({s}) to {d} ({s})\n", .{ from.n, from.reason, to.n, to.reason });

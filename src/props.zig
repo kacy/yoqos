@@ -203,10 +203,10 @@ fn genFacts(a: Allocator, r: Random, c: *const config.Config, l: *const lock.Loc
 fn load(a: Allocator, text: []const u8) !config.Config {
     var fs: compose.MemFiles = .{};
     defer fs.deinit();
-    try fs.put("/etc/yoq/machine.toml", text);
+    try fs.put("/etc/yos/machine.toml", text);
     var diags: diag.List = .init(testing.allocator);
     defer diags.deinit();
-    const loaded = try compose.load(a, fs.files(), "/etc/yoq/machine.toml", &diags);
+    const loaded = try compose.load(a, fs.files(), "/etc/yos/machine.toml", &diags);
     if (diags.items.items.len > 0) {
         try diags.render(std.debug.lockStderr(&.{}).terminal().writer);
         std.debug.print("\nin:\n{s}\n", .{text});

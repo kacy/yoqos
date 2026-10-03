@@ -1,0 +1,15 @@
+# records package changes made with pacman directly, so `yos status` can say
+# what changed outside yos. the yos package installs this to
+# /usr/share/libalpm/hooks.
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Recording package changes for yos status...
+When = PostTransaction
+Exec = /usr/bin/yos record-pacman
+NeedsTargets

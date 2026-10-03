@@ -16,7 +16,7 @@ const Machine = gens.Machine;
 const Allocator = std.mem.Allocator;
 
 /// where copies of boot files, and unified kernel images, go on the esp.
-pub const esp_boot_dir = "yoq/boot";
+pub const esp_boot_dir = "yos/boot";
 
 /// puts the menu in place, for entries whose files are where it says,
 /// with `entries[held]` as the default when it's given, and the first
@@ -27,7 +27,7 @@ pub const MenuWriter = *const fn (*const Machine, []menu.Entry, held: ?usize) an
 /// bootloader that can't read the roots (see menu.copiesOnEsp),
 /// entries whose files are in a root's /boot get copies on the esp,
 /// named by content so generations share them. an entry for a root
-/// with os's ukify config starts a unified kernel image there instead,
+/// with yos's ukify config starts a unified kernel image there instead,
 /// on every bootloader, built from the same files and shared the same
 /// way. files that don't fit leave everything as it was, and say which
 /// of `records` to remove to make room. `put` puts the menu in place;
@@ -198,7 +198,7 @@ pub fn hash(m: *const Machine, path: []const u8, why: *[]const u8) !?Hashed {
 pub fn replaceFile(m: *const Machine, src: []const u8, dest: []const u8) !?[]const u8 {
     const why = try exec.runAll(m.a, m.io, try replaceSteps(m.a, src, dest)) orelse return null;
     // a copy cut short, by a full esp say, would only take up room.
-    std.Io.Dir.cwd().deleteFile(m.io, try std.fmt.allocPrint(m.a, "{s}.yoq-new", .{dest})) catch {};
+    std.Io.Dir.cwd().deleteFile(m.io, try std.fmt.allocPrint(m.a, "{s}.yos-new", .{dest})) catch {};
     return why;
 }
 
@@ -231,7 +231,7 @@ pub fn restoreBoot(m: *const Machine, subvol: []const u8) !Put {
     const esp = m.boot.esp.?;
     const s = try bootSync(m, from, esp, &why) orelse return .{ .failed = why };
     if (rootfs.freeBytes(esp)) |room| {
-        // older generations' copies may be there too, which `os gc`
+        // older generations' copies may be there too, which `yos gc`
         // frees.
         const collectable = menu.copiesOnEsp(m.boot);
         const records = try gens.readRecords(m.a, m.io, "/var");
@@ -323,7 +323,7 @@ pub const Put = union(enum) {
 /// fat, syncing the file and the menu's own directory leaves the rename
 /// in memory, and a power cut then leaves a menu whose file isn't there.
 fn replaceSteps(a: Allocator, src: []const u8, dest: []const u8) ![]const []const []const u8 {
-    const tmp = try std.fmt.allocPrint(a, "{s}.yoq-new", .{dest});
+    const tmp = try std.fmt.allocPrint(a, "{s}.yos-new", .{dest});
     const dir = std.fs.path.dirnamePosix(dest) orelse ".";
     return a.dupe([]const []const u8, &.{
         try a.dupe([]const u8, &.{ "cp", src, tmp }),
@@ -339,16 +339,16 @@ test "a file put on the esp is renamed in, and its directory synced after" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const steps = try replaceSteps(a, "/x/vmlinuz-linux", "/efi/yoq/boot/ab-vmlinuz-linux");
+    const steps = try replaceSteps(a, "/x/vmlinuz-linux", "/efi/yos/boot/ab-vmlinuz-linux");
     try std.testing.expectEqual(4, steps.len);
     try std.testing.expectEqualStrings("mv", steps[2][0]);
     try std.testing.expectEqualStrings("sync", steps[3][0]);
-    try std.testing.expectEqualStrings("/efi/yoq/boot", steps[3][1]);
+    try std.testing.expectEqualStrings("/efi/yos/boot", steps[3][1]);
     // and the steps work: the file's there whole, with nothing beside it.
     const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src", .data = "kernel" });
     const dest = try std.fmt.allocPrint(a, "{s}/dest", .{base});
     try std.testing.expectEqual(null, try exec.runAll(a, std.testing.io, try replaceSteps(a, try std.fmt.allocPrint(a, "{s}/src", .{base}), dest)));
     try std.testing.expectEqualStrings("kernel", try tmp.dir.readFileAlloc(std.testing.io, "dest", a, .limited(16)));
-    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "dest.yoq-new", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "dest.yos-new", .{}));
 }

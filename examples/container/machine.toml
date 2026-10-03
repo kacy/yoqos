@@ -1,11 +1,11 @@
 # a machine with no kernel of its own: a systemd-nspawn container, or a
-# toolbox for a project. `kernel = "none"` keeps os from installing or
+# toolbox for a project. `kernel = "none"` keeps yos from installing or
 # expecting one; everything else works the same.
 version = 1
 packages = ["base", "git", "base-devel", "zig", "ripgrep", "fd"]
 
 [providers]
-# arch has more than one package for this, and os asks instead of picking
+# arch has more than one package for this, and yos asks instead of picking
 # the first one the way pacman does.
 "libxtables.so" = "iptables"
 

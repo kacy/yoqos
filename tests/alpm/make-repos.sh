@@ -23,7 +23,7 @@ pkg() {
         echo "pkgver = $ver"
         echo "pkgdesc = test package $name"
         echo "builddate = 1790000000"
-        echo "packager = yoq os tests"
+        echo "packager = yos tests"
         echo "size = 64"
         echo "arch = x86_64"
         echo "license = MIT"

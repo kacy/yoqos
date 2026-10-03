@@ -16,7 +16,7 @@ pub fn apply(a: Allocator, io: std.Io, root: []const u8, subject: []const u8, va
     if (std.mem.eql(u8, key, "locale")) return s.setVar("etc/locale.conf", "LANG", value);
     if (std.mem.eql(u8, key, "keymap")) return s.setVar("etc/vconsole.conf", "KEYMAP", value);
     if (std.mem.eql(u8, key, "timezone")) return s.timezone(value);
-    try diags.add(.bad_value, null, "os doesn't know how to set {s}", .{subject}, null);
+    try diags.add(.bad_value, null, "yos doesn't know how to set {s}", .{subject}, null);
     return false;
 }
 

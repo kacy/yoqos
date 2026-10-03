@@ -1,6 +1,6 @@
 {
-  "schema": "yoq.plan/1",
-  "hash": "8cfc205e59c4a80cd3d2eff8a6a7bb3687d8f1833fa0b7bb3dd4b844a6649843",
+  "schema": "yos.plan/1",
+  "hash": "2527e4050372b483c932feb2815f112cab8ca583e5e4b144855a17ea1d90160f",
   "summary": {
     "add": 11,
     "change": 0,
@@ -108,7 +108,7 @@
     {
       "op": "add",
       "kind": "file",
-      "subject": "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf",
+      "subject": "/etc/mkinitcpio.conf.d/10-yos-nvidia.conf",
       "from": null,
       "to": "write, mode 0644",
       "cause": "hardware.gpu",

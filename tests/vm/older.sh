@@ -4,7 +4,7 @@
 #   older.sh date   an archive day at least a week back whose core repo
 #                   has another linux than the one installed (and another
 #                   systemd, if a day in reach has one), and the same glibc
-#                   and pacman releases, so os, built against today's,
+#                   and pacman releases, so yos, built against today's,
 #                   still runs there. as yyyy-mm-dd.
 #   older.sh linux  the url of the newest linux package with an older
 #                   upstream version than the one installed.
@@ -34,7 +34,7 @@ date)
     found=
     for back in $(seq 7 60); do
         day=$(date -u -d "$back days ago" +%Y/%m/%d)
-        curl -fsL -o "$db" "$archive/repos/$day/core/os/x86_64/core.db" || continue
+        curl -fsL -o "$db" "$archive/repos/$day/core/yos/x86_64/core.db" || continue
         [ "$(version linux "$db")" != "$linux" ] || continue
         [ "$(upstream "$(version glibc "$db")")" = "$glibc" ] || continue
         [ "$(upstream "$(version pacman "$db")")" = "$pacman" ] || continue

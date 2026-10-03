@@ -1,4 +1,4 @@
-//! `os doctor`: how os is set up on this machine, as checks with what to
+//! `yos doctor`: how yos is set up on this machine, as checks with what to
 //! do about each one that fails. it changes nothing.
 
 const std = @import("std");
@@ -21,7 +21,7 @@ const Allocator = std.mem.Allocator;
 const esp_room: u64 = 200 << 20;
 
 pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (try cli.noArgs(ctx, args, "os doctor")) |code| return code;
+    if (try cli.noArgs(ctx, args, "yos doctor")) |code| return code;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
@@ -32,14 +32,14 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         .what = "config",
         .ok = loaded != null,
         .found = ctx.config_path,
-        .fix = "it doesn't load. `os plan` says what's wrong, and where.",
+        .fix = "it doesn't load. `yos plan` says what's wrong, and where.",
     });
     const dir = std.fs.path.dirnamePosix(ctx.config_path) orelse "/";
     try checks.append(a, .{
         .what = "config history",
         .ok = try exec.run(a, ctx.io, &.{ "git", "-C", dir, "rev-parse", "--git-dir" }) == null,
         .found = dir,
-        .fix = "it isn't a git repository, so changes aren't recorded. `os init` makes one, or `git init` there.",
+        .fix = "it isn't a git repository, so changes aren't recorded. `yos init` makes one, or `git init` there.",
     });
     if (loaded != null) {
         const l = try locking.readLock(ctx, a, ctx.config_path);
@@ -51,14 +51,14 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         .what = "pacman hook",
         .ok = hook,
         .found = if (hook) "installed" else "missing",
-        .fix = "without yoq-drift.hook, changes made with pacman directly go unnoticed. installing the yoq-os package puts it in place.",
+        .fix = "without yos-drift.hook, changes made with pacman directly go unnoticed. installing the yos package puts it in place.",
     });
     const unfinished = try journal.unfinished(a, ctx.io, ctx.root);
     try checks.append(a, .{
         .what = "last apply",
         .ok = unfinished == null,
         .found = if (unfinished == null) "finished" else "didn't finish",
-        .fix = "it stopped partway. `os apply` starts again from the machine as it is.",
+        .fix = "it stopped partway. `yos apply` starts again from the machine as it is.",
     });
     if (cli.eql(ctx.root, "/")) {
         const f = try w.facts() orelse return w.fail();
@@ -67,8 +67,8 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             try checks.append(a, .{
                 .what = "boot menu",
                 .ok = b.menu_missing == null,
-                .found = b.menu_missing orelse "has os's generations",
-                .fix = "another tool rewrote it without os's generations. `os gc` writes them again.",
+                .found = b.menu_missing orelse "has yos's generations",
+                .fix = "another tool rewrote it without yos's generations. `yos gc` writes them again.",
             });
             var missing: std.ArrayList([]const u8) = .empty;
             for (try enable.units(a, "")) |u| {
@@ -78,7 +78,7 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
                 .what = "units",
                 .ok = missing.items.len == 0,
                 .found = if (missing.items.len == 0) "all in place" else try std.mem.join(a, ", ", missing.items),
-                .fix = "trial boots need these. the next change that makes a generation puts them back, as long as yoq-health.service is there; without it, `os uninstall` then `os enable-rollback` does.",
+                .fix = "trial boots need these. the next change that makes a generation puts them back, as long as yos-health.service is there; without it, `yos uninstall` then `yos enable-rollback` does.",
             });
         }
         if (try enable.luksCheck(a, &b)) |c| try checks.append(a, c);
@@ -103,7 +103,7 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
                 .what = "esp space",
                 .ok = room == null or room.? >= esp_room,
                 .found = if (room) |r| try std.fmt.allocPrint(a, "{d} MiB free on {s}", .{ r >> 20, esp }) else esp,
-                .fix = "a new kernel and initramfs may not fit. `os gc --keep 2` removes older generations and their copies there.",
+                .fix = "a new kernel and initramfs may not fit. `yos gc --keep 2` removes older generations and their copies there.",
             });
         }
         if (try passwordlessSudo(ctx, a)) |where| try checks.append(a, .{
@@ -115,7 +115,7 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     }
     const ok = enable.allOk(checks.items);
     if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.doctor/1", .{ .ok = ok, .checks = checks.items });
+        try output.writeDoc(ctx.out, "yos.doctor/1", .{ .ok = ok, .checks = checks.items });
     } else {
         try enable.writeChecks(ctx.out, checks.items);
         const end = if (!ok) "\nthe lines under each \"no\" say what to do.\n" else if (enable.anyWarning(checks.items)) "\nnothing to fix, but read the lines under each \"warn\".\n" else "\nnothing to fix.\n";
@@ -208,7 +208,7 @@ fn tpmSealCheck(a: Allocator, device: []const u8) !enable.Check {
 }
 
 /// whether the kernel command line has the initramfs try the tpm, as
-/// `os install --tpm` sets it up: rd.luks.options with tpm2-device.
+/// `yos install --tpm` sets it up: rd.luks.options with tpm2-device.
 fn cmdlineTpm(cmdline: []const u8) bool {
     var words: generation.Words = .{ .text = cmdline };
     while (words.next()) |w| {
@@ -221,7 +221,7 @@ fn cmdlineTpm(cmdline: []const u8) bool {
 /// files that get the key from being changed. without it, it's a warning:
 /// the tpm keeps a powered-off disk safe, not a machine left alone. it's
 /// the same with limine, which loads kernels itself and checks nothing
-/// until its config's hash is enrolled, which os can't do while it edits
+/// until its config's hash is enrolled, which yos can't do while it edits
 /// that file. grub, systemd-boot, and refind start kernels through the
 /// firmware, which checks them.
 fn tpmCheck(b: *const facts.Boot, tpm: bool) ?enable.Check {
@@ -266,13 +266,13 @@ fn secureBootChecks(a: Allocator, b: *const facts.Boot, wants: bool, sbctl: bool
         .what = "sbctl",
         .ok = sbctl,
         .found = if (sbctl) "installed" else "missing",
-        .fix = "it makes, enrolls, and signs with the keys. `pacman -S sbctl` to make keys before the first apply; with secure_boot on, os installs it too.",
+        .fix = "it makes, enrolls, and signs with the keys. `pacman -S sbctl` to make keys before the first apply; with secure_boot on, yos installs it too.",
     });
     try checks.append(a, .{
         .what = "secure boot keys",
         .ok = b.sbctl_keys,
         .found = if (b.sbctl_keys) secureboot.keys_dir else "none",
-        .fix = "`sbctl create-keys` makes them in " ++ secureboot.keys_dir ++ ". os never makes or enrolls keys itself.",
+        .fix = "`sbctl create-keys` makes them in " ++ secureboot.keys_dir ++ ". yos never makes or enrolls keys itself.",
     });
     const on = b.secure_boot orelse false;
     // in setup mode the firmware has no keys yet, which is expected.
@@ -280,14 +280,14 @@ fn secureBootChecks(a: Allocator, b: *const facts.Boot, wants: bool, sbctl: bool
         .what = "firmware keys",
         .ok = enrolled or !on,
         .found = if (enrolled) "sbctl's db key is enrolled" else "sbctl's db key isn't enrolled",
-        .fix = "images os signs won't start while the firmware enforces secure boot (E0137). in the firmware's setup, clear the secure boot keys (setup mode), boot, and run `sbctl enroll-keys -m`.",
+        .fix = "images yos signs won't start while the firmware enforces secure boot (E0137). in the firmware's setup, clear the secure boot keys (setup mode), boot, and run `sbctl enroll-keys -m`.",
     });
     try checks.append(a, .{
         .what = "firmware secure boot",
         .ok = on or !wants,
         .found = secureboot.describe(b.secure_boot, b.setup_mode),
         .fix = if (b.setup_mode orelse false)
-            "the firmware takes new keys now. once `os doctor` finds nothing unsigned, `sbctl enroll-keys -m` enrolls sbctl's keys and microsoft's, and the next boot enforces them."
+            "the firmware takes new keys now. once `yos doctor` finds nothing unsigned, `sbctl enroll-keys -m` enrolls sbctl's keys and microsoft's, and the next boot enforces them."
         else
             "in the firmware's setup, clear its secure boot keys (setup mode), boot, and run `sbctl enroll-keys -m`; then turn secure boot on there.",
     });
@@ -297,9 +297,9 @@ fn secureBootChecks(a: Allocator, b: *const facts.Boot, wants: bool, sbctl: bool
         .ok = b.unsigned.len == 0,
         .found = if (b.unsigned.len == 0) "every efi file is signed" else try std.fmt.allocPrint(a, "unsigned: {s}", .{try std.mem.join(a, ", ", b.unsigned)}),
         .fix = if (mine.len == b.unsigned.len)
-            "os signs its images in yoq/boot when it writes the boot menu; `os gc` writes it now."
+            "yos signs its images in yos/boot when it writes the boot menu; `yos gc` writes it now."
         else
-            "os signs its own images in yoq/boot when it writes the boot menu (`os gc` writes it now). sign the bootloader's files with `sbctl sign -s <file>`, which signs them again whenever their package updates them.",
+            "yos signs its own images in yos/boot when it writes the boot menu (`yos gc` writes it now). sign the bootloader's files with `sbctl sign -s <file>`, which signs them again whenever their package updates them.",
     });
 }
 
@@ -307,16 +307,16 @@ fn secureBootChecks(a: Allocator, b: *const facts.Boot, wants: bool, sbctl: bool
 /// `date` is null. a lock from after today means the clock is behind, or
 /// was ahead when the lock was made.
 fn lockCheck(a: Allocator, date: ?[]const u8, age: ?i64) !enable.Check {
-    const d = date orelse return .{ .what = "lock", .ok = false, .found = "missing", .fix = "there's no machine.lock beside the config. `os update` makes one." };
+    const d = date orelse return .{ .what = "lock", .ok = false, .found = "missing", .fix = "there's no machine.lock beside the config. `yos update` makes one." };
     const ahead = age != null and age.? < 0;
     return .{
         .what = "lock",
         .ok = age != null and age.? <= status.stale_days and !ahead,
         .found = try std.fmt.allocPrint(a, "from {s}{s}", .{ d, if (ahead) ", after today by the clock" else "" }),
         .fix = if (ahead)
-            "the clock is behind the lock's date, or was ahead when the lock was made. set the clock; `os update` stops until it's past the lock's date, unless `--date` names today."
+            "the clock is behind the lock's date, or was ahead when the lock was made. set the clock; `yos update` stops until it's past the lock's date, unless `--date` names today."
         else
-            "it's over two weeks old, so it's missing security fixes. `os update` moves it to today.",
+            "it's over two weeks old, so it's missing security fixes. `yos update` moves it to today.",
     };
 }
 
@@ -341,7 +341,7 @@ fn lockAge(ctx: *Context, a: Allocator, date: []const u8) !?i64 {
 }
 
 fn hookInstalled(ctx: *Context) bool {
-    for ([_][]const u8{ "/usr/share/libalpm/hooks/yoq-drift.hook", "/etc/pacman.d/hooks/yoq-drift.hook" }) |p| {
+    for ([_][]const u8{ "/usr/share/libalpm/hooks/yos-drift.hook", "/etc/pacman.d/hooks/yos-drift.hook" }) |p| {
         if (rootfs.pathExists(ctx.io, p)) return true;
     }
     return false;
@@ -359,7 +359,7 @@ fn freeBytes(ctx: *Context, a: Allocator, path: []const u8) !?u64 {
 }
 
 /// the sudoers file with a NOPASSWD rule in it, if there is one. files
-/// os can't read are left out.
+/// yos can't read are left out.
 fn passwordlessSudo(ctx: *Context, a: Allocator) !?[]const u8 {
     var files: std.ArrayList([]const u8) = .empty;
     try files.append(a, "/etc/sudoers");
@@ -390,13 +390,13 @@ test "secure boot checks" {
     defer arena.deinit();
     const a = arena.allocator();
     var checks: std.ArrayList(enable.Check) = .empty;
-    var b: facts.Boot = .{ .esp = "/boot", .secure_boot = false, .setup_mode = true, .unsigned = &.{ "/boot/EFI/systemd/systemd-bootx64.efi", "/boot/yoq/boot/0123456789abcdef-yoq.efi" } };
+    var b: facts.Boot = .{ .esp = "/boot", .secure_boot = false, .setup_mode = true, .unsigned = &.{ "/boot/EFI/systemd/systemd-bootx64.efi", "/boot/yos/boot/0123456789abcdef-yos.efi" } };
     try secureBootChecks(a, &b, true, false, &checks);
     try std.testing.expectEqual(4, checks.items.len);
     for (checks.items) |c| try std.testing.expect(!c.ok);
     try std.testing.expectEqualStrings("off, in setup mode", checks.items[2].found);
     try std.testing.expect(std.mem.indexOf(u8, checks.items[2].fix.?, "sbctl enroll-keys -m") != null);
-    try std.testing.expectEqualStrings("unsigned: /boot/EFI/systemd/systemd-bootx64.efi, /boot/yoq/boot/0123456789abcdef-yoq.efi", checks.items[3].found);
+    try std.testing.expectEqualStrings("unsigned: /boot/EFI/systemd/systemd-bootx64.efi, /boot/yos/boot/0123456789abcdef-yos.efi", checks.items[3].found);
     try std.testing.expect(std.mem.indexOf(u8, checks.items[3].fix.?, "sbctl sign -s") != null);
 
     b = .{ .esp = "/boot", .secure_boot = true, .setup_mode = false, .sbctl_keys = true };

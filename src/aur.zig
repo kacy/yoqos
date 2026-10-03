@@ -1,7 +1,7 @@
-//! packages from the aur. `os update` fetches each one's recipe with git,
+//! packages from the aur. `yos update` fetches each one's recipe with git,
 //! shows what changed since the locked commit for review, builds it in a
 //! clean chroot with devtools' makechrootpkg, and adds the result to a
-//! local repository, `yoq-aur`, that resolution reads like any other.
+//! local repository, `yos-aur`, that resolution reads like any other.
 //! every function that changes something returns null when it worked, or
 //! what went wrong.
 
@@ -14,13 +14,13 @@ const sync = @import("sync.zig");
 const Allocator = std.mem.Allocator;
 
 /// the local repository's name, as pacman and the lock see it.
-pub const repo_name = "yoq-aur";
+pub const repo_name = "yos-aur";
 
 /// the unprivileged user recipes build as, inside the chroot.
-pub const build_user = "yoq-build";
+pub const build_user = "yos-build";
 
 /// the local repository's directory on the machine.
-pub const repo_dir = "/var/cache/yoq/aur/repo";
+pub const repo_dir = "/var/cache/yos/aur/repo";
 
 /// where the aur's recipes come from, unless the context says otherwise.
 pub const default_url = "https://aur.archlinux.org";
@@ -48,7 +48,7 @@ pub fn parseSrcInfo(a: Allocator, text: []const u8) !?SrcInfo {
     var needs: std.ArrayList([]const u8) = .empty;
     var provides: std.ArrayList([]const u8) = .empty;
     // "" in the pkgbase part, then the package whose part it is. a split
-    // package's other parts say what those packages need, which os doesn't
+    // package's other parts say what those packages need, which yos doesn't
     // install.
     var part: []const u8 = "";
     var lines = std.mem.splitScalar(u8, text, '\n');
@@ -82,14 +82,14 @@ pub fn parseSrcInfo(a: Allocator, text: []const u8) !?SrcInfo {
 
 /// what's wrong with building the recipe fetched for `name`, or null if
 /// nothing is. the build's paths come from pkgbase, so it has to be the
-/// recipe that was fetched and reviewed, and os installs only the package
+/// recipe that was fetched and reviewed, and yos installs only the package
 /// named after the recipe, so it has to build one.
 pub fn nameProblem(a: Allocator, name: []const u8, info: SrcInfo) !?[]const u8 {
     if (!std.mem.eql(u8, info.pkgbase, name)) {
-        return try std.fmt.allocPrint(a, "{s}'s recipe says its pkgbase is {s}. os builds a recipe only under its own name.", .{ name, info.pkgbase });
+        return try std.fmt.allocPrint(a, "{s}'s recipe says its pkgbase is {s}. yos builds a recipe only under its own name.", .{ name, info.pkgbase });
     }
     if (!lists.contains(info.pkgnames, name)) {
-        return try std.fmt.allocPrint(a, "{s}'s recipe is a split package that builds {s}, but none of them is {s}. os installs only the package named after its recipe, so it can't use this one.", .{ name, try std.mem.join(a, ", ", info.pkgnames), name });
+        return try std.fmt.allocPrint(a, "{s}'s recipe is a split package that builds {s}, but none of them is {s}. yos installs only the package named after its recipe, so it can't use this one.", .{ name, try std.mem.join(a, ", ", info.pkgnames), name });
     }
     return null;
 }
@@ -99,7 +99,7 @@ pub const Missing = struct {
     need: []const u8,
     /// the recipe that needs it.
     by: []const u8,
-    /// the recipe among them that splits it off, which os doesn't install.
+    /// the recipe among them that splits it off, which yos doesn't install.
     split_from: ?[]const u8 = null,
 };
 
@@ -179,7 +179,7 @@ fn providerOf(recipes: []const SrcInfo, name: []const u8) ?[]const u8 {
 /// in with `-I`.
 pub fn chrootPacmanConf(a: Allocator, repos: []const sync.Repo) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
-    // LocalFileSigLevel is for the aur packages -I installs, which os built
+    // LocalFileSigLevel is for the aur packages -I installs, which yos built
     // and didn't sign.
     try out.appendSlice(a, "[options]\nArchitecture = auto\nSigLevel = Required DatabaseOptional\nLocalFileSigLevel = Optional\n");
     for (repos) |r| {
@@ -191,7 +191,7 @@ pub fn chrootPacmanConf(a: Allocator, repos: []const sync.Repo) ![]const u8 {
     return out.items;
 }
 
-/// the directories os keeps aur work in, under a machine's root.
+/// the directories yos keeps aur work in, under a machine's root.
 pub const Dirs = struct {
     /// the recipes, one git clone each, and build logs.
     src: []const u8,
@@ -199,11 +199,11 @@ pub const Dirs = struct {
     build: []const u8,
     /// the chroot builds run in.
     chroot: []const u8,
-    /// the local repository: built packages and yoq-aur.db.
+    /// the local repository: built packages and yos-aur.db.
     repo: []const u8,
 
     pub fn under(a: Allocator, root: []const u8) !Dirs {
-        const base = try std.fs.path.join(a, &.{ root, "var/cache/yoq/aur" });
+        const base = try std.fs.path.join(a, &.{ root, "var/cache/yos/aur" });
         return .{
             .src = try std.fs.path.join(a, &.{ base, "src" }),
             .build = try std.fs.path.join(a, &.{ base, "build" }),
@@ -532,7 +532,7 @@ test "aur needs no repository or recipe has" {
     const lib: SrcInfo = .{ .pkgbase = "lib", .pkgnames = &.{ "lib", "lib-extra" }, .provides = &.{"libapi"} };
     const recipes = [_]SrcInfo{ app, lib };
     // glibc is in a sync database; the rest aren't. lib-extra is lib's
-    // recipe's, but os installs only lib from it.
+    // recipe's, but yos installs only lib from it.
     const missing = try missingNeeds(a, &recipes, &.{ "lib", "libapi", "helper", "lib-extra" });
     try testing.expectEqual(2, missing.len);
     try testing.expectEqualStrings("helper", missing[0].need);
@@ -555,11 +555,11 @@ test "a recipe builds only the package named after it" {
     const a = arena.allocator();
     try testing.expectEqual(null, try nameProblem(a, "foo", .{ .pkgbase = "foo", .pkgnames = &.{ "foo", "foo-common" } }));
     try testing.expectEqualStrings(
-        "foo's recipe says its pkgbase is bar. os builds a recipe only under its own name.",
+        "foo's recipe says its pkgbase is bar. yos builds a recipe only under its own name.",
         (try nameProblem(a, "foo", .{ .pkgbase = "bar", .pkgnames = &.{"foo"} })).?,
     );
     try testing.expectEqualStrings(
-        "foo's recipe is a split package that builds foo-cli, foo-gui, but none of them is foo. os installs only the package named after its recipe, so it can't use this one.",
+        "foo's recipe is a split package that builds foo-cli, foo-gui, but none of them is foo. yos installs only the package named after its recipe, so it can't use this one.",
         (try nameProblem(a, "foo", .{ .pkgbase = "foo", .pkgnames = &.{ "foo-cli", "foo-gui" } })).?,
     );
 }
@@ -592,11 +592,11 @@ test "the chroot builds from the lock's servers" {
     defer arena.deinit();
     const a = arena.allocator();
     const repos = [_]sync.Repo{
-        .{ .name = "core", .servers = &.{"https://m.example/$repo/os/$arch"} },
+        .{ .name = "core", .servers = &.{"https://m.example/$repo/yos/$arch"} },
         .{ .name = "extra", .servers = &.{} },
         .{ .name = "omarchy", .servers = &.{"https://pkgs.example/$arch"}, .signed = false },
         .{ .name = "mine", .servers = &.{"file:///srv/mine"} },
-        .{ .name = repo_name, .servers = &.{"file:///var/cache/yoq/aur/repo"}, .signed = false, .local = true },
+        .{ .name = repo_name, .servers = &.{"file:///var/cache/yos/aur/repo"}, .signed = false, .local = true },
     };
     // a lock from an earlier day: arch's own repositories from the archive.
     try testing.expectEqualStrings(
@@ -606,10 +606,10 @@ test "the chroot builds from the lock's servers" {
         \\LocalFileSigLevel = Optional
         \\
         \\[core]
-        \\Server = https://archive.archlinux.org/repos/2026/09/20/$repo/os/$arch
+        \\Server = https://archive.archlinux.org/repos/2026/09/20/$repo/yos/$arch
         \\
         \\[extra]
-        \\Server = https://archive.archlinux.org/repos/2026/09/20/$repo/os/$arch
+        \\Server = https://archive.archlinux.org/repos/2026/09/20/$repo/yos/$arch
         \\
         \\[omarchy]
         \\SigLevel = Optional TrustAll
@@ -618,14 +618,14 @@ test "the chroot builds from the lock's servers" {
     , try chrootPacmanConf(a, try sync.archived(a, &repos, "2026-09-20")));
     // today's: the machine's own servers, or arch's fallback.
     const now = try chrootPacmanConf(a, &repos);
-    try testing.expect(std.mem.indexOf(u8, now, "[core]\nServer = https://m.example/$repo/os/$arch\n") != null);
-    try testing.expect(std.mem.indexOf(u8, now, "[extra]\nServer = https://geo.mirror.pkgbuild.com/$repo/os/$arch\n") != null);
+    try testing.expect(std.mem.indexOf(u8, now, "[core]\nServer = https://m.example/$repo/yos/$arch\n") != null);
+    try testing.expect(std.mem.indexOf(u8, now, "[extra]\nServer = https://geo.mirror.pkgbuild.com/$repo/yos/$arch\n") != null);
 }
 
 test "a package file's name" {
     try testing.expectEqualStrings("yay-bin", packageName("yay-bin-12.5.0-1-x86_64.pkg.tar.zst").?);
     try testing.expectEqualStrings("lib-a", packageName("lib-a-1:2.0-3-any.pkg.tar.xz").?);
-    try testing.expectEqual(null, packageName("yoq-aur.db.tar.gz"));
+    try testing.expectEqual(null, packageName("yos-aur.db.tar.gz"));
 }
 
 /// a git repository at `dir`, standing in for a recipe on the aur, and a

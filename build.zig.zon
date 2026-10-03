@@ -1,7 +1,7 @@
 .{
-    .name = .yoqos,
+    .name = .yos,
     .version = "0.1.5",
-    .fingerprint = 0x2fffc77f94162495,
+    .fingerprint = 0x8f08dd238c683c15,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
     .paths = .{

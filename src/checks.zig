@@ -17,8 +17,8 @@ const desired = @import("desired.zig");
 const Plan = planner.Plan;
 const Allocator = std.mem.Allocator;
 
-/// whether the plan passes every check, run in the order `os plan` and
-/// `os apply` report them, stopping at the first that refuses.
+/// whether the plan passes every check, run in the order `yos plan` and
+/// `yos apply` report them, stopping at the first that refuses.
 pub fn passes(a: Allocator, c: *const config.Config, p: *const Plan, f: *const facts.Facts, diags: *diag.List) !bool {
     return try checkEsp(a, p, f, diags) and try checkSecrets(c, f, diags) and try checkSecureBoot(c, f, diags) and try checkLuks(c, p, f, diags);
 }
@@ -28,7 +28,7 @@ pub const EspNeed = struct {
     /// bytes, estimated.
     need: u64,
     /// older generations keep copies of their boot files there, which
-    /// `os gc` frees.
+    /// `yos gc` frees.
     collectable: bool,
 };
 
@@ -204,7 +204,7 @@ fn resignRoom(a: Allocator, p: *const Plan, f: *const facts.Facts, uki_on: bool)
 }
 
 /// the room the largest signed image takes, from the running root's boot
-/// files, a sixteenth bigger, like a new one. os builds its initramfs, so
+/// files, a sixteenth bigger, like a new one. yos builds its initramfs, so
 /// that counts with a little to spare (see uki.signedInitramfs).
 fn largestImage(b: *const facts.Boot) u64 {
     var kernel: u64 = 0;
@@ -279,8 +279,8 @@ pub fn checkSecrets(c: *const config.Config, f: *const facts.Facts, diags: *diag
         const s = f.secret(ref.v) orelse continue;
         switch (s.state) {
             .set, .unknown => continue,
-            .missing => try diags.addHint(.secret_missing, ref.src, "files.\"{s}\" needs the secret \"{s}\", and this machine doesn't have it", .{ e.name, ref.v }, "set it with `os secret set {s}`", .{ref.v}),
-            .unreadable => try diags.addHint(.secret_missing, ref.src, "the secret \"{s}\" for files.\"{s}\" can't be decrypted on this machine", .{ ref.v, e.name }, "values don't move between machines; set it again here with `os secret set {s}`", .{ref.v}),
+            .missing => try diags.addHint(.secret_missing, ref.src, "files.\"{s}\" needs the secret \"{s}\", and this machine doesn't have it", .{ e.name, ref.v }, "set it with `yos secret set {s}`", .{ref.v}),
+            .unreadable => try diags.addHint(.secret_missing, ref.src, "the secret \"{s}\" for files.\"{s}\" can't be decrypted on this machine", .{ ref.v, e.name }, "values don't move between machines; set it again here with `yos secret set {s}`", .{ref.v}),
         }
         ok = false;
     }
@@ -291,7 +291,7 @@ pub fn checkSecrets(c: *const config.Config, f: *const facts.Facts, diags: *diag
 /// whose config signs images for secure boot, when sbctl has no keys to
 /// sign them with, or grub couldn't start: without shim, grub's lockdown
 /// loads nothing unless grub's tpm module checks it, and that module
-/// does nothing without a tpm 2.0. os never makes or enrolls keys
+/// does nothing without a tpm 2.0. yos never makes or enrolls keys
 /// itself. returns whether the plan can go ahead.
 pub fn checkSecureBoot(c: *const config.Config, f: *const facts.Facts, diags: *diag.List) !bool {
     const v = c.boot.secure_boot orelse return true;
@@ -313,7 +313,7 @@ pub fn checkSecureBoot(c: *const config.Config, f: *const facts.Facts, diags: *d
     return true;
 }
 
-/// refuses, with a diagnostic, a plan that removes os's drop-in that
+/// refuses, with a diagnostic, a plan that removes yos's drop-in that
 /// unlocks a luks root while mkinitcpio's own hooks don't: the initramfs
 /// built after it couldn't open the root, and without generations
 /// nothing would boot. returns whether the plan can go ahead.
@@ -422,7 +422,7 @@ test "how much room a plan's new boot files take on the esp" {
     try testing.expectEqual(51 * mib, espNeed(&lts, &b, false).?.need);
     const ucode: Plan = .{ .changes = &.{.{ .op = .change, .kind = .package, .subject = "amd-ucode", .from = "1", .to = "2", .reboot = "microcode" }} };
     try testing.expectEqual(38 * mib + mib / 4, espNeed(&ucode, &b, false).?.need);
-    const drop_in: Plan = .{ .changes = &.{.{ .op = .add, .kind = .file, .subject = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf", .reboot = "initramfs" }} };
+    const drop_in: Plan = .{ .changes = &.{.{ .op = .add, .kind = .file, .subject = "/etc/mkinitcpio.conf.d/10-yos-nvidia.conf", .reboot = "initramfs" }} };
     try testing.expectEqual(34 * mib, espNeed(&drop_in, &b, false).?.need);
     // nothing new to boot, or a kernel that goes.
     const tool: Plan = .{ .changes = &.{.{ .op = .add, .kind = .package, .subject = "ripgrep", .to = "14" }} };
@@ -467,7 +467,7 @@ test "unified kernel images on the esp take a kernel's files together" {
     // grub reads the roots, but images are on the esp for every bootloader.
     try testing.expectEqual(null, espNeed(&upgrade, &b, false));
     try testing.expectEqual(EspNeed{ .need = 51 * mib, .collectable = true }, espNeed(&upgrade, &b, true).?);
-    const drop_in: Plan = .{ .changes = &.{.{ .op = .add, .kind = .file, .subject = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf", .reboot = "initramfs" }} };
+    const drop_in: Plan = .{ .changes = &.{.{ .op = .add, .kind = .file, .subject = "/etc/mkinitcpio.conf.d/10-yos-nvidia.conf", .reboot = "initramfs" }} };
     try testing.expectEqual(51 * mib, espNeed(&drop_in, &b, true).?.need);
     const lts: Plan = .{ .changes = &.{.{ .op = .add, .kind = .package, .subject = "linux-lts", .to = "6.12.48", .reboot = "kernel" }} };
     try testing.expectEqual(51 * mib, espNeed(&lts, &b, true).?.need);
@@ -511,7 +511,7 @@ test "a plan whose boot files don't fit on the esp stops before anything is buil
     const d = t.diags.items.items[0];
     try testing.expectEqual(diag.Code.esp_full, d.code);
     try testing.expectEqualStrings("the esp at /efi has 40 MiB free of 512 MiB, and this plan's new boot files need about 51 MiB", d.message);
-    try testing.expectEqualStrings("`os gc --keep 1` removes generation 2, with the boot files only it uses", d.hint.?);
+    try testing.expectEqualStrings("`yos gc --keep 1` removes generation 2, with the boot files only it uses", d.hint.?);
 
     // grub with the esp at /boot: removing generations frees nothing there.
     f.boot.esp = "/boot";
@@ -548,7 +548,7 @@ test "signing an image already on the esp needs room beside it" {
         .boot_files = &boot_files,
         .secure_boot = true,
         .sbctl_keys = true,
-        .unsigned = &.{"/efi/yoq/boot/0123456789abcdef-yoq.efi"},
+        .unsigned = &.{"/efi/yos/boot/0123456789abcdef-yos.efi"},
     } };
     // a change that brings no new boot files; the menu after it still
     // signs the image, in a copy beside it, and the generation before
@@ -559,7 +559,7 @@ test "signing an image already on the esp needs room beside it" {
     // with nothing unsigned, or nothing that signs, there's room.
     f.boot.unsigned = &.{"/efi/EFI/BOOT/BOOTX64.EFI"};
     try testing.expect(try checkEsp(a, &tool, &f, &t.diags));
-    f.boot.unsigned = &.{"/efi/yoq/boot/0123456789abcdef-yoq.efi"};
+    f.boot.unsigned = &.{"/efi/yos/boot/0123456789abcdef-yos.efi"};
     f.boot.secure_boot = false;
     try testing.expect(try checkEsp(a, &tool, &f, &t.diags));
     // the config's key signs too, and an empty plan writes no menu.
@@ -576,7 +576,7 @@ test "with secure boot, each entry's image has its command line, and takes room"
         .{ .name = "initramfs-linux.img", .size = 32 * mib },
         .{ .name = "vmlinuz-linux", .size = 16 * mib },
     };
-    // os builds the initramfs for a signed image, with an eighth to spare.
+    // yos builds the initramfs for a signed image, with an eighth to spare.
     const now = 16 * mib + 36 * mib + uki.stub_size;
     const image = now + now / 16;
     var files = [_]facts.File{

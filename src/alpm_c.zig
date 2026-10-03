@@ -120,7 +120,7 @@ const Questions = struct {
             // pacman's default. the user approved the plan, so say which
             // key and go on.
             c.ALPM_QUESTION_IMPORT_KEY => {
-                std.debug.print("os: importing pgp key {s} ({s}) to check a package signature\n", .{ str(q.import_key.fingerprint), str(q.import_key.uid) });
+                std.debug.print("yos: importing pgp key {s} ({s}) to check a package signature\n", .{ str(q.import_key.fingerprint), str(q.import_key.uid) });
                 q.import_key.import = 1;
             },
             // deletes the broken download, so the next run fetches it again.

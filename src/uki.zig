@@ -1,6 +1,6 @@
 //! unified kernel images: a kernel, its microcode and initramfs, and
 //! systemd's efi stub in one file, which a bootloader starts like any efi
-//! program. os builds them with ukify, from the root's own tools. without
+//! program. yos builds them with ukify, from the root's own tools. without
 //! secure boot, an image leaves the command line out, so one image serves
 //! every generation with the same boot files, and each menu entry passes
 //! its own. with secure boot, each entry's image has its command line in
@@ -11,16 +11,16 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-/// the ukify config os writes into a root for `[boot] uki`, relative to
+/// the ukify config yos writes into a root for `[boot] uki`, relative to
 /// the root. ukify gets it with --config, which also keeps it from reading
 /// a ukify.conf of the machine's that might put a command line in. a root
-/// that has it boots a unified kernel image from os's menu.
-pub const config_rel = "etc/kernel/yoq-uki.conf";
+/// that has it boots a unified kernel image from yos's menu.
+pub const config_rel = "etc/kernel/yos-uki.conf";
 pub const config_path = "/" ++ config_rel;
 
 pub const config_content =
-    \\# written by os from [boot] uki in the config. edits here are overwritten.
-    \\# os builds this root's unified kernel images with these settings. it
+    \\# written by yos from [boot] uki in the config. edits here are overwritten.
+    \\# yos builds this root's unified kernel images with these settings. it
     \\# passes the kernel command line from each boot entry, so there's none here.
     \\[UKI]
     \\
@@ -35,7 +35,7 @@ pub const package = "systemd-ukify";
 
 /// where a root's inputs and the image go while ukify runs, inside the
 /// root, since it runs there.
-pub const work_dir = "tmp/yoq-uki";
+pub const work_dir = "tmp/yos-uki";
 
 /// the command that builds an image in the root at `root`, through
 /// `chroot` (chroot itself, or a stand-in in tests), so it's that root's
@@ -90,7 +90,7 @@ pub fn signedKernel(kernels: []const Kernel, boot_name: []const u8, boot_sum: ?[
 /// at `root`, through `chroot` (one with /proc, /sys, /dev, and /run
 /// mounted, or a stand-in in tests), so it's the root's own mkinitcpio,
 /// config, and modules. autodetect stays in: a signed image is only built
-/// on the machine that boots it, since `os install` and clean builds
+/// on the machine that boots it, since `yos install` and clean builds
 /// refuse secure boot, so what autodetect finds in /sys is right, and the
 /// image is about as big as the root's own. early microcode comes from
 /// mkinitcpio's microcode hook, from the root's /usr/lib/firmware.
@@ -101,14 +101,14 @@ pub fn mkinitcpioArgv(a: Allocator, chroot: []const []const u8, root: []const u8
     return argv.items;
 }
 
-/// the room an initramfs os builds for a signed image takes, from the size
+/// the room an initramfs yos builds for a signed image takes, from the size
 /// of the root's own: about the same, with an eighth to spare.
 pub fn signedInitramfs(size: u64) u64 {
     return size +| size / 8;
 }
 
 /// how an image's name ends.
-pub const suffix = "-yoq.efi";
+pub const suffix = "-yos.efi";
 
 /// systemd's efi stub, which ukify puts in front of the kernel, relative
 /// to the root that builds the image. its sum goes in the image's name,
@@ -117,7 +117,7 @@ pub const stub_rel = "usr/lib/systemd/boot/efi/linuxx64.efi.stub";
 
 /// the image's name on the esp, from the sha256 sums of what goes in it,
 /// kernel first, then the initrds and the stub, and the command line in
-/// it, if there is one: "<16 hex>-yoq.efi". entries with the same boot
+/// it, if there is one: "<16 hex>-yos.efi". entries with the same boot
 /// files, stub, and command line share one.
 pub fn name(a: Allocator, sums: []const []const u8, cmdline: ?[]const u8) ![]const u8 {
     var h: std.crypto.hash.sha2.Sha256 = .init(.{});
@@ -169,19 +169,19 @@ test "ukify's arguments" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const kernel = "/tmp/yoq-uki/vmlinuz-linux";
-    const initrds: []const []const u8 = &.{ "/tmp/yoq-uki/amd-ucode.img", "/tmp/yoq-uki/initramfs-linux.img" };
-    const argv = try ukifyArgv(a, &.{"chroot"}, "/run/yoq/private/top/@roots/4", kernel, initrds, null, "/tmp/yoq-uki/yoq.efi");
+    const kernel = "/tmp/yos-uki/vmlinuz-linux";
+    const initrds: []const []const u8 = &.{ "/tmp/yos-uki/amd-ucode.img", "/tmp/yos-uki/initramfs-linux.img" };
+    const argv = try ukifyArgv(a, &.{"chroot"}, "/run/yos/private/top/@roots/4", kernel, initrds, null, "/tmp/yos-uki/yos.efi");
     const want = [_][]const u8{
         "chroot",
-        "/run/yoq/private/top/@roots/4",
+        "/run/yos/private/top/@roots/4",
         "ukify",
         "build",
-        "--config=/etc/kernel/yoq-uki.conf",
-        "--linux=/tmp/yoq-uki/vmlinuz-linux",
-        "--initrd=/tmp/yoq-uki/amd-ucode.img",
-        "--initrd=/tmp/yoq-uki/initramfs-linux.img",
-        "--output=/tmp/yoq-uki/yoq.efi",
+        "--config=/etc/kernel/yos-uki.conf",
+        "--linux=/tmp/yos-uki/vmlinuz-linux",
+        "--initrd=/tmp/yos-uki/amd-ucode.img",
+        "--initrd=/tmp/yos-uki/initramfs-linux.img",
+        "--output=/tmp/yos-uki/yos.efi",
     };
     try testing.expectEqual(want.len, argv.len);
     for (want, argv) |w, g| try testing.expectEqualStrings(w, g);
@@ -190,10 +190,10 @@ test "ukify's arguments" {
 
     // with secure boot, the entry's goes in, as one argument.
     const cmdline = "root=UUID=r rootflags=subvol=/@roots/4 rw rd.luks.name=u=root console=ttyS0,115200 panic=10";
-    const signed = try ukifyArgv(a, &.{"chroot"}, "/run/yoq/private/top/@roots/4", kernel, initrds, cmdline, "/tmp/yoq-uki/yoq.efi");
+    const signed = try ukifyArgv(a, &.{"chroot"}, "/run/yos/private/top/@roots/4", kernel, initrds, cmdline, "/tmp/yos-uki/yos.efi");
     try testing.expectEqual(want.len + 1, signed.len);
     try testing.expectEqualStrings("--cmdline=" ++ cmdline, signed[signed.len - 2]);
-    try testing.expectEqualStrings("--output=/tmp/yoq-uki/yoq.efi", signed[signed.len - 1]);
+    try testing.expectEqualStrings("--output=/tmp/yos-uki/yos.efi", signed[signed.len - 1]);
 }
 
 test "a signed image's kernel comes from its package, not /boot" {
@@ -214,8 +214,8 @@ test "a signed image's kernel comes from its package, not /boot" {
 test "mkinitcpio's arguments" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const argv = try mkinitcpioArgv(arena.allocator(), &.{"chroot"}, "/run/yoq/private/top/@roots/4", "6.17.1-arch1-1", "/tmp/yoq-uki/initramfs.img");
-    const want = [_][]const u8{ "chroot", "/run/yoq/private/top/@roots/4", "/usr/bin/mkinitcpio", "-k", "6.17.1-arch1-1", "-g", "/tmp/yoq-uki/initramfs.img" };
+    const argv = try mkinitcpioArgv(arena.allocator(), &.{"chroot"}, "/run/yos/private/top/@roots/4", "6.17.1-arch1-1", "/tmp/yos-uki/initramfs.img");
+    const want = [_][]const u8{ "chroot", "/run/yos/private/top/@roots/4", "/usr/bin/mkinitcpio", "-k", "6.17.1-arch1-1", "-g", "/tmp/yos-uki/initramfs.img" };
     try testing.expectEqual(want.len, argv.len);
     for (want, argv) |w, g| try testing.expectEqualStrings(w, g);
 }
@@ -225,8 +225,8 @@ test "an image's name follows what's in it" {
     defer arena.deinit();
     const a = arena.allocator();
     const one = try name(a, &.{ "aa", "bb" }, null);
-    try testing.expect(std.mem.endsWith(u8, one, "-yoq.efi"));
-    try testing.expectEqual(16 + "-yoq.efi".len, one.len);
+    try testing.expect(std.mem.endsWith(u8, one, "-yos.efi"));
+    try testing.expectEqual(16 + "-yos.efi".len, one.len);
     try testing.expectEqualStrings(one, try name(a, &.{ "aa", "bb" }, null));
     try testing.expect(!std.mem.eql(u8, one, try name(a, &.{ "aa", "cc" }, null)));
     // the order counts: microcode goes before the initramfs.
@@ -236,7 +236,7 @@ test "an image's name follows what's in it" {
     const two = try name(a, &.{ "aa", "bb" }, "root=UUID=r rootflags=subvol=/@roots/2 rw");
     try testing.expect(!std.mem.eql(u8, one, two));
     try testing.expectEqualStrings(two, try name(a, &.{ "aa", "bb" }, "root=UUID=r rootflags=subvol=/@roots/2 rw"));
-    try testing.expect(!std.mem.eql(u8, two, try name(a, &.{ "aa", "bb" }, "root=UUID=r rootflags=subvol=/@roots/2 rw yoq.trial")));
+    try testing.expect(!std.mem.eql(u8, two, try name(a, &.{ "aa", "bb" }, "root=UUID=r rootflags=subvol=/@roots/2 rw yos.trial")));
     // an empty command line is still one.
     try testing.expect(!std.mem.eql(u8, one, try name(a, &.{ "aa", "bb" }, "")));
 }

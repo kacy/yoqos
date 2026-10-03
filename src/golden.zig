@@ -65,7 +65,7 @@ fn runCase(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8
     var outputs: std.ArrayList(struct { []const u8, []const u8 }) = .empty;
     var built = try pipeline.buildPlan(gpa, io, files.files(), in, &diags);
     defer if (built) |*r| r.deinit();
-    // the esp, secret, and secure boot checks run where os plan and os apply
+    // the esp, secret, and secure boot checks run where yos plan and yos apply
     // run them.
     const planned = if (built) |*r| try checks.passes(a, r.state.config(), &r.plan, &r.facts, &diags) else false;
     if (planned) {
