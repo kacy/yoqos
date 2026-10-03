@@ -15,6 +15,9 @@ on_failure="cat /proc/cmdline; grub-editenv /boot/yoq/grubenv list; /usr/local/b
 
 check "$(efivar SetupMode)" 1
 check "/usr/local/bin/os doctor | grep -c '^  ok  tpm key: opens the root\$'" 1
+# os install seals the key to pcr 7, which systemd no longer does by
+# itself.
+check "/usr/local/bin/os doctor | grep -c 'tpm seal' || true" 0
 
 # keys, both settings under the [boot] the install's config has, and
 # everything on the esp signed, then enrolled.
@@ -47,7 +50,7 @@ check "/usr/local/bin/os doctor | grep -c '^  no  firmware keys: sbctl.s db key 
 "$vm" ssh "rm -rf /var/lib/sbctl && mv /root/sbctl.enrolled /var/lib/sbctl"
 
 # the tpm's key made again, as the docs say: the next boot is unattended.
-"$vm" ssh "printf 'correct horse battery' > /root/luks-key && systemd-cryptenroll --unlock-key-file=/root/luks-key --wipe-slot=tpm2 --tpm2-device=auto $part >/dev/null; rm -f /root/luks-key"
+"$vm" ssh "printf 'correct horse battery' > /root/luks-key && systemd-cryptenroll --unlock-key-file=/root/luks-key --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 $part >/dev/null; rm -f /root/luks-key"
 check "/usr/local/bin/os doctor | grep -c '^  ok  tpm key: opens the root\$'" 1
 "$vm" reboot
 check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in use."

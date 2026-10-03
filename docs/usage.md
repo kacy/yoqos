@@ -753,7 +753,10 @@ its standard input, and never into the new machine, a log, or json.
 without a terminal, `--encrypt` needs `--passphrase-file`.
 
 `--tpm` also puts a key in the tpm, with `systemd-cryptenroll
---tpm2-device=auto`, so the machine unlocks at boot without anyone typing.
+--tpm2-device=auto --tpm2-pcrs=7`, so the machine unlocks at boot without
+anyone typing. the `--tpm2-pcrs=7` matters: since systemd 258,
+systemd-cryptenroll seals a key to nothing by default, and the tpm then
+hands it to anything that boots. `os doctor` fails on a key like that.
 the passphrase still works for when the tpm can't unlock it, like after
 some firmware updates or with the disk in another machine, so keep it
 somewhere safe. `--tpm` means `--encrypt` too, and needs a tpm 2.0; a
@@ -775,7 +778,7 @@ with limine the tpm keeps a powered-off disk safe and no more, secure boot
 or not, and `os doctor` says so.
 turning secure boot on changes pcr 7, so the tpm won't unlock the disk
 until its key is enrolled again: type the passphrase once, then run
-`systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto <partition>`.
+`systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 <partition>`.
 `os doctor` warns until then. a trial boot waits at the passphrase as
 long as it takes: its watchdog only starts counting once the root is up.
 
