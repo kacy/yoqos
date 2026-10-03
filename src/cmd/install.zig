@@ -371,7 +371,7 @@ const Installer = struct {
         const io = in.ctx.io;
         if (try exec.runInput(in.a, io, &.{ "cryptsetup", "luksFormat", "--type", "luks2", "--batch-mode", "--key-file=-", part }, secret)) |w| return w;
         if (in.tpm) {
-            if (try exec.runInput(in.a, io, &.{ "systemd-cryptenroll", "--unlock-key-file=/dev/stdin", "--tpm2-device=auto", part }, secret)) |w| return w;
+            if (try exec.runInput(in.a, io, try install.enrollArgv(in.a, part, true), secret)) |w| return w;
         }
         return exec.runInput(in.a, io, &.{ "cryptsetup", "open", "--key-file=-", part, install.luks_install_name }, secret);
     }
@@ -387,7 +387,7 @@ const Installer = struct {
         if (try exec.interactive(in.a, io, &.{ "cryptsetup", "luksFormat", "--type", "luks2", "--batch-mode", "--verify-passphrase", part })) |w| return w;
         if (in.tpm) {
             try in.say("\nonce more, to add a key the tpm keeps:\n");
-            if (try exec.interactive(in.a, io, &.{ "systemd-cryptenroll", "--tpm2-device=auto", part })) |w| return w;
+            if (try exec.interactive(in.a, io, try install.enrollArgv(in.a, part, false))) |w| return w;
         }
         try in.say("\nand once more, to open it for the install:\n");
         return exec.interactive(in.a, io, &.{ "cryptsetup", "open", part, install.luks_install_name });

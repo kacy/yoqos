@@ -13,9 +13,33 @@
   kernel signed, as on systemd-boot and refind. grub's tpm
   module needs a tpm 2.0, so without one, `secure_boot` on grub stops
   `os plan` with E0136, and facts carry `tpm2`.
+- `os plan` and `os apply` stop with E0137 while the firmware enforces
+  secure boot without sbctl's key in its db, as after `sbctl create-keys`
+  makes new keys. images signed with it wouldn't start, and limine and
+  refind hang on one instead of falling back. facts carry `db_enrolled`,
+  and `os doctor` has a "firmware keys" check.
+- `os doctor` checks that the tpm's key still opens a luks root, without
+  opening anything. after turning secure boot on, it doesn't until it's
+  made again, and the boot asks for the passphrase. the same goes for
+  switching between unified kernel images and plain kernels, since
+  systemd's stub adds to pcr 7. `os uninstall` on a machine that boots
+  images says so before it starts: arch's plain kernel boots next, so
+  the passphrase is asked once, and it names the `systemd-cryptenroll`
+  command that makes the key again.
 
 ### fixes
 
+- on a luks root, a passphrase typed more than 90 seconds after the prompt
+  came up landed in emergency mode, since the initramfs gave up waiting
+  for the root. every generation there now has
+  `x-systemd.device-timeout=infinity` in its `rootflags`.
+- `os install --tpm` seals the tpm's key to pcr 7, the firmware's secure
+  boot state, as the docs always said. machines installed with
+  `os install --tpm` on systemd 258 or later got a tpm key bound to no
+  pcrs, since systemd-cryptenroll seals to nothing unless told, so the tpm
+  handed the key to anything that booted, a system on a usb stick
+  included. `os doctor` now fails on a key like that and shows the
+  `systemd-cryptenroll ... --tpm2-pcrs=7` command that enrolls it again.
 - on grub, an entry that can't load its kernel or image falls back to the
   generation the trial falls back to. grub was given that generation by
   name, which it ignores for a fallback, so it showed the failed entry

@@ -36,6 +36,7 @@ pub const Code = enum {
     secret_missing,
     secure_boot_keys,
     secure_boot_tpm,
+    secure_boot_enrolled,
     luks_locked,
 };
 
@@ -263,6 +264,17 @@ pub const table = [_]Entry{
             "2.0 that module does nothing, so grub stops at its rescue prompt. turn the tpm on in the " ++
             "firmware setup (it may be called ptt, fttpm, or security device), or leave `secure_boot` off " ++
             "with grub.",
+    },
+    .{
+        .code = .secure_boot_enrolled,
+        .id = "E0137",
+        .title = "the firmware doesn't have sbctl's keys",
+        .explanation = "the firmware enforces secure boot, and the certificate os would sign images with, " ++
+            "sbctl's db.pem in /var/lib/sbctl/keys/db, isn't in the firmware's db. images signed with it " ++
+            "wouldn't start: grub falls back to the generation before, but limine halts and refind waits " ++
+            "for a key, for good. it happens after `sbctl create-keys` makes new keys, or on a machine that " ++
+            "boots through shim. enroll the keys: in the firmware's setup, clear the secure boot keys (setup " ++
+            "mode), boot, and run `sbctl enroll-keys -m`. or turn secure boot off in the firmware until then.",
     },
     .{
         .code = .luks_locked,

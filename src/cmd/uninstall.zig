@@ -20,6 +20,7 @@ const output = @import("../output.zig");
 const uninstall = @import("../uninstall.zig");
 const trial = @import("../trial.zig");
 const applying = @import("apply.zig");
+const doctor = @import("doctor.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
@@ -44,9 +45,10 @@ pub fn uninstallCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const f = try w.facts() orelse return w.fail();
     const running = generation.running(f.boot.root_subvol);
     const unsigned = try unsignedKernels(a, ctx.io, f.boot);
-    var p = try uninstall.plan(a, &f, drop, unsigned);
+    const tpm = if (try doctor.luks(a, ctx.io, &f.boot)) |l| l.tpm else false;
+    var p = try uninstall.plan(a, &f, drop, unsigned, tpm);
     if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.uninstall/1", .{ .ready = p.ready(), .checks = p.checks, .steps = p.steps });
+        try output.writeDoc(ctx.out, "yoq.uninstall/1", .{ .ready = p.ready(), .checks = p.checks, .steps = p.steps, .notes = p.notes });
         return if (p.ready()) 0 else 1;
     }
     try uninstall.writeText(ctx.out, &p);
@@ -59,7 +61,7 @@ pub fn uninstallCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (try cli.approve(ctx, yes, "uninstall", "uninstall?")) |code| return code;
     // asked apart, since keeping them is the safe answer.
     if (running and !drop and !yes and try cli.confirm(ctx, "delete every generation but this one too? otherwise they stay as btrfs subvolumes.")) {
-        p = try uninstall.plan(a, &f, true, unsigned);
+        p = try uninstall.plan(a, &f, true, unsigned, tpm);
     }
     try ctx.out.writeByte('\n');
     var u: Uninstaller = .{ .ctx = ctx, .a = a, .boot = f.boot, .package = uninstall.ownPackage(&f) };
@@ -71,6 +73,7 @@ pub fn uninstallCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         if (try u.step(s.kind)) |why| return cli.fail(ctx, "{s}\nos: the steps above are done; `os uninstall` again finishes the rest.", .{why});
     }
     try ctx.out.writeAll("\nos is off this machine, and the config stays in /etc/yoq.\n");
+    try uninstall.writeNotes(ctx.out, &p);
     return 0;
 }
 

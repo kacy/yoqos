@@ -537,9 +537,11 @@ when the tpm unlocks it while secure boot is off, or with limine, which
 loads kernels without secure boot's check. a warning shows as
 `warn` and doesn't count as a failure. with
 `secure_boot` in the config, or firmware that enforces secure boot, it
-checks that sbctl and its keys are there, says whether the firmware
-enforces secure boot or is in setup mode, and lists the efi files on the
-esp without a signature. a sudo
+checks that sbctl and its keys are there, that the firmware has sbctl's
+key, says whether the firmware enforces secure boot or is in setup mode,
+and lists the efi files on the esp without a signature. when the tpm
+unlocks the root, it also checks that the tpm's key opens it now, without
+opening anything. a sudo
 rule without a password shows up too: anything running as that user could
 change the machine without asking. each check that fails says what to do,
 and the exit code is 1 when one does.
@@ -564,6 +566,13 @@ boot the running root without `os`:
 - refind boots the kernel in `/boot` through `refind_linux.conf`.
 - systemd-boot gets one entry of its own, `arch-linux.conf`, as its
   default, where os's were.
+
+on a luks root the tpm unlocks, a machine that boots unified kernel
+images boots arch's plain kernel after `os uninstall`, which leaves pcr 7
+without the os separator systemd's stub adds, so the tpm's key doesn't
+match. the plan says so: the next boot asks for the passphrase once, and
+`systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7
+<partition>` makes the key again.
 
 limine, refind, and systemd-boot need the esp mounted at `/boot` for this,
 since that's where arch installs the kernel. while the firmware enforces
@@ -751,7 +760,10 @@ its standard input, and never into the new machine, a log, or json.
 without a terminal, `--encrypt` needs `--passphrase-file`.
 
 `--tpm` also puts a key in the tpm, with `systemd-cryptenroll
---tpm2-device=auto`, so the machine unlocks at boot without anyone typing.
+--tpm2-device=auto --tpm2-pcrs=7`, so the machine unlocks at boot without
+anyone typing. the `--tpm2-pcrs=7` matters: since systemd 258,
+systemd-cryptenroll seals a key to nothing by default, and the tpm then
+hands it to anything that boots. `os doctor` fails on a key like that.
 the passphrase still works for when the tpm can't unlock it, like after
 some firmware updates or with the disk in another machine, so keep it
 somewhere safe. `--tpm` means `--encrypt` too, and needs a tpm 2.0; a
@@ -773,7 +785,19 @@ with limine the tpm keeps a powered-off disk safe and no more, secure boot
 or not, and `os doctor` says so.
 turning secure boot on changes pcr 7, so the tpm won't unlock the disk
 until its key is enrolled again: type the passphrase once, then run
-`systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto <partition>`.
+`systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 <partition>`.
+`os doctor` warns until then. the same happens the first time a machine
+boots a unified kernel image (`uki`), and the first time it boots a plain
+kernel after that, like a generation from before `uki` or the machine
+after `os uninstall`: systemd's stub has the initramfs add an os
+separator to pcr 7, and a plain kernel's boot doesn't.
+
+a boot waits at the passphrase as long as it takes: every generation on a
+luks root has `x-systemd.device-timeout=infinity` in its `rootflags`,
+since the initramfs otherwise gives up on the root after 90 seconds and
+lands in emergency mode. `os uninstall` leaves that out, so plain arch
+waits 90 seconds again. a trial's watchdog only starts counting once the
+root is up.
 
 the config has to say the root is encrypted, or the new machine's
 initramfs can't unlock it: `[boot] encrypt = true` (see [encrypted
@@ -1230,6 +1254,14 @@ job, in this order:
    firmware signed with them, and some machines won't start without it.
 5. turn secure boot on in the firmware setup, if enrolling didn't, and
    reboot.
+
+if the firmware enforces secure boot already, with keys of its own, like
+on a machine that boots through shim, enroll sbctl's keys before step 2.
+`os plan` and `os apply` stop with E0137 while the firmware enforces
+secure boot without sbctl's key, and so they do after `sbctl create-keys`
+makes new ones: images signed with a key the firmware doesn't have won't
+start. grub falls back from one to the generation before, but limine
+halts and refind waits for a key, for good, so os checks first.
 
 without the keys, `os plan` and `os apply` stop with E0134. a way back
 doesn't: `os rollback`, a fallback from a failed trial, and `os gc` write

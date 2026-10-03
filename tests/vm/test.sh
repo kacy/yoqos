@@ -19,12 +19,13 @@ esac
 export VM_ESP VM_ROOT VM_LOADER
 
 # the ext4 machine installs new ones on a second disk, and on luks on a
-# third, which its tpm unlocks.
-[ "${VM_IMAGE:-cloud}" = ext4 ] && export VM_DISK2=1 VM_DISK3=1 VM_TPM=1
-# systemd-boot and archinstall's grub run on firmware that can enforce
-# secure boot, in setup mode until secureboot.sh or secureboot-grub.sh
-# enrolls keys. grub needs a tpm to start under secure boot.
-case ${VM_IMAGE:-cloud} in sdboot | archinstall) export VM_SECBOOT=1 ;; esac
+# third, which its tpm unlocks, and whose passphrase is typed at the
+# serial console once secure boot is on.
+[ "${VM_IMAGE:-cloud}" = ext4 ] && export VM_DISK2=1 VM_DISK3=1 VM_TPM=1 VM_SERIAL_IN=1
+# every image but cloud and snapper runs on firmware that can enforce
+# secure boot, in setup mode until a test enrolls keys. grub needs a tpm
+# to start under secure boot.
+case ${VM_IMAGE:-cloud} in sdboot | archinstall | limine | refind | ext4) export VM_SECBOOT=1 ;; esac
 [ "${VM_IMAGE:-cloud}" = archinstall ] && export VM_TPM=1
 "$vm" start
 trap '"$vm" stop' EXIT
@@ -74,8 +75,9 @@ limine | sdboot)
     # boot files live on the esp here, so it can run out of room. both
     # lose power partway through a trial.
     if [ "$VM_IMAGE" = sdboot ]; then tests/vm/failures.sh esp trial; else tests/vm/failures.sh trial; fi
-    # signed images under secure boot; it takes the keys out at the end.
-    if [ "$VM_IMAGE" = sdboot ]; then tests/vm/secureboot.sh; fi
+    # signed images under secure boot. systemd-boot's test takes the keys
+    # out at the end; limine's leaves them for leave.sh.
+    if [ "$VM_IMAGE" = sdboot ]; then tests/vm/secureboot.sh; else tests/vm/secureboot-loader.sh; fi
     tests/vm/leave.sh
     ;;
 snapper)
@@ -93,6 +95,8 @@ refind)
     tests/vm/load-failures.sh
     # the firmware's one-shot boot, with the power lost partway through.
     tests/vm/failures.sh trial
+    # under secure boot, with the keys left enrolled for leave.sh.
+    tests/vm/secureboot-loader.sh
     tests/vm/leave.sh
     ;;
 *)
@@ -114,7 +118,7 @@ refind)
     # the esp is /boot here, so a rollback puts a kernel on it.
     if [ "${VM_IMAGE:-cloud}" = archinstall ]; then tests/vm/failures.sh restore; fi
     # grub under secure boot, with the keys left enrolled for leave.sh.
-    if [ "${VM_IMAGE:-cloud}" = archinstall ]; then tests/vm/secureboot-grub.sh; fi
+    if [ "${VM_IMAGE:-cloud}" = archinstall ]; then tests/vm/secureboot-loader.sh; fi
     tests/vm/leave.sh
     ;;
 esac

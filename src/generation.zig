@@ -318,10 +318,22 @@ pub fn kernelArgs(a: Allocator, cmdline: []const u8, root_uuid: []const u8, subv
         }
         try rest.print(a, " {s}", .{w});
     }
+    // sd-encrypt's initramfs waits for the root as long as the passphrase
+    // takes. by default it gives up after 90 seconds, and a passphrase
+    // typed later lands in emergency mode, where a trial's watchdog never
+    // starts. systemd's fstab-generator takes the timeout from rootflags.
+    if (std.mem.indexOf(u8, rest.items, " rd.luks.") != null and std.mem.indexOf(u8, flags.items, luks_wait_key) == null) {
+        try flags.appendSlice(a, "," ++ luks_wait);
+    }
     // a kernel that panics reboots, so a generation on trial falls back.
     const panic = if (std.mem.indexOf(u8, rest.items, " panic=") == null) " panic=10" else "";
     return std.fmt.allocPrint(a, "root=UUID={s} rootflags={s}{s}{s}", .{ root_uuid, flags.items, rest.items, panic });
 }
+
+/// the root mount option that keeps sd-encrypt's initramfs at the
+/// passphrase prompt for good.
+pub const luks_wait_key = "x-systemd.device-timeout=";
+pub const luks_wait = luks_wait_key ++ "infinity";
 
 /// `target`'s shadow file with the password hash, and when it last
 /// changed, taken from `current` for every user both have. users only in
@@ -556,7 +568,10 @@ test "a generation's kernel command line" {
     // on luks, what unlocks the root comes along, for sd-encrypt and for
     // busybox's encrypt hook, and the root is the btrfs inside it.
     const sd = "root=/dev/mapper/root rootflags=subvol=/@ rd.luks.name=0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b=root rd.luks.options=tpm2-device=auto rw";
-    try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/2 rd.luks.name=0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b=root rd.luks.options=tpm2-device=auto rw panic=10", try kernelArgs(arena.allocator(), sd, "abc", "/@roots/2"));
+    try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/2,x-systemd.device-timeout=infinity rd.luks.name=0f7a1c2e-9b3d-4e5f-8a6b-7c8d9e0f1a2b=root rd.luks.options=tpm2-device=auto rw panic=10", try kernelArgs(arena.allocator(), sd, "abc", "/@roots/2"));
+    // the wait goes in once, and only for sd-encrypt's initramfs.
+    const waits = try kernelArgs(arena.allocator(), "rootflags=subvol=/@,x-systemd.device-timeout=600 rd.luks.name=u=root", "abc", "/@roots/2");
+    try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/2,x-systemd.device-timeout=600 rd.luks.name=u=root panic=10", waits);
     const busybox = "cryptdevice=PARTUUID=5e1f:root cryptkey=rootfs:/crypto_keyfile.bin root=/dev/mapper/root rw rootflags=subvol=@";
     try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/2 cryptdevice=PARTUUID=5e1f:root cryptkey=rootfs:/crypto_keyfile.bin rw panic=10", try kernelArgs(arena.allocator(), busybox, "abc", "/@roots/2"));
     // a quoted argument stays as it was, spaces and all, and a word in

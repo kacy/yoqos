@@ -26,6 +26,13 @@
 #   vm.sh ssh <command>      run a command in the vm as root
 #   vm.sh copy <file> <dest> copy a file into the vm
 #   vm.sh reboot             reboot and wait for ssh
+#   vm.sh reboot-answer <prompt> <text>
+#                            reboot, type <text> at the serial console once
+#                            it shows <prompt>, like a luks passphrase, and
+#                            wait for ssh. needs VM_SERIAL_IN. with
+#                            VM_ANSWER_MAYBE=1, a boot that comes up
+#                            without the prompt is fine too. it prints
+#                            "answered" when it typed
 #   vm.sh stop               power off and throw the overlay away
 #
 # VM_TPM=1 gives the vm a tpm 2.0, from swtpm. a start or start-iso begins
@@ -36,8 +43,12 @@
 # the same firmware variables, which have no keys: it starts in setup
 # mode, where it enforces nothing until keys are enrolled.
 #
-# needs qemu, edk2-ovmf, xorriso, and openssh, and swtpm for VM_TPM. VM_DIR
-# sets where the images and the running vm's files live.
+# VM_SERIAL_IN=1 makes the serial console a socket as well as the log, so
+# reboot-answer can type at it.
+#
+# needs qemu, edk2-ovmf, xorriso, and openssh, swtpm for VM_TPM, and socat
+# for VM_SERIAL_IN. VM_DIR sets where the images and the running vm's
+# files live.
 set -eu
 
 dir=${VM_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/yoq-vm}
@@ -119,6 +130,12 @@ boot() {
         code=OVMF_CODE.secboot.4m.fd machine=q35,smm=on
         set -- "$@" -global driver=cfi.pflash01,property=secure,value=on
     fi
+    if [ -n "${VM_SERIAL_IN:-}" ]; then
+        rm -f "$dir/serial.sock"
+        set -- "$@" -chardev socket,id=serial,path="$dir/serial.sock",server=on,wait=off,logfile="$dir/console.log",logappend=off -serial chardev:serial
+    else
+        set -- "$@" -serial file:"$dir/console.log"
+    fi
     seed
     qemu-system-x86_64 -enable-kvm -cpu host -machine "$machine" -smp 2 -m 2048 \
         -drive if=pflash,format=raw,readonly=on,file="$ovmf/$code" \
@@ -126,7 +143,7 @@ boot() {
         -drive if=virtio,file="$disk" \
         -drive media=cdrom,file="$dir/seed.iso" \
         -netdev user,id=net,hostfwd=tcp:127.0.0.1:"$port"-:22 -device virtio-net-pci,netdev=net \
-        -display none -serial file:"$dir/console.log" \
+        -display none \
         -daemonize -pidfile "$dir/qemu.pid" "$@"
     wait_boot ""
     run cloud-init status --wait >/dev/null 2>&1 || true
@@ -224,13 +241,35 @@ reboot)
     run systemctl reboot || true
     wait_boot "$old"
     ;;
+reboot-answer)
+    old=$(run cat /proc/sys/kernel/random/boot_id)
+    from=$(($(stat -c %s "$dir/console.log") + 1))
+    run systemctl reboot || true
+    for _ in $(seq 100); do
+        tail -c +"$from" "$dir/console.log" | grep -a -- "$2" >/dev/null && break
+        if [ -n "${VM_ANSWER_MAYBE:-}" ]; then
+            id=$(timeout 20 ssh $ssh_opts -p "$port" root@127.0.0.1 cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+            if [ -n "$id" ] && [ "$id" != "$old" ]; then exit 0; fi
+        fi
+        sleep 3
+    done
+    if ! tail -c +"$from" "$dir/console.log" | grep -a -- "$2" >/dev/null; then
+        echo "vm: no '$2' on the console after 5 minutes; the console log is $dir/console.log" >&2
+        exit 1
+    fi
+    # VM_ANSWER_DELAY waits that many seconds first, like someone slow.
+    sleep "${VM_ANSWER_DELAY:-1}"
+    printf '%s\r' "$3" | socat - UNIX-CONNECT:"$dir/serial.sock"
+    wait_boot "$old"
+    echo answered
+    ;;
 stop)
     if [ -f "$dir/qemu.pid" ]; then kill "$(cat "$dir/qemu.pid")" 2>/dev/null || true; fi
     stop_tpm
     rm -rf "$dir/qemu.pid" "$dir/overlay.qcow2" "$dir/vars.fd" "$dir/disk2.qcow2" "$dir/disk3.qcow2" "$dir/tpm"
     ;;
 *)
-    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac

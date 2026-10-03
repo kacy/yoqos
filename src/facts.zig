@@ -134,6 +134,9 @@ pub const Boot = struct {
     setup_mode: ?bool = null,
     /// the machine has a tpm 2.0. null under another root.
     tpm2: ?bool = null,
+    /// sbctl's db certificate is in the firmware's db, so images signed
+    /// with sbctl's key start. null without both to compare.
+    db_enrolled: ?bool = null,
     /// efi binaries on the esp without a signature: os's images in
     /// yoq/boot, which count as unsigned unless sbctl's db key signed
     /// them, and everything under EFI, which any signature will do for.

@@ -35,6 +35,37 @@ const global_guid = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
 pub const secure_boot_var = "sys/firmware/efi/efivars/SecureBoot-" ++ global_guid;
 pub const setup_mode_var = "sys/firmware/efi/efivars/SetupMode-" ++ global_guid;
 
+/// the firmware's db: the certificates it starts images signed with.
+pub const db_var = "sys/firmware/efi/efivars/db-d719b2cb-3d3a-4596-a3bc-dad00e67656f";
+
+/// EFI_CERT_X509_GUID as it's stored: a signature list of certificates.
+const x509_guid = [16]u8{ 0xa1, 0x59, 0xc0, 0xa5, 0xe4, 0x94, 0xa7, 0x4a, 0x87, 0xb5, 0xab, 0x15, 0x5c, 0x2b, 0xf0, 0x72 };
+
+/// whether the certificate in `pem`, like sbctl's db.pem, is in `db`, the
+/// firmware's db variable as efivarfs shows it: four bytes of attributes,
+/// then signature lists, each a type, its sizes, and entries of an owner
+/// and the certificate. null if either can't be read.
+pub fn inDb(a: Allocator, db: []const u8, pem: []const u8) !?bool {
+    const der = try pemDer(a, pem) orelse return null;
+    if (db.len < 4) return null;
+    var rest = db[4..];
+    while (rest.len > 0) {
+        if (rest.len < 28) return null;
+        const list_size = std.mem.readInt(u32, rest[16..20], .little);
+        const header_size = std.mem.readInt(u32, rest[20..24], .little);
+        const entry_size = std.mem.readInt(u32, rest[24..28], .little);
+        if (list_size < 28 or list_size > rest.len or header_size > list_size - 28) return null;
+        const list = rest[0..list_size];
+        rest = rest[list_size..];
+        if (!std.mem.eql(u8, list[0..16], &x509_guid) or entry_size <= 16) continue;
+        var entries = list[28 + header_size ..];
+        while (entries.len >= entry_size) : (entries = entries[entry_size..]) {
+            if (std.mem.eql(u8, entries[16..entry_size], der)) return true;
+        }
+    }
+    return false;
+}
+
 /// whether images get signed whatever the config says: the firmware
 /// enforces secure boot, and sbctl has keys to sign with. a generation
 /// without `[boot] secure_boot`, like one rolled back to, or a config
@@ -208,6 +239,41 @@ test "sbctl's arguments" {
     try testing.expectEqualStrings("sbctl", argv[0]);
     try testing.expectEqualStrings("sign", argv[1]);
     try testing.expectEqualStrings("/run/yoq/private/top/@roots/4/tmp/yoq-uki/yoq.efi", argv[2]);
+}
+
+/// a db variable with a list of hashes, then one list of `certs`, after
+/// efivarfs's four bytes of attributes.
+fn testDb(a: Allocator, certs: []const []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(a, &.{ 0x27, 0, 0, 0 });
+    try out.appendSlice(a, &([_]u8{0x26} ** 16));
+    for ([_]u32{ 28 + 48, 0, 48 }) |n| try out.appendSlice(a, &std.mem.toBytes(std.mem.nativeToLittle(u32, n)));
+    try out.appendSlice(a, &([_]u8{0} ** 48));
+    for (certs) |c| {
+        try out.appendSlice(a, &x509_guid);
+        for ([_]u32{ @intCast(28 + 16 + c.len), 0, @intCast(16 + c.len) }) |n| try out.appendSlice(a, &std.mem.toBytes(std.mem.nativeToLittle(u32, n)));
+        try out.appendSlice(a, &([_]u8{0x77} ** 16));
+        try out.appendSlice(a, c);
+    }
+    return out.items;
+}
+
+test "sbctl's certificate in the firmware's db" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const mine = try testCert(a, "sbctl db", &.{7});
+    const theirs = try testCert(a, "microsoft", &.{9});
+    const mine_der = (try pemDer(a, mine.pem)).?;
+    const theirs_der = (try pemDer(a, theirs.pem)).?;
+    try testing.expectEqual(true, try inDb(a, try testDb(a, &.{ theirs_der, mine_der }), mine.pem));
+    try testing.expectEqual(false, try inDb(a, try testDb(a, &.{theirs_der}), mine.pem));
+    try testing.expectEqual(false, try inDb(a, try testDb(a, &.{}), mine.pem));
+    // cut short, or nothing to compare with.
+    const db = try testDb(a, &.{mine_der});
+    try testing.expectEqual(null, try inDb(a, db[0 .. db.len - 3], mine.pem));
+    try testing.expectEqual(null, try inDb(a, "", mine.pem));
+    try testing.expectEqual(null, try inDb(a, db, "not a certificate"));
 }
 
 test "secure boot and setup mode from efivarfs" {

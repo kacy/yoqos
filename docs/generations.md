@@ -571,11 +571,26 @@ next boot tries again once there's room.
   images, and `os` doesn't boot those: it boots the kernel and initramfs
   files in `/boot`, or with `[boot] uki`, images it builds from them. the
   vm tests boot images on systemd-boot and limine so far.
-- secure boot is tested on systemd-boot and grub. limine stops booting
-  if its config's checksum was enrolled (`limine enroll-config`), since
-  `os` edits limine.conf. a generation from before `uki` boots a kernel
+- from an entry the firmware won't start, like an image signed with keys
+  it doesn't have, grub falls back, but limine halts ("System halted.")
+  and refind waits for a key, and both turn the firmware's watchdog off,
+  so nothing reboots the machine. systemd-boot isn't tested there. os checks the
+  firmware's db for sbctl's certificate before it signs (E0137), which
+  covers the likely way there. a file that went bad on the esp after
+  that still hangs those two.
+- secure boot is tested on all four bootloaders, and on luks with a tpm
+  key. limine stops booting if its config's checksum was enrolled
+  (`limine enroll-config`), since `os` edits limine.conf. a generation from before `uki` boots a kernel
   without a signature, so on grub, systemd-boot, and refind the firmware
   refuses it while secure boot is on.
+- pcr 7 isn't only the firmware's: a boot through systemd's stub, which
+  every unified kernel image has, adds an os separator to it from the
+  initramfs, and a plain kernel's boot doesn't. so a tpm key made while
+  images boot doesn't open the root when a plain kernel boots, and the
+  other way around: turning `uki` on, rolling back to a generation from
+  before it, and `os uninstall` each cost a passphrase and the key made
+  again (`os doctor` says so). systemd-pcrlock's policies are the way out,
+  and os doesn't use them yet.
 - the tpm key that `os install --tpm` adds is sealed to pcr 7, the secure
   boot state. on grub, systemd-boot, and refind that's enough: the
   firmware checks every kernel they start, and each signed image has its

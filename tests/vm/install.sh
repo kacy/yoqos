@@ -2,8 +2,8 @@
 # a new machine: os install puts this machine's config on the vm's blank
 # second disk, and the vm then boots that disk alone, as generation 1. the
 # same config goes on the third disk too, inside luks2 that the vm's tpm
-# unlocks, and that disk boots after. runs last, since it leaves the vm
-# running the new machines.
+# unlocks, and that disk boots after, then turns secure boot on. runs
+# last, since it leaves the vm running the new machines.
 set -eu
 . tests/vm/lib.sh
 
@@ -47,6 +47,9 @@ check "/usr/local/bin/os install /root/machines --disk /dev/vdc --tpm --passphra
 "$vm" ssh "/usr/local/bin/os install /root/sealed --disk /dev/vdc --update --tpm --passphrase-file /root/luks-passphrase --yes" | tail -n 20
 check "cryptsetup isLuks --type luks2 /dev/vdc2 && echo luks2" luks2
 check "cryptsetup luksDump /dev/vdc2 | grep -c 'systemd-tpm2'" 1
+# sealed to pcr 7: systemd-cryptenroll seals to nothing unless told.
+# systemd's token plugin prints its part of the dump on stderr.
+check "cryptsetup luksDump /dev/vdc2 2>&1 | sed -n 's/^[[:space:]]*tpm2-hash-pcrs:[[:space:]]*//p'" 7
 check "printf 'correct horse battery' | cryptsetup open --test-passphrase /dev/vdc2 && echo opens" opens
 # if it's still open, what holds it: a mount in another namespace, a
 # holder, a loop device, or gpg's daemons for the build's keyring.
@@ -119,12 +122,28 @@ check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in
 # generation 1 stays in the menu, booting its copies on the esp.
 check "grep -c 'linux (\${yoq_esp})/yoq/boot/' /boot/grub/grub.cfg" 1
 check "/usr/local/bin/os plan" "nothing to do. this machine matches its config."
+# secure boot on it: the tpm's key stops working until it's made again.
+tests/vm/secureboot-luks.sh
 # leaving: grub-mkconfig's menu takes what unlocks the root from grub's
 # defaults, where os puts it, since only os's own entries had it.
 check "/usr/local/bin/os uninstall --yes --delete-generations >/tmp/out 2>&1; echo \$?" 0
+# it says the next boot asks for the passphrase, and how to make the key
+# again for the partition under the root, in its plan and once it's done.
+check "grep -c '^  the next boot asks for the passphrase once' /tmp/out" 2
+check "grep -c \"systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 \$(cryptsetup status root | sed -n 's/^ *device: *//p')\" /tmp/out" 2
 check "grep -c '^GRUB_CMDLINE_LINUX=.* rd.luks.name=' /etc/default/grub" 1
 check "grep -c 'rd.luks.options=tpm2-device=auto' /boot/grub/grub.cfg | grep -c -v '^0\$'" 1
-"$vm" reboot
+# arch's plain kernel boots now, without systemd's stub, whose initramfs
+# adds an os separator to pcr 7. the tpm's key was made with it there, so
+# this boot asks for the passphrase, which opens the root, and the key
+# made again makes the next boot unattended.
+answered=$(VM_ANSWER_MAYBE=1 "$vm" reboot-answer "passphrase for" "correct horse battery")
+"$vm" ssh "/usr/lib/systemd/systemd-pcrlock log --pcr=7 2>&1 | grep -c os-separator" || true
+if [ "$answered" = answered ]; then
+    part=$("$vm" ssh "cryptsetup status root | sed -n 's/^ *device: *//p'")
+    "$vm" ssh "printf 'correct horse battery' > /root/luks-key && chmod 600 /root/luks-key && systemd-cryptenroll --unlock-key-file=/root/luks-key --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 $part >/dev/null; rm -f /root/luks-key"
+    "$vm" reboot
+fi
 check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in use."
 check "test -e /var/lib/yoq && echo state || echo none" none
 echo "install ok"

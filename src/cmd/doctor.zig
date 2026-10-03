@@ -82,15 +82,16 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             });
         }
         if (try enable.luksCheck(a, &b)) |c| try checks.append(a, c);
-        if (b.luks_uuid) |uuid| {
-            const device = b.luks_device orelse try std.fmt.allocPrint(a, "/dev/disk/by-uuid/{s}", .{uuid});
-            // the header needs root to read; the command line doesn't.
-            const dump = switch (try exec.output(a, ctx.io, &.{ "cryptsetup", "luksDump", "--dump-json-metadata", device })) {
-                .ok => |t| t,
-                .failed => null,
-            };
-            const tpm = try tpmToken(a, dump) orelse cmdlineTpm(try rootfs.readProc(a, ctx.io, "/proc/cmdline"));
-            if (tpmCheck(&b, tpm)) |c| try checks.append(a, c);
+        if (try luks(a, ctx.io, &b)) |l| {
+            if (tpmCheck(&b, l.tpm)) |c| try checks.append(a, c);
+            // whether the tpm hands the key over now, without opening
+            // anything: it doesn't once the firmware's state it was sealed
+            // to changes, like after turning secure boot on.
+            if (l.token == true) {
+                if (try tpmUnsealed(a, l.dump.?)) try checks.append(a, try tpmSealCheck(a, l.device));
+                const opens = try exec.run(a, ctx.io, &.{ "cryptsetup", "open", "--test-passphrase", "--token-only", "--token-type", "systemd-tpm2", l.device }) == null;
+                try checks.append(a, try tpmOpensCheck(a, l.device, opens));
+            }
         }
         const wants = if (loaded) |l| if (l.config.boot.secure_boot) |v| v.v else false else false;
         if (wants or (b.secure_boot orelse false)) {
@@ -125,6 +126,32 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
 /// whether a luks2 header, as `cryptsetup luksDump --dump-json-metadata`
 /// prints it, has a key the tpm unlocks: a systemd-tpm2 token, as
+/// the luks volume under the root, and how the tpm opens it.
+pub const Luks = struct {
+    /// its partition.
+    device: []const u8,
+    /// its header as json, which needs root to read. null without it.
+    dump: ?[]const u8,
+    /// whether the header has a systemd-tpm2 token. null without a header.
+    token: ?bool,
+    /// whether the tpm unlocks it at boot: the token, or without a header
+    /// to read, the command line.
+    tpm: bool,
+};
+
+/// the luks volume under the root that `b` describes, or null when the
+/// root isn't on luks.
+pub fn luks(a: Allocator, io: std.Io, b: *const facts.Boot) !?Luks {
+    const uuid = b.luks_uuid orelse return null;
+    const device = b.luks_device orelse try std.fmt.allocPrint(a, "/dev/disk/by-uuid/{s}", .{uuid});
+    const dump = switch (try exec.output(a, io, &.{ "cryptsetup", "luksDump", "--dump-json-metadata", device })) {
+        .ok => |t| t,
+        .failed => null,
+    };
+    const token = try tpmToken(a, dump);
+    return .{ .device = device, .dump = dump, .token = token, .tpm = token orelse cmdlineTpm(try rootfs.readProc(a, io, "/proc/cmdline")) };
+}
+
 /// systemd-cryptenroll leaves. null when there's no header to go by.
 fn tpmToken(a: Allocator, dump: ?[]const u8) !?bool {
     const text = dump orelse return null;
@@ -141,6 +168,43 @@ fn tpmToken(a: Allocator, dump: ?[]const u8) !?bool {
         if (kind == .string and std.mem.eql(u8, kind.string, "systemd-tpm2")) return true;
     }
     return false;
+}
+
+/// whether a systemd-tpm2 token in `dump`, cryptsetup's luks header as
+/// json, has a key sealed to nothing: no pcrs, no signed policy, and no
+/// pcrlock policy. systemd-cryptenroll makes one by default since systemd
+/// 258.
+fn tpmUnsealed(a: Allocator, dump: []const u8) !bool {
+    const v = std.json.parseFromSliceLeaky(std.json.Value, a, dump, .{}) catch |e| switch (e) {
+        error.OutOfMemory => return e,
+        else => return false,
+    };
+    if (v != .object) return false;
+    const tokens = v.object.get("tokens") orelse return false;
+    if (tokens != .object) return false;
+    for (tokens.object.values()) |t| {
+        if (t != .object) continue;
+        const kind = t.object.get("type") orelse continue;
+        if (kind != .string or !std.mem.eql(u8, kind.string, "systemd-tpm2")) continue;
+        var sealed = false;
+        for ([_][]const u8{ "tpm2-pcrs", "tpm2_pubkey_pcrs", "tpm2-pubkey-pcrs" }) |name| {
+            if (t.object.get(name)) |pcrs| sealed = sealed or (pcrs == .array and pcrs.array.items.len > 0);
+        }
+        if (t.object.get("tpm2_pcrlock")) |l| sealed = sealed or (l == .bool and l.bool);
+        if (!sealed) return true;
+    }
+    return false;
+}
+
+/// the check for a tpm key sealed to nothing, on the luks volume at
+/// `device`.
+fn tpmSealCheck(a: Allocator, device: []const u8) !enable.Check {
+    return .{
+        .what = "tpm seal",
+        .ok = false,
+        .found = "the tpm's key isn't sealed to any pcr",
+        .fix = try std.fmt.allocPrint(a, "the tpm hands the key to anything that boots, a system on a usb stick included, so the disk is only safe away from this machine. systemd-cryptenroll stopped sealing to pcr 7 by default in systemd 258. make the key again with `systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 {s}`, typing the passphrase.", .{device}),
+    };
 }
 
 /// whether the kernel command line has the initramfs try the tpm, as
@@ -181,6 +245,18 @@ fn tpmCheck(b: *const facts.Boot, tpm: bool) ?enable.Check {
     };
 }
 
+/// whether the tpm's key opens the luks volume at `device` now. when it
+/// doesn't, the next boot asks for the passphrase, which still works.
+fn tpmOpensCheck(a: Allocator, device: []const u8, opens: bool) !enable.Check {
+    return .{
+        .what = "tpm key",
+        .ok = opens,
+        .warn = true,
+        .found = if (opens) "opens the root" else "doesn't open the root now",
+        .fix = try std.fmt.allocPrint(a, "the tpm only hands the key over in the firmware state it was made in, and that changed, like after turning secure boot on, so the next boot asks for the passphrase. make the key again with `systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 {s}`, typing the passphrase.", .{device}),
+    };
+}
+
 /// what secure boot needs: sbctl, its keys, firmware that enforces it,
 /// and signatures on every efi binary on the esp. `wants` is the
 /// config's `[boot] secure_boot`; without it, the firmware's state is
@@ -199,6 +275,13 @@ fn secureBootChecks(a: Allocator, b: *const facts.Boot, wants: bool, sbctl: bool
         .fix = "`sbctl create-keys` makes them in " ++ secureboot.keys_dir ++ ". os never makes or enrolls keys itself.",
     });
     const on = b.secure_boot orelse false;
+    // in setup mode the firmware has no keys yet, which is expected.
+    if (b.db_enrolled) |enrolled| if (!(b.setup_mode orelse false)) try checks.append(a, .{
+        .what = "firmware keys",
+        .ok = enrolled or !on,
+        .found = if (enrolled) "sbctl's db key is enrolled" else "sbctl's db key isn't enrolled",
+        .fix = "images os signs won't start while the firmware enforces secure boot (E0137). in the firmware's setup, clear the secure boot keys (setup mode), boot, and run `sbctl enroll-keys -m`.",
+    });
     try checks.append(a, .{
         .what = "firmware secure boot",
         .ok = on or !wants,
@@ -372,6 +455,33 @@ test "a root the tpm unlocks without secure boot is a warning" {
     try std.testing.expect(!tpmCheck(&b, true).?.ok);
     b.loader = "grub";
     try std.testing.expect(tpmCheck(&b, true).?.ok);
+}
+
+test "a tpm key that doesn't open the root is a warning" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expect((try tpmOpensCheck(a, "/dev/vda2", true)).ok);
+    const c = try tpmOpensCheck(a, "/dev/vda2", false);
+    try std.testing.expect(!c.ok and c.warn);
+    try std.testing.expect(enable.allOk(&.{c}));
+    try std.testing.expect(std.mem.endsWith(u8, c.fix.?, "`systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 /dev/vda2`, typing the passphrase."));
+}
+
+test "a tpm key sealed to no pcr fails" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // systemd 258's default: an empty pcr list.
+    try std.testing.expect(try tpmUnsealed(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-tpm2\",\"keyslots\":[\"1\"],\"tpm2-pcrs\":[]}}}"));
+    try std.testing.expect(!try tpmUnsealed(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-tpm2\",\"keyslots\":[\"1\"],\"tpm2-pcrs\":[7]}}}"));
+    // a signed policy, or pcrlock's, counts.
+    try std.testing.expect(!try tpmUnsealed(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-tpm2\",\"tpm2-pcrs\":[],\"tpm2_pubkey_pcrs\":[11]}}}"));
+    try std.testing.expect(!try tpmUnsealed(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-tpm2\",\"tpm2-pcrs\":[],\"tpm2_pcrlock\":true}}}"));
+    try std.testing.expect(!try tpmUnsealed(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-fido2\"}}}"));
+    try std.testing.expect(!try tpmUnsealed(a, "not json"));
+    const c = try tpmSealCheck(a, "/dev/vda2");
+    try std.testing.expect(!c.ok and !c.warn);
 }
 
 test "a sudoers rule without a password, and a commented one" {
