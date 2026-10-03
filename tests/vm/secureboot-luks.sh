@@ -60,4 +60,7 @@ settled
 
 # without os, grub boots arch's kernel, which has to be signed then.
 "$vm" ssh "sbctl sign -s /boot/vmlinuz-linux >/dev/null"
+# what pcr 7 was made of, to compare with if the tpm doesn't unlock the
+# root after os is gone.
+"$vm" ssh "/usr/lib/systemd/systemd-pcrlock log --pcr=7 2>&1 | tail -n 20" || true
 echo "secure boot on luks ok"

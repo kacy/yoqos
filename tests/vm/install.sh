@@ -126,7 +126,15 @@ tests/vm/secureboot-luks.sh
 check "/usr/local/bin/os uninstall --yes --delete-generations >/tmp/out 2>&1; echo \$?" 0
 check "grep -c '^GRUB_CMDLINE_LINUX=.* rd.luks.name=' /etc/default/grub" 1
 check "grep -c 'rd.luks.options=tpm2-device=auto' /boot/grub/grub.cfg | grep -c -v '^0\$'" 1
-"$vm" reboot
+# the tpm still unlocks it, through grub and arch's own signed kernel. if
+# it asks for the passphrase instead, it gets it, and pcr 7's events show
+# what changed.
+answered=$(VM_ANSWER_MAYBE=1 "$vm" reboot-answer "passphrase for" "correct horse battery")
+if [ "$answered" = answered ]; then
+    "$vm" ssh "/usr/lib/systemd/systemd-pcrlock log --pcr=7 2>&1 | tail -n 20; cryptsetup luksDump \$(cryptsetup status root | sed -n 's/^ *device: *//p') | sed -n '/^Tokens:/,/^Digests:/p'" || true
+    echo "install: the tpm didn't unlock the root after uninstall"
+    exit 1
+fi
 check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in use."
 check "test -e /var/lib/yoq && echo state || echo none" none
 echo "install ok"

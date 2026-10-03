@@ -29,7 +29,10 @@
 #   vm.sh reboot-answer <prompt> <text>
 #                            reboot, type <text> at the serial console once
 #                            it shows <prompt>, like a luks passphrase, and
-#                            wait for ssh. needs VM_SERIAL_IN
+#                            wait for ssh. needs VM_SERIAL_IN. with
+#                            VM_ANSWER_MAYBE=1, a boot that comes up
+#                            without the prompt is fine too. it prints
+#                            "answered" when it typed
 #   vm.sh stop               power off and throw the overlay away
 #
 # VM_TPM=1 gives the vm a tpm 2.0, from swtpm. a start or start-iso begins
@@ -244,6 +247,10 @@ reboot-answer)
     run systemctl reboot || true
     for _ in $(seq 100); do
         tail -c +"$from" "$dir/console.log" | grep -q -- "$2" && break
+        if [ -n "${VM_ANSWER_MAYBE:-}" ]; then
+            id=$(timeout 20 ssh $ssh_opts -p "$port" root@127.0.0.1 cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+            if [ -n "$id" ] && [ "$id" != "$old" ]; then exit 0; fi
+        fi
         sleep 3
     done
     if ! tail -c +"$from" "$dir/console.log" | grep -q -- "$2"; then
@@ -254,6 +261,7 @@ reboot-answer)
     sleep "${VM_ANSWER_DELAY:-1}"
     printf '%s\r' "$3" | socat - UNIX-CONNECT:"$dir/serial.sock"
     wait_boot "$old"
+    echo answered
     ;;
 stop)
     if [ -f "$dir/qemu.pid" ]; then kill "$(cat "$dir/qemu.pid")" 2>/dev/null || true; fi
