@@ -33,6 +33,10 @@ trap '"$vm" stop' EXIT
 # git is what an os package would depend on, for the config's history.
 # a new kernel needs a reboot before its modules load.
 "$vm" ssh pacman -Syu --noconfirm --noprogressbar --needed git >/dev/null
+# the journal goes to the serial console too, so when a boot never answers
+# over ssh, the console log shows what sshd and the network did. it's in
+# /etc, so every root made from this one has it.
+"$vm" ssh "mkdir -p /etc/systemd/journald.conf.d && printf '[Journal]\\nForwardToConsole=yes\\nTTYPath=/dev/ttyS0\\nMaxLevelConsole=info\\n' > /etc/systemd/journald.conf.d/yoq-test-console.conf"
 "$vm" reboot
 
 # the upgrade from an older os runs on its own: os goes in /usr/bin there,
