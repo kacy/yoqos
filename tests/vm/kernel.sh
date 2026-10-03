@@ -36,7 +36,7 @@ old_kernel=$("$vm" ssh "uname -r")
 [ "$old_kernel" != "$today_kernel" ] || { echo "$name: still on $today_kernel after going back to $then"; exit 1; }
 kernel_matches
 old=$(newest)
-check "$os pin $old" "generation $old is pinned: garbage collection keeps it"
+check "$os pin $old" "generation $old is pinned: garbage collection keeps it."
 
 # forward: the weekly update, the screen says what's notable and why it
 # needs a reboot.
