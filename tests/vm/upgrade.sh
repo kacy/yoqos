@@ -116,7 +116,10 @@ on_trial yes
 check "test -e /var/lib/yoq/trial && echo noted || echo journal only" "journal only"
 before=$(second_newest)
 break_trial_boot
-falls_back "$before"
+"$vm" reboot || true
+wait_root "/@roots/boot-$before"
+settled
+check "os history | tail -n 1 | grep -c 'fell back from'" 1
 check "os version" "$want_version"
 check "os plan" "nothing to do. this machine matches its config."
 echo "upgrade ok"
