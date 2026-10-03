@@ -75,10 +75,10 @@ jobs:
       matrix:
         image: [cloud, archinstall, ext4, limine, refind, sdboot, snapper]
         suite: [full]
-        # yos upgraded from 0.1.0, on a machine 0.1.0 set up.
+        # a machine yoq os 0.1.5 set up, moved over to yos.
         include:
           - image: cloud
-            suite: upgrade
+            suite: switch
     env:
       VM_IMAGE: ${{ matrix.image }}
       VM_SUITE: ${{ matrix.suite }}
@@ -92,16 +92,15 @@ jobs:
         with:
           version: 0.16.0
       - run: zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline
-      # the older yos the upgrade runs, each built from its tag.
-      - if: matrix.suite == 'upgrade'
+      # yoq os 0.1.5, the last release before the name was yos, built from
+      # its tag.
+      - if: matrix.suite == 'switch'
         run: |
           git config --global --add safe.directory "$PWD"
-          for v in 0.1.0 0.1.3; do
-            git fetch --depth=1 origin tag "v$v"
-            mkdir -p "/tmp/old/$v"
-            git archive "v$v" | tar -x -C "/tmp/old/$v"
-            (cd "/tmp/old/$v" && zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline)
-          done
+          git fetch --depth=1 origin tag v0.1.5
+          mkdir -p /tmp/old/0.1.5
+          git archive v0.1.5 | tar -x -C /tmp/old/0.1.5
+          (cd /tmp/old/0.1.5 && zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline)
       - id: week
         run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
       # saved right after it's made, so a failing test doesn't mean

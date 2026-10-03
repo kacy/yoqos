@@ -1,8 +1,8 @@
-  __   __   ___     ___         ___    ____
-  \ \ / /  / _ \   / _ \       / _ \  / ___|
-   \ V /  | | | | | | | |     | | | | \___ \
-    | |   | |_| | | |_| |     | |_| |  ___) |
-    |_|    \___/   \__\_\      \___/  |____/
+  __   __   ___    ____
+  \ \ / /  / _ \  / ___|
+   \ V /  | | | | \___ \
+    | |   | |_| |  ___) |
+    |_|    \___/  |____/
 
   declarative arch linux, with rollback. this is the live system; nothing
   on this machine's disks has changed.

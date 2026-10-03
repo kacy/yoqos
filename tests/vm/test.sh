@@ -43,10 +43,10 @@ trap '"$vm" stop' EXIT
 "$vm" ssh "mkdir -p /etc/systemd/journald.conf.d && printf '[Journal]\\nForwardToConsole=yes\\nTTYPath=/dev/ttyS0\\nMaxLevelConsole=info\\n' > /etc/systemd/journald.conf.d/yos-test-console.conf"
 "$vm" reboot
 
-# the upgrade from an older yos runs on its own: yos goes in /usr/bin there,
-# so nothing may shadow it in /usr/local/bin.
-if [ "${VM_SUITE:-}" = upgrade ]; then
-    tests/vm/upgrade.sh /tmp/old/0.1.0/zig-out/bin/yos /tmp/old/0.1.3/zig-out/bin/yos "$os"
+# the move from yoq os, yos's name before 0.2.0, runs on its own: yos goes
+# in /usr/bin there, as its package puts it.
+if [ "${VM_SUITE:-}" = switch ]; then
+    tests/vm/switch.sh /tmp/old/0.1.5 "$os"
     exit 0
 fi
 
