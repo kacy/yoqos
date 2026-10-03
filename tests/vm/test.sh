@@ -71,8 +71,9 @@ limine | sdboot)
     tests/vm/load-failures.sh
     # unified kernel images, started by each loader's own kind of entry.
     tests/vm/uki.sh
-    # boot files live on the esp here, so it can run out of room.
-    if [ "$VM_IMAGE" = sdboot ]; then tests/vm/failures.sh esp; fi
+    # boot files live on the esp here, so it can run out of room. both
+    # lose power partway through a trial.
+    if [ "$VM_IMAGE" = sdboot ]; then tests/vm/failures.sh esp trial; else tests/vm/failures.sh trial; fi
     # signed images under secure boot; it takes the keys out at the end.
     if [ "$VM_IMAGE" = sdboot ]; then tests/vm/secureboot.sh; fi
     tests/vm/leave.sh
@@ -90,6 +91,8 @@ refind)
     tests/vm/rollback.sh
     tests/vm/trial.sh
     tests/vm/load-failures.sh
+    # the firmware's one-shot boot, with the power lost partway through.
+    tests/vm/failures.sh trial
     tests/vm/leave.sh
     ;;
 *)
@@ -107,7 +110,7 @@ refind)
     tests/vm/desktop.sh
     tests/vm/ids.sh
     # failures with generations, on one image of the two.
-    if [ "${VM_IMAGE:-cloud}" = cloud ]; then tests/vm/failures.sh crash committed download disk; fi
+    if [ "${VM_IMAGE:-cloud}" = cloud ]; then tests/vm/failures.sh crash committed download disk trial; fi
     # the esp is /boot here, so a rollback puts a kernel on it.
     if [ "${VM_IMAGE:-cloud}" = archinstall ]; then tests/vm/failures.sh restore; fi
     # grub under secure boot, with the keys left enrolled for leave.sh.
