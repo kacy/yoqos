@@ -1,8 +1,12 @@
 # generations
 
-on a btrfs root, `os` can keep generations: whole copies of the system that
-you can boot from the boot menu. this page covers how they work, what they
-don't do yet, and what's planned.
+on a btrfs root, `os` can keep generations: whole copies of the system
+that you can boot from the boot menu. every change becomes one, and a
+change that needs a reboot boots once on trial, so a bad kernel or a
+broken desktop costs you one reboot instead of an evening. this page
+covers how that works, what it doesn't do yet, and what's planned. it
+goes deeper than you need for daily use; [usage.md](usage.md) has the
+everyday side.
 
 generations are new. try them on a machine you can reinstall first.
 
