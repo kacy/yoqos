@@ -38,7 +38,7 @@ trap '"$vm" stop' EXIT
 # the upgrade from an older os runs on its own: os goes in /usr/bin there,
 # so nothing may shadow it in /usr/local/bin.
 if [ "${VM_SUITE:-}" = upgrade ]; then
-    tests/vm/upgrade.sh "$VM_OLD_OS" "$os"
+    tests/vm/upgrade.sh /tmp/old/0.1.0/zig-out/bin/os /tmp/old/0.1.3/zig-out/bin/os "$os"
     exit 0
 fi
 

@@ -7,14 +7,16 @@
 # left (records, the journal, the drift log, grub's env file and menu, its
 # units, the config's history) and bring it up to date. a rollback to a
 # generation from before the upgrade runs 0.1.0 again, on what the new os
-# wrote, and 0.1.0 rolls forward again. runs on the cloud image, in a vm
-# of its own.
-# usage: tests/vm/upgrade.sh <old os> <new os>
+# wrote, and 0.1.0 rolls forward again. last, 0.1.3 arms a trial that
+# fails, and the new os has to fall back from it, though 0.1.3 noted grub
+# trials only in the journal. runs on the cloud image, in a vm of its own.
+# usage: tests/vm/upgrade.sh <os 0.1.0> <os 0.1.3> <new os>
 set -eu
 . tests/vm/lib.sh
 
 old=$1
-new=$2
+old013=$2
+new=$3
 on_failure="/usr/bin/os version; grub-editenv $VM_ESP/yoq/grubenv list; ls /var/lib/yoq /var/lib/yoq/generations; tail -n 5 /var/lib/yoq/journal; journalctl -b -u yoq-health --no-pager -o cat | tail -n 20"
 
 # os where its package puts it, with the drift hook beside it.
@@ -103,4 +105,18 @@ check "os plan" "nothing to do. this machine matches its config."
 check "os gc >/dev/null; echo \$?" 0
 check "os doctor | grep -c '^  ok  boot menu'" 1
 check "grep -c -e '--id head' $VM_ESP/grub/grub.cfg" 1
+
+# a trial 0.1.3 arms, run beside the new os, as one in /usr/local would
+# be. it can't boot, and the boot that falls back runs the new os, which
+# finds 0.1.3's armed event in the journal, not a note of its own.
+"$vm" copy "$old013" /root/os-0.1.3
+check "/root/os-0.1.3 version" "os 0.1.3"
+"$vm" ssh "/root/os-0.1.3 add --yes intel-ucode" | tail -n 2
+on_trial yes
+check "test -e /var/lib/yoq/trial && echo noted || echo journal only" "journal only"
+before=$(second_newest)
+break_trial_boot
+falls_back "$before"
+check "os version" "$want_version"
+check "os plan" "nothing to do. this machine matches its config."
 echo "upgrade ok"
