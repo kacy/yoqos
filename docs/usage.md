@@ -779,12 +779,18 @@ or not, and `os doctor` says so.
 turning secure boot on changes pcr 7, so the tpm won't unlock the disk
 until its key is enrolled again: type the passphrase once, then run
 `systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 <partition>`.
-`os doctor` warns until then. a boot waits at the passphrase as long as
-it takes: every generation on a luks root has
-`x-systemd.device-timeout=infinity` in its `rootflags`, since the
-initramfs otherwise gives up on the root after 90 seconds and lands in
-emergency mode. `os uninstall` leaves that out, so plain arch waits 90
-seconds again. a trial's watchdog only starts counting once the root is up.
+`os doctor` warns until then. the same happens the first time a machine
+boots a unified kernel image (`uki`), and the first time it boots a plain
+kernel after that, like a generation from before `uki` or the machine
+after `os uninstall`: systemd's stub has the initramfs add an os
+separator to pcr 7, and a plain kernel's boot doesn't.
+
+a boot waits at the passphrase as long as it takes: every generation on a
+luks root has `x-systemd.device-timeout=infinity` in its `rootflags`,
+since the initramfs otherwise gives up on the root after 90 seconds and
+lands in emergency mode. `os uninstall` leaves that out, so plain arch
+waits 90 seconds again. a trial's watchdog only starts counting once the
+root is up.
 
 the config has to say the root is encrypted, or the new machine's
 initramfs can't unlock it: `[boot] encrypt = true` (see [encrypted

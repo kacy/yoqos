@@ -583,6 +583,14 @@ next boot tries again once there's room.
   (`limine enroll-config`), since `os` edits limine.conf. a generation from before `uki` boots a kernel
   without a signature, so on grub, systemd-boot, and refind the firmware
   refuses it while secure boot is on.
+- pcr 7 isn't only the firmware's: a boot through systemd's stub, which
+  every unified kernel image has, adds an os separator to it from the
+  initramfs, and a plain kernel's boot doesn't. so a tpm key made while
+  images boot doesn't open the root when a plain kernel boots, and the
+  other way around: turning `uki` on, rolling back to a generation from
+  before it, and `os uninstall` each cost a passphrase and the key made
+  again (`os doctor` says so). systemd-pcrlock's policies are the way out,
+  and os doesn't use them yet.
 - the tpm key that `os install --tpm` adds is sealed to pcr 7, the secure
   boot state. on grub, systemd-boot, and refind that's enough: the
   firmware checks every kernel they start, and each signed image has its

@@ -20,7 +20,9 @@
   and `os doctor` has a "firmware keys" check.
 - `os doctor` checks that the tpm's key still opens a luks root, without
   opening anything. after turning secure boot on, it doesn't until it's
-  made again, and the boot asks for the passphrase.
+  made again, and the boot asks for the passphrase. the same goes for
+  switching between unified kernel images and plain kernels, since
+  systemd's stub adds to pcr 7.
 
 ### fixes
 
