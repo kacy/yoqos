@@ -831,7 +831,7 @@ until its key is enrolled again: type the passphrase once, then run
 `yos doctor` warns until then. the same happens the first time a machine
 boots a unified kernel image (`uki`), and the first time it boots a plain
 kernel after that, like a generation from before `uki` or the machine
-after `yos uninstall`: systemd's stub has the initramfs add an yos
+after `yos uninstall`: systemd's stub has the initramfs add an os
 separator to pcr 7, and a plain kernel's boot doesn't.
 
 a boot waits at the passphrase as long as it takes: every generation on a
@@ -1545,7 +1545,7 @@ every command takes `--json` and prints one json document. each document
 starts with a `schema` field, like `"schema": "yos.plan/1"`, that names its
 shape and version. errors with a code come out as a `yos.errors/1`
 document on stdout under `--json`; other problems, like a file that can't
-be written, are an `yos: ...` line on stderr either way.
+be written, are a `yos: ...` line on stderr either way.
 
 `yos schema <name>` prints the json schema for a document: `plan`, `facts`,
 `status`, `errors`, `events`, `secret` (what `yos secret set` and `rm`

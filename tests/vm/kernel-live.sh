@@ -10,10 +10,10 @@ set -eu
 yos=/usr/local/bin/yos
 empty="nothing to do. this machine matches its config."
 
-"$vm" ssh "$os init >/dev/null 2>&1 || true"
+"$vm" ssh "$yos init >/dev/null 2>&1 || true"
 # the scripts before can leave the lock ahead of the machine.
-"$vm" ssh "$os apply --yes" | tail -n 1
-check "$os plan" "$empty"
+"$vm" ssh "$yos apply --yes" | tail -n 1
+check "$yos plan" "$empty"
 # an older kernel from the archive, running. the lock still has today's.
 url=$(older linux)
 [ -n "$url" ] || { echo "$name: no older linux in the archive"; exit 1; }
@@ -25,11 +25,11 @@ kernel_matches
 check "lsmod | grep -c '^dummy ' || true" 0
 
 # yos puts today's linux back, live. the running kernel's modules stay.
-"$vm" ssh "$os apply --yes" | tail -n 2
+"$vm" ssh "$yos apply --yes" | tail -n 2
 check "test \"\$(pacman -Q linux | cut -d' ' -f2 | sed 's/\\.arch/-arch/')\" != $old && echo upgraded" upgraded
 check "test -f /usr/lib/modules/$old/.yos-kept && echo kept" kept
 check "modprobe dummy && lsmod | grep -c '^dummy '" 1
-check "$os plan" "$empty"
+check "$yos plan" "$empty"
 
 # after the reboot, the new kernel runs, and the next apply, even with
 # nothing to do, removes the old modules.
@@ -37,6 +37,6 @@ check "$os plan" "$empty"
 kernel_matches
 check "test \"\$(uname -r)\" != $old && echo newer" newer
 check "test -d /usr/lib/modules/$old && echo still there" "still there"
-check "$os apply --yes" "$empty"
+check "$yos apply --yes" "$empty"
 check "test -d /usr/lib/modules/$old && echo still there || echo gone" gone
 echo "kernel live ok"

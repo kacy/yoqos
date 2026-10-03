@@ -17,7 +17,7 @@ sed -i -e 's/^iso_name=.*/iso_name="yos"/' \
 grep -rl 'Arch Linux install medium' "$profile" | xargs -r sed -i 's/Arch Linux install medium/yos live medium/'
 cp "$(dirname "$0")/motd" "$profile/airootfs/etc/motd"
 # yos itself, runnable by everyone.
-install -Dm755 "$os" "$profile/airootfs/usr/local/bin/yos"
+install -Dm755 "$yos" "$profile/airootfs/usr/local/bin/yos"
 sed -i 's|^file_permissions=(|file_permissions=(\n  ["/usr/local/bin/yos"]="0:0:755"|' "$profile/profiledef.sh"
 # and its man pages, for `man yos` before there's anything to install.
 # /usr/local/share/man is a link to ../man there, which the filesystem

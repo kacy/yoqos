@@ -23,7 +23,7 @@ set -eu
 
 yos=/usr/local/bin/yos
 empty="nothing to do. this machine matches its config."
-"$vm" ssh "$os init >/dev/null 2>&1 || true"
+"$vm" ssh "$yos init >/dev/null 2>&1 || true"
 generations=$("$vm" ssh "test -d /var/lib/yos/generations && echo yes || echo no")
 newest_cmd="ls /var/lib/yos/generations 2>/dev/null | sort -n | tail -n 1 | cut -d. -f1"
 # the journal's last apply line. yos's other events, like commits and
@@ -39,8 +39,8 @@ else
     menu_cmd="echo none"
 fi
 # the scripts before can leave the lock ahead of the machine.
-"$vm" ssh "$os apply --yes" | tail -n 1
-check "$os plan" "$empty"
+"$vm" ssh "$yos apply --yes" | tail -n 1
+check "$yos plan" "$empty"
 # when a check fails, what yos printed last and what the journal says.
 on_failure="echo '--- /tmp/out'; cat /tmp/out 2>/dev/null; echo '--- journal'; tail -n 5 /var/lib/yos/journal 2>/dev/null"
 
@@ -83,7 +83,7 @@ online() {
 # apply notices the journal's unfinished run, clears the stale lock, and
 # finishes the job.
 crash_apply() {
-    "$vm" ssh "$os add --no-apply sl" | tail -n 1
+    "$vm" ssh "$yos add --no-apply sl" | tail -n 1
     check "grep -cF '[packages.sl]' /etc/yos/machine.lock" 1
     # the hook takes itself out first, so the next boot's apply goes
     # through. sync stands in for a disk that kept what was written
@@ -91,7 +91,7 @@ crash_apply() {
     "$vm" ssh "mkdir -p /etc/pacman.d/hooks && printf '#!/bin/sh\\nrm -f /etc/pacman.d/hooks/00-yos-power-loss.hook\\nsync\\necho b > /proc/sysrq-trigger\\n' > /root/power-loss && chmod +x /root/power-loss && printf '[Trigger]\\nOperation = Install\\nType = Package\\nTarget = sl\\n\\n[Action]\\nDescription = losing power\\nWhen = PreTransaction\\nExec = /root/power-loss\\n' > /etc/pacman.d/hooks/00-yos-power-loss.hook && sync"
     before=$("$vm" ssh "$newest_cmd")
     menu=$("$vm" ssh "$menu_cmd")
-    crash "$os apply --yes"
+    crash "$yos apply --yes"
     if [ "$generations" = yes ]; then settled; fi
     check "test -e /var/lib/pacman/db.lck && echo locked" locked
     check "pacman -Q sl >/dev/null 2>&1 || echo not yet" "not yet"
@@ -99,13 +99,13 @@ crash_apply() {
     # the menu still boots the generation from before the apply.
     check "$newest_cmd" "$before"
     check "$menu_cmd" "$menu"
-    check "$os apply --yes 2>&1 | grep -c -e 'the last apply .* didn.t finish' -e 'left from before this boot'" 2
+    check "$yos apply --yes 2>&1 | grep -c -e 'the last apply .* didn.t finish' -e 'left from before this boot'" 2
     check "pacman -Q sl >/dev/null && echo installed" installed
     check "$last_apply | grep -c '\"event\":\"done\"'" 1
-    check "$os plan" "$empty"
+    check "$yos plan" "$empty"
     if [ "$generations" = yes ]; then check "test \$($newest_cmd) -gt $before && echo recorded" recorded; fi
-    "$vm" ssh "$os remove --yes sl" | tail -n 1
-    check "$os plan" "$empty"
+    "$vm" ssh "$yos remove --yes sl" | tail -n 1
+    check "$yos plan" "$empty"
 }
 
 # the power goes once pacman has installed sl, before yos writes "done" in
@@ -113,16 +113,16 @@ crash_apply() {
 # nothing to do, so it records the cut-off apply as done, and on a machine
 # with generations, records the generation that apply never got to.
 crash_committed() {
-    "$vm" ssh "$os add --no-apply sl" | tail -n 1
+    "$vm" ssh "$yos add --no-apply sl" | tail -n 1
     check "grep -cF '[packages.sl]' /etc/yos/machine.lock" 1
     "$vm" ssh "mkdir -p /etc/pacman.d/hooks && printf '#!/bin/sh\\nrm -f /etc/pacman.d/hooks/00-yos-power-loss.hook\\nsync\\necho b > /proc/sysrq-trigger\\n' > /root/power-loss && chmod +x /root/power-loss && printf '[Trigger]\\nOperation = Install\\nType = Package\\nTarget = sl\\n\\n[Action]\\nDescription = losing power\\nWhen = PostTransaction\\nExec = /root/power-loss\\n' > /etc/pacman.d/hooks/00-yos-power-loss.hook && sync"
     before=$("$vm" ssh "$newest_cmd")
-    crash "$os apply --yes"
+    crash "$yos apply --yes"
     if [ "$generations" = yes ]; then settled; fi
     check "pacman -Qq sl" sl
     check "$last_apply | grep -c '\"event\":\"begin\"'" 1
     check "$newest_cmd" "$before"
-    check "$os apply --yes >/tmp/out 2>&1; echo \$?" 0
+    check "$yos apply --yes >/tmp/out 2>&1; echo \$?" 0
     check "grep -c 'was cut off after it made its changes. the machine matches the config, so it.s recorded as done' /tmp/out" 1
     check "grep -c 'didn.t finish' /tmp/out || true" 0
     check "test -e /var/lib/pacman/db.lck && echo locked || echo clear" clear
@@ -133,24 +133,24 @@ crash_committed() {
     fi
     # settled: the next apply has nothing to say, and records nothing.
     after=$("$vm" ssh "$newest_cmd")
-    check "$os apply --yes 2>&1" "$empty"
+    check "$yos apply --yes 2>&1" "$empty"
     check "$newest_cmd" "$after"
-    check "$os plan" "$empty"
-    "$vm" ssh "$os remove --yes sl" | tail -n 1
-    check "$os plan" "$empty"
+    check "$yos plan" "$empty"
+    "$vm" ssh "$yos remove --yes sl" | tail -n 1
+    check "$yos plan" "$empty"
 }
 
 # no network: an apply can't download figlet, and an update can't fetch
 # today's databases. neither changes the machine, the lock, the config's
 # history, or the generations, and both say why.
 download() {
-    "$vm" ssh "$os add --no-apply figlet" | tail -n 1
+    "$vm" ssh "$yos add --no-apply figlet" | tail -n 1
     check "grep -cF '[packages.figlet]' /etc/yos/machine.lock" 1
     "$vm" ssh "rm -f /var/cache/yos/pkg/figlet-*"
     before=$("$vm" ssh "$newest_cmd")
     menu=$("$vm" ssh "$menu_cmd")
     offline
-    check "$os apply --yes >/tmp/out 2>&1; echo \$?" 1
+    check "$yos apply --yes >/tmp/out 2>&1; echo \$?" 1
     "$vm" ssh "tail -n 4 /tmp/out"
     check "grep -q 'failed to retrieve some files' /tmp/out && echo named" named
     check "pacman -Q figlet >/dev/null 2>&1 || echo not installed" "not installed"
@@ -164,7 +164,7 @@ download() {
     lock=$("$vm" ssh "sha256sum < /etc/yos/machine.lock")
     commits=$("$vm" ssh "git -C /etc/yos rev-list --count HEAD")
     "$vm" ssh "cd /var/cache/yos/sync && if [ -d $today ]; then mv $today $today.aside; fi"
-    check "$os update --yes >/tmp/out 2>&1; echo \$?" 1
+    check "$yos update --yes >/tmp/out 2>&1; echo \$?" 1
     "$vm" ssh "tail -n 4 /tmp/out"
     check "grep -c 'can.t download the core database from any server' /tmp/out" 1
     check "sha256sum < /etc/yos/machine.lock" "$lock"
@@ -172,8 +172,8 @@ download() {
     check "$newest_cmd" "$before"
     online
     "$vm" ssh "cd /var/cache/yos/sync && if [ -d $today.aside ]; then rm -rf $today && mv $today.aside $today; fi"
-    "$vm" ssh "$os remove --yes figlet" | tail -n 1
-    check "$os plan" "$empty"
+    "$vm" ssh "$yos remove --yes figlet" | tail -n 1
+    check "$yos plan" "$empty"
 }
 
 # the disk fills up, then a change that needs a reboot builds the next
@@ -182,13 +182,13 @@ download() {
 disk_full() {
     pkg=$(ucode)
     # the config changes first: its files are on the same filesystem.
-    "$vm" ssh "$os add --no-apply $pkg" | tail -n 1
+    "$vm" ssh "$yos add --no-apply $pkg" | tail -n 1
     before=$("$vm" ssh "$newest_cmd")
     menu=$("$vm" ssh "$menu_cmd")
     was=$(roots)
     # preallocated, so compression can't make room.
     "$vm" ssh "avail=\$(df --output=avail -B1M /var | tail -n 1); fallocate -l \$((avail - 64))M /var/yos-filler-0 || true; i=1; while fallocate -l 16M /var/yos-filler-\$i 2>/dev/null; do i=\$((i + 1)); done; while fallocate -l 1M /var/yos-filler-\$i 2>/dev/null; do i=\$((i + 1)); done; sync; df -m /var | tail -n 1"
-    check "$os apply --yes >/tmp/out 2>&1; echo \$?" 1
+    check "$yos apply --yes >/tmp/out 2>&1; echo \$?" 1
     "$vm" ssh "tail -n 6 /tmp/out"
     check "grep -c 'which is likely why' /tmp/out" 1
     check "$newest_cmd" "$before"
@@ -198,8 +198,8 @@ disk_full() {
     check "findmnt -rn -o TARGET | grep -c /run/yos/next || true" 0
     "$vm" ssh "rm -f /var/yos-filler-*; sync"
     same_roots "$was"
-    "$vm" ssh "$os remove --no-apply $pkg" | tail -n 1
-    check "$os plan" "$empty"
+    "$vm" ssh "$yos remove --no-apply $pkg" | tail -n 1
+    check "$yos plan" "$empty"
 }
 
 # fills the esp up, leaving 2 MiB: less than a new initramfs, or a
@@ -214,16 +214,16 @@ fill_esp() {
 # builds anything.
 esp_full() {
     pkg=$(ucode)
-    "$vm" ssh "$os add --no-apply $pkg" | tail -n 1
+    "$vm" ssh "$yos add --no-apply $pkg" | tail -n 1
     before=$("$vm" ssh "$newest_cmd")
     menu=$("$vm" ssh "$menu_cmd")
     was=$(roots)
     fill_esp
-    check "$os plan >/tmp/out 2>&1; echo \$?" 1
+    check "$yos plan >/tmp/out 2>&1; echo \$?" 1
     "$vm" ssh "tail -n 4 /tmp/out"
     check "grep -c 'error.E0131.: the esp at $VM_ESP has .* MiB free' /tmp/out" 1
     check "grep -c 'yos gc --keep 1. removes generation' /tmp/out" 1
-    check "$os apply --yes >/tmp/out 2>&1; echo \$?" 1
+    check "$yos apply --yes >/tmp/out 2>&1; echo \$?" 1
     check "grep -c 'error.E0131.' /tmp/out" 1
     check "grep -c 'building generation' /tmp/out || true" 0
     check "$newest_cmd" "$before"
@@ -233,8 +233,8 @@ esp_full() {
     check "pacman -Q $pkg >/dev/null 2>&1 || echo not installed" "not installed"
     "$vm" ssh "rm -f $VM_ESP/yos-filler; sync"
     same_roots "$was"
-    "$vm" ssh "$os remove --no-apply $pkg" | tail -n 1
-    check "$os plan" "$empty"
+    "$vm" ssh "$yos remove --no-apply $pkg" | tail -n 1
+    check "$yos plan" "$empty"
 }
 
 # with grub and the esp at /boot, only the running root's boot files are
@@ -248,9 +248,9 @@ esp_restore() {
     target=$("$vm" ssh "cat /root/old-kernel-gen")
     back=$("$vm" ssh "$newest_cmd")
     running=$("$vm" ssh "uname -r")
-    check "$os plan" "$empty"
+    check "$yos plan" "$empty"
     fill_esp
-    check "$os rollback --yes $target >/tmp/out 2>&1; echo \$?" 0
+    check "$yos rollback --yes $target >/tmp/out 2>&1; echo \$?" 0
     "$vm" ssh "tail -n 4 /tmp/out"
     check "grep -c 'boot files don.t fit on the esp, so nothing was copied there' /tmp/out" 1
     check "grep -c 'the esp at $VM_ESP has .* MiB free, and the new boot files need' /tmp/out" 1
@@ -268,13 +268,13 @@ esp_restore() {
     check "grep -c 'BOOT_IMAGE=[^ ]*/$root/boot/vmlinuz-linux' /proc/cmdline" 1
     kernel_matches
     check "test -e /var/lib/yos/unsettled && echo noted || echo none" none
-    check "$os plan" "$empty"
-    "$vm" ssh "$os rollback --yes $back" | tail -n 1
+    check "$yos plan" "$empty"
+    "$vm" ssh "$yos rollback --yes $back" | tail -n 1
     "$vm" reboot
     settled
     check "uname -r" "$running"
     kernel_matches
-    check "$os plan" "$empty"
+    check "$yos plan" "$empty"
 }
 
 # a stand-in for $1 in /usr/local/bin, ahead of the real one in PATH,
@@ -339,7 +339,7 @@ trial_cuts() {
     # up again, and the boot after tries it.
     before=$("$vm" ssh "$newest_cmd")
     power_cut_on "$arm_tool" "$arm_cut"
-    crash "$os add --yes $pkg"
+    crash "$yos add --yes $pkg"
     wait_cut "$arm_tool" "/@roots/boot-$before"
     n=$("$vm" ssh "$newest_cmd")
     check "journalctl -b -u yos-health --no-pager -o cat | grep -c 'trial wasn.t set up before the machine went down'" 1
@@ -356,7 +356,7 @@ trial_cuts() {
     # made the default. the bootloader still boots the generation before,
     # whose health check finishes the job instead of falling back.
     before=$("$vm" ssh "$newest_cmd")
-    "$vm" ssh "$os remove --yes $pkg" | tail -n 1
+    "$vm" ssh "$yos remove --yes $pkg" | tail -n 1
     on_trial yes
     n=$("$vm" ssh "$newest_cmd")
     power_cut_on "$end_tool" "$end_cut"
@@ -369,12 +369,12 @@ trial_cuts() {
     settled
     check "findmnt -no FSROOT /" "/$(newest_root)"
     check "pacman -Q $pkg >/dev/null 2>&1 || echo removed" removed
-    check "$os plan" "$empty"
+    check "$yos plan" "$empty"
 
     # falling back: a trial that can't boot, then the power goes as the
     # fallback ends the trial, after it made its generation. the boot after
     # finds that generation made, and only ends the trial.
-    "$vm" ssh "$os add --yes $pkg" | tail -n 1
+    "$vm" ssh "$yos add --yes $pkg" | tail -n 1
     on_trial yes
     before=$(second_newest)
     n=$("$vm" ssh "$newest_cmd")
@@ -388,7 +388,7 @@ trial_cuts() {
     "$vm" reboot
     settled
     check "findmnt -no FSROOT /" "/$(newest_root)"
-    check "$os plan" "$empty"
+    check "$yos plan" "$empty"
 }
 
 for what in "$@"; do

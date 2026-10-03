@@ -19,7 +19,7 @@ trap 'rm -rf "$work"' EXIT
 cp -r examples "$work/"
 
 for top in $(cd "$work" && find examples -name machine.toml | sort); do
-    if ! out=$("$os" --config "$work/$top" config show 2>&1 >/dev/null); then
+    if ! out=$("$yos" --config "$work/$top" config show 2>&1 >/dev/null); then
         echo "fail: $top"
         echo "$out"
         failed=1
@@ -29,11 +29,11 @@ for top in $(cd "$work" && find examples -name machine.toml | sort); do
         echo "ok: $top"
         continue
     fi
-    if "$os" --config "$work/$top" --json config show | tr -d ' \n' | grep -q -e '"aur":\[{' -e '"repos":{"'; then
+    if "$yos" --config "$work/$top" --json config show | tr -d ' \n' | grep -q -e '"aur":\[{' -e '"repos":{"'; then
         echo "ok: $top (checked; it builds from the aur or trusts another repository)"
         continue
     fi
-    if ! out=$("$os" --config "$work/$top" update --no-apply 2>&1); then
+    if ! out=$("$yos" --config "$work/$top" update --no-apply 2>&1); then
         echo "fail: $top doesn't resolve"
         echo "$out"
         failed=1

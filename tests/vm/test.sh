@@ -46,14 +46,14 @@ trap '"$vm" stop' EXIT
 # the move from yoq os, yos's name before 0.2.0, runs on its own: yos goes
 # in /usr/bin there, as its package puts it.
 if [ "${VM_SUITE:-}" = switch ]; then
-    tests/vm/switch.sh /tmp/old/0.1.5 "$os"
+    tests/vm/switch.sh /tmp/old/0.1.5 "$yos"
     exit 0
 fi
 
 # the serial console report a vm that stops answering gets, checked once
 # here so it works when it's needed.
 "$vm" diagnose 2>&1 | grep -a -c '^lo ' | grep -qx 1 || { echo "test: the serial console report came back empty"; exit 1; }
-"$vm" copy "$os" /usr/local/bin/yos
+"$vm" copy "$yos" /usr/local/bin/yos
 "$vm" copy tests/arch/smoke.sh /root/smoke.sh
 "$vm" ssh mkdir -p /root/dist
 "$vm" copy dist/yos-drift.hook /root/dist/yos-drift.hook
