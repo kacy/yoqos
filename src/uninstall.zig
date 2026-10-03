@@ -100,7 +100,7 @@ pub fn grubDefaults(a: Allocator, text: []const u8, cmdline: []const u8) !?[]con
     var add: std.ArrayList(u8) = .empty;
     var words: generation.Words = .{ .text = cmdline };
     while (words.next()) |w| {
-        const keep = for ([_][]const u8{ "rd.luks.", "cryptdevice=", "cryptkey=", "console=", generation.luks_wait_key }) |p| {
+        const keep = for ([_][]const u8{ "rd.luks.", "cryptdevice=", "cryptkey=", "console=" }) |p| {
             if (std.mem.startsWith(u8, w, p)) break true;
         } else false;
         if (!keep or std.mem.indexOf(u8, text, w) != null) continue;
