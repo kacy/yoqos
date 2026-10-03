@@ -29,6 +29,9 @@
 
 ### fixes
 
+- E0123's hint quotes a provider name with a dot in it, like
+  `"libxtables.so" = "iptables"`. copied as it was, the bare name made a
+  toml table instead of a choice, and the config wouldn't load.
 - on a luks root, a passphrase typed more than 90 seconds after the prompt
   came up landed in emergency mode, since the initramfs gave up waiting
   for the root. every generation there now has
