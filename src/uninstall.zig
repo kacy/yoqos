@@ -20,6 +20,8 @@ pub const Step = struct {
 pub const Plan = struct {
     checks: []const enable.Check,
     steps: []const Step,
+    /// what to expect after, which changes nothing.
+    notes: []const []const u8 = &.{},
 
     pub fn ready(p: *const Plan) bool {
         return enable.allOk(p.checks);
@@ -37,11 +39,19 @@ pub fn ownPackage(f: *const facts.Facts) ?[]const u8 {
 /// `drop_generations` adds the step that deletes every generation but the
 /// running one. `unsigned_kernels` are the kernels on the esp's top,
 /// where arch installs them with the esp at /boot, that have no
-/// signature.
-pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool, unsigned_kernels: []const []const u8) !Plan {
+/// signature. `tpm_unlock` says the tpm unlocks a luks root at boot.
+pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool, unsigned_kernels: []const []const u8, tpm_unlock: bool) !Plan {
     const b = f.boot;
     var checks: std.ArrayList(enable.Check) = .empty;
     var steps: std.ArrayList(Step) = .empty;
+    var notes: std.ArrayList([]const u8) = .empty;
+    // a boot through systemd's stub, as every unified kernel image has,
+    // adds an os separator to pcr 7, and arch's plain kernel boots without
+    // one. a tpm key made while images booted doesn't match then.
+    if (tpm_unlock and b.uki and generation.running(b.root_subvol)) if (b.luks_uuid) |uuid| {
+        const device = b.luks_device orelse try std.fmt.allocPrint(a, "/dev/disk/by-uuid/{s}", .{uuid});
+        try notes.append(a, try std.fmt.allocPrint(a, "the next boot asks for the passphrase once: the tpm's key was made while this machine booted unified kernel images, whose stub adds to pcr 7, and arch's plain kernel boots without one. after that boot, run `systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 {s}` and type the passphrase, and the tpm unlocks it again.", .{device}));
+    };
     if (generation.running(b.root_subvol)) {
         const loader = menu.Loader.of(b) orelse .grub;
         // a plain limine, refind, or systemd-boot finds arch's kernels in
@@ -88,7 +98,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool, unsigne
     // before the state, since pacman's hook would write to it.
     if (ownPackage(f)) |name| try steps.append(a, .{ .kind = .package, .what = try std.fmt.allocPrint(a, "remove the {s} package: os itself, and its pacman hook", .{name}) });
     try steps.append(a, .{ .kind = .state, .what = "remove os's own state: /var/lib/yoq, and its files on the esp" });
-    return .{ .checks = checks.items, .steps = steps.items };
+    return .{ .checks = checks.items, .steps = steps.items, .notes = notes.items };
 }
 
 /// /etc/default/grub, as `text`, with a line that adds the kernel
@@ -123,6 +133,14 @@ pub fn writeText(w: *std.Io.Writer, p: *const Plan) !void {
     }
     try w.writeAll("steps\n");
     for (p.steps, 1..) |s, i| try w.print("  {d}. {s}\n", .{ i, s.what });
+    try writeNotes(w, p);
+}
+
+/// the plan's notes, if it has any, after a blank line.
+pub fn writeNotes(w: *std.Io.Writer, p: *const Plan) !void {
+    if (p.notes.len == 0) return;
+    try w.writeAll("\nnotes\n");
+    for (p.notes) |n| try w.print("  {s}\n", .{n});
 }
 
 // -- tests --
@@ -134,47 +152,47 @@ test "the steps on each rung" {
     defer arena.deinit();
     const a = arena.allocator();
     var pkgs = [_]facts.Package{.{ .name = "yoq-os", .version = "0.1.0-1" }};
-    const manage = try plan(a, &.{ .boot = .{ .root_subvol = "/@" }, .packages = &pkgs }, true, &.{});
+    const manage = try plan(a, &.{ .boot = .{ .root_subvol = "/@" }, .packages = &pkgs }, true, &.{}, false);
     try testing.expectEqual(2, manage.steps.len);
     try testing.expectEqual(Kind.package, manage.steps[0].kind);
     try testing.expectEqual(Kind.state, manage.steps[1].kind);
 
-    const gens = try plan(a, &.{ .boot = .{ .root_subvol = "/@roots/4", .loader = "grub", .esp = "/efi", .pacman_moved = true } }, false, &.{});
+    const gens = try plan(a, &.{ .boot = .{ .root_subvol = "/@roots/4", .loader = "grub", .esp = "/efi", .pacman_moved = true } }, false, &.{}, false);
     try testing.expect(gens.ready());
     var kinds: [6]Kind = undefined;
     for (gens.steps, 0..) |s, i| kinds[i] = s.kind;
     try testing.expectEqualSlices(Kind, &.{ .config_dir, .units, .pacman_db, .boot_menu, .state }, kinds[0..gens.steps.len]);
 
     // on luks, the step says grub's defaults get what unlocks the root.
-    const luks = try plan(a, &.{ .boot = .{ .root_subvol = "/@roots/1", .loader = "grub", .esp = "/boot", .luks_uuid = "u" } }, false, &.{});
+    const luks = try plan(a, &.{ .boot = .{ .root_subvol = "/@roots/1", .loader = "grub", .esp = "/boot", .luks_uuid = "u" } }, false, &.{}, false);
     try testing.expect(std.mem.endsWith(u8, luks.steps[2].what, "with what unlocks it added to /etc/default/grub"));
 
     // under secure boot, systemd-boot and refind need arch's kernel signed.
     const sb: facts.Boot = .{ .root_subvol = "/@roots/3", .loader = "systemd-boot", .esp = "/boot", .secure_boot = true };
-    const refused = try plan(a, &.{ .boot = sb }, false, &.{"vmlinuz-linux"});
+    const refused = try plan(a, &.{ .boot = sb }, false, &.{"vmlinuz-linux"}, false);
     try testing.expect(!refused.ready());
     try testing.expectEqualStrings("enforced, and vmlinuz-linux has no signature", refused.checks[1].found);
-    try testing.expect((try plan(a, &.{ .boot = sb }, false, &.{})).ready());
+    try testing.expect((try plan(a, &.{ .boot = sb }, false, &.{}, false)).ready());
     var off = sb;
     off.secure_boot = false;
-    try testing.expect((try plan(a, &.{ .boot = off }, false, &.{"vmlinuz-linux"})).ready());
+    try testing.expect((try plan(a, &.{ .boot = off }, false, &.{"vmlinuz-linux"}, false)).ready());
     var limine_sb = sb;
     limine_sb.loader = "limine";
-    try testing.expect((try plan(a, &.{ .boot = limine_sb }, false, &.{"vmlinuz-linux"})).ready());
+    try testing.expect((try plan(a, &.{ .boot = limine_sb }, false, &.{"vmlinuz-linux"}, false)).ready());
     // grub needs arch's kernel signed, and sbctl's keys to sign itself.
     var grub_sb = sb;
     grub_sb.loader = "grub";
-    const no_keys = try plan(a, &.{ .boot = grub_sb }, false, &.{});
+    const no_keys = try plan(a, &.{ .boot = grub_sb }, false, &.{}, false);
     try testing.expect(!no_keys.ready());
     try testing.expectEqualStrings("enforced, and sbctl has no keys to sign grub with", no_keys.checks[0].found);
     grub_sb.sbctl_keys = true;
-    try testing.expect(!(try plan(a, &.{ .boot = grub_sb }, false, &.{"vmlinuz-linux"})).ready());
-    const keys = try plan(a, &.{ .boot = grub_sb }, false, &.{});
+    try testing.expect(!(try plan(a, &.{ .boot = grub_sb }, false, &.{"vmlinuz-linux"}, false)).ready());
+    const keys = try plan(a, &.{ .boot = grub_sb }, false, &.{}, false);
     try testing.expect(keys.ready());
     try testing.expect(std.mem.endsWith(u8, keys.steps[2].what, "booting this root, and sign grub with sbctl's keys"));
 
     // limine without the esp at /boot can't boot arch's kernels on its own.
-    const limine = try plan(a, &.{ .boot = .{ .root_subvol = "/@roots/2", .loader = "limine", .esp = "/efi", .snapper_root = true } }, true, &.{});
+    const limine = try plan(a, &.{ .boot = .{ .root_subvol = "/@roots/2", .loader = "limine", .esp = "/efi", .snapper_root = true } }, true, &.{}, false);
     try testing.expect(!limine.ready());
     try testing.expectEqual(Kind.generations, limine.steps[limine.steps.len - 2].kind);
 }
@@ -200,4 +218,28 @@ test "grub's defaults get what os's entries passed to unlock the root" {
     try testing.expectEqual(null, try grubDefaults(a, stock, "root=UUID=b rw quiet"));
     // a value with shell's special characters stays as it was.
     try testing.expect(std.mem.endsWith(u8, (try grubDefaults(a, "", "console=\"a$b\"")).?, "GRUB_CMDLINE_LINUX=\"$GRUB_CMDLINE_LINUX console=\\\"a\\$b\\\"\"\n"));
+}
+
+test "leaving images behind on a luks root the tpm unlocks" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const b: facts.Boot = .{ .root_subvol = "/@roots/3", .loader = "grub", .esp = "/boot", .luks_uuid = "u", .luks_device = "/dev/vda2", .uki = true };
+    const p = try plan(a, &.{ .boot = b }, false, &.{}, true);
+    try testing.expect(p.ready());
+    try testing.expectEqual(1, p.notes.len);
+    try testing.expect(std.mem.startsWith(u8, p.notes[0], "the next boot asks for the passphrase once"));
+    try testing.expect(std.mem.indexOf(u8, p.notes[0], "`systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 /dev/vda2`") != null);
+    var out: std.Io.Writer.Allocating = .init(a);
+    try writeText(&out.writer, &p);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\nnotes\n  the next boot asks") != null);
+    // nothing to say with the passphrase alone, or without images.
+    try testing.expectEqual(0, (try plan(a, &.{ .boot = b }, false, &.{}, false)).notes.len);
+    var plain = b;
+    plain.uki = false;
+    try testing.expectEqual(0, (try plan(a, &.{ .boot = plain }, false, &.{}, true)).notes.len);
+    // without the partition in facts, the luks volume by uuid.
+    var by_uuid = b;
+    by_uuid.luks_device = null;
+    try testing.expect(std.mem.indexOf(u8, (try plan(a, &.{ .boot = by_uuid }, false, &.{}, true)).notes[0], "/dev/disk/by-uuid/u`") != null);
 }

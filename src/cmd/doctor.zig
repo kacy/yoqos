@@ -82,23 +82,15 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             });
         }
         if (try enable.luksCheck(a, &b)) |c| try checks.append(a, c);
-        if (b.luks_uuid) |uuid| {
-            const device = b.luks_device orelse try std.fmt.allocPrint(a, "/dev/disk/by-uuid/{s}", .{uuid});
-            // the header needs root to read; the command line doesn't.
-            const dump = switch (try exec.output(a, ctx.io, &.{ "cryptsetup", "luksDump", "--dump-json-metadata", device })) {
-                .ok => |t| t,
-                .failed => null,
-            };
-            const token = try tpmToken(a, dump);
-            const tpm = token orelse cmdlineTpm(try rootfs.readProc(a, ctx.io, "/proc/cmdline"));
-            if (tpmCheck(&b, tpm)) |c| try checks.append(a, c);
+        if (try luks(a, ctx.io, &b)) |l| {
+            if (tpmCheck(&b, l.tpm)) |c| try checks.append(a, c);
             // whether the tpm hands the key over now, without opening
             // anything: it doesn't once the firmware's state it was sealed
             // to changes, like after turning secure boot on.
-            if (token == true) {
-                if (try tpmUnsealed(a, dump.?)) try checks.append(a, try tpmSealCheck(a, device));
-                const opens = try exec.run(a, ctx.io, &.{ "cryptsetup", "open", "--test-passphrase", "--token-only", "--token-type", "systemd-tpm2", device }) == null;
-                try checks.append(a, try tpmOpensCheck(a, device, opens));
+            if (l.token == true) {
+                if (try tpmUnsealed(a, l.dump.?)) try checks.append(a, try tpmSealCheck(a, l.device));
+                const opens = try exec.run(a, ctx.io, &.{ "cryptsetup", "open", "--test-passphrase", "--token-only", "--token-type", "systemd-tpm2", l.device }) == null;
+                try checks.append(a, try tpmOpensCheck(a, l.device, opens));
             }
         }
         const wants = if (loaded) |l| if (l.config.boot.secure_boot) |v| v.v else false else false;
@@ -134,6 +126,32 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
 /// whether a luks2 header, as `cryptsetup luksDump --dump-json-metadata`
 /// prints it, has a key the tpm unlocks: a systemd-tpm2 token, as
+/// the luks volume under the root, and how the tpm opens it.
+pub const Luks = struct {
+    /// its partition.
+    device: []const u8,
+    /// its header as json, which needs root to read. null without it.
+    dump: ?[]const u8,
+    /// whether the header has a systemd-tpm2 token. null without a header.
+    token: ?bool,
+    /// whether the tpm unlocks it at boot: the token, or without a header
+    /// to read, the command line.
+    tpm: bool,
+};
+
+/// the luks volume under the root that `b` describes, or null when the
+/// root isn't on luks.
+pub fn luks(a: Allocator, io: std.Io, b: *const facts.Boot) !?Luks {
+    const uuid = b.luks_uuid orelse return null;
+    const device = b.luks_device orelse try std.fmt.allocPrint(a, "/dev/disk/by-uuid/{s}", .{uuid});
+    const dump = switch (try exec.output(a, io, &.{ "cryptsetup", "luksDump", "--dump-json-metadata", device })) {
+        .ok => |t| t,
+        .failed => null,
+    };
+    const token = try tpmToken(a, dump);
+    return .{ .device = device, .dump = dump, .token = token, .tpm = token orelse cmdlineTpm(try rootfs.readProc(a, io, "/proc/cmdline")) };
+}
+
 /// systemd-cryptenroll leaves. null when there's no header to go by.
 fn tpmToken(a: Allocator, dump: ?[]const u8) !?bool {
     const text = dump orelse return null;
