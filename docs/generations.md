@@ -435,6 +435,13 @@ the next boot runs the new generation, while the menu's default stays on
 the one before. the menu that adds the new generation already keeps that
 default, and the trial's one-shot boot is set up after it, so a power
 cut in between boots the generation before, not one nothing has tried.
+`os` notes the trial in `/var/lib/yoq/trial` before either, so that boot
+knows the trial was never set up: it sets it up again, and the boot after
+tries it. a trial that passes is noted as passed before it becomes the
+default, so a power cut partway through that doesn't look like a failed
+trial; the next boot finishes the job, whichever generation it runs. a
+fallback cut off after it made its generation ends the trial at the next
+boot without making another.
 once the machine is up, `yoq-health.service` checks it:
 systemd isn't in maintenance or shutting down, the display manager is
 running if there is one, and every service the config turns on is running.
