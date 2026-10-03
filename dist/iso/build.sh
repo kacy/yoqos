@@ -20,9 +20,11 @@ cp "$(dirname "$0")/motd" "$profile/airootfs/etc/motd"
 install -Dm755 "$os" "$profile/airootfs/usr/local/bin/os"
 sed -i 's|^file_permissions=(|file_permissions=(\n  ["/usr/local/bin/os"]="0:0:755"|' "$profile/profiledef.sh"
 # and its man pages, for `man os` before there's anything to install.
+# /usr/local/share/man is a link to ../man there, which the filesystem
+# package owns.
 "$(dirname "$0")/../man.sh" "$profile/man"
-install -Dm644 "$profile/man/os.1" "$profile/airootfs/usr/local/share/man/man1/os.1"
-install -Dm644 "$profile/man/os-generations.7" "$profile/airootfs/usr/local/share/man/man7/os-generations.7"
+install -Dm644 "$profile/man/os.1" "$profile/airootfs/usr/local/man/man1/os.1"
+install -Dm644 "$profile/man/os-generations.7" "$profile/airootfs/usr/local/man/man7/os-generations.7"
 rm -r "$profile/man"
 # what os install runs. releng has most of it already; pacman skips the
 # ones it has.
