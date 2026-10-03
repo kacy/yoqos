@@ -153,13 +153,39 @@ wait_root() {
     exit 1
 }
 
+# the vm's serial console, as vm.sh logs it on this side. reboots keep
+# writing to the same file.
+console=${VM_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/yoq-vm}/console.log
+
 # after a trial that shouldn't come up: the next boot runs generation $1
-# from its copy, and os took it on as the newest generation.
+# from its copy, and os took it on as the newest generation. the trial
+# has to have been tried, or a machine that never left the default would
+# pass too. by default the boot before this one is the trial's, whose
+# kernel logged its command line with the trial's root and yoq.trial. a
+# trial that leaves no journal names its own proof in $2:
+# "console:<pattern>", for what the bootloader or a panicking kernel
+# printed, or "journal:<pattern>", for the boot before this one.
 falls_back() {
+    proof=${2:-}
+    if [ -z "$proof" ]; then
+        trial_root=$(newest_root)
+        proof="journal:Command line:.*subvol=/$trial_root[ ,].*yoq\\.trial"
+    fi
+    mark=$(wc -c < "$console" 2>/dev/null || echo 0)
     "$vm" reboot || true
     wait_root "/@roots/boot-$1"
     settled
     check "/usr/local/bin/os history | tail -n 1 | grep -c 'fell back from'" 1
+    case $proof in
+    console:*)
+        if ! tail -c +"$((mark + 1))" "$console" | tr -d '\r' | grep -E -q -e "${proof#console:}"; then
+            echo "$name: the trial wasn't tried: nothing on the console matches '${proof#console:}'"
+            exit 1
+        fi
+        ;;
+    journal:*) check "journalctl -b -1 --no-pager -o cat | grep -E -c -e '${proof#journal:}' | sed 's/^[1-9][0-9]*\$/seen/'" seen ;;
+    esac
+    echo "ok: the trial was tried ($proof)"
 }
 
 # the newest generation's number.
@@ -185,20 +211,54 @@ break_trial_boot() {
 }
 
 # makes the next trial boot's kernel one the bootloader can't load: gone
-# ($1 = missing) or not a kernel at all ($1 = garbage). grub and refind
-# read it from the staged root's /boot; limine and systemd-boot get a
-# path of their own on the esp, so the fallback's copies stay whole.
+# ($1 = missing), not a kernel at all ($1 = garbage), or on systemd-boot,
+# a whole kernel marked for another machine, arm64 ($1 = foreign), which
+# looks fine until the firmware won't start it. grub and refind read it
+# from the staged root's /boot; limine and systemd-boot get a path of
+# their own on the esp, so the fallback's copies stay whole.
 break_trial_kernel() {
-    if [ "$1" = missing ]; then esp_file=/yoq/boot/missing-kernel; else esp_file=/yoq/boot/garbage-kernel; fi
+    esp_file=/yoq/boot/$1-kernel
     case $VM_LOADER in
     limine) "$vm" ssh "echo not a kernel > $VM_ESP/yoq/boot/garbage-kernel && sed -i '/^\/yoq trial boot/,/cmdline/ s|^    path: boot():.*|    path: boot():$esp_file|' $(menu_file) && grep -A5 '^/yoq trial boot' $(menu_file)" ;;
-    systemd-boot) "$vm" ssh "echo not a kernel > $VM_ESP/yoq/boot/garbage-kernel && sed -i 's|^linux .*|linux $esp_file|' $VM_ESP/loader/entries/yoq-trial*.conf && cat $VM_ESP/loader/entries/yoq-trial*.conf" ;;
+    systemd-boot)
+        if [ "$1" = foreign ]; then
+            # the pe header's machine field, after "PE\0\0", says arm64.
+            "$vm" ssh "f=$VM_ESP$esp_file && cp $VM_ESP\$(sed -n 's|^linux ||p' $VM_ESP/loader/entries/yoq-trial*.conf) \$f && pe=\$(od -An -tu4 -j60 -N4 \$f | tr -d ' ') && printf '\\144\\252' | dd of=\$f bs=1 seek=\$((pe + 4)) conv=notrunc 2>/dev/null && od -An -tx2 -j\$((pe + 4)) -N2 \$f"
+        else
+            "$vm" ssh "echo not a kernel > $VM_ESP/yoq/boot/garbage-kernel"
+        fi
+        "$vm" ssh "sed -i 's|^linux .*|linux $esp_file|' $VM_ESP/loader/entries/yoq-trial*.conf && cat $VM_ESP/loader/entries/yoq-trial*.conf"
+        ;;
     *)
         staged=$(newest_root)
         if [ "$1" = missing ]; then how="mv /run/yoq-top/$staged/boot/vmlinuz-linux /run/yoq-top/$staged/boot/vmlinuz-linux.gone"; else how="echo not a kernel > /run/yoq-top/$staged/boot/vmlinuz-linux"; fi
         "$vm" ssh "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && $how; umount /run/yoq-top"
         ;;
     esac
+}
+
+# makes the next trial boot hang before os's watchdog would ordinarily
+# be there: the initramfs can't mount the root ($1 = root, the trial's
+# command line names a subvolume that isn't there), the root's fstab has
+# a mount that never comes ($1 = fstab, so it drops to an emergency
+# shell), or a unit holds up sysinit.target for good ($1 = sysinit).
+break_trial_early() {
+    if [ "$1" = root ]; then
+        sub="s|subvol=/@roots/[0-9]*|subvol=/@roots/999|"
+        case $VM_LOADER in
+        grub) "$vm" ssh "sed -i '/--id head/,/^}/ $sub' $(menu_file) && sed -n '/--id head/,/^}/p' $(menu_file)" ;;
+        limine) "$vm" ssh "sed -i '/^\/yoq trial boot/,/cmdline/ $sub' $(menu_file) && grep -A5 '^/yoq trial boot' $(menu_file)" ;;
+        systemd-boot) "$vm" ssh "sed -i '/^options / $sub' $VM_ESP/loader/entries/yoq-trial*.conf && cat $VM_ESP/loader/entries/yoq-trial*.conf" ;;
+        refind) "$vm" ssh "sed -i '/menuentry \"yoq trial boot\"/,/^}/ $sub' $VM_ESP/EFI/yoq-trial/refind.conf && grep -A4 'menuentry \"yoq trial boot\"' $VM_ESP/EFI/yoq-trial/refind.conf" ;;
+        esac
+        return
+    fi
+    staged=$(newest_root)
+    case $1 in
+    fstab) how="echo 'UUID=00000000-0000-4000-8000-000000000000 /mnt/yoq-missing ext4 defaults 0 2' >> /run/yoq-top/$staged/etc/fstab" ;;
+    sysinit) how="printf '[Unit]\\nDescription=hang before sysinit\\nDefaultDependencies=no\\nBefore=sysinit.target\\n[Service]\\nType=oneshot\\nTimeoutStartSec=infinity\\nExecStart=/usr/bin/sleep infinity\\n[Install]\\nWantedBy=sysinit.target\\n' > /run/yoq-top/$staged/etc/systemd/system/yoq-test-hang.service && mkdir -p /run/yoq-top/$staged/etc/systemd/system/sysinit.target.wants && ln -sf ../yoq-test-hang.service /run/yoq-top/$staged/etc/systemd/system/sysinit.target.wants/" ;;
+    esac
+    "$vm" ssh "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && $how; umount /run/yoq-top"
 }
 
 # the newest generation's root, like @roots/7.

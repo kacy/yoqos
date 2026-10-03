@@ -59,7 +59,7 @@ before=$(second_newest)
 twin=$("$vm" ssh "sed -n '/--id head/,/^}/ s|^    chainloader (\${yoq_esp})||p' $grub_cfg | head -n 1")
 "$vm" ssh "cp $VM_ESP/vmlinuz-linux $VM_ESP$twin"
 show_env
-falls_back "$before"
+falls_back "$before" "console:Falling back to"
 check "$(efivar SecureBoot)" 1
 
 # grub starts a kernel through the firmware, which checks it: an entry

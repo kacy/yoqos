@@ -105,7 +105,7 @@ on_trial yes
 before=$(second_newest)
 "$vm" ssh "echo not an initramfs > /root/garbage.img && ukify build --config=/etc/kernel/yoq-uki.conf --linux=/boot/vmlinuz-linux --initrd=/root/garbage.img --cmdline=\"\$(cat /proc/cmdline)\" --output=$VM_ESP/yoq/boot/garbage.efi >/dev/null && sbctl sign $VM_ESP/yoq/boot/garbage.efi >/dev/null && sed -i 's|^efi .*|efi /yoq/boot/garbage.efi|' $entries/yoq-trial*.conf && cat $entries/yoq-trial*.conf"
 show_env
-falls_back "$before"
+falls_back "$before" "console:Kernel panic"
 check "$(efivar SecureBoot)" 1
 # uninstall would leave systemd-boot starting arch's unsigned kernel,
 # which the firmware refuses now, so it won't go ahead.

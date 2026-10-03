@@ -97,8 +97,9 @@ refind)
     # a drop-in built into a staged root, on one image of the two.
     if [ "${VM_IMAGE:-cloud}" = cloud ]; then tests/vm/initramfs.sh; fi
     tests/vm/trial.sh
-    # kernels grub can't load, on one image of the two.
-    if [ "${VM_IMAGE:-cloud}" = cloud ]; then tests/vm/load-failures.sh; fi
+    # kernels grub can't load and early hangs, on one image of the two:
+    # the one whose run is shorter.
+    if [ "${VM_IMAGE:-cloud}" = archinstall ]; then tests/vm/load-failures.sh; fi
     tests/vm/desktop.sh
     tests/vm/ids.sh
     # failures with generations, on one image of the two.
