@@ -204,6 +204,14 @@ pub fn carryCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer w.deinit();
     const a = w.allocator();
     const boot = try w.generations() orelse return 0;
+    // a trial's boot files can break after it was armed. limine would
+    // stop at an error screen over them, so a trial with a broken file
+    // isn't tried.
+    if (trial.Store.of(a, ctx.io, boot)) |store| {
+        if (try store.current()) |t| {
+            if (!t.tried) _ = try applying.skipBroken(ctx, store, t.n, t.fallback);
+        }
+    }
     const running = boot.root_subvol.?;
     const waiting = try waitingRoot(ctx, a, running) orelse return 0;
     // an os still changing the machine as it shuts down could be removing

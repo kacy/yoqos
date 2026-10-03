@@ -14,6 +14,7 @@ const generation = @import("generation.zig");
 const facts = @import("facts.zig");
 const menu = @import("menu.zig");
 const events = @import("events.zig");
+const bootcheck = @import("bootcheck.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Trial = struct {
@@ -183,6 +184,54 @@ pub const Store = struct {
         }
     }
 
+    /// what's wrong with a file the trial entry loads, as "<path>: <why>",
+    /// or null when each one looks loadable. limine stops at an error
+    /// screen until someone presses a key when it can't load one, and so
+    /// does systemd-boot before 258, so a trial with a broken file is
+    /// better not tried. grub falls back by itself.
+    pub fn brokenFile(s: Store) !?[]const u8 {
+        for (try s.trialFiles()) |f| {
+            const path = try std.fs.path.join(s.a, &.{ s.esp, f.path });
+            if (try fileProblem(s.a, s.io, path, f.kernel)) |why| return try std.fmt.allocPrint(s.a, "{s}: {s}", .{ path, why });
+        }
+        return null;
+    }
+
+    /// the files the trial entry loads.
+    fn trialFiles(s: Store) ![]const menu.Loaded {
+        const cwd = std.Io.Dir.cwd();
+        switch (s.loader) {
+            .limine => {
+                const conf = s.conf orelse return &.{};
+                return menu.limineTrialFiles(s.a, cwd.readFileAlloc(s.io, conf, s.a, .limited(1 << 20)) catch return &.{});
+            },
+            .@"systemd-boot" => {
+                const conf = s.conf orelse try std.fs.path.join(s.a, &.{ s.esp, "loader/loader.conf" });
+                const dir_path = try std.fs.path.join(s.a, &.{ std.fs.path.dirnamePosix(conf).?, "entries" });
+                var dir = cwd.openDir(s.io, dir_path, .{ .iterate = true }) catch return &.{};
+                defer dir.close(s.io);
+                var it = dir.iterate();
+                // the counter in its name changes once it has booted.
+                while (it.next(s.io) catch null) |f| {
+                    if (!std.mem.startsWith(u8, f.name, "yoq-trial") or !std.mem.endsWith(u8, f.name, ".conf")) continue;
+                    return menu.sdbootFiles(s.a, dir.readFileAlloc(s.io, f.name, s.a, .limited(1 << 16)) catch return &.{});
+                }
+                return &.{};
+            },
+            .grub, .refind => return &.{},
+        }
+    }
+
+    /// leaves the trial untried: the next boot runs the default, the
+    /// generation before, and the health check takes that as the trial
+    /// failing.
+    pub fn skip(s: Store) !?[]const u8 {
+        return switch (s.loader) {
+            .limine, .@"systemd-boot" => s.bootctl("set-oneshot", ""),
+            .grub, .refind => null,
+        };
+    }
+
     /// the trial hasn't booted yet: the next boot tries it again.
     pub fn retry(s: Store) !?[]const u8 {
         return switch (s.loader) {
@@ -317,6 +366,64 @@ test "grub's trial is os's note of it, not the esp's" {
     try std.testing.expectEqual(9, planted.n);
     try std.testing.expect(!planted.noted);
     try std.testing.expectEqual(null, grubTrial(null, null, 2, true));
+}
+
+/// what's wrong with the boot file at `path`, a `kernel` or not (see
+/// bootcheck.problem), or null if it looks loadable.
+fn fileProblem(a: Allocator, io: std.Io, path: []const u8, kernel: bool) !?[]const u8 {
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return "it's missing";
+    defer file.close(io);
+    const size = (file.stat(io) catch return "it can't be read").size;
+    var head: [bootcheck.head_bytes]u8 = undefined;
+    const n = file.readPositionalAll(io, &head, 0) catch return "it can't be read";
+    var sum: ?[]const u8 = null;
+    if (!kernel and bootcheck.hashedName(path) != null) {
+        var h: std.crypto.hash.sha2.Sha256 = .init(.{});
+        var buf: [64 << 10]u8 = undefined;
+        var at: u64 = 0;
+        while (true) {
+            const got = file.readPositionalAll(io, &buf, at) catch return "it can't be read";
+            if (got == 0) break;
+            h.update(buf[0..got]);
+            at += got;
+        }
+        var digest: [32]u8 = undefined;
+        h.final(&digest);
+        sum = try a.dupe(u8, &std.fmt.bytesToHex(digest, .lower));
+    }
+    return bootcheck.problem(kernel, path, head[0..n], size, sum);
+}
+
+test "a trial's files that limine couldn't load" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const esp = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "yoq/boot");
+    const pe = bootcheck.testPe(0x200, 0x200);
+    var kernel: [0x400]u8 = undefined;
+    @memcpy(kernel[0..512], &pe);
+    @memset(kernel[512..], 0);
+    const initrd = "an initramfs";
+    const initrd_name = try std.fmt.allocPrint(a, "yoq/boot/{s}-initramfs-linux.img", .{facts.sha256Hex(initrd)[0..16]});
+    try tmp.dir.writeFile(io, .{ .sub_path = "yoq/boot/0123456789abcdef-vmlinuz-linux", .data = &kernel });
+    try tmp.dir.writeFile(io, .{ .sub_path = initrd_name, .data = initrd });
+    const conf = try std.fmt.allocPrint(a, "{s}\n/yoq trial boot\n    protocol: linux\n    path: boot():/yoq/boot/0123456789abcdef-vmlinuz-linux\n    module_path: boot():/{s}\n    cmdline: rw\n{s}\n", .{ menu.limine_begin, initrd_name, menu.limine_end });
+    try tmp.dir.writeFile(io, .{ .sub_path = "limine.conf", .data = conf });
+    const s: Store = .{ .a = a, .io = io, .loader = .limine, .esp = esp, .conf = try std.fmt.allocPrint(a, "{s}/limine.conf", .{esp}) };
+    try std.testing.expectEqual(null, try s.brokenFile());
+    // cut off, the kernel isn't whole.
+    try tmp.dir.writeFile(io, .{ .sub_path = "yoq/boot/0123456789abcdef-vmlinuz-linux", .data = kernel[0..0x300] });
+    try std.testing.expect(std.mem.endsWith(u8, (try s.brokenFile()).?, "0123456789abcdef-vmlinuz-linux: it isn't a whole efi binary"));
+    try tmp.dir.writeFile(io, .{ .sub_path = "yoq/boot/0123456789abcdef-vmlinuz-linux", .data = &kernel });
+    // an initramfs that changed after os named it.
+    try tmp.dir.writeFile(io, .{ .sub_path = initrd_name, .data = "something else" });
+    try std.testing.expect(std.mem.endsWith(u8, (try s.brokenFile()).?, "-initramfs-linux.img: its content doesn't match the hash in its name"));
+    try tmp.dir.deleteFile(io, initrd_name);
+    try std.testing.expect(std.mem.endsWith(u8, (try s.brokenFile()).?, "-initramfs-linux.img: it's missing"));
 }
 
 /// refind's efi binary in `dir`, like refind_x64.efi.
