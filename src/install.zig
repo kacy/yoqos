@@ -96,6 +96,12 @@ pub const tools = [_][]const u8{ "wipefs", "sfdisk", "udevadm", "blkid", "mkfs.f
 pub const encrypt_tools = [_][]const u8{"cryptsetup"};
 pub const tpm_tools = [_][]const u8{"systemd-cryptenroll"};
 
+/// what the tpm's key is sealed to: pcr 7, the firmware's secure boot
+/// state. it has to be said: since systemd 258, systemd-cryptenroll seals
+/// to nothing by default, and the tpm then hands the key to anything that
+/// boots.
+pub const tpm_pcrs = "--tpm2-pcrs=7";
+
 /// the tpm2-tss library systemd-cryptenroll loads to talk to the tpm.
 /// it's missing as "tpm2-tss", the package that has it.
 pub const tpm_library = "/usr/lib/libtss2-esys.so.0";
