@@ -62,13 +62,36 @@ pub const Store = struct {
             return grubTrial(noted, env_trial, env_default, try s.value("yoq_tried") != null);
         }
         const words = try s.state() orelse return null;
+        // the bootloader, or for refind the firmware, clears the one-shot
+        // variable when it reads it, whatever then boots. an entry picked
+        // by hand in its place didn't try the trial.
+        const cleared = !rootfs.pathExists(s.io, if (s.loader == .refind) bootnext_var else oneshot_var);
         return .{
             .n = std.fmt.parseInt(u32, words[0], 10) catch return null,
             .fallback = std.fmt.parseInt(u32, words[1], 10) catch 0,
-            // the bootloader, or for refind the firmware, clears the
-            // one-shot variable when it reads it.
-            .tried = !rootfs.pathExists(s.io, if (s.loader == .refind) bootnext_var else oneshot_var),
+            .tried = cleared and !byHand(s.loader, .{
+                .selected = try s.efiText(selected_var),
+                .default = try s.efiText(default_var),
+                .boot_current = try s.efiNumber(bootcurrent_var),
+                .trial_entry = words[2],
+            }),
         };
+    }
+
+    /// an efi variable's text, as the boot loader interface stores it:
+    /// utf-16 after 4 bytes of attributes. its ascii only, which is all
+    /// os's entry names are.
+    fn efiText(s: Store, path: []const u8) !?[]const u8 {
+        const bytes = std.Io.Dir.cwd().readFileAlloc(s.io, path, s.a, .limited(4096)) catch return null;
+        return try efiString(s.a, bytes);
+    }
+
+    /// an efi variable's 16-bit number, like BootCurrent's.
+    fn efiNumber(s: Store, path: []const u8) !?u16 {
+        var buf: [8]u8 = undefined;
+        const bytes = std.Io.Dir.cwd().readFile(s.io, path, &buf) catch return null;
+        if (bytes.len < 6) return null;
+        return std.mem.readInt(u16, bytes[4..6], .little);
     }
 
     /// makes the next boot try the newest generation, `n`, once, and
@@ -305,10 +328,16 @@ pub const Store = struct {
     /// refind's firmware entry.
     const state_path = "/var/lib/yoq/trial";
     /// the variable limine and systemd-boot boot once from, under the
-    /// boot loader interface's vendor guid.
+    /// boot loader interface's vendor guid; the one they boot by default,
+    /// which bootctl sets too; and the one they set to the entry this boot
+    /// runs.
     const oneshot_var = "/sys/firmware/efi/efivars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
-    /// the firmware's own one-shot boot, under the global uefi guid.
-    const bootnext_var = "/sys/firmware/efi/efivars/BootNext-8be4df61-93ca-11d0-aa0d-00e098032b8c";
+    const default_var = "/sys/firmware/efi/efivars/LoaderEntryDefault-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
+    const selected_var = "/sys/firmware/efi/efivars/LoaderEntrySelected-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
+    /// the firmware's own one-shot boot, and the boot entry this boot
+    /// started from, under the global uefi guid.
+    const bootnext_var = "/sys/firmware/efi/efivars/BootNext-8be4df61-93ca-11d2-aa0d-00e098032b8c";
+    const bootcurrent_var = "/sys/firmware/efi/efivars/BootCurrent-8be4df61-93ca-11d2-aa0d-00e098032b8c";
 
     /// the env file on the esp that grub reads the menu's choices from.
     fn envPath(s: Store) ![]const u8 {
@@ -366,6 +395,81 @@ test "grub's trial is os's note of it, not the esp's" {
     try std.testing.expectEqual(9, planted.n);
     try std.testing.expect(!planted.noted);
     try std.testing.expectEqual(null, grubTrial(null, null, 2, true));
+}
+
+/// what a boot that cleared the trial's one-shot says about itself.
+const Booted = struct {
+    /// limine's and systemd-boot's entry for this boot, and the default
+    /// os set, the generation the trial falls back to.
+    selected: ?[]const u8 = null,
+    default: ?[]const u8 = null,
+    /// the firmware entry this boot started from, and the trial's, for
+    /// refind, which starts a trial through a firmware entry of its own.
+    boot_current: ?u16 = null,
+    trial_entry: []const u8 = "",
+};
+
+/// whether a boot that isn't the trial's, though the one-shot that
+/// would have started it is gone, ran an entry picked by hand: that
+/// leaves the trial untried. a trial that didn't come up leaves the
+/// machine on the default, the generation before, which limine and
+/// systemd-boot name as this boot's entry; any other entry was picked.
+/// refind's trial boots its own copy of refind, through a firmware entry
+/// of its own, so this boot starting from that entry means an older one
+/// was picked there. a hand pick of the generation before itself looks
+/// just like a failed trial.
+fn byHand(loader: menu.Loader, b: Booted) bool {
+    return switch (loader) {
+        .limine, .@"systemd-boot" => {
+            const selected = b.selected orelse return false;
+            const default = b.default orelse return false;
+            return !std.mem.eql(u8, selected, default);
+        },
+        .refind => {
+            const current = b.boot_current orelse return false;
+            const entry = std.fmt.parseInt(u16, b.trial_entry, 16) catch return false;
+            return current == entry;
+        },
+        .grub => false,
+    };
+}
+
+/// the ascii text of an efi variable's bytes: 4 bytes of attributes,
+/// then utf-16 up to a nul. null for anything else.
+fn efiString(a: Allocator, bytes: []const u8) !?[]const u8 {
+    if (bytes.len < 4) return null;
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 4;
+    while (i + 1 < bytes.len) : (i += 2) {
+        const ch = std.mem.readInt(u16, bytes[i..][0..2], .little);
+        if (ch == 0) break;
+        if (ch >= 0x80) return null;
+        try out.append(a, @intCast(ch));
+    }
+    return out.items;
+}
+
+test "an older entry picked by hand isn't a failed trial" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // "yoq-gen-2.conf" as the boot loader interface stores it.
+    var bytes: std.ArrayList(u8) = .empty;
+    try bytes.appendSlice(a, &.{ 6, 0, 0, 0 });
+    for ("yoq-gen-2.conf") |ch| try bytes.appendSlice(a, &.{ ch, 0 });
+    try bytes.appendSlice(a, &.{ 0, 0 });
+    const gen2 = (try efiString(a, bytes.items)).?;
+    try std.testing.expectEqualStrings("yoq-gen-2.conf", gen2);
+    // the default, after a trial that didn't come up, or another entry.
+    try std.testing.expect(!byHand(.@"systemd-boot", .{ .selected = gen2, .default = "yoq-gen-2.conf" }));
+    try std.testing.expect(byHand(.@"systemd-boot", .{ .selected = "yoq-gen-1.conf", .default = "yoq-gen-2.conf" }));
+    try std.testing.expect(byHand(.limine, .{ .selected = "yoq-1-enable-rollback", .default = "yoq-2-add-fd" }));
+    // without the variables, nothing says it was.
+    try std.testing.expect(!byHand(.limine, .{ .default = "yoq-2-add-fd" }));
+    // refind: this boot started from the trial's firmware entry.
+    try std.testing.expect(byHand(.refind, .{ .boot_current = 4, .trial_entry = "0004" }));
+    try std.testing.expect(!byHand(.refind, .{ .boot_current = 1, .trial_entry = "0004" }));
+    try std.testing.expect(!byHand(.grub, .{ .selected = "x", .default = "y" }));
 }
 
 /// what's wrong with the boot file at `path`, a `kernel` or not (see
