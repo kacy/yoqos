@@ -41,6 +41,18 @@ trap '"$vm" stop' EXIT
 # over ssh, the console log shows what sshd and the network did. it's in
 # /etc, so every root made from this one has it.
 "$vm" ssh "mkdir -p /etc/systemd/journald.conf.d && printf '[Journal]\\nForwardToConsole=yes\\nTTYPath=/dev/ttyS0\\nMaxLevelConsole=info\\n' > /etc/systemd/journald.conf.d/yos-test-console.conf"
+# and the serial console logs root in by itself, so vm.sh diagnose can ask
+# a vm that stops answering over ssh what's wrong, whatever a test did to
+# root's password.
+autologin=$(mktemp)
+cat > "$autologin" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty -o '-p -f -- \\u' --noreset --noclear --keep-baud --autologin root 115200,57600,38400,9600 - ${TERM}
+EOF
+"$vm" ssh "mkdir -p /etc/systemd/system/serial-getty@ttyS0.service.d"
+"$vm" copy "$autologin" /etc/systemd/system/serial-getty@ttyS0.service.d/yos-test-autologin.conf
+rm -f "$autologin"
 "$vm" reboot
 
 # the move from yoq os, yos's name before 0.2.0, runs on its own: yos goes
