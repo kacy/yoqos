@@ -32,7 +32,7 @@
   default when it can't start it, and `os` doesn't try a trial whose
   files are missing, cut short, or changed since it put them on the esp,
   checking right after it sets the trial up and again at shutdown.
-  limine waits for a key otherwise.
+  limine and refind wait for a key otherwise.
 - a trial that drops to an emergency shell, in the initramfs or the
   root, reboots into the generation before instead of waiting for a
   password, through `yoq-emergency.service`, which a mkinitcpio hook puts

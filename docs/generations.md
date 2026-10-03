@@ -467,12 +467,12 @@ bootloader can't load is different:
 - systemd-boot, from 258, reboots when an entry with a boot counter
   fails to start, and the trial's entry has one,
   `yoq-trial+1.conf`. the boot after gets the default.
-- limine stops at an error screen until someone presses a key. so does
-  an older systemd-boot. `os` looks at the files the trial's entry loads
-  right after it sets up the trial, and again at shutdown, from
-  `yoq-carry.service`: a missing file, a kernel or image cut short, or a
-  copy whose content no longer matches the hash in its name. if one is
-  broken, the trial isn't tried, and the next boot runs the generation
+- limine and refind stop at an error screen until someone presses a key,
+  and so does an older systemd-boot. `os` looks at the files the trial's
+  entry loads right after it sets up the trial, and again at shutdown,
+  from `yoq-carry.service`: a missing file, a kernel or image cut short,
+  or a copy whose content no longer matches the hash in its name. if one
+  is broken, the trial isn't tried, and the next boot runs the generation
   before, which counts as the trial failing.
 
 either way, `os` notices on that boot, makes it the newest generation with

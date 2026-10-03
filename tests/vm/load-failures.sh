@@ -5,8 +5,8 @@
 # the bootloader. grub falls back to the generation before by itself.
 # limine and refind would stop at an error screen, so os looks at the
 # trial's files at shutdown and doesn't try a trial with a broken one, on
-# systemd-boot too. a file that looks fine but won't start, a kernel for another
-# machine, makes systemd-boot reboot, and the boot after runs the
+# systemd-boot too. a file that looks fine but won't start, a kernel for
+# another machine, makes systemd-boot reboot, and the boot after runs the
 # default. runs after trial.sh, in the same vm.
 set -eu
 . tests/vm/lib.sh
