@@ -22,7 +22,7 @@ settled
 on_trial yes
 trial_n=$(newest)
 case $VM_LOADER in
-refind) "$vm" ssh "sed -i \"s|^default_selection .*|default_selection \\\"\$(grep -o '^menuentry \"yoq 1 [^\"]*' $(menu_file) | cut -c12-)\\\"|\" $VM_ESP/EFI/yoq-trial/refind.conf && grep ^default_selection $VM_ESP/EFI/yoq-trial/refind.conf" ;;
+refind) "$vm" ssh "cp $VM_ESP/EFI/yoq-trial/refind.conf /root/trial-refind.conf && sed -i \"s|^default_selection .*|default_selection \\\"\$(grep -o '^menuentry \"yoq 1 [^\"]*' $(menu_file) | cut -c12-)\\\"|\" $VM_ESP/EFI/yoq-trial/refind.conf && grep ^default_selection $VM_ESP/EFI/yoq-trial/refind.conf" ;;
 *) boot_once 1 ;;
 esac
 show_env
@@ -32,6 +32,8 @@ settled
 check "journalctl -b -u yoq-health --no-pager -o cat | grep -c \"generation $trial_n hasn't been tried yet\"" 1
 on_trial yes
 check "ls /var/lib/yoq/generations | sort -n | tail -n 1 | cut -d. -f1" "$trial_n"
+# a pick at refind's menu is for one boot; the edit above isn't.
+if [ "$VM_LOADER" = refind ]; then "$vm" ssh "cp /root/trial-refind.conf $VM_ESP/EFI/yoq-trial/refind.conf"; fi
 "$vm" reboot
 settled
 check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'the default now'" 1
@@ -43,7 +45,7 @@ proof() {
     case $VM_LOADER:$1 in
     grub:*) echo "console:Falling back to" ;;
     systemd-boot:foreign) echo "console:Failed to start boot entry" ;;
-    *) echo "journal:won't try it" ;;
+    *) echo "journal:won.t try it" ;;
     esac
 }
 
