@@ -1,6 +1,19 @@
 # changelog
 
-## unreleased
+## 0.1.5
+
+the important one first. machines installed with `os install --tpm` on
+current arch got a tpm key that wasn't sealed to anything, so the tpm
+would hand it to whatever booted. after upgrading, run `os doctor`, and if
+its tpm seal check fails, run the command it shows, which makes the key
+again sealed to pcr 7.
+
+the rest came from a round of tests that tried harder to break things:
+trials whose kernel won't load, hangs before the watchdog starts, power
+cuts at each step of a trial, an older entry picked by hand, kernel
+upgrades with rollbacks across them, and upgrading os itself from 0.1.0
+and 0.1.3. grub starts under secure boot now, and `examples/` has whole
+machines to borrow from.
 
 ### new
 
@@ -26,6 +39,14 @@
   images says so before it starts: arch's plain kernel boots next, so
   the passphrase is asked once, and it names the `systemd-cryptenroll`
   command that makes the key again.
+- `os doctor` warns when the tpm unlocks the root on limine, even with
+  secure boot on: limine loads a kernel without the firmware's check, so
+  someone who can change its menu can boot their own with the disk
+  unlocked.
+- `examples/` has whole machines to read and borrow from: a minimal one,
+  an encrypted laptop with secure boot, hyprland, kde on nvidia, a home
+  server, a container, aur packages, and a fleet of two that share files.
+  ci checks every one, and resolves them against today's arch packages.
 
 ### fixes
 
@@ -67,10 +88,6 @@
   same. the watchdog starts with the root's systemd, so a unit that hangs
   before `sysinit.target` can't keep it from rebooting the machine. the
   next generation gets both.
-- `os doctor` warns when the tpm unlocks the root on limine, even with
-  secure boot on: limine loads a kernel without the firmware's check, so
-  someone who can change its menu can boot their own with the disk
-  unlocked.
 - a grub trial that os 0.1.3 armed falls back if it fails, when the os
   that judges it is newer, like one in /usr/local upgraded before the
   reboot. 0.1.4 took only its own note in /var as a sign that os armed a
