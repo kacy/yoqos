@@ -14,9 +14,11 @@ set -eu
 # an older generation picked by hand while a trial waits isn't the trial
 # failing: it's still on trial, and the boot after tries it. refind's
 # trial starts its own copy of refind, so that's where the pick goes.
+# the trial turns amd-ucode the other way, since it passes in the end,
+# and the trials after this one add intel-ucode.
 "$vm" reboot
 settled
-"$vm" ssh "/usr/local/bin/os add --yes intel-ucode" | tail -n 1
+"$vm" ssh "if pacman -Q amd-ucode >/dev/null 2>&1; then /usr/local/bin/os remove --yes amd-ucode; else /usr/local/bin/os add --yes amd-ucode; fi" | tail -n 1
 on_trial yes
 trial_n=$(newest)
 case $VM_LOADER in
