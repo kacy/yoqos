@@ -316,6 +316,11 @@ wait_cut() {
     exit 1
 }
 
+# fails unless the machine has $2 generations newer than generation $1.
+newer_than() {
+    check "ls /var/lib/yoq/generations | cut -d. -f1 | awk '\$1 > $1' | wc -l" "$2"
+}
+
 # the trial's own steps, with the power cut at each: while the trial is
 # set up, while a trial that passed is made the default, and while a
 # fallback ends the trial it fell back from. each step is one call os
@@ -326,7 +331,6 @@ trial_cuts() {
     limine | systemd-boot) arm_tool=bootctl arm_cut='"set-oneshot "*trial*' end_tool=bootctl end_cut='"set-oneshot "' ;;
     refind) arm_tool=efibootmgr arm_cut='*"-n "*' end_tool=efibootmgr end_cut='*-B*' ;;
     esac
-    fell="$os history | grep -c 'fell back from' || true"
     pkg=$(ucode)
 
     # arming: the menu holds the default on the generation before, and the
@@ -334,10 +338,10 @@ trial_cuts() {
     # boot runs the generation before, whose health check sets the trial
     # up again, and the boot after tries it.
     before=$("$vm" ssh "$newest_cmd")
-    falls=$("$vm" ssh "$fell")
     power_cut_on "$arm_tool" "$arm_cut"
     crash "$os add --yes $pkg"
     wait_cut "$arm_tool" "/@roots/boot-$before"
+    n=$("$vm" ssh "$newest_cmd")
     check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'trial wasn.t set up before the machine went down'" 1
     on_trial yes
     "$vm" reboot
@@ -346,7 +350,7 @@ trial_cuts() {
     check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'the default now'" 1
     on_trial no
     check "pacman -Q $pkg >/dev/null && echo installed" installed
-    check "$fell" "$falls"
+    newer_than "$n" 0
 
     # blessing: the trial comes up healthy, and the power goes while it's
     # made the default. the bootloader still boots the generation before,
@@ -354,12 +358,13 @@ trial_cuts() {
     before=$("$vm" ssh "$newest_cmd")
     "$vm" ssh "$os remove --yes $pkg" | tail -n 1
     on_trial yes
+    n=$("$vm" ssh "$newest_cmd")
     power_cut_on "$end_tool" "$end_cut"
     "$vm" reboot || true
     wait_cut "$end_tool" "/@roots/boot-$before"
     check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'machine went down before it was the default'" 1
     on_trial no
-    check "$fell" "$falls"
+    newer_than "$n" 0
     "$vm" reboot
     settled
     check "findmnt -no FSROOT /" "/$(newest_root)"
@@ -372,12 +377,13 @@ trial_cuts() {
     "$vm" ssh "$os add --yes $pkg" | tail -n 1
     on_trial yes
     before=$(second_newest)
+    n=$("$vm" ssh "$newest_cmd")
     break_trial_boot
     power_cut_on "$end_tool" "$end_cut"
     "$vm" reboot || true
     wait_cut "$end_tool" "/@roots/boot-$before"
-    check "$fell" "$((falls + 1))"
-    check "/usr/local/bin/os history | tail -n 1 | grep -c 'fell back from'" 1
+    newer_than "$n" 1
+    check "/usr/local/bin/os history | tail -n 1 | grep -c 'fell back from $n to $before'" 1
     on_trial no
     "$vm" reboot
     settled

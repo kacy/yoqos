@@ -95,15 +95,19 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 /// passed it and a power cut stopped os before it finished, and this boot
 /// may run another generation.
 fn finishPass(ctx: *Context, a: Allocator, store: trial.Store, boot: facts.Boot, record: generation.Record, fresh: bool) !u8 {
-    if (try headDefault(ctx, a, boot)) |why| try ctx.err.print("os: generation {d} is healthy, but couldn't make it grub.cfg's default: {s}. `os gc` writes the menu again.\n", .{ record.n, why });
+    const head = try std.fmt.allocPrint(a, "/{s}", .{record.root});
+    if (try headDefault(ctx, a, boot, head)) |why| try ctx.err.print("os: generation {d} is healthy, but couldn't make it grub.cfg's default: {s}. `os gc` writes the menu again.\n", .{ record.n, why });
     if (try store.end()) |why| return cli.fail(ctx, "generation {d} is healthy, but couldn't make it the default: {s}", .{ record.n, why });
+    const on_it = std.mem.eql(u8, boot.root_subvol.?, head);
     if (fresh) {
         try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .trial, .step = .passed, .generation = record.n });
         try ctx.out.print("generation {d} came up healthy. it's the default now.\n", .{record.n});
-    } else if (std.mem.eql(u8, boot.root_subvol.?[1..], record.root)) {
+    } else if (on_it) {
         try ctx.out.print("generation {d} came up healthy before the machine went down. it's the default now.\n", .{record.n});
     } else {
+        // its boot files settle when it runs, at the next boot.
         try ctx.out.print("generation {d} came up healthy, but the machine went down before it was the default. it is now; reboot to run it.\n", .{record.n});
+        return 0;
     }
     if (try settleBoot(ctx, a, boot)) |why| try ctx.err.print("os: {s}\n", .{why});
     return 0;
@@ -170,13 +174,14 @@ fn fellBackNotice(ctx: *Context, a: Allocator, tried: u32, n: u32, made: u32) !u
 /// while it lasted. it's written before the trial ends, so a power cut in
 /// between still leaves the trial's fallback as the default. the other
 /// bootloaders keep the default outside their menu, where ending the trial
-/// moves it.
-fn headDefault(ctx: *Context, a: Allocator, boot: facts.Boot) !?[]const u8 {
+/// moves it. `head` is the trial's root, which the boot finishing this may
+/// not run.
+fn headDefault(ctx: *Context, a: Allocator, boot: facts.Boot, head: []const u8) !?[]const u8 {
     if (menu.Loader.of(boot) != .grub) return null;
     var why: []const u8 = "";
     const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse return why;
     defer m.close();
-    return m.writeMenu(boot.root_subvol.?, try gens.readRecords(a, ctx.io, "/var"));
+    return m.writeMenu(head, try gens.readRecords(a, ctx.io, "/var"));
 }
 
 /// with /boot as the esp, a generation that was staged booted its kernel
