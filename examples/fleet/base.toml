@@ -6,6 +6,12 @@ packages = [
   "git", "neovim", "htop", "nano",
 ]
 
+[providers]
+# arch has more than one package for these, and os asks instead of picking
+# the first one the way pacman does. naming them here means it never has to.
+"libxtables.so" = "iptables"
+initramfs = "mkinitcpio"
+
 [system]
 timezone = "America/Chicago"
 locale = "en_US.UTF-8"

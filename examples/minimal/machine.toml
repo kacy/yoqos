@@ -3,3 +3,9 @@
 # or as a dependency.
 version = 1
 packages = ["base", "linux-firmware", "grub", "efibootmgr", "git", "ripgrep"]
+
+[providers]
+# arch has more than one package for these, and os asks instead of picking
+# the first one the way pacman does. naming them here means it never has to.
+"libxtables.so" = "iptables"
+initramfs = "mkinitcpio"

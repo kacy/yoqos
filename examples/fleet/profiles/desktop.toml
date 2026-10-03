@@ -1,6 +1,9 @@
 # what a desktop adds to the base.
 packages = ["firefox", "kitty", "wofi", "waybar", "noto-fonts", "noto-fonts-emoji"]
 
+[providers]
+jack = "pipewire-jack"
+
 [desktop]
 session = "hyprland"
 audio = "pipewire"

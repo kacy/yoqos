@@ -8,6 +8,13 @@ packages = [
   "sudo", "tpm2-tss", "neovim", "git", "firefox", "noto-fonts",
 ]
 
+[providers]
+# arch has more than one package for these, and os asks instead of picking
+# the first one the way pacman does. naming them here means it never has to.
+"libxtables.so" = "iptables"
+initramfs = "mkinitcpio"
+jack = "pipewire-jack"
+
 [system]
 hostname = "lark"
 timezone = "Europe/Berlin"

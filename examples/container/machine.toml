@@ -4,6 +4,11 @@
 version = 1
 packages = ["base", "git", "base-devel", "zig", "ripgrep", "fd"]
 
+[providers]
+# arch has more than one package for this, and os asks instead of picking
+# the first one the way pacman does.
+"libxtables.so" = "iptables"
+
 [system]
 hostname = "builder"
 timezone = "UTC"
