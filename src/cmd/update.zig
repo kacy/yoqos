@@ -364,7 +364,7 @@ test "update downloads the databases pacman.conf names, once per date" {
     var t: TestRun = .{ .fetcher = mirror.fetcher() };
     defer t.deinit();
     try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n");
-    try t.fs.put(try std.fs.path.join(arena.allocator(), &.{ root, "etc/pacman.conf" }), "[options]\n[core]\nServer = https://mirror.example/$repo/yos/$arch\n[extra]\nServer = https://mirror.example/$repo/yos/$arch\n");
+    try t.fs.put(try std.fs.path.join(arena.allocator(), &.{ root, "etc/pacman.conf" }), "[options]\n[core]\nServer = https://mirror.example/$repo/os/$arch\n[extra]\nServer = https://mirror.example/$repo/os/$arch\n");
     try t.exec(&.{ "--root", root, "update", "--date", "2026-09-25" });
     try std.testing.expectEqualStrings("", t.err.buffered());
     try std.testing.expectEqual(0, t.code);

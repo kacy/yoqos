@@ -34,7 +34,7 @@ date)
     found=
     for back in $(seq 7 60); do
         day=$(date -u -d "$back days ago" +%Y/%m/%d)
-        curl -fsL -o "$db" "$archive/repos/$day/core/yos/x86_64/core.db" || continue
+        curl -fsL -o "$db" "$archive/repos/$day/core/os/x86_64/core.db" || continue
         [ "$(version linux "$db")" != "$linux" ] || continue
         [ "$(upstream "$(version glibc "$db")")" = "$glibc" ] || continue
         [ "$(upstream "$(version pacman "$db")")" = "$pacman" ] || continue

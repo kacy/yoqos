@@ -35,7 +35,7 @@ pub fn repoRank(name: []const u8) usize {
 }
 
 /// used when pacman's config names no server for a repository.
-const fallback_server = "https://geo.mirror.pkgbuild.com/$repo/yos/$arch";
+const fallback_server = "https://geo.mirror.pkgbuild.com/$repo/os/$arch";
 
 pub const arch = switch (builtin.cpu.arch) {
     .x86_64 => "x86_64",
@@ -199,7 +199,7 @@ pub fn archived(a: Allocator, rs: []const Repo, date: []const u8) ![]const Repo 
     const out = try a.dupe(Repo, rs);
     for (out) |*r| {
         if (!lists.contains(&archived_repos, r.name) or servedFromDisk(r.*)) continue;
-        const server = try std.fmt.allocPrint(a, "https://archive.archlinux.org/repos/{s}/{s}/{s}/$repo/yos/$arch", .{ date[0..4], date[5..7], date[8..10] });
+        const server = try std.fmt.allocPrint(a, "https://archive.archlinux.org/repos/{s}/{s}/{s}/$repo/os/$arch", .{ date[0..4], date[5..7], date[8..10] });
         r.servers = try a.dupe([]const u8, &.{server});
     }
     return out;
@@ -221,7 +221,7 @@ pub fn pastServers(a: Allocator, rs: []const Repo, date: []const u8) ![]const Re
         if (!lists.contains(&archived_repos, r.name) or servedFromDisk(r.*)) continue;
         var servers: std.ArrayList([]const u8) = .empty;
         for ([_][]const u8{ date, &after }) |d| {
-            try servers.append(a, try std.fmt.allocPrint(a, "https://archive.archlinux.org/repos/{s}/{s}/{s}/$repo/yos/$arch", .{ d[0..4], d[5..7], d[8..10] }));
+            try servers.append(a, try std.fmt.allocPrint(a, "https://archive.archlinux.org/repos/{s}/{s}/{s}/$repo/os/$arch", .{ d[0..4], d[5..7], d[8..10] }));
         }
         try servers.appendSlice(a, serversOf(r.*));
         r.servers = servers.items;
@@ -342,7 +342,7 @@ test "repositories and servers from pacman.conf" {
     defer arena.deinit();
     var fs: compose.MemFiles = .{};
     defer fs.deinit();
-    try fs.put("/root/etc/pacman.d/mirrorlist", "## worldwide\n#Server = https://off.example/$repo/yos/$arch\nServer = https://geo.mirror.pkgbuild.com/$repo/yos/$arch\nServer=https://two.example/$repo/yos/$arch/\n");
+    try fs.put("/root/etc/pacman.d/mirrorlist", "## worldwide\n#Server = https://off.example/$repo/os/$arch\nServer = https://geo.mirror.pkgbuild.com/$repo/os/$arch\nServer=https://two.example/$repo/os/$arch/\n");
     try fs.put("/root/etc/pacman.conf",
         \\[options]
         \\HoldPkg = pacman glibc
@@ -376,7 +376,7 @@ test "repositories and servers from pacman.conf" {
     try testing.expectEqualStrings("https://pkgs.omarchy.org/$arch", rs[2].servers[0]);
 
     const a = arena.allocator();
-    try testing.expectEqualStrings("https://two.example/extra/yos/" ++ arch ++ "/extra.db", try dbUrl(a, rs[1].servers[1], "extra"));
+    try testing.expectEqualStrings("https://two.example/extra/os/" ++ arch ++ "/extra.db", try dbUrl(a, rs[1].servers[1], "extra"));
     try testing.expectEqualStrings("https://pkgs.omarchy.org/" ++ arch ++ "/omarchy.db", try dbUrl(a, rs[2].servers[0], "omarchy"));
 
     // an included file with sections of its own adds repositories, the
@@ -399,24 +399,24 @@ test "arch's own repositories from the archive, as they were that day" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const rs = [_]Repo{ .{ .name = "core", .servers = &.{"https://m/$repo/yos/$arch"} }, .{ .name = "chaotic-aur", .servers = &.{"https://c/$repo"} }, .{ .name = "extra", .servers = &.{"file:///srv/extra"} } };
+    const rs = [_]Repo{ .{ .name = "core", .servers = &.{"https://m/$repo/os/$arch"} }, .{ .name = "chaotic-aur", .servers = &.{"https://c/$repo"} }, .{ .name = "extra", .servers = &.{"file:///srv/extra"} } };
     const got = try archived(a, &rs, "2026-09-20");
-    try testing.expectEqualStrings("https://archive.archlinux.org/repos/2026/09/20/$repo/yos/$arch", got[0].servers[0]);
+    try testing.expectEqualStrings("https://archive.archlinux.org/repos/2026/09/20/$repo/os/$arch", got[0].servers[0]);
     try testing.expectEqualStrings("https://c/$repo", got[1].servers[0]);
     try testing.expectEqualStrings("file:///srv/extra", got[2].servers[0]);
-    try testing.expectEqualStrings("https://m/$repo/yos/$arch", rs[0].servers[0]);
+    try testing.expectEqualStrings("https://m/$repo/os/$arch", rs[0].servers[0]);
 }
 
 test "packages for an older lock come from the archive, the day after, then the mirrors" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const rs = [_]Repo{ .{ .name = "core", .servers = &.{"https://m/$repo/yos/$arch"} }, .{ .name = "extra", .servers = &.{} }, .{ .name = "chaotic-aur", .servers = &.{"https://c/$repo"} } };
+    const rs = [_]Repo{ .{ .name = "core", .servers = &.{"https://m/$repo/os/$arch"} }, .{ .name = "extra", .servers = &.{} }, .{ .name = "chaotic-aur", .servers = &.{"https://c/$repo"} } };
     const got = try pastServers(a, &rs, "2026-12-31");
     try testing.expectEqual(3, got[0].servers.len);
-    try testing.expectEqualStrings("https://archive.archlinux.org/repos/2026/12/31/$repo/yos/$arch", got[0].servers[0]);
-    try testing.expectEqualStrings("https://archive.archlinux.org/repos/2027/01/01/$repo/yos/$arch", got[0].servers[1]);
-    try testing.expectEqualStrings("https://m/$repo/yos/$arch", got[0].servers[2]);
+    try testing.expectEqualStrings("https://archive.archlinux.org/repos/2026/12/31/$repo/os/$arch", got[0].servers[0]);
+    try testing.expectEqualStrings("https://archive.archlinux.org/repos/2027/01/01/$repo/os/$arch", got[0].servers[1]);
+    try testing.expectEqualStrings("https://m/$repo/os/$arch", got[0].servers[2]);
     // without a server of its own, the fallback mirror.
     try testing.expectEqualStrings(fallback_server, got[1].servers[2]);
     try testing.expectEqualStrings("https://c/$repo", got[2].servers[0]);
@@ -455,12 +455,12 @@ test "download tries servers in order, then uses the cache" {
     defer diags.deinit();
 
     const rs = [_]Repo{
-        .{ .name = "core", .servers = &.{ "https://down.example/$repo/yos/$arch", "https://up.example/$repo/yos/$arch" } },
-        .{ .name = "extra", .servers = &.{"https://up.example/$repo/yos/$arch"} },
+        .{ .name = "core", .servers = &.{ "https://down.example/$repo/os/$arch", "https://up.example/$repo/os/$arch" } },
+        .{ .name = "extra", .servers = &.{"https://up.example/$repo/os/$arch"} },
     };
     var fake: FakeFetcher = .{ .answers = &.{
-        .{ "https://up.example/core/yos/" ++ arch ++ "/core.db", "core bytes" },
-        .{ "https://up.example/extra/yos/" ++ arch ++ "/extra.db", "extra bytes" },
+        .{ "https://up.example/core/os/" ++ arch ++ "/core.db", "core bytes" },
+        .{ "https://up.example/extra/os/" ++ arch ++ "/extra.db", "extra bytes" },
     } };
     const dbs = (try databases(a, testing.io, fake.fetcher(), &rs, cache, "2026-09-25", &diags)).?;
     try testing.expectEqual(3, fake.urls.items.len);

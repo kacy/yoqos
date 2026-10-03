@@ -48,7 +48,7 @@ pub const SyncDb = struct {
     /// a `<name>.db` file.
     path: []const u8,
     /// where the repository's packages download from, most preferred first:
-    /// directories like https://geo.mirror.pkgbuild.com/core/yos/x86_64.
+    /// directories like https://geo.mirror.pkgbuild.com/core/os/x86_64.
     servers: []const []const u8 = &.{},
     /// its packages are signed and checked. a repository that isn't, like
     /// yos's own aur builds, is read as pacman's `Optional TrustAll`.

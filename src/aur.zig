@@ -592,7 +592,7 @@ test "the chroot builds from the lock's servers" {
     defer arena.deinit();
     const a = arena.allocator();
     const repos = [_]sync.Repo{
-        .{ .name = "core", .servers = &.{"https://m.example/$repo/yos/$arch"} },
+        .{ .name = "core", .servers = &.{"https://m.example/$repo/os/$arch"} },
         .{ .name = "extra", .servers = &.{} },
         .{ .name = "omarchy", .servers = &.{"https://pkgs.example/$arch"}, .signed = false },
         .{ .name = "mine", .servers = &.{"file:///srv/mine"} },
@@ -606,10 +606,10 @@ test "the chroot builds from the lock's servers" {
         \\LocalFileSigLevel = Optional
         \\
         \\[core]
-        \\Server = https://archive.archlinux.org/repos/2026/09/20/$repo/yos/$arch
+        \\Server = https://archive.archlinux.org/repos/2026/09/20/$repo/os/$arch
         \\
         \\[extra]
-        \\Server = https://archive.archlinux.org/repos/2026/09/20/$repo/yos/$arch
+        \\Server = https://archive.archlinux.org/repos/2026/09/20/$repo/os/$arch
         \\
         \\[omarchy]
         \\SigLevel = Optional TrustAll
@@ -618,8 +618,8 @@ test "the chroot builds from the lock's servers" {
     , try chrootPacmanConf(a, try sync.archived(a, &repos, "2026-09-20")));
     // today's: the machine's own servers, or arch's fallback.
     const now = try chrootPacmanConf(a, &repos);
-    try testing.expect(std.mem.indexOf(u8, now, "[core]\nServer = https://m.example/$repo/yos/$arch\n") != null);
-    try testing.expect(std.mem.indexOf(u8, now, "[extra]\nServer = https://geo.mirror.pkgbuild.com/$repo/yos/$arch\n") != null);
+    try testing.expect(std.mem.indexOf(u8, now, "[core]\nServer = https://m.example/$repo/os/$arch\n") != null);
+    try testing.expect(std.mem.indexOf(u8, now, "[extra]\nServer = https://geo.mirror.pkgbuild.com/$repo/os/$arch\n") != null);
 }
 
 test "a package file's name" {
