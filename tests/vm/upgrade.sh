@@ -76,7 +76,7 @@ check "grep -c '^OnActiveSec=' /etc/systemd/system/yoq-watchdog.timer" 1
 check "test -e /etc/systemd/system/multi-user.target.wants/yoq-carry.service && echo on" on
 # its own drift hook, and its own trial.
 "$vm" ssh "pacman -S --noconfirm --needed --noprogressbar fortune-mod >/dev/null"
-check "os status | grep -c fortune-mod" 1
+check "os status | grep -q fortune-mod && echo changed" changed
 "$vm" ssh "os remove --yes intel-ucode" | tail -n 2
 on_trial yes
 "$vm" reboot
