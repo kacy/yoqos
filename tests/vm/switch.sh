@@ -50,7 +50,7 @@ check "yos version" "yos $("$new" version | cut -d' ' -f2)"
 check "test -e /var/lib/yoq && echo state || echo none" none
 "$vm" ssh "rm -f /usr/bin/os /usr/share/libalpm/hooks/yoq-drift.hook"
 "$vm" reboot
-"$vm" ssh "mv /etc/yoq /etc/yos"
+"$vm" ssh "mv /etc/yoq /etc/yos && mv /var/cache/yoq /var/cache/yos"
 check "yos plan" "nothing to do. this machine matches its config."
 check "git -C /etc/yos log --format=%s | grep -c 'add tree'" 1
 

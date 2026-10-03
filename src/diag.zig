@@ -296,8 +296,10 @@ pub const table = [_]Entry{
             "state in /var/lib/yoq and its config in /etc/yoq, and yos reads neither, so it stops rather " ++
             "than plan against a machine it can't see. with the old yoq-os package still installed, run " ++
             "`os uninstall`: it leaves plain arch running the system you have, and keeps the config in " ++
-            "/etc/yoq. then `mv /etc/yoq /etc/yos`, and `yos plan` reads it as it was. `yos " ++
-            "enable-rollback` turns generations back on. the two packages can be installed side by side " ++
+            "/etc/yoq. then `mv /etc/yoq /etc/yos`, and `yos plan` reads it as it was. move " ++
+            "/var/cache/yoq to /var/cache/yos too: it holds the package databases and packages your lock " ++
+            "was made from, which `yos add` and rollbacks use. `yos enable-rollback` turns generations " ++
+            "back on. the two packages can be installed side by side " ++
             "while you switch.",
     },
 };

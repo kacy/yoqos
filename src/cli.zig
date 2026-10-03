@@ -209,7 +209,7 @@ pub fn run(ctx: *Context, raw: []const [:0]const u8) !u8 {
         if (try legacyState(ctx)) |found| {
             var w: Work = .init(ctx);
             defer w.deinit();
-            try w.diags.add(.legacy_state, null, "this machine was set up by yoq os, the name yos had before 0.2.0: {s} is still here", .{found}, "with the old package installed, run `os uninstall`, then `mv /etc/yoq /etc/yos`. `yos explain E0138` has the rest");
+            try w.diags.add(.legacy_state, null, "this machine was set up by yoq os, the name yos had before 0.2.0: {s} is still here", .{found}, "with the old package installed, run `os uninstall`, then `mv /etc/yoq /etc/yos` and `mv /var/cache/yoq /var/cache/yos`. `yos explain E0138` has the rest");
             return w.fail();
         }
     }

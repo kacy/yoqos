@@ -14,7 +14,8 @@
   package's.
 - on a machine yoq os set up, yos stops with E0138, since it reads none of
   yoq os's state. the way over: with the old package installed, `os
-  uninstall`, then `mv /etc/yoq /etc/yos`. `yos plan` reads the config as
+  uninstall`, then `mv /etc/yoq /etc/yos` and `mv /var/cache/yoq
+  /var/cache/yos`. `yos plan` reads the config as
   it was, history and all, and `yos enable-rollback` turns generations on
   again. the two packages install side by side while you switch. ci runs
   that whole move, from a machine 0.1.5 set up.

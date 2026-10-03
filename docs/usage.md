@@ -101,6 +101,7 @@ installed:
 ```
 sudo os uninstall --delete-generations   # plain arch again; removes yoq-os, keeps /etc/yoq
 sudo mv /etc/yoq /etc/yos
+sudo mv /var/cache/yoq /var/cache/yos     # the packages and databases your lock came from
 yos plan                                  # nothing to do, and the history is there
 sudo yos enable-rollback                  # generations again, if you had them
 ```
