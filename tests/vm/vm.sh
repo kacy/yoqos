@@ -94,7 +94,11 @@ diagnose() {
     done
     sleep 10
     echo "--- what the vm says, from its serial console" >&2
-    tail -c +"$from" "$dir/console.log" | tr -d '\r' | sed 's/\x1b\[[0-9;?=!]*[a-zA-Z]//g' | sed -n '/^yoq-diag-start/,/^yoq-diag-end/p' >&2
+    # the shell marks its prompts and commands with escape sequences of its
+    # own (osc 3008), which come off with the colors.
+    tail -c +"$from" "$dir/console.log" | tr -d '\r' |
+        sed -e 's/\x1b\[[0-9;?=!]*[a-zA-Z]//g' -e 's/\x1b\][^\x07\x1b]*\(\x07\|\x1b\\\)//g' |
+        sed -n '/yoq-diag-start$/,/yoq-diag-end$/p' >&2
 }
 
 seed() {
