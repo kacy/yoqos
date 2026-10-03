@@ -89,8 +89,16 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
                 .ok => |t| t,
                 .failed => null,
             };
-            const tpm = try tpmToken(a, dump) orelse cmdlineTpm(try rootfs.readProc(a, ctx.io, "/proc/cmdline"));
+            const token = try tpmToken(a, dump);
+            const tpm = token orelse cmdlineTpm(try rootfs.readProc(a, ctx.io, "/proc/cmdline"));
             if (tpmCheck(&b, tpm)) |c| try checks.append(a, c);
+            // whether the tpm hands the key over now, without opening
+            // anything: it doesn't once the firmware's state it was sealed
+            // to changes, like after turning secure boot on.
+            if (token == true) {
+                const opens = try exec.run(a, ctx.io, &.{ "cryptsetup", "open", "--test-passphrase", "--token-only", "--token-type", "systemd-tpm2", device }) == null;
+                try checks.append(a, try tpmOpensCheck(a, device, opens));
+            }
         }
         const wants = if (loaded) |l| if (l.config.boot.secure_boot) |v| v.v else false else false;
         if (wants or (b.secure_boot orelse false)) {
@@ -181,6 +189,18 @@ fn tpmCheck(b: *const facts.Boot, tpm: bool) ?enable.Check {
     };
 }
 
+/// whether the tpm's key opens the luks volume at `device` now. when it
+/// doesn't, the next boot asks for the passphrase, which still works.
+fn tpmOpensCheck(a: Allocator, device: []const u8, opens: bool) !enable.Check {
+    return .{
+        .what = "tpm key",
+        .ok = opens,
+        .warn = true,
+        .found = if (opens) "opens the root" else "doesn't open the root now",
+        .fix = try std.fmt.allocPrint(a, "the tpm only hands the key over in the firmware state it was made in, and that changed, like after turning secure boot on, so the next boot asks for the passphrase. make the key again with `systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto {s}`, typing the passphrase.", .{device}),
+    };
+}
+
 /// what secure boot needs: sbctl, its keys, firmware that enforces it,
 /// and signatures on every efi binary on the esp. `wants` is the
 /// config's `[boot] secure_boot`; without it, the firmware's state is
@@ -199,6 +219,13 @@ fn secureBootChecks(a: Allocator, b: *const facts.Boot, wants: bool, sbctl: bool
         .fix = "`sbctl create-keys` makes them in " ++ secureboot.keys_dir ++ ". os never makes or enrolls keys itself.",
     });
     const on = b.secure_boot orelse false;
+    // in setup mode the firmware has no keys yet, which is expected.
+    if (b.db_enrolled) |enrolled| if (!(b.setup_mode orelse false)) try checks.append(a, .{
+        .what = "firmware keys",
+        .ok = enrolled or !on,
+        .found = if (enrolled) "sbctl's db key is enrolled" else "sbctl's db key isn't enrolled",
+        .fix = "images os signs won't start while the firmware enforces secure boot (E0137). in the firmware's setup, clear the secure boot keys (setup mode), boot, and run `sbctl enroll-keys -m`.",
+    });
     try checks.append(a, .{
         .what = "firmware secure boot",
         .ok = on or !wants,
@@ -372,6 +399,17 @@ test "a root the tpm unlocks without secure boot is a warning" {
     try std.testing.expect(!tpmCheck(&b, true).?.ok);
     b.loader = "grub";
     try std.testing.expect(tpmCheck(&b, true).?.ok);
+}
+
+test "a tpm key that doesn't open the root is a warning" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expect((try tpmOpensCheck(a, "/dev/vda2", true)).ok);
+    const c = try tpmOpensCheck(a, "/dev/vda2", false);
+    try std.testing.expect(!c.ok and c.warn);
+    try std.testing.expect(enable.allOk(&.{c}));
+    try std.testing.expect(std.mem.endsWith(u8, c.fix.?, "`systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto /dev/vda2`, typing the passphrase."));
 }
 
 test "a sudoers rule without a password, and a commented one" {
