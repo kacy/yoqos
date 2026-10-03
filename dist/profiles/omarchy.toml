@@ -1,9 +1,9 @@
 # the system side of an omarchy machine: its desktop, login, and services,
 # the way omarchy's installer sets them up. packages aren't here, since
-# `os init` on an omarchy machine imports the ones it has. include it ahead
+# `yos init` on an omarchy machine imports the ones it has. include it ahead
 # of the rest:
 #
-#   include = ["/usr/share/yoq/profiles/omarchy.toml", "imported.toml"]
+#   include = ["/usr/share/yos/profiles/omarchy.toml", "imported.toml"]
 #
 # services omarchy turns on only for some hardware, like thermald, stay in
 # the machine's own config.

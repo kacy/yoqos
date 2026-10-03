@@ -1,4 +1,4 @@
-//! what `os enable-rollback` checks and does, worked out from facts alone:
+//! what `yos enable-rollback` checks and does, worked out from facts alone:
 //! whether this machine can have generations, and the steps to get there.
 //! like the planner, it reads no files and runs nothing.
 
@@ -32,8 +32,8 @@ pub const Step = struct {
 pub const Kind = enum { var_subvol, data_subvols, pacman_db, config_dir, snapper, default_subvol, snapshot, boot_files, boot_entry };
 
 /// where the config lives on the rollback rung: in /var, so no rollback
-/// takes it, and bind-mounted at /etc/yoq.
-pub const config_home = "/var/lib/yoq/config";
+/// takes it, and bind-mounted at /etc/yos.
+pub const config_home = "/var/lib/yos/config";
 
 pub const Plan = struct {
     checks: []const Check,
@@ -101,7 +101,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .what = "root filesystem",
         .ok = std.mem.eql(u8, fs, "btrfs"),
         .found = fs,
-        .fix = "generations are btrfs snapshots, so the root has to be btrfs. everything else in os works on any filesystem.",
+        .fix = "generations are btrfs snapshots, so the root has to be btrfs. everything else in yos works on any filesystem.",
     });
     try checks.append(a, .{
         .what = "firmware",
@@ -122,24 +122,26 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .what = "bootloader",
         .ok = known != null,
         .found = loader,
-        .fix = if (b.loader != null) "generations support grub, limine, refind, and systemd-boot." else "no bootloader os knows was found.",
+        .fix = if (b.loader != null) "generations support grub, limine, refind, and systemd-boot." else "no bootloader yos knows was found.",
     });
-    // every bootloader but grub keeps os's entries beside its own config.
+    // every bootloader but grub keeps yos's entries beside its own config.
     const own_conf = known != null and known.? != .grub;
     if (own_conf) try checks.append(a, .{
         .what = try std.fmt.allocPrint(a, "{s}'s config", .{loader}),
         .ok = b.loader_conf != null,
         .found = b.loader_conf orelse "not found",
-        .fix = try std.fmt.allocPrint(a, "os adds its entries to the config {s} reads, on the esp, and couldn't find it.", .{loader}),
+        .fix = try std.fmt.allocPrint(a, "yos adds its entries to the config {s} reads, on the esp, and couldn't find it.", .{loader}),
     });
     const layout = b.root_subvol orelse "unknown";
-    const known_layout = knownLayout(layout);
-    const running_gen = generation.running(b.root_subvol);
+    // a root in @roots is a generation's, or one an uninstall left there,
+    // which converts like any other.
+    const known_layout = knownLayout(layout) or generation.running(b.root_subvol);
+    const running_gen = generation.on(b);
     try checks.append(a, .{
         .what = "root layout",
-        .ok = known_layout or running_gen,
+        .ok = known_layout,
         .found = layout,
-        .fix = "enable-rollback converts a root in the btrfs top level, archinstall's @ subvolume, or a snapshot snapper rolled back to. other layouts come later.",
+        .fix = "enable-rollback converts a root in the btrfs top level, archinstall's @ subvolume, a snapshot snapper rolled back to, or one an uninstall left in @roots. other layouts come later.",
     });
     if (try luksCheck(a, &b)) |c| try checks.append(a, c);
     try checks.append(a, .{
@@ -157,7 +159,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
     var steps: std.ArrayList(Step) = .empty;
     try steps.append(a, .{
         .kind = .snapshot,
-        .what = "snapshot the running root as generation 1",
+        .what = "snapshot the running root as the first generation",
         .why = "the first generation to go back to. changes made after it and before the reboot are left behind",
     });
     if (!b.var_subvol) try steps.append(a, .{
@@ -179,7 +181,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
     });
     try steps.append(a, .{
         .kind = .config_dir,
-        .what = "keep the config in " ++ config_home ++ ", mounted at /etc/yoq",
+        .what = "keep the config in " ++ config_home ++ ", mounted at /etc/yos",
         .why = "the config and its history stay put when a rollback changes the root; a rollback puts back the config that generation had",
     });
     if (b.snapper_root) try steps.append(a, .{
@@ -188,7 +190,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .why = "each change is a generation already. snapper keeps its other configs, like /home's",
     });
     // grub and refind find files on btrfs from the default subvolume, and
-    // os's menu names each root from the top level. limine and
+    // yos's menu names each root from the top level. limine and
     // systemd-boot only read the esp, as every bootloader does on luks,
     // and their own entries may count on the default, so it stays.
     if (!b.top_is_default and known != null and !menu.copiesOnEsp(b)) try steps.append(a, .{
@@ -237,7 +239,7 @@ pub fn luksCheck(a: Allocator, b: *const facts.Boot) !?Check {
         .what = "luks",
         .ok = ok,
         .found = if (ok) on else try std.fmt.allocPrint(a, "{s}, and mkinitcpio's hooks have no encrypt or sd-encrypt", .{on}),
-        .fix = "the initramfs has to unlock the root. put `encrypt = true` under [boot] in the config and run `os apply`, which adds sd-encrypt to the hooks, or add encrypt or sd-encrypt to HOOKS in /etc/mkinitcpio.conf.",
+        .fix = "the initramfs has to unlock the root. put `encrypt = true` under [boot] in the config and run `yos apply`, which adds sd-encrypt to the hooks, or add encrypt or sd-encrypt to HOOKS in /etc/mkinitcpio.conf.",
     };
 }
 
@@ -255,16 +257,16 @@ pub const Unit = struct {
     }
 };
 
-/// yoq-health.service runs `os health` at each boot, which ends a trial
-/// one way or the other, yoq-watchdog.timer reboots a trial boot that
-/// hangs before it, yoq-emergency.service reboots one that drops to an
-/// emergency shell, and yoq-carry.service carries passwords and the like
+/// yos-health.service runs `yos health` at each boot, which ends a trial
+/// one way or the other, yos-watchdog.timer reboots a trial boot that
+/// hangs before it, yos-emergency.service reboots one that drops to an
+/// emergency shell, and yos-carry.service carries passwords and the like
 /// into a generation waiting for the reboot, as the machine shuts down.
-/// `os_path` is the os they run.
+/// `os_path` is the yos they run.
 pub fn units(a: Allocator, os_path: []const u8) ![5]Unit {
     return .{
         .{
-            .name = "yoq-health.service",
+            .name = "yos-health.service",
             .text = try std.fmt.allocPrint(a,
                 \\[Unit]
                 \\Description=Check that a generation on trial came up healthy
@@ -281,7 +283,7 @@ pub fn units(a: Allocator, os_path: []const u8) ![5]Unit {
             .wanted_by = "multi-user.target",
         },
         .{
-            .name = "yoq-watchdog.timer",
+            .name = "yos-watchdog.timer",
             // from when this timer starts in the booted root, not from the
             // kernel or the initramfs's systemd: time spent typing a luks
             // passphrase in the initramfs doesn't count. it starts as soon
@@ -290,7 +292,7 @@ pub fn units(a: Allocator, os_path: []const u8) ![5]Unit {
             .text =
             \\[Unit]
             \\Description=Reboot a generation on trial that doesn't finish booting
-            \\ConditionKernelCommandLine=yoq.trial
+            \\ConditionKernelCommandLine=yos.trial
             \\DefaultDependencies=no
             \\
             \\[Timer]
@@ -304,7 +306,7 @@ pub fn units(a: Allocator, os_path: []const u8) ![5]Unit {
             .wanted_by = "timers.target",
         },
         .{
-            .name = "yoq-watchdog.service",
+            .name = "yos-watchdog.service",
             .text =
             \\[Unit]
             \\Description=Reboot a generation on trial that didn't finish booting
@@ -328,7 +330,7 @@ pub fn units(a: Allocator, os_path: []const u8) ![5]Unit {
             .text =
             \\[Unit]
             \\Description=Reboot a generation on trial that went into emergency mode
-            \\ConditionKernelCommandLine=yoq.trial
+            \\ConditionKernelCommandLine=yos.trial
             \\DefaultDependencies=no
             \\SuccessAction=reboot-force
             \\
@@ -343,7 +345,7 @@ pub fn units(a: Allocator, os_path: []const u8) ![5]Unit {
             .wanted_by = "emergency.target",
         },
         .{
-            .name = "yoq-carry.service",
+            .name = "yos-carry.service",
             // it does its work when it stops, at shutdown, after
             // everything that could still change a password, and before
             // the filesystems go.
@@ -368,31 +370,31 @@ pub fn units(a: Allocator, os_path: []const u8) ![5]Unit {
 }
 
 /// the unit that reboots a trial from an emergency shell.
-pub const emergency_unit = "yoq-emergency.service";
+pub const emergency_unit = "yos-emergency.service";
 
-/// a file os writes into each root along with its units: a path under
+/// a file yos writes into each root along with its units: a path under
 /// the root, and its content.
 pub const RootFile = struct { path: []const u8, text: []const u8 };
 
 /// mkinitcpio's hook that reboots a trial from the initramfs's emergency
 /// shell, and the drop-in that adds it to HOOKS. the drop-in comes after
-/// os's others, since the luks one sets HOOKS whole. a systemd initramfs
-/// gets yoq-emergency.service, wanted by emergency.target. a busybox one
+/// yos's others, since the luks one sets HOOKS whole. a systemd initramfs
+/// gets yos-emergency.service, wanted by emergency.target. a busybox one
 /// gets a runtime hook instead: mkinitcpio's init reads each one into its
 /// own shell before it mounts the root, so on a trial boot it can make
 /// the shell that a failed mount drops to a reboot.
 pub const trial_hook = [_]RootFile{
     .{
-        .path = "etc/initcpio/install/yoq-trial",
+        .path = "etc/initcpio/install/yos-trial",
         .text =
         \\#!/bin/bash
-        \\# written by os: a generation on trial that drops to an emergency
+        \\# written by yos: a generation on trial that drops to an emergency
         \\# shell in the initramfs reboots instead.
         \\build() {
         \\    if [[ " ${HOOKS[*]} " == *" systemd "* ]]; then
         \\        local dir=/usr/lib/systemd/system
-        \\        add_file /etc/systemd/system/yoq-emergency.service "$dir/yoq-emergency.service"
-        \\        add_symlink "$dir/emergency.target.wants/yoq-emergency.service" "$dir/yoq-emergency.service"
+        \\        add_file /etc/systemd/system/yos-emergency.service "$dir/yos-emergency.service"
+        \\        add_symlink "$dir/emergency.target.wants/yos-emergency.service" "$dir/yos-emergency.service"
         \\    else
         \\        add_runscript
         \\    fi
@@ -405,16 +407,16 @@ pub const trial_hook = [_]RootFile{
         ,
     },
     .{
-        .path = "etc/initcpio/hooks/yoq-trial",
+        .path = "etc/initcpio/hooks/yos-trial",
         .text =
         \\#!/usr/bin/ash
-        \\# written by os: on a trial boot, the shell a failed mount drops to
+        \\# written by yos: on a trial boot, the shell a failed mount drops to
         \\# is a reboot, into the generation before.
         \\run_hook() {
         \\    case " $(cat /proc/cmdline) " in
-        \\    *" yoq.trial "*)
+        \\    *" yos.trial "*)
         \\        launch_interactive_shell() {
-        \\            echo "yoq: this generation on trial can't boot; rebooting into the one before."
+        \\            echo "yos: this generation on trial can't boot; rebooting into the one before."
         \\            reboot -f
         \\        }
         \\        ;;
@@ -423,7 +425,7 @@ pub const trial_hook = [_]RootFile{
         \\
         ,
     },
-    .{ .path = "etc/mkinitcpio.conf.d/" ++ facts.trial_dropin, .text = "# written by os.\nHOOKS+=(yoq-trial)\n" },
+    .{ .path = "etc/mkinitcpio.conf.d/" ++ facts.trial_dropin, .text = "# written by yos.\nHOOKS+=(yos-trial)\n" },
 };
 
 /// snap-pac's config, from `text`, with its snapshots of the root off.
@@ -477,7 +479,7 @@ pub const Fstab = struct {
     add_var: bool,
     /// data directories that moved into subvolumes of their own.
     data: []const generation.DataDir = &.{},
-    /// /etc/yoq is a bind mount of the config in /var.
+    /// /etc/yos is a bind mount of the config in /var.
     bind_config: bool = false,
     /// the esp, which gets a line if none mounts it: without one it might
     /// only have been automounted, which a new root can't count on.
@@ -510,7 +512,7 @@ pub fn rewriteFstab(a: Allocator, text: []const u8, f: Fstab) ![]const u8 {
     }
     if (f.add_var) try out.print(a, "UUID={s} /var btrfs {s},subvol=/{s} 0 0\n", .{ f.uuid, root_opts, generation.var_subvol });
     for (f.data) |d| try out.print(a, "UUID={s} /{s} btrfs {s},subvol=/{s} 0 0\n", .{ f.uuid, d.dir, root_opts, d.subvol });
-    if (f.bind_config) try out.print(a, "{s} /etc/yoq none bind,x-systemd.requires-mounts-for=/var 0 0\n", .{config_home});
+    if (f.bind_config) try out.print(a, "{s} /etc/yos none bind,x-systemd.requires-mounts-for=/var 0 0\n", .{config_home});
     if (f.esp) |esp| {
         if (!has_esp) try out.print(a, "UUID={s} {s} vfat rw,relatime,fmask=0077,dmask=0077 0 2\n", .{ esp.uuid, esp.point });
     }
@@ -553,6 +555,27 @@ test "a machine on btrfs and grub is ready, with every step" {
     try testing.expectEqualStrings("install grub's boot files on the esp (/efi), reading that menu", p.steps[6].what);
 }
 
+test "a root an uninstall left in @roots converts; one with records has generations" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var f: facts.Facts = .{ .boot = .{
+        .uefi = true,
+        .esp = "/efi",
+        .loader = "grub",
+        .root_fs = "btrfs",
+        .root_subvol = "/@roots/3",
+        .left_root = true,
+    } };
+    const left = try plan(arena.allocator(), &f);
+    try testing.expect(left.ready());
+    try testing.expectEqual(null, left.running);
+    try testing.expectEqual(Kind.snapshot, left.steps[0].kind);
+    f.boot.left_root = false;
+    const on = try plan(arena.allocator(), &f);
+    try testing.expectEqualStrings("/@roots/3", on.running.?);
+    try testing.expectEqual(0, on.steps.len);
+}
+
 test "a luks root converts when the initramfs unlocks it" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -587,7 +610,7 @@ test "a luks root converts when the initramfs unlocks it" {
         \\  no  luks: the root is /dev/mapper/root, from /dev/vda2, and mkinitcpio's hooks have no encrypt or sd-encrypt
         \\        the initramfs has to unlock the root. put `encrypt = true` under [boot]
     ) != null);
-    // os's own drop-in counts.
+    // yos's own drop-in counts.
     f.boot.encrypt_dropin = true;
     try testing.expect((try plan(a, &f)).ready());
     // and a root that isn't on luks has no such check.
@@ -677,19 +700,19 @@ test "what stops a machine, and the steps it no longer needs" {
     try testing.expectEqualStrings(
         \\checks
         \\  no  root filesystem: ext4
-        \\        generations are btrfs snapshots, so the root has to be btrfs. everything else in os works on any filesystem.
+        \\        generations are btrfs snapshots, so the root has to be btrfs. everything else in yos works on any filesystem.
         \\  ok  firmware: uefi
         \\  ok  esp: /boot/efi
         \\  no  bootloader: efistub
         \\        generations support grub, limine, refind, and systemd-boot.
         \\  no  root layout: /@arch
-        \\        enable-rollback converts a root in the btrfs top level, archinstall's @ subvolume, or a snapshot snapper rolled back to. other layouts come later.
+        \\        enable-rollback converts a root in the btrfs top level, archinstall's @ subvolume, a snapshot snapper rolled back to, or one an uninstall left in @roots. other layouts come later.
         \\  ok  generations: none yet
         \\
         \\steps
-        \\  1. snapshot the running root as generation 1
+        \\  1. snapshot the running root as the first generation
         \\     the first generation to go back to. changes made after it and before the reboot are left behind
-        \\  2. keep the config in /var/lib/yoq/config, mounted at /etc/yoq
+        \\  2. keep the config in /var/lib/yos/config, mounted at /etc/yos
         \\     the config and its history stay put when a rollback changes the root; a rollback puts back the config that generation had
         \\  3. write efistub's menu on the esp: generation 1 first, and the system as it is now (at the next boot)
         \\     every generation can be booted, and so can the way back
@@ -720,7 +743,7 @@ test "the new root's fstab" {
         \\UUID=efi /efi vfat rw 0 2
         \\UUID=abc /var btrfs rw,relatime,compress=zstd:1,subvol=/@var 0 0
         \\UUID=abc /home btrfs rw,relatime,compress=zstd:1,subvol=/@home 0 0
-        \\/var/lib/yoq/config /etc/yoq none bind,x-systemd.requires-mounts-for=/var 0 0
+        \\/var/lib/yos/config /etc/yos none bind,x-systemd.requires-mounts-for=/var 0 0
         \\
     , try rewriteFstab(a,
         \\# /dev/vda3

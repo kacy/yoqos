@@ -1,8 +1,8 @@
-//! `os why <package>`: which line of the config makes a package part of the
+//! `yos why <package>`: which line of the config makes a package part of the
 //! machine. a package is either asked for (in `packages`, or implied by a
 //! service or hardware choice) or pulled in by one that is, and then the
 //! answer is the shortest dependency chain back to something asked for.
-//! files and units get the key that makes os write or enable them.
+//! files and units get the key that makes yos write or enable them.
 
 const std = @import("std");
 const config = @import("config.zig");
@@ -14,7 +14,7 @@ const lists = @import("lists.zig");
 const catalog = @import("catalog.zig");
 const Allocator = std.mem.Allocator;
 
-pub const schema = "yoq.why/1";
+pub const schema = "yos.why/1";
 
 pub const Answer = struct {
     package: []const u8,
@@ -130,10 +130,10 @@ pub fn writeJson(w: *std.Io.Writer, ans: *const Answer) !void {
 
 // -- files and units --
 
-pub const file_schema = "yoq.why-file/1";
-pub const unit_schema = "yoq.why-unit/1";
+pub const file_schema = "yos.why-file/1";
+pub const unit_schema = "yos.why-unit/1";
 
-/// what an argument to `os why` names, by its shape.
+/// what an argument to `yos why` names, by its shape.
 pub const Kind = enum { file, unit, package };
 
 pub fn kindOf(arg: []const u8) Kind {
@@ -154,11 +154,11 @@ pub const Cause = struct {
 
 pub const FileAnswer = struct {
     path: []const u8,
-    /// the key that makes os write the file, or add to it.
+    /// the key that makes yos write the file, or add to it.
     cause: ?Cause,
-    /// os adds a line to the file instead of writing all of it.
+    /// yos adds a line to the file instead of writing all of it.
     partial: bool = false,
-    /// the package that ships the file, when os doesn't manage it. the
+    /// the package that ships the file, when yos doesn't manage it. the
     /// caller fills this in: it takes reading the machine.
     package: ?[]const u8 = null,
 };
@@ -166,7 +166,7 @@ pub const FileAnswer = struct {
 pub fn explainFile(a: Allocator, c: *const config.Config, path: []const u8) !FileAnswer {
     var ans: FileAnswer = .{ .path = path, .cause = null };
     // `[files]` entries are checked by name: one whose source can't be
-    // read is still os's.
+    // read is still yos's.
     if (c.files.get(path)) |f| {
         // a secret's name, never its value: the config doesn't have one.
         if (f.secret) |s| {
@@ -186,7 +186,7 @@ pub const UnitAnswer = struct {
     cause: ?Cause,
     /// what the config wants the unit to be, when it says.
     enabled: ?bool = null,
-    /// the catalog's service for the unit, which `os enable` would turn on.
+    /// the catalog's service for the unit, which `yos enable` would turn on.
     service: ?[]const u8 = null,
 };
 
@@ -235,13 +235,13 @@ fn writeCause(w: *std.Io.Writer, cause: Cause) !void {
 
 pub fn writeFileText(w: *std.Io.Writer, ans: *const FileAnswer) !void {
     if (ans.cause) |cause| {
-        try w.print("{s}: os {s} it for ", .{ ans.path, if (ans.partial) "adds a line to" else "writes" });
+        try w.print("{s}: yos {s} it for ", .{ ans.path, if (ans.partial) "adds a line to" else "writes" });
         return writeCause(w, cause);
     }
-    try w.print("{s}: not managed by os", .{ans.path});
+    try w.print("{s}: not managed by yos", .{ans.path});
     if (ans.package) |p| try w.print("; it comes with {s}", .{p});
     try w.writeByte('\n');
-    if (std.mem.startsWith(u8, ans.path, "/etc/")) try w.print("`os adopt {s}` takes it into the config\n", .{ans.path});
+    if (std.mem.startsWith(u8, ans.path, "/etc/")) try w.print("`yos adopt {s}` takes it into the config\n", .{ans.path});
 }
 
 pub fn writeFileJson(w: *std.Io.Writer, ans: *const FileAnswer) !void {
@@ -262,7 +262,7 @@ pub fn writeUnitText(w: *std.Io.Writer, ans: *const UnitAnswer) !void {
         return writeCause(w, cause);
     }
     try w.print("{s}: the config leaves it alone\n", .{ans.unit});
-    if (ans.service) |s| try w.print("`os enable {s}` manages it\n", .{s});
+    if (ans.service) |s| try w.print("`yos enable {s}` manages it\n", .{s});
 }
 
 pub fn writeUnitJson(w: *std.Io.Writer, ans: *const UnitAnswer) !void {
@@ -391,29 +391,29 @@ const files_cfg =
     \\
 ;
 
-test "files os writes name the key behind them" {
-    try expectFile(files_cfg, "/etc/motd", null, "/etc/motd: os writes it for files.\"/etc/motd\"  (machine.toml:2)\n");
-    try expectFile(files_cfg, "/etc/sysctl.d/99-yoq.conf", null, "/etc/sysctl.d/99-yoq.conf: os writes it for sysctl  (machine.toml:5)\n");
-    try expectFile(files_cfg, "/etc/modules-load.d/99-yoq.conf", null, "/etc/modules-load.d/99-yoq.conf: os writes it for boot.modules  (machine.toml:7)\n");
-    try expectFile(files_cfg, "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf", null, "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf: os writes it for hardware.gpu  (machine.toml:9)\n");
-    try expectFile(files_cfg, "/etc/pacman.d/yoq-repos.conf", null, "/etc/pacman.d/yoq-repos.conf: os writes it for repos  (machine.toml:10)\n");
-    try expectFile(files_cfg, "/etc/pacman.conf", null, "/etc/pacman.conf: os adds a line to it for repos  (machine.toml:10)\n");
-    try expectFile("[desktop]\nsession = \"hyprland\"\nlogin = \"greetd\"\n", "/etc/greetd/config.toml", null, "/etc/greetd/config.toml: os writes it for desktop.login  (machine.toml:3)\n");
-    try expectFile("[files.\"/etc/wifi.psk\"]\nsecret = \"wifi/home\"\n", "/etc/wifi.psk", null, "/etc/wifi.psk: os writes it for files.\"/etc/wifi.psk\" secret = \"wifi/home\"  (machine.toml:1)\n");
+test "files yos writes name the key behind them" {
+    try expectFile(files_cfg, "/etc/motd", null, "/etc/motd: yos writes it for files.\"/etc/motd\"  (machine.toml:2)\n");
+    try expectFile(files_cfg, "/etc/sysctl.d/99-yos.conf", null, "/etc/sysctl.d/99-yos.conf: yos writes it for sysctl  (machine.toml:5)\n");
+    try expectFile(files_cfg, "/etc/modules-load.d/99-yos.conf", null, "/etc/modules-load.d/99-yos.conf: yos writes it for boot.modules  (machine.toml:7)\n");
+    try expectFile(files_cfg, "/etc/mkinitcpio.conf.d/10-yos-nvidia.conf", null, "/etc/mkinitcpio.conf.d/10-yos-nvidia.conf: yos writes it for hardware.gpu  (machine.toml:9)\n");
+    try expectFile(files_cfg, "/etc/pacman.d/yos-repos.conf", null, "/etc/pacman.d/yos-repos.conf: yos writes it for repos  (machine.toml:10)\n");
+    try expectFile(files_cfg, "/etc/pacman.conf", null, "/etc/pacman.conf: yos adds a line to it for repos  (machine.toml:10)\n");
+    try expectFile("[desktop]\nsession = \"hyprland\"\nlogin = \"greetd\"\n", "/etc/greetd/config.toml", null, "/etc/greetd/config.toml: yos writes it for desktop.login  (machine.toml:3)\n");
+    try expectFile("[files.\"/etc/wifi.psk\"]\nsecret = \"wifi/home\"\n", "/etc/wifi.psk", null, "/etc/wifi.psk: yos writes it for files.\"/etc/wifi.psk\" secret = \"wifi/home\"  (machine.toml:1)\n");
 }
 
-test "files os leaves alone say where they come from" {
+test "files yos leaves alone say where they come from" {
     try expectFile(files_cfg, "/etc/ssh/sshd_config", "openssh",
-        \\/etc/ssh/sshd_config: not managed by os; it comes with openssh
-        \\`os adopt /etc/ssh/sshd_config` takes it into the config
+        \\/etc/ssh/sshd_config: not managed by yos; it comes with openssh
+        \\`yos adopt /etc/ssh/sshd_config` takes it into the config
         \\
     );
     try expectFile("", "/etc/pacman.conf", "pacman",
-        \\/etc/pacman.conf: not managed by os; it comes with pacman
-        \\`os adopt /etc/pacman.conf` takes it into the config
+        \\/etc/pacman.conf: not managed by yos; it comes with pacman
+        \\`yos adopt /etc/pacman.conf` takes it into the config
         \\
     );
-    try expectFile("", "/usr/bin/ssh", null, "/usr/bin/ssh: not managed by os\n");
+    try expectFile("", "/usr/bin/ssh", null, "/usr/bin/ssh: not managed by yos\n");
 }
 
 fn expectUnit(src: []const u8, unit: []const u8, want: []const u8) !void {
@@ -449,7 +449,7 @@ test "units name the key that enables or disables them" {
 }
 
 test "units the config leaves alone" {
-    try expectUnit(units_cfg, "cups.service", "cups.service: the config leaves it alone\n`os enable cups` manages it\n");
+    try expectUnit(units_cfg, "cups.service", "cups.service: the config leaves it alone\n`yos enable cups` manages it\n");
     try expectUnit("", "gdm.service", "gdm.service: the config leaves it alone\n");
     try expectUnit("", "foo.timer", "foo.timer: the config leaves it alone\n");
 }

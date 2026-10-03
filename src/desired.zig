@@ -1,4 +1,4 @@
-//! the files os writes from the config: `[files]`, and the ones other
+//! the files yos writes from the config: `[files]`, and the ones other
 //! keys make, like the sysctl file, mkinitcpio drop-ins, and the configs
 //! that tell the boot menu to build and sign images. pure, like the
 //! planner, which compares them with what the machine has.
@@ -20,7 +20,7 @@ pub fn ownRepos(c: *const config.Config) bool {
     return c.repos.entries.items.len > 0 or c.aur.items.items.len > 0;
 }
 
-/// a file os writes, from `[files]` or made from another key.
+/// a file yos writes, from `[files]` or made from another key.
 pub const File = struct {
     path: []const u8,
     content: []const u8,
@@ -37,28 +37,28 @@ pub const File = struct {
 };
 
 /// where `[sysctl]` goes.
-pub const sysctl_path = "/etc/sysctl.d/99-yoq.conf";
+pub const sysctl_path = "/etc/sysctl.d/99-yos.conf";
 
 /// where `[boot] modules` goes.
-pub const modules_path = "/etc/modules-load.d/99-yoq.conf";
+pub const modules_path = "/etc/modules-load.d/99-yos.conf";
 
 pub const greetd_config_path = "/etc/greetd/config.toml";
-const tty_session_path = "/etc/profile.d/yoq-session.sh";
+const tty_session_path = "/etc/profile.d/yos-session.sh";
 
 /// mkinitcpio's drop-in that loads nvidia's modules early.
-pub const nvidia_initramfs_path = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf";
+pub const nvidia_initramfs_path = "/etc/mkinitcpio.conf.d/10-yos-nvidia.conf";
 
 /// mkinitcpio's drop-in that unlocks a luks root.
 pub const encrypt_initramfs_path = facts.initramfs_dropins ++ "/" ++ facts.encrypt_dropin;
 
-/// whether a file os writes is a mkinitcpio drop-in. changing one changes
+/// whether a file yos writes is a mkinitcpio drop-in. changing one changes
 /// the initramfs, so it waits for a reboot like a kernel does, and apply
 /// rebuilds the initramfs in the root it builds.
 pub fn isInitramfsDropIn(path: []const u8) bool {
     return std.mem.startsWith(u8, path, "/etc/mkinitcpio.conf.d/");
 }
 
-/// why a change to a file os writes needs a reboot: a drop-in changes the
+/// why a change to a file yos writes needs a reboot: a drop-in changes the
 /// initramfs, the ukify config changes what the menu boots, and the
 /// secure boot file whether its images are signed.
 pub fn fileReboot(path: []const u8) ?[]const u8 {
@@ -73,19 +73,19 @@ pub const uki_reboot = "uki";
 /// the reboot reason for turning `[boot] secure_boot` on or off.
 pub const secure_boot_reboot = "secure boot";
 
-/// files os writes from other keys, each starting with a "written by os"
+/// files yos writes from other keys, each starting with a "written by yos"
 /// line. one still there that nothing asks for any more is removed. the
 /// session's own config isn't here: it's the user's file.
 pub const generated_paths = [_][]const u8{ sysctl_path, modules_path, greetd_config_path, tty_session_path, nvidia_initramfs_path, encrypt_initramfs_path, uki.config_path, secureboot.config_path };
 
-/// the first line of a file os makes from `key`.
+/// the first line of a file yos makes from `key`.
 fn header(comptime key: []const u8) []const u8 {
-    return "# written by os from " ++ key ++ " in the config. edits here are overwritten.\n";
+    return "# written by yos from " ++ key ++ " in the config. edits here are overwritten.\n";
 }
 
 /// tuigreet on tty1, offering every installed wayland session.
 const greetd_config =
-    \\# written by os for [desktop] login = "greetd". edits here are overwritten.
+    \\# written by yos for [desktop] login = "greetd". edits here are overwritten.
     \\[terminal]
     \\vt = 1
     \\
@@ -97,7 +97,7 @@ const greetd_config =
 
 /// logging in on tty1 starts the session through uwsm.
 const tty_session =
-    \\# written by os for [desktop] login = "tty". edits here are overwritten.
+    \\# written by yos for [desktop] login = "tty". edits here are overwritten.
     \\if [ -z "$WAYLAND_DISPLAY" ] && [ "$(tty)" = /dev/tty1 ] && uwsm check may-start; then
     \\    exec uwsm start {s}
     \\fi
@@ -108,7 +108,7 @@ const tty_session =
 const nvidia_modules = [_][]const u8{ "nvidia", "nvidia_modeset", "nvidia_uvm", "nvidia_drm" };
 
 const nvidia_initramfs_content = blk: {
-    var s: []const u8 = "# written by os for [hardware] gpu = \"nvidia\".\nMODULES+=(" ++ nvidia_modules[0];
+    var s: []const u8 = "# written by yos for [hardware] gpu = \"nvidia\".\nMODULES+=(" ++ nvidia_modules[0];
     for (nvidia_modules[1..]) |m| s = s ++ " " ++ m;
     break :blk s ++ ")\n";
 };
@@ -120,32 +120,32 @@ const nvidia_initramfs_content = blk: {
 /// that, to type the passphrase with. mkinitcpio sources drop-ins as
 /// bash, after its own config, so this works on whatever hooks are set.
 pub const encrypt_initramfs_content =
-    \\# written by os from [boot] encrypt in the config. edits here are overwritten.
-    \\_yoq_hooks=()
-    \\for _yoq_hook in "${HOOKS[@]}"; do
-    \\    case $_yoq_hook in
-    \\    udev) _yoq_hook=systemd ;;
-    \\    keymap | consolefont) _yoq_hook=sd-vconsole ;;
+    \\# written by yos from [boot] encrypt in the config. edits here are overwritten.
+    \\_yos_hooks=()
+    \\for _yos_hook in "${HOOKS[@]}"; do
+    \\    case $_yos_hook in
+    \\    udev) _yos_hook=systemd ;;
+    \\    keymap | consolefont) _yos_hook=sd-vconsole ;;
     \\    encrypt | sd-encrypt | resume | usr) continue ;;
     \\    filesystems)
-    \\        [[ " ${_yoq_hooks[*]} " == *" keyboard "* ]] || _yoq_hooks+=(keyboard)
-    \\        _yoq_hooks+=(sd-encrypt)
+    \\        [[ " ${_yos_hooks[*]} " == *" keyboard "* ]] || _yos_hooks+=(keyboard)
+    \\        _yos_hooks+=(sd-encrypt)
     \\        ;;
     \\    esac
-    \\    [[ " ${_yoq_hooks[*]} " == *" $_yoq_hook "* ]] || _yoq_hooks+=("$_yoq_hook")
+    \\    [[ " ${_yos_hooks[*]} " == *" $_yos_hook "* ]] || _yos_hooks+=("$_yos_hook")
     \\done
-    \\HOOKS=("${_yoq_hooks[@]}")
-    \\unset _yoq_hooks _yoq_hook
+    \\HOOKS=("${_yos_hooks[@]}")
+    \\unset _yos_hooks _yos_hook
     \\# with autodetect, add_checked_modules keeps only the modules this machine
     \\# uses, and mkinitcpio counts finding none as a failed build, without
     \\# saying why. that's what it finds when the driver is built into the
     \\# kernel, as arch's tpm and btrfs drivers are, and sd-encrypt asks for
     \\# the tpm's on every build. finding none isn't a failure here; a module
     \\# it finds and can't add still is.
-    \\if declare -F add_checked_modules >/dev/null && ! declare -F _yoq_add_checked_modules >/dev/null; then
-    \\    eval "_yoq_$(declare -f add_checked_modules)"
+    \\if declare -F add_checked_modules >/dev/null && ! declare -F _yos_add_checked_modules >/dev/null; then
+    \\    eval "_yos_$(declare -f add_checked_modules)"
     \\    add_checked_modules() {
-    \\        _yoq_add_checked_modules "$@" || true
+    \\        _yos_add_checked_modules "$@" || true
     \\    }
     \\fi
     \\
@@ -236,7 +236,7 @@ fn reposFile(a: Allocator, c: *const config.Config, f: *const facts.Facts) !?Fil
         const siglevel = if (e.value.key != null) "Required DatabaseOptional" else "Optional TrustAll";
         try text.print(a, "\n[{s}]\nSigLevel = {s}\nServer = {s}\n", .{ e.name, siglevel, server.v });
     }
-    // the aur packages os builds, unsigned, in a local repository.
+    // the aur packages yos builds, unsigned, in a local repository.
     if (c.aur.items.items.len > 0) try text.print(a, "\n[{s}]\nSigLevel = Optional TrustAll\nServer = file://{s}\n", .{ aur.repo_name, aur.repo_dir });
     return .{ .path = facts.repos_conf, .content = text.items, .cause = "repos", .src = reposSrc(c) };
 }
@@ -298,8 +298,8 @@ fn secureBootFile(c: *const config.Config, f: *const facts.Facts) ?File {
     return menuFile(c.boot.secure_boot, f, .{ .path = secureboot.config_path, .content = secureboot.config_content, .cause = "boot.secure_boot", .reboot = secure_boot_reboot });
 }
 
-/// `file`, which tells os's boot menu how to boot a root, when `key` is
-/// on and os writes the menu: in a root running a generation, or one
+/// `file`, which tells yos's boot menu how to boot a root, when `key` is
+/// on and yos writes the menu: in a root running a generation, or one
 /// being built, where mounts say nothing (no root filesystem in facts).
 /// a machine without generations boots the way it always has, so there
 /// the key only brings its package. the next menu reads it, so a change
@@ -307,7 +307,7 @@ fn secureBootFile(c: *const config.Config, f: *const facts.Facts) ?File {
 fn menuFile(key: ?config.Val(bool), f: *const facts.Facts, file: File) ?File {
     const v = key orelse return null;
     if (!v.v) return null;
-    if (f.boot.root_fs != null and !generation.running(f.boot.root_subvol)) return null;
+    if (f.boot.root_fs != null and !generation.on(f.boot)) return null;
     var out = file;
     out.src = v.src;
     return out;

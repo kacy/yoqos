@@ -33,7 +33,7 @@
 #                            VM_ANSWER_MAYBE=1, a boot that comes up
 #                            without the prompt is fine too. it prints
 #                            "answered" when it typed
-#   vm.sh diagnose           log in on the serial console and print the
+#   vm.sh diagnose           ask the serial console's root shell for the
 #                            vm's network and sshd state, as a vm that
 #                            stops answering over ssh does by itself.
 #                            needs VM_SERIAL_IN
@@ -55,7 +55,7 @@
 # files live.
 set -eu
 
-dir=${VM_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/yoq-vm}
+dir=${VM_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/yos-vm}
 image_url=https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 ovmf=${OVMF_DIR:-/usr/share/edk2/x64}
 port=${VM_SSH_PORT:-2222}
@@ -82,13 +82,13 @@ wait_boot() {
     exit 1
 }
 
-# logs in on the serial console of a vm that doesn't answer over ssh, and
-# prints what it says about its network and sshd. needs VM_SERIAL_IN; the
-# root password is the test images' own.
+# asks the serial console of a vm that doesn't answer over ssh what it
+# says about its network and sshd. needs VM_SERIAL_IN, and a root shell
+# there, which test.sh's autologin gives every vm.
 diagnose() {
     [ -S "$dir/serial.sock" ] || return 0
     from=$(($(wc -c < "$dir/console.log") + 1))
-    for line in "" root yoq "export SYSTEMD_COLORS=0 SYSTEMD_PAGER=; echo yoq-diag-start; ip -br addr; ip route; systemctl is-active sshd NetworkManager systemd-networkd; systemctl --failed --no-legend; ss -tln; journalctl -b --no-pager -o short-monotonic -u NetworkManager -u systemd-networkd -u sshd | tail -n 40; echo yoq-diag-end"; do
+    for line in "" "export SYSTEMD_COLORS=0 SYSTEMD_PAGER=; echo yos-diag-start; ip -br addr; ip route; systemctl is-active sshd NetworkManager systemd-networkd; systemctl --failed --no-legend; ss -tln; journalctl -b --no-pager -o short-monotonic -u NetworkManager -u systemd-networkd -u sshd | tail -n 40; echo yos-diag-end"; do
         printf '%s\r' "$line" | socat - UNIX-CONNECT:"$dir/serial.sock" || return 0
         sleep 3
     done
@@ -98,7 +98,7 @@ diagnose() {
     # own (osc 3008), which come off with the colors.
     tail -c +"$from" "$dir/console.log" | tr -d '\r' |
         sed -e 's/\x1b\[[0-9;?=!]*[a-zA-Z]//g' -e 's/\x1b\][^\x07\x1b]*\(\x07\|\x1b\\\)//g' |
-        sed -n '/yoq-diag-start$/,/yoq-diag-end$/p' >&2
+        sed -n '/yos-diag-start$/,/yos-diag-end$/p' >&2
 }
 
 seed() {
@@ -111,14 +111,8 @@ users:
   - name: root
     ssh_authorized_keys:
       - $(cat "$dir/key.pub")
-# the same root password archinstall's images have, so a vm that stops
-# answering over ssh can still be asked what's wrong on its serial console.
-chpasswd:
-  expire: false
-  users:
-    - {name: root, password: yoq, type: text}
 EOF
-    printf 'instance-id: yoq-test\nlocal-hostname: yoq-test\n' > "$dir/seed/meta-data"
+    printf 'instance-id: yos-test\nlocal-hostname: yos-test\n' > "$dir/seed/meta-data"
     xorriso -as mkisofs -quiet -o "$dir/seed.iso" -V cidata -J -r "$dir/seed/user-data" "$dir/seed/meta-data"
 }
 
@@ -210,8 +204,8 @@ archinstall() {
     rm -f "$dir/qemu.pid" "$dir/overlay.qcow2"
 }
 
-# the test image's root password, "yoq". tests log in with the key.
-root_hash='$6$yoqtest$1O8KkkgUFxpfgynUcFNHA3HfsIzEwgQTT08V4e4qLTP41SDhe6dXugxAvBde5MUV0ZSq9J/0tyDLUqA..mecu0'
+# the test image's root password, "yos". tests log in with the key.
+root_hash='$6$yostest$JTDVgwmpDH/rIv3Uo09iioZFrv.xRS4jXLHm6TdyrCFjurZ4wyGrGdWEHX/aTSBS2X.cl9ymPESR953IFz1az0'
 
 case ${1:-} in
 image)

@@ -1,4 +1,4 @@
-//! the config `os init --new` writes for a machine that has nothing on it
+//! the config `yos init --new` writes for a machine that has nothing on it
 //! yet, from a few answers and what the live system can see of the
 //! hardware. it has what a new machine can't do without: a kernel, the
 //! bootloader, firmware on real hardware, a network, and a user who can use
@@ -18,7 +18,7 @@ pub const Answers = struct {
     /// real hardware wants linux-firmware; a virtual machine doesn't.
     firmware: bool = true,
     ssh: bool = false,
-    /// for `os install --encrypt`: an initramfs that unlocks a luks root,
+    /// for `yos install --encrypt`: an initramfs that unlocks a luks root,
     /// and with `--tpm`, what unlocks it with the tpm.
     encrypt: bool = false,
     tpm: bool = false,
@@ -27,8 +27,8 @@ pub const Answers = struct {
 pub fn machineToml(a: Allocator, x: Answers) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(a,
-        \\# written by os init --new: a small machine to start from. add to it;
-        \\# `os docs` says everything a config can hold.
+        \\# written by yos init --new: a small machine to start from. add to it;
+        \\# `yos docs` says everything a config can hold.
         \\version = 1
         \\packages = [
         \\  "base",

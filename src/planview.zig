@@ -1,5 +1,5 @@
-//! how a plan looks: the screen `os plan`, `os apply`, and `os update`
-//! show, and the json document `os plan --json` prints and `os plan -o`
+//! how a plan looks: the screen `yos plan`, `yos apply`, and `yos update`
+//! show, and the json document `yos plan --json` prints and `yos plan -o`
 //! saves.
 
 const std = @import("std");
@@ -172,7 +172,7 @@ fn depSummary(w: *std.Io.Writer, p: *const Plan) !void {
     try w.writeAll(" dependencies (-v to list)\n");
 }
 
-/// a plan as json: what `os plan --json` prints, and `os plan -o` saves.
+/// a plan as json: what `yos plan --json` prints, and `yos plan -o` saves.
 pub const Doc = struct {
     hash: []const u8,
     summary: Summary,

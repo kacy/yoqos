@@ -1,6 +1,6 @@
 #!/bin/sh
-# writes os's man pages from the docs, so there's one copy to keep up to
-# date: os(1) from docs/usage.md and os-generations(7) from
+# writes yos's man pages from the docs, so there's one copy to keep up to
+# date: yos(1) from docs/usage.md and yos-generations(7) from
 # docs/generations.md. each page gets the NAME section man and whatis look
 # for, and a SEE ALSO. needs lowdown.
 # usage: dist/man.sh <dir>
@@ -24,12 +24,12 @@ page() {
         printf '\n## SEE ALSO\n\n%s\n' "$5"
     } | lowdown -s -Tman \
         -M title="$1" -M section="$2" -M date="$date" \
-        -M source="yoq os $version" -M volume="yoq os manual" \
+        -M source="yos $version" -M volume="yos manual" \
         -M shiftheadinglevelby=-1 \
         -o "$out/$1.$2"
 }
 
-page os 1 "declarative arch linux with rollback" docs/usage.md \
-    "os-generations(7), pacman(8), systemctl(1), sbctl(8), systemd-cryptenroll(1)"
-page os-generations 7 "how os keeps generations, trial boots, and rollback" docs/generations.md \
-    "os(1), btrfs(8), bootctl(1), grub-install(8)"
+page yos 1 "declarative arch linux with rollback" docs/usage.md \
+    "yos-generations(7), pacman(8), systemctl(1), sbctl(8), systemd-cryptenroll(1)"
+page yos-generations 7 "how yos keeps generations, trial boots, and rollback" docs/generations.md \
+    "yos(1), btrfs(8), bootctl(1), grub-install(8)"

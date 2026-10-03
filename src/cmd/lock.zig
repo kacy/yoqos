@@ -66,7 +66,7 @@ pub fn unsatisfied(ctx: *Context, w: *cli.Work, dbs: []const alpm.SyncDb, names:
 /// `w.diags`.
 fn scratchDir(ctx: *Context, w: *cli.Work) !?[]const u8 {
     const a = w.allocator();
-    const scratch = try std.fmt.allocPrintSentinel(a, "/tmp/os-resolve-{d}", .{std.Io.Timestamp.now(ctx.io, .real).toNanoseconds()}, 0);
+    const scratch = try std.fmt.allocPrintSentinel(a, "/tmp/yos-resolve-{d}", .{std.Io.Timestamp.now(ctx.io, .real).toNanoseconds()}, 0);
     // made fresh and private: one someone else made first could hold
     // symlinks that the writes into it would follow.
     if (std.os.linux.errno(std.os.linux.mkdir(scratch, 0o700)) != .SUCCESS) {
@@ -136,7 +136,7 @@ fn saveProviders(ctx: *Context, w: *cli.Work, top: []const u8, picked: []const l
 /// the recipe commit each aur package was built from, by package name.
 pub const Recipes = std.StringHashMapUnmanaged([]const u8);
 
-/// gives each package from os's aur repository its recipe commit: the one
+/// gives each package from yos's aur repository its recipe commit: the one
 /// it was just built from, or else the one the old lock has for it.
 pub fn pinRecipes(a: Allocator, l: *lock.Lock, built: Recipes, old: ?*const lock.Lock) !void {
     const pkgs = try a.dupe(lock.Package, l.packages);
@@ -158,7 +158,7 @@ pub fn readLock(ctx: *Context, a: Allocator, top: []const u8) !?lock.Lock {
     };
     var ignored: diag.List = .init(a);
     return try lock.parse(a, path, bytes, &ignored) orelse {
-        try ctx.err.print("os: {s} doesn't parse, so it's treated as missing. `os plan` says what's wrong with it.\n", .{path});
+        try ctx.err.print("yos: {s} doesn't parse, so it's treated as missing. `yos plan` says what's wrong with it.\n", .{path});
         return null;
     };
 }
@@ -180,7 +180,7 @@ pub fn writeLockTo(ctx: *Context, a: Allocator, path: []const u8, l: *const lock
 pub fn reportLock(ctx: *Context, what: []const u8, d: lock.Diff, next: bool) !void {
     try ctx.out.print("{s}: ", .{what});
     try d.write(ctx.out);
-    try ctx.out.writeAll(if (next) ". next: os plan, then os apply\n" else ".\n");
+    try ctx.out.writeAll(if (next) ". next: yos plan, then yos apply\n" else ".\n");
 }
 
 /// the repositories in the machine's pacman.conf, or core and extra from
@@ -189,13 +189,13 @@ pub fn repos(ctx: *Context, a: Allocator, c: *const config.Config) ![]const sync
     return (try pacman(ctx, a, c)).repos;
 }
 
-/// the machine's pacman.conf, as far as `os` uses it, with the config's
+/// the machine's pacman.conf, as far as `yos` uses it, with the config's
 /// own repositories after arch's: the ones pacman.conf doesn't list yet,
 /// before an apply writes them there.
 pub fn pacman(ctx: *Context, a: Allocator, c: *const config.Config) !sync.Pacman {
     var p = try sync.pacmanConf(a, ctx.files, ctx.root);
     var all: std.ArrayList(sync.Repo) = .empty;
-    // os's aur repository, which pacman.conf may name through os's own
+    // yos's aur repository, which pacman.conf may name through yos's own
     // file, is always the local one below, when there's one at all.
     for (p.repos) |r| {
         if (!std.mem.eql(u8, r.name, aur.repo_name)) try all.append(a, r);
@@ -205,7 +205,7 @@ pub fn pacman(ctx: *Context, a: Allocator, c: *const config.Config) !sync.Pacman
         if (lists.find(all.items, "name", e.name) != null) continue;
         try all.append(a, .{ .name = e.name, .servers = try a.dupe([]const u8, &.{server.v}), .signed = e.value.key != null });
     }
-    // aur packages come from the local repository os builds them into.
+    // aur packages come from the local repository yos builds them into.
     if (c.aur.items.items.len > 0) {
         const dir = try cli.machinePath(ctx, a, aur.repo_dir);
         try all.append(a, .{ .name = aur.repo_name, .servers = try a.dupe([]const u8, &.{try std.fmt.allocPrint(a, "file://{s}", .{dir})}), .signed = false, .local = true });
@@ -216,7 +216,7 @@ pub fn pacman(ctx: *Context, a: Allocator, c: *const config.Config) !sync.Pacman
 
 /// where downloaded package databases are kept, one directory per date.
 pub fn cacheDir(ctx: *Context, a: Allocator) ![]const u8 {
-    return cli.machinePath(ctx, a, "/var/cache/yoq/sync");
+    return cli.machinePath(ctx, a, "/var/cache/yos/sync");
 }
 
 /// today's date as yyyy-mm-dd, in utc.

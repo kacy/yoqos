@@ -1,4 +1,4 @@
-//! `os secret set`, `list`, and `rm`: the values `[files]` entries name
+//! `yos secret set`, `list`, and `rm`: the values `[files]` entries name
 //! with `secret`. nothing here prints, logs, or records a value.
 
 const std = @import("std");
@@ -10,7 +10,7 @@ const Context = cli.Context;
 const eql = cli.eql;
 const Allocator = std.mem.Allocator;
 
-const usage_text = "os secret set <name> | os secret list | os secret rm <name>";
+const usage_text = "yos secret set <name> | yos secret list | yos secret rm <name>";
 
 pub fn secretCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var buf: [2][]const u8 = undefined;
@@ -47,7 +47,7 @@ fn set(ctx: *Context, w: *cli.Work, store: secrets.Store, name: []const u8) !u8 
     if (ctx.json) return writeEntry(ctx, .{ .name = name, .set = true, .files = files });
     if (files.len == 0) {
         try ctx.out.print("kept {s}. the config doesn't use it yet; `[files.\"<path>\"] secret = \"{s}\"` writes it to a file.\n", .{ name, name });
-    } else try ctx.out.print("kept {s}. `os apply` writes it to {s}.\n", .{ name, try joined(a, files) });
+    } else try ctx.out.print("kept {s}. `yos apply` writes it to {s}.\n", .{ name, try joined(a, files) });
     return 0;
 }
 
@@ -65,12 +65,12 @@ fn joined(a: Allocator, paths: []const []const u8) ![]const u8 {
 /// stdin, byte for byte. null after saying why there's none.
 fn readValue(ctx: *Context, name: []const u8, buf: []u8) !?[]u8 {
     const in = ctx.in orelse {
-        try ctx.err.writeAll("os: there's no input to read the value from.\n");
+        try ctx.err.writeAll("yos: there's no input to read the value from.\n");
         return null;
     };
     if (!ctx.in_tty) {
         const n = in.readSliceShort(buf) catch {
-            try ctx.err.writeAll("os: can't read the value from stdin.\n");
+            try ctx.err.writeAll("yos: can't read the value from stdin.\n");
             return null;
         };
         return buf[0..n];
@@ -82,7 +82,7 @@ fn readValue(ctx: *Context, name: []const u8, buf: []u8) !?[]u8 {
     try ctx.err.writeAll("again: ");
     const again = try prompt(ctx, buf[half..]) orelse return null;
     if (!std.mem.eql(u8, first, again)) {
-        try ctx.err.writeAll("os: the two didn't match, so nothing was kept.\n");
+        try ctx.err.writeAll("yos: the two didn't match, so nothing was kept.\n");
         return null;
     }
     secrets.wipe(again);
@@ -102,17 +102,17 @@ fn prompt(ctx: *Context, into: []u8) !?[]u8 {
     }
     const typed = line catch |e| {
         try ctx.err.writeAll(switch (e) {
-            error.StreamTooLong => "os: the value is longer than a typed line can be, so nothing was kept. pipe it in on stdin instead.\n",
-            error.ReadFailed => "os: can't read the value, so nothing was kept.\n",
+            error.StreamTooLong => "yos: the value is longer than a typed line can be, so nothing was kept. pipe it in on stdin instead.\n",
+            error.ReadFailed => "yos: can't read the value, so nothing was kept.\n",
         });
         return null;
     };
     const got = std.mem.trimEnd(u8, typed orelse {
-        try ctx.err.writeAll("os: no value was typed, so nothing was kept.\n");
+        try ctx.err.writeAll("yos: no value was typed, so nothing was kept.\n");
         return null;
     }, "\r");
     if (got.len > into.len) {
-        try ctx.err.writeAll("os: the value is too long, so nothing was kept.\n");
+        try ctx.err.writeAll("yos: the value is too long, so nothing was kept.\n");
         return null;
     }
     @memcpy(into[0..got.len], got);
@@ -145,11 +145,11 @@ fn list(ctx: *Context, w: *cli.Work, store: secrets.Store) !u8 {
         try output.writeDoc(ctx.out, secrets.list_schema, secrets.List{ .secrets = entries.items });
         return 0;
     }
-    if (entries.items.len == 0) try ctx.out.writeAll("no secrets. `os secret set <name>` keeps one.\n");
+    if (entries.items.len == 0) try ctx.out.writeAll("no secrets. `yos secret set <name>` keeps one.\n");
     for (entries.items) |e| {
         try ctx.out.print("{s: <24} ", .{e.name});
         if (!e.set) {
-            try ctx.out.print("missing: `os secret set {s}`, for {s}\n", .{ e.name, try joined(a, e.files) });
+            try ctx.out.print("missing: `yos secret set {s}`, for {s}\n", .{ e.name, try joined(a, e.files) });
         } else if (e.files.len == 0) {
             try ctx.out.writeAll("not in the config\n");
         } else try ctx.out.print("{s}\n", .{try joined(a, e.files)});
@@ -201,17 +201,17 @@ test "set reads stdin byte for byte, and nothing prints the value" {
     defer mem.deinit();
     var t: cli.TestRun = .{ .piped = "hunter2\n" };
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", config_text);
-    try run(&t, &mem, &.{ "--config", "/etc/yoq/machine.toml", "secret", "set", "wifi/home" });
+    try t.fs.put("/etc/yos/machine.toml", config_text);
+    try run(&t, &mem, &.{ "--config", "/etc/yos/machine.toml", "secret", "set", "wifi/home" });
     try testing.expectEqual(0, t.code);
     try testing.expectEqualStrings("hunter2\n", mem.values.get("wifi/home").?);
-    try testing.expectEqualStrings("kept wifi/home. `os apply` writes it to /etc/wifi.psk.\n", t.out.buffered());
+    try testing.expectEqualStrings("kept wifi/home. `yos apply` writes it to /etc/wifi.psk.\n", t.out.buffered());
 
     t.piped = "x";
-    try run(&t, &mem, &.{ "--config", "/etc/yoq/machine.toml", "secret", "set", "other" });
-    try run(&t, &mem, &.{ "--config", "/etc/yoq/machine.toml", "secret", "list" });
+    try run(&t, &mem, &.{ "--config", "/etc/yos/machine.toml", "secret", "set", "other" });
+    try run(&t, &mem, &.{ "--config", "/etc/yos/machine.toml", "secret", "list" });
     try testing.expectEqualStrings("other                    not in the config\nwifi/home                /etc/wifi.psk\n", t.out.buffered());
-    try run(&t, &mem, &.{ "--config", "/etc/yoq/machine.toml", "--json", "secret", "list" });
+    try run(&t, &mem, &.{ "--config", "/etc/yos/machine.toml", "--json", "secret", "list" });
     try testing.expect(std.mem.indexOf(u8, t.out.buffered(), "hunter2") == null);
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, t.out.buffered(), .{});
     defer parsed.deinit();
@@ -244,7 +244,7 @@ test "set at a terminal asks twice" {
     t.input = "hunter2\nhunter3\n";
     try run(&t, &mem, &.{ "secret", "set", "wifi/home" });
     try testing.expectEqual(1, t.code);
-    try testing.expectEqualStrings("value for wifi/home: again: os: the two didn't match, so nothing was kept.\n", t.err.buffered());
+    try testing.expectEqualStrings("value for wifi/home: again: yos: the two didn't match, so nothing was kept.\n", t.err.buffered());
     try testing.expectEqualStrings("hunter4", mem.values.get("wifi/home").?);
 }
 
@@ -262,7 +262,7 @@ test "a typed line longer than stdin's buffer says so" {
     defer t.deinit();
     try run(&t, &mem, &.{ "secret", "set", "wifi/home" });
     try testing.expectEqual(1, t.code);
-    try testing.expect(std.mem.endsWith(u8, t.err.buffered(), "os: the value is longer than a typed line can be, so nothing was kept. pipe it in on stdin instead.\n"));
+    try testing.expect(std.mem.endsWith(u8, t.err.buffered(), "yos: the value is longer than a typed line can be, so nothing was kept. pipe it in on stdin instead.\n"));
     try testing.expectEqual(null, mem.values.get("wifi/home"));
 }
 
@@ -284,8 +284,8 @@ test "plan, status, why, and list never show a secret's value" {
     _ = try mem.store().set(a, "wifi/home", value);
     var t: cli.TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "[boot]\nkernel = \"none\"\n" ++ config_text);
-    try t.fs.put("/etc/yoq/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n");
+    try t.fs.put("/etc/yos/machine.toml", "[boot]\nkernel = \"none\"\n" ++ config_text);
+    try t.fs.put("/etc/yos/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n");
 
     const runs = [_][]const [:0]const u8{
         &.{ "plan", "--json" },       &.{ "plan", "-v" },                     &.{ "status", "--json" },         &.{"status"},
@@ -297,7 +297,7 @@ test "plan, status, why, and list never show a secret's value" {
         const shown = try std.mem.concat(a, u8, &.{ t.out.buffered(), t.err.buffered() });
         for ([_][]const u8{ "horse", &@import("../facts.zig").sha256Hex(value) }) |leak| {
             if (std.mem.indexOf(u8, shown, leak) != null) {
-                std.debug.print("os {s} showed {s}:\n{s}\n", .{ args[0], leak, shown });
+                std.debug.print("yos {s} showed {s}:\n{s}\n", .{ args[0], leak, shown });
                 return error.TestUnexpectedResult;
             }
         }
@@ -311,19 +311,19 @@ test "list, rm, and what they refuse" {
     defer mem.deinit();
     var t: cli.TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", config_text);
-    try run(&t, &mem, &.{ "--config", "/etc/yoq/machine.toml", "secret", "list" });
-    try testing.expectEqualStrings("wifi/home                missing: `os secret set wifi/home`, for /etc/wifi.psk\n", t.out.buffered());
+    try t.fs.put("/etc/yos/machine.toml", config_text);
+    try run(&t, &mem, &.{ "--config", "/etc/yos/machine.toml", "secret", "list" });
+    try testing.expectEqualStrings("wifi/home                missing: `yos secret set wifi/home`, for /etc/wifi.psk\n", t.out.buffered());
 
     _ = try mem.store().set(testing.allocator, "wifi/home", "hunter2");
-    try run(&t, &mem, &.{ "--config", "/etc/yoq/machine.toml", "secret", "list" });
+    try run(&t, &mem, &.{ "--config", "/etc/yos/machine.toml", "secret", "list" });
     try testing.expectEqualStrings("wifi/home                /etc/wifi.psk\n", t.out.buffered());
-    try run(&t, &mem, &.{ "--config", "/etc/yoq/machine.toml", "secret", "rm", "wifi/home" });
+    try run(&t, &mem, &.{ "--config", "/etc/yos/machine.toml", "secret", "rm", "wifi/home" });
     try testing.expectEqual(0, t.code);
     try testing.expect(std.mem.startsWith(u8, t.out.buffered(), "removed wifi/home. the config still writes it to /etc/wifi.psk"));
     try run(&t, &mem, &.{ "secret", "rm", "wifi/home" });
     try testing.expectEqual(1, t.code);
-    try testing.expectEqualStrings("os: there's no secret called wifi/home. `os secret list` lists them.\n", t.err.buffered());
+    try testing.expectEqualStrings("yos: there's no secret called wifi/home. `yos secret list` lists them.\n", t.err.buffered());
 
     try run(&t, &mem, &.{ "secret", "set", "../key" });
     try testing.expectEqual(1, t.code);
@@ -331,5 +331,5 @@ test "list, rm, and what they refuse" {
     try testing.expectEqual(2, t.code);
     mem.refuse = "secrets are root's, so this needs root";
     try run(&t, &mem, &.{ "secret", "list" });
-    try testing.expectEqualStrings("os: secrets are root's, so this needs root.\n", t.err.buffered());
+    try testing.expectEqualStrings("yos: secrets are root's, so this needs root.\n", t.err.buffered());
 }

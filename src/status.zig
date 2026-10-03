@@ -1,5 +1,5 @@
-//! `os status`: the plan boiled down to three answers. what matches the
-//! config, what changed outside os, and what's failing.
+//! `yos status`: the plan boiled down to three answers. what matches the
+//! config, what changed outside yos, and what's failing.
 
 const std = @import("std");
 const lists = @import("lists.zig");
@@ -11,7 +11,7 @@ const planner = @import("planner.zig");
 const output = @import("output.zig");
 const Allocator = std.mem.Allocator;
 
-pub const schema = "yoq.status/1";
+pub const schema = "yos.status/1";
 
 /// warn when the lock is older than this, since pinning also holds back
 /// security fixes.
@@ -44,14 +44,14 @@ pub const Status = struct {
         /// fixes, and the ones only a reboot should.
         restart: []const []const u8,
         reboot: []const []const u8,
-        /// files with a new upstream default beside them: ones os doesn't
+        /// files with a new upstream default beside them: ones yos doesn't
         /// manage, and ones it does, where the .pacnew is only news.
         pacnew: []const []const u8,
         pacnew_managed: []const []const u8,
         /// packages pacman touched since the last apply. this says where
         /// the rows above came from, so it isn't counted on its own.
         pacman: []const []const u8,
-        /// the boot menu file that lost os's entries.
+        /// the boot menu file that lost yos's entries.
         menu: ?[]const u8 = null,
         /// system ids that aren't what they first were.
         ids: []const []const u8 = &.{},
@@ -200,7 +200,7 @@ pub fn writeText(w: *std.Io.Writer, s: *const Status) !void {
         } else {
             try w.print(" ({d} {s} old)", .{ d, if (d == 1) "day" else "days" });
         }
-        if (d > stale_days) try w.writeAll(": `os update` picks up security fixes");
+        if (d > stale_days) try w.writeAll(": `yos update` picks up security fixes");
     }
     try w.print("\n\nok        {d} packages", .{s.ok.packages});
     if (s.ok.services > 0) try w.print(", {d} services", .{s.ok.services});
@@ -208,20 +208,20 @@ pub fn writeText(w: *std.Io.Writer, s: *const Status) !void {
 
     const ch = s.changed;
     var rows: Rows = .{ .w = w };
-    if (ch.extra.len > 0) try rows.list("installed but not in the config", ch.extra, "os adopt keeps them, os plan removes them");
-    if (ch.missing.len > 0) try rows.count(ch.missing.len, .{ "isn't", "aren't" }, "installed yet", "os plan");
-    if (ch.versions.len > 0) try rows.count(ch.versions.len, .{ "differs", "differ" }, "from the lock", "os plan");
-    if (ch.orphans > 0) try rows.count(ch.orphans, .{ "is", "are" }, "no longer needed", "os plan");
-    if (ch.settings.len > 0) try rows.list("settings differ", ch.settings, "os plan");
-    if (ch.units.len > 0) try rows.list("services not as configured", ch.units, "os plan");
-    if (ch.users.len > 0) try rows.list("users not as configured", ch.users, "os plan");
-    if (ch.files.len > 0) try rows.list("files differ", ch.files, "os plan");
+    if (ch.extra.len > 0) try rows.list("installed but not in the config", ch.extra, "yos adopt keeps them, yos plan removes them");
+    if (ch.missing.len > 0) try rows.count(ch.missing.len, .{ "isn't", "aren't" }, "installed yet", "yos plan");
+    if (ch.versions.len > 0) try rows.count(ch.versions.len, .{ "differs", "differ" }, "from the lock", "yos plan");
+    if (ch.orphans > 0) try rows.count(ch.orphans, .{ "is", "are" }, "no longer needed", "yos plan");
+    if (ch.settings.len > 0) try rows.list("settings differ", ch.settings, "yos plan");
+    if (ch.units.len > 0) try rows.list("services not as configured", ch.units, "yos plan");
+    if (ch.users.len > 0) try rows.list("users not as configured", ch.users, "yos plan");
+    if (ch.files.len > 0) try rows.list("files differ", ch.files, "yos plan");
     if (ch.restart.len > 0) try rows.list("running replaced files", ch.restart, "systemctl restart them");
     if (ch.reboot.len > 0) try rows.list("system services running replaced files", ch.reboot, "reboot when you can");
     if (ch.pacnew.len > 0) try rows.list("new upstream defaults", ch.pacnew, "merge them with pacdiff");
-    if (ch.pacnew_managed.len > 0) try rows.list("new upstream defaults for files os writes", ch.pacnew_managed, "os keeps its version; the .pacnew is for reference");
-    if (ch.pacman.len > 0) try rows.list("touched with pacman since the last apply", ch.pacman, "os plan shows what differs");
-    if (ch.menu) |m| try rows.list("boot menu without os's generations", &.{m}, "os gc writes them again");
+    if (ch.pacnew_managed.len > 0) try rows.list("new upstream defaults for files yos writes", ch.pacnew_managed, "yos keeps its version; the .pacnew is for reference");
+    if (ch.pacman.len > 0) try rows.list("touched with pacman since the last apply", ch.pacman, "yos plan shows what differs");
+    if (ch.menu) |m| try rows.list("boot menu without yos's generations", &.{m}, "yos gc writes them again");
     if (ch.ids.len > 0) try rows.list("system ids changed", ch.ids, "files they own may now belong to someone else; chown them");
     if (ch.after_staging.len > 0) try rows.list("changed since the next generation was built", ch.after_staging, "they stay behind at the reboot. make them in the config, or again afterwards");
     if (ch.static.len > 0) try rows.list("services systemd can't enable", ch.static, "no [Install] section: they start, but not at boot unless another unit pulls them in");
@@ -235,7 +235,7 @@ pub fn writeText(w: *std.Io.Writer, s: *const Status) !void {
     for (s.secrets, 0..) |secret, i| {
         if (i > 0 or s.failing.len > 0) try w.writeAll(" " ** 10);
         const what = if (secret.state == .missing) "isn't set here" else "can't be decrypted here";
-        try w.print("secret {s} {s}  -> os secret set {s}\n", .{ secret.name, what, secret.name });
+        try w.print("secret {s} {s}  -> yos secret set {s}\n", .{ secret.name, what, secret.name });
     }
 }
 
@@ -305,14 +305,14 @@ test "status text" {
     var out: std.Io.Writer.Allocating = .init(arena.allocator());
     try writeText(&out.writer, &s);
     try testing.expectEqualStrings(
-        \\atlas · lock from 2026-09-01 (24 days old): `os update` picks up security fixes
+        \\atlas · lock from 2026-09-01 (24 days old): `yos update` picks up security fixes
         \\
         \\ok        400 packages, 2 services
-        \\changed   installed but not in the config: htop, btop  -> os adopt keeps them, os plan removes them
-        \\          1 package differs from the lock  -> os plan
+        \\changed   installed but not in the config: htop, btop  -> yos adopt keeps them, yos plan removes them
+        \\          1 package differs from the lock  -> yos plan
         \\          running replaced files: sshd.service  -> systemctl restart them
         \\          new upstream defaults: /etc/pacman.conf  -> merge them with pacdiff
-        \\          touched with pacman since the last apply: htop, btop  -> os plan shows what differs
+        \\          touched with pacman since the last apply: htop, btop  -> yos plan shows what differs
         \\failing   tailscaled.service
         \\
     , out.written());
@@ -334,8 +334,8 @@ test "a secret this machine doesn't have is failing" {
     var out: std.Io.Writer.Allocating = .init(a);
     try writeText(&out.writer, &s);
     try testing.expect(std.mem.endsWith(u8, out.written(),
-        \\failing   secret vpn can't be decrypted here  -> os secret set vpn
-        \\          secret wifi/home isn't set here  -> os secret set wifi/home
+        \\failing   secret vpn can't be decrypted here  -> yos secret set vpn
+        \\          secret wifi/home isn't set here  -> yos secret set wifi/home
         \\
     ));
 }

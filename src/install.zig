@@ -1,4 +1,4 @@
-//! what `os install` checks and does, worked out from what it found. it
+//! what `yos install` checks and does, worked out from what it found. it
 //! puts a config repository's machine on a blank disk, from a live arch
 //! system: one esp, one btrfs filesystem with the layout enable-rollback
 //! makes, the clean build in generation 1, and grub. like enable.zig, it
@@ -10,7 +10,7 @@ const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 
 /// where the new machine is mounted while it's built.
-pub const target = "/mnt/yoq";
+pub const target = "/mnt/yos";
 
 /// the esp's size. kernels and initramfs images live there, with copies
 /// for generations, so it's generous.
@@ -22,15 +22,15 @@ pub const luks_name = "root";
 
 /// the name it's opened as during the install, which nothing on the live
 /// system is likely to use already.
-pub const luks_install_name = "yoq-install";
+pub const luks_install_name = "yos-install";
 
 /// the smallest disk worth installing on.
 pub const min_bytes: u64 = 16 << 30;
 
-/// what os install found before it asks.
+/// what yos install found before it asks.
 pub const Found = struct {
     disk: []const u8,
-    /// bytes, or 0 if it isn't a disk os could read.
+    /// bytes, or 0 if it isn't a disk yos could read.
     size: u64,
     /// it's a whole disk, not a partition.
     whole: bool,
@@ -54,7 +54,7 @@ pub const Found = struct {
     /// the lock has these.
     has_kernel: bool,
     has_grub: bool,
-    /// btrfs-progs, which os uses for generations, and the initramfs to
+    /// btrfs-progs, which yos uses for generations, and the initramfs to
     /// check the root with fsck.btrfs.
     has_btrfs_progs: bool,
     /// tools the install runs that aren't on the live system.
@@ -135,7 +135,7 @@ pub fn plan(a: Allocator, f: Found) !Plan {
         .what = "firmware",
         .ok = f.uefi,
         .found = if (f.uefi) "uefi" else "bios",
-        .fix = "os installs a uefi boot. boot the live system in uefi mode.",
+        .fix = "yos installs a uefi boot. boot the live system in uefi mode.",
     });
     try checks.append(a, .{
         .what = "tools",
@@ -160,19 +160,19 @@ pub fn plan(a: Allocator, f: Found) !Plan {
         .what = "aur packages",
         .ok = f.aur == 0,
         .found = try std.fmt.allocPrint(a, "{d}", .{f.aur}),
-        .fix = "aur packages build on a running machine. install without them, then add them back and run `os update` there.",
+        .fix = "aur packages build on a running machine. install without them, then add them back and run `yos update` there.",
     });
     try checks.append(a, .{
         .what = "btrfs tools",
         .ok = f.has_btrfs_progs,
         .found = if (f.has_btrfs_progs) "in the lock" else "no btrfs-progs in the lock",
-        .fix = "the new machine's root is btrfs: os keeps its generations with btrfs-progs, and the initramfs checks the root with its fsck.btrfs. add btrfs-progs to packages.",
+        .fix = "the new machine's root is btrfs: yos keeps its generations with btrfs-progs, and the initramfs checks the root with its fsck.btrfs. add btrfs-progs to packages.",
     });
     if (f.secrets_unset.len > 0) try checks.append(a, .{
         .what = "secrets",
         .ok = false,
         .found = try std.fmt.allocPrint(a, "not set here: {s}", .{try std.mem.join(a, ", ", f.secrets_unset)}),
-        .fix = "the build writes them from this live system's values. set each with `os secret set <name>` here first; the new machine needs them set again once it runs.",
+        .fix = "the build writes them from this live system's values. set each with `yos secret set <name>` here first; the new machine needs them set again once it runs.",
     });
     if (f.secure_boot) try checks.append(a, .{
         .what = "secure boot",
@@ -229,7 +229,7 @@ fn encryptChecks(a: Allocator, f: Found, checks: *std.ArrayList(enable.Check)) !
         .what = "passphrase",
         .ok = f.passphrase_file or f.interactive,
         .found = if (f.passphrase_file) "from --passphrase-file" else if (f.interactive) "cryptsetup asks for it" else "no terminal to type it on",
-        .fix = "run os install on a terminal, where cryptsetup asks for it, or pass --passphrase-file <file>.",
+        .fix = "run yos install on a terminal, where cryptsetup asks for it, or pass --passphrase-file <file>.",
     });
     if (!f.tpm) return;
     try checks.append(a, .{

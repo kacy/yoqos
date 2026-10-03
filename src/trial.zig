@@ -1,10 +1,10 @@
 //! a generation on trial: the next boot tries it once, the default stays
-//! on the generation before, and `os health` ends the trial one way or the
+//! on the generation before, and `yos health` ends the trial one way or the
 //! other. grub reads these choices from an env file on the esp, since it
 //! can write fat but not btrfs. limine and systemd-boot read them from
 //! efi variables, which bootctl sets. refind has no one-shot boot, so the
-//! firmware's own, BootNext, starts it with a config of os's. whatever
-//! the loader, os keeps the trial itself in /var, where only root can
+//! firmware's own, BootNext, starts it with a config of yos's. whatever
+//! the loader, yos keeps the trial itself in /var, where only root can
 //! write it.
 
 const std = @import("std");
@@ -24,16 +24,16 @@ pub const Trial = struct {
     fallback: u32,
     /// the boot that tries it has started.
     tried: bool,
-    /// os noted the trial in /var when it armed it. one only grub's env
+    /// yos noted the trial in /var when it armed it. one only grub's env
     /// file names, which anything that can write the esp can set, may
-    /// pass, as one armed before os noted grub's there did, but never
+    /// pass, as one armed before yos noted grub's there did, but never
     /// makes the machine fall back.
     noted: bool = true,
-    /// how far os got with it.
+    /// how far yos got with it.
     phase: Phase = .armed,
 };
 
-/// how far a trial got, by os's note of it. a power cut can stop os
+/// how far a trial got, by yos's note of it. a power cut can stop yos
 /// between any two steps, and the note says where.
 pub const Phase = enum {
     /// the note went in before the menu that holds the default on the
@@ -47,9 +47,9 @@ pub const Phase = enum {
     passed,
 };
 
-/// os's note of a trial: its phase, then its generation, the one before
+/// yos's note of a trial: its phase, then its generation, the one before
 /// it, and for refind, the firmware entry. a note without a phase, like
-/// one from an older os, is an armed trial.
+/// one from an older yos, is an armed trial.
 const Note = struct {
     phase: Phase,
     words: [3][]const u8,
@@ -84,7 +84,7 @@ pub const Store = struct {
     /// loads its kernel from its root. null when it isn't.
     top: ?[]const u8 = null,
 
-    /// null for a machine without an esp or a bootloader os knows.
+    /// null for a machine without an esp or a bootloader yos knows.
     pub fn of(a: Allocator, io: std.Io, boot: facts.Boot) ?Store {
         return .{
             .a = a,
@@ -99,10 +99,10 @@ pub const Store = struct {
     /// the trial waiting for its boot, or running, if there is one.
     pub fn current(s: Store) !?Trial {
         if (s.loader == .grub) {
-            const env_trial = try s.number("yoq_trial");
-            const env_default = try s.number("yoq_default");
+            const env_trial = try s.number("yos_trial");
+            const env_default = try s.number("yos_default");
             const noted = try s.state() orelse try s.journalNote(env_trial, env_default);
-            return grubTrial(noted, env_trial, env_default, try s.value("yoq_tried") != null);
+            return grubTrial(noted, env_trial, env_default, try s.value("yos_tried") != null);
         }
         const note = try s.state() orelse return null;
         // the bootloader, or for refind the firmware, clears the one-shot
@@ -138,7 +138,7 @@ pub const Store = struct {
 
     /// an efi variable's text, as the boot loader interface stores it:
     /// utf-16 after 4 bytes of attributes, read as ascii, which is all
-    /// os's entry names are.
+    /// yos's entry names are.
     fn efiText(s: Store, path: []const u8) !?[]const u8 {
         const bytes = std.Io.Dir.cwd().readFileAlloc(s.io, path, s.a, .limited(4096)) catch return null;
         return try efiString(s.a, bytes);
@@ -158,11 +158,11 @@ pub const Store = struct {
         if (try s.prepare(n, fallback.n)) |w| return w;
         const why = switch (s.loader) {
             .grub => blk: {
-                _ = try s.edit("unset", &.{"yoq_tried"});
+                _ = try s.edit("unset", &.{"yos_tried"});
                 if (try s.edit("set", &.{
-                    "yoq_next=head",
-                    try std.fmt.allocPrint(s.a, "yoq_default={s}", .{try menu.genId(s.a, fallback.n)}),
-                    try std.fmt.allocPrint(s.a, "yoq_trial={d}", .{n}),
+                    "yos_next=head",
+                    try std.fmt.allocPrint(s.a, "yos_default={s}", .{try menu.genId(s.a, fallback.n)}),
+                    try std.fmt.allocPrint(s.a, "yos_trial={d}", .{n}),
                 })) |w| break :blk w;
                 break :blk try s.write(state_path, try std.fmt.allocPrint(s.a, "{d} {d}\n", .{ n, fallback.n }));
             },
@@ -196,9 +196,9 @@ pub const Store = struct {
     fn armRefind(s: Store, n: u32, fallback: generation.Record) !?[]const u8 {
         const conf = s.conf orelse return "can't find refind.conf";
         const dir = std.fs.path.dirnamePosix(conf).?;
-        const yoq_path = try std.fs.path.join(s.a, &.{ dir, menu.refind_file });
+        const yos_path = try std.fs.path.join(s.a, &.{ dir, menu.refind_file });
         const cwd = std.Io.Dir.cwd();
-        const yoq = cwd.readFileAlloc(s.io, yoq_path, s.a, .limited(1 << 20)) catch return "can't read yoq.conf";
+        const yos = cwd.readFileAlloc(s.io, yos_path, s.a, .limited(1 << 20)) catch return "can't read yos.conf";
         const main = cwd.readFileAlloc(s.io, conf, s.a, .limited(1 << 20)) catch return "can't read refind.conf";
         const binary = try refindBinary(s.a, s.io, dir) orelse return "can't find refind's efi binary";
         const trial_dir = try s.refindTrialDir();
@@ -214,13 +214,13 @@ pub const Store = struct {
             if (!rootfs.pathExists(s.io, from)) continue;
             if (try exec.run(s.a, s.io, &.{ "cp", "-a", from, trial_dir })) |w| return w;
         }
-        if (try s.write(try std.fs.path.join(s.a, &.{ trial_dir, "refind.conf" }), try menu.refindTrialConf(s.a, main, yoq))) |w| return w;
+        if (try s.write(try std.fs.path.join(s.a, &.{ trial_dir, "refind.conf" }), try menu.refindTrialConf(s.a, main, yos))) |w| return w;
         // one entry at a time: an earlier trial's, or one a failed arm
         // left, would stay in nvram and be the one found by its label.
         try s.dropFirmwareEntries();
         const entry = try s.firmwareEntry(trial_dir, binary) orelse return "can't add a boot entry for the trial";
         if (try exec.run(s.a, s.io, &.{ "efibootmgr", "-q", "-n", entry })) |w| return w;
-        if (try s.write(yoq_path, try menu.refindDefault(s.a, yoq, try generation.title(s.a, fallback)))) |w| return w;
+        if (try s.write(yos_path, try menu.refindDefault(s.a, yos, try generation.title(s.a, fallback)))) |w| return w;
         return s.write(state_path, try std.fmt.allocPrint(s.a, "{d} {d} {s}\n", .{ n, fallback.n, entry }));
     }
 
@@ -235,7 +235,7 @@ pub const Store = struct {
         const device = s.esp_device orelse return null;
         const disk = try s.lsblk("PKNAME", device) orelse return null;
         const part = try s.lsblk("PARTN", device) orelse return null;
-        // as the firmware names it: \EFI\yoq-trial\refind_x64.efi.
+        // as the firmware names it: \EFI\yos-trial\refind_x64.efi.
         const loader = try std.fs.path.join(s.a, &.{ dir[s.esp.len..], binary });
         std.mem.replaceScalar(u8, loader, '/', '\\');
         const out = switch (try exec.output(s.a, s.io, &.{ "efibootmgr", "-C", "-d", try std.fmt.allocPrint(s.a, "/dev/{s}", .{disk}), "-p", part, "-l", loader, "-L", firmware_label })) {
@@ -299,7 +299,7 @@ pub const Store = struct {
                 var it = dir.iterate();
                 // the counter in its name changes once it has booted.
                 while (it.next(s.io) catch null) |f| {
-                    if (!std.mem.startsWith(u8, f.name, "yoq-trial") or !std.mem.endsWith(u8, f.name, ".conf")) continue;
+                    if (!std.mem.startsWith(u8, f.name, "yos-trial") or !std.mem.endsWith(u8, f.name, ".conf")) continue;
                     const text = dir.readFileAlloc(s.io, f.name, s.a, .limited(1 << 16)) catch return null;
                     return .{ .base = s.esp, .files = try menu.sdbootFiles(s.a, text) };
                 }
@@ -334,7 +334,7 @@ pub const Store = struct {
     /// the trial hasn't booted yet: the next boot tries it again.
     pub fn retry(s: Store) !?[]const u8 {
         return switch (s.loader) {
-            .grub => s.edit("set", &.{"yoq_next=head"}),
+            .grub => s.edit("set", &.{"yos_next=head"}),
             .limine => s.bootctl("set-oneshot", try menu.limineId(s.a, menu.trial_title)),
             .@"systemd-boot" => s.bootctl("set-oneshot", menu.sdboot_trial),
             .refind => {
@@ -348,7 +348,7 @@ pub const Store = struct {
     /// default again.
     pub fn end(s: Store) !?[]const u8 {
         switch (s.loader) {
-            .grub => if (try s.edit("unset", &.{ "yoq_default", "yoq_trial", "yoq_tried" })) |w| return w,
+            .grub => if (try s.edit("unset", &.{ "yos_default", "yos_trial", "yos_tried" })) |w| return w,
             .limine, .@"systemd-boot" => {
                 // empty removes the one-shot. limine's first entry is the
                 // newest generation, so it needs no default; systemd-boot
@@ -368,21 +368,21 @@ pub const Store = struct {
         try s.dropFirmwareEntries();
         _ = try exec.run(s.a, s.io, &.{ "rm", "-rf", try s.refindTrialDir() });
         const conf = s.conf orelse return null;
-        const yoq_path = try std.fs.path.join(s.a, &.{ std.fs.path.dirnamePosix(conf).?, menu.refind_file });
-        const yoq = std.Io.Dir.cwd().readFileAlloc(s.io, yoq_path, s.a, .limited(1 << 20)) catch "";
-        const head = menu.refindHead(yoq) orelse return null;
-        return s.write(yoq_path, try menu.refindDefault(s.a, yoq, head));
+        const yos_path = try std.fs.path.join(s.a, &.{ std.fs.path.dirnamePosix(conf).?, menu.refind_file });
+        const yos = std.Io.Dir.cwd().readFileAlloc(s.io, yos_path, s.a, .limited(1 << 20)) catch "";
+        const head = menu.refindHead(yos) orelse return null;
+        return s.write(yos_path, try menu.refindDefault(s.a, yos, head));
     }
 
-    /// os's note of the trial.
+    /// yos's note of the trial.
     fn state(s: Store) !?Note {
         const text = std.Io.Dir.cwd().readFileAlloc(s.io, state_path, s.a, .limited(128)) catch return null;
         return parseNote(text);
     }
 
-    /// a grub trial os armed before 0.1.4, which noted it only as an
+    /// a grub trial yos armed before 0.1.4, which noted it only as an
     /// armed event in the journal, as the words of a note. the journal is
-    /// root's alone, like the note, so a trial armed just before os was
+    /// root's alone, like the note, so a trial armed just before yos was
     /// upgraded still falls back if it fails.
     fn journalNote(s: Store, n: ?u32, fallback: ?u32) !?Note {
         const t = n orelse return null;
@@ -398,9 +398,9 @@ pub const Store = struct {
         return exec.run(s.a, s.io, &.{ "bootctl", verb, id });
     }
 
-    /// where os keeps a trial: its generation, the one before it, and
+    /// where yos keeps a trial: its generation, the one before it, and
     /// refind's firmware entry.
-    const state_path = "/var/lib/yoq/trial";
+    const state_path = "/var/lib/yos/trial";
     /// the variable limine and systemd-boot boot once from, under the
     /// boot loader interface's vendor guid; the one they boot by default,
     /// which bootctl sets too; and the one they set to the entry this boot
@@ -447,7 +447,7 @@ pub const Store = struct {
     }
 };
 
-/// grub's trial, from os's note of it, `noted`, or without one, from the
+/// grub's trial, from yos's note of it, `noted`, or without one, from the
 /// env file's `env_trial` and `env_default`. whether the boot has started
 /// is the env file's either way: grub sets it.
 fn grubTrial(noted: ?Note, env_trial: ?u32, env_default: ?u32, tried: bool) ?Trial {
@@ -464,7 +464,7 @@ test "a trial's note says how far it got" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    // one from an older os has no phase, and was armed.
+    // one from an older yos has no phase, and was armed.
     const old = parseNote("7 6\n").?;
     try std.testing.expectEqual(Phase.armed, old.phase);
     try std.testing.expectEqualStrings("6", old.words[1]);
@@ -477,7 +477,7 @@ test "a trial's note says how far it got" {
     try std.testing.expectEqual(null, parseNote("arming\n"));
 }
 
-test "grub's trial is os's note of it, not the esp's" {
+test "grub's trial is yos's note of it, not the esp's" {
     const t = grubTrial(.{ .phase = .armed, .words = .{ "7", "6", "" } }, 9, 2, true).?;
     try std.testing.expectEqual(7, t.n);
     try std.testing.expectEqual(6, t.fallback);
@@ -492,7 +492,7 @@ test "grub's trial is os's note of it, not the esp's" {
 /// what a boot that cleared the trial's one-shot says about itself.
 const Booted = struct {
     /// limine's and systemd-boot's entry for this boot, and the default
-    /// os set, the generation the trial falls back to.
+    /// yos set, the generation the trial falls back to.
     selected: ?[]const u8 = null,
     default: ?[]const u8 = null,
     /// the firmware entry this boot started from, and the trial's, for
@@ -515,11 +515,11 @@ test "a trial whose one-shot is still there wasn't tried" {
     // refind: BootNext still names the trial's entry, and this boot came
     // from refind's own, so no boot read it.
     try std.testing.expect(!wasTried(.refind, true, .{ .boot_current = 0xa, .trial_entry = "0004" }));
-    try std.testing.expect(!wasTried(.@"systemd-boot", true, .{ .selected = "yoq-gen-2.conf", .default = "yoq-gen-2.conf" }));
+    try std.testing.expect(!wasTried(.@"systemd-boot", true, .{ .selected = "yos-gen-2.conf", .default = "yos-gen-2.conf" }));
     try std.testing.expect(!wasTried(.limine, true, .{}));
     // gone, and this boot is the default: the trial ran and didn't come up.
     try std.testing.expect(wasTried(.refind, false, .{ .boot_current = 0xa, .trial_entry = "0004" }));
-    try std.testing.expect(wasTried(.@"systemd-boot", false, .{ .selected = "yoq-gen-2.conf", .default = "yoq-gen-2.conf" }));
+    try std.testing.expect(wasTried(.@"systemd-boot", false, .{ .selected = "yos-gen-2.conf", .default = "yos-gen-2.conf" }));
     // gone, but an older entry was picked in its place.
     try std.testing.expect(!wasTried(.refind, false, .{ .boot_current = 4, .trial_entry = "0004" }));
 }
@@ -568,19 +568,19 @@ test "an older entry picked by hand isn't a failed trial" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    // "yoq-gen-2.conf" as the boot loader interface stores it.
+    // "yos-gen-2.conf" as the boot loader interface stores it.
     var bytes: std.ArrayList(u8) = .empty;
     try bytes.appendSlice(a, &.{ 6, 0, 0, 0 });
-    for ("yoq-gen-2.conf") |ch| try bytes.appendSlice(a, &.{ ch, 0 });
+    for ("yos-gen-2.conf") |ch| try bytes.appendSlice(a, &.{ ch, 0 });
     try bytes.appendSlice(a, &.{ 0, 0 });
     const gen2 = (try efiString(a, bytes.items)).?;
-    try std.testing.expectEqualStrings("yoq-gen-2.conf", gen2);
+    try std.testing.expectEqualStrings("yos-gen-2.conf", gen2);
     // the default, after a trial that didn't come up, or another entry.
-    try std.testing.expect(!byHand(.@"systemd-boot", .{ .selected = gen2, .default = "yoq-gen-2.conf" }));
-    try std.testing.expect(byHand(.@"systemd-boot", .{ .selected = "yoq-gen-1.conf", .default = "yoq-gen-2.conf" }));
-    try std.testing.expect(byHand(.limine, .{ .selected = "yoq-1-enable-rollback", .default = "yoq-2-add-fd" }));
+    try std.testing.expect(!byHand(.@"systemd-boot", .{ .selected = gen2, .default = "yos-gen-2.conf" }));
+    try std.testing.expect(byHand(.@"systemd-boot", .{ .selected = "yos-gen-1.conf", .default = "yos-gen-2.conf" }));
+    try std.testing.expect(byHand(.limine, .{ .selected = "yos-1-enable-rollback", .default = "yos-2-add-fd" }));
     // without the variables, nothing says it was.
-    try std.testing.expect(!byHand(.limine, .{ .default = "yoq-2-add-fd" }));
+    try std.testing.expect(!byHand(.limine, .{ .default = "yos-2-add-fd" }));
     // refind: this boot started from the trial's firmware entry.
     try std.testing.expect(byHand(.refind, .{ .boot_current = 4, .trial_entry = "0004" }));
     try std.testing.expect(!byHand(.refind, .{ .boot_current = 1, .trial_entry = "0004" }));
@@ -621,24 +621,24 @@ test "a trial's files that limine couldn't load" {
     const a = arena.allocator();
     const io = std.testing.io;
     const esp = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
-    try tmp.dir.createDirPath(io, "yoq/boot");
+    try tmp.dir.createDirPath(io, "yos/boot");
     const pe = bootcheck.testPe(0x200, 0x200);
     var kernel: [0x400]u8 = undefined;
     @memcpy(kernel[0..512], &pe);
     @memset(kernel[512..], 0);
     const initrd = "an initramfs";
-    const initrd_name = try std.fmt.allocPrint(a, "yoq/boot/{s}-initramfs-linux.img", .{facts.sha256Hex(initrd)[0..16]});
-    try tmp.dir.writeFile(io, .{ .sub_path = "yoq/boot/0123456789abcdef-vmlinuz-linux", .data = &kernel });
+    const initrd_name = try std.fmt.allocPrint(a, "yos/boot/{s}-initramfs-linux.img", .{facts.sha256Hex(initrd)[0..16]});
+    try tmp.dir.writeFile(io, .{ .sub_path = "yos/boot/0123456789abcdef-vmlinuz-linux", .data = &kernel });
     try tmp.dir.writeFile(io, .{ .sub_path = initrd_name, .data = initrd });
-    const conf = try std.fmt.allocPrint(a, "{s}\n/yoq trial boot\n    protocol: linux\n    path: boot():/yoq/boot/0123456789abcdef-vmlinuz-linux\n    module_path: boot():/{s}\n    cmdline: rw\n{s}\n", .{ menu.limine_begin, initrd_name, menu.limine_end });
+    const conf = try std.fmt.allocPrint(a, "{s}\n/yos trial boot\n    protocol: linux\n    path: boot():/yos/boot/0123456789abcdef-vmlinuz-linux\n    module_path: boot():/{s}\n    cmdline: rw\n{s}\n", .{ menu.limine_begin, initrd_name, menu.limine_end });
     try tmp.dir.writeFile(io, .{ .sub_path = "limine.conf", .data = conf });
     const s: Store = .{ .a = a, .io = io, .loader = .limine, .esp = esp, .conf = try std.fmt.allocPrint(a, "{s}/limine.conf", .{esp}) };
     try std.testing.expectEqual(null, try s.brokenFile());
     // cut off, the kernel isn't whole.
-    try tmp.dir.writeFile(io, .{ .sub_path = "yoq/boot/0123456789abcdef-vmlinuz-linux", .data = kernel[0..0x300] });
+    try tmp.dir.writeFile(io, .{ .sub_path = "yos/boot/0123456789abcdef-vmlinuz-linux", .data = kernel[0..0x300] });
     try std.testing.expect(std.mem.endsWith(u8, (try s.brokenFile()).?, "0123456789abcdef-vmlinuz-linux: it isn't a whole efi binary"));
-    try tmp.dir.writeFile(io, .{ .sub_path = "yoq/boot/0123456789abcdef-vmlinuz-linux", .data = &kernel });
-    // an initramfs that changed after os named it.
+    try tmp.dir.writeFile(io, .{ .sub_path = "yos/boot/0123456789abcdef-vmlinuz-linux", .data = &kernel });
+    // an initramfs that changed after yos named it.
     try tmp.dir.writeFile(io, .{ .sub_path = initrd_name, .data = "something else" });
     try std.testing.expect(std.mem.endsWith(u8, (try s.brokenFile()).?, "-initramfs-linux.img: its content doesn't match the hash in its name"));
     try tmp.dir.deleteFile(io, initrd_name);
@@ -657,10 +657,10 @@ fn refindBinary(a: Allocator, io: std.Io, dir: []const u8) !?[]const u8 {
 }
 
 /// the label of the firmware entry a refind trial boots.
-const firmware_label = "yoq trial";
+const firmware_label = "yos trial";
 
 /// the number of the entry labelled `firmware_label` in efibootmgr's
-/// listing, like "0004" from "Boot0004* yoq trial".
+/// listing, like "0004" from "Boot0004* yos trial".
 fn firmwareNumber(listing: []const u8) ?[]const u8 {
     var lines = std.mem.splitScalar(u8, listing, '\n');
     while (lines.next()) |line| {
@@ -677,7 +677,7 @@ test "the firmware entry a refind trial made" {
         \\BootOrder: 0001,0000
         \\Boot0000* UiApp\tFvVol(7cb8bdc9)
         \\Boot0001* rEFInd Boot Manager\tHD(1,GPT)
-        \\Boot0004* yoq trial\tHD(1,GPT)/\\EFI\\refind\\refind_x64.efi
+        \\Boot0004* yos trial\tHD(1,GPT)/\\EFI\\refind\\refind_x64.efi
         \\
     ;
     try std.testing.expectEqualStrings("0004", firmwareNumber(listing).?);

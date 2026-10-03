@@ -1,4 +1,4 @@
-//! `os add`, `os remove`, `os enable`, and `os disable` change the config
+//! `yos add`, `yos remove`, `yos enable`, and `yos disable` change the config
 //! file for the user. each one edits the text of the top config file,
 //! checks the result by loading the whole config with the new text, and
 //! only then writes it.
@@ -113,7 +113,7 @@ fn remove(a: Allocator, c: *const config.Config, top: []const u8, text: *[]const
     if (planner.findWant(ws, name)) |w| {
         const cause = w.cause.?;
         if (std.mem.startsWith(u8, cause, "services.")) {
-            try diags.addHint(.bad_value, null, "{s} comes from {s}", .{ name, cause }, "run `os disable {s}`", .{cause["services.".len..]});
+            try diags.addHint(.bad_value, null, "{s} comes from {s}", .{ name, cause }, "run `yos disable {s}`", .{cause["services.".len..]});
         } else {
             try diags.addHint(.bad_value, null, "{s} comes from {s}", .{ name, cause }, "change {s} in the config", .{cause});
         }
@@ -138,15 +138,15 @@ fn service(a: Allocator, c: *const config.Config, text: *[]const u8, name: []con
     return .{ .name = name, .what = what };
 }
 
-/// why `os adopt` can't take the file at `path` into the config, or null
+/// why `yos adopt` can't take the file at `path` into the config, or null
 /// if it can. what's on disk is checked by the caller.
 pub fn adoptProblem(a: Allocator, c: *const config.Config, path: []const u8) !?[]const u8 {
     if (config.filePathProblem(path)) |hint| return hint;
-    if (!std.mem.startsWith(u8, path, "/etc/")) return "os adopts files under /etc; the rest belong to packages";
+    if (!std.mem.startsWith(u8, path, "/etc/")) return "yos adopts files under /etc; the rest belong to packages";
     // the config is meant to be safe to publish, and these are the
     // machine's own, carried into every root anyway.
     if (observe.carriedEtc(path["/etc/".len..])) return "it's machine state, like accounts, passwords, or host keys, and stays out of the config";
-    if ((try why.explainFile(a, c, path)).cause) |cause| return try std.fmt.allocPrint(a, "os writes it already, for {s}", .{cause.key});
+    if ((try why.explainFile(a, c, path)).cause) |cause| return try std.fmt.allocPrint(a, "yos writes it already, for {s}", .{cause.key});
     return null;
 }
 
@@ -181,7 +181,7 @@ pub fn check(gpa: Allocator, files: compose.Files, path: []const u8, text: []con
             .unchanged => true,
         };
         if (!ok) {
-            try diags.add(.bad_value, null, "the edit to {s} didn't take effect for {s} ({s})", .{ path, n.name, @tagName(n.what) }, "this is a bug in os; the file was left alone");
+            try diags.add(.bad_value, null, "the edit to {s} didn't take effect for {s} ({s})", .{ path, n.name, @tagName(n.what) }, "this is a bug in yos; the file was left alone");
             return false;
         }
     }
@@ -221,7 +221,7 @@ const Overlay = struct {
 
 const testing = std.testing;
 
-test "which files os can adopt" {
+test "which files yos can adopt" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -231,11 +231,11 @@ test "which files os can adopt" {
     for ([_][]const u8{ "/etc/shadow", "/etc/gshadow-", "/etc/passwd", "/etc/ssh/ssh_host_ed25519_key", "/etc/machine-id", "/etc/pacman.d/gnupg/pubring.gpg" }) |p| {
         try testing.expectStringStartsWith((try adoptProblem(a, &c, p)).?, "it's machine state");
     }
-    try testing.expectEqualStrings("os writes it already, for files.\"/etc/motd\"", (try adoptProblem(a, &c, "/etc/motd")).?);
-    try testing.expectEqualStrings("os writes it already, for sysctl", (try adoptProblem(a, &c, "/etc/sysctl.d/99-yoq.conf")).?);
-    try testing.expectStringStartsWith((try adoptProblem(a, &c, "/usr/lib/os-release")).?, "os adopts files under /etc");
-    try testing.expectStringStartsWith((try adoptProblem(a, &c, "/etc")).?, "os adopts files under /etc");
-    try testing.expectEqualStrings("os keeps its own state there", (try adoptProblem(a, &c, "/etc/yoq/machine.toml")).?);
+    try testing.expectEqualStrings("yos writes it already, for files.\"/etc/motd\"", (try adoptProblem(a, &c, "/etc/motd")).?);
+    try testing.expectEqualStrings("yos writes it already, for sysctl", (try adoptProblem(a, &c, "/etc/sysctl.d/99-yos.conf")).?);
+    try testing.expectStringStartsWith((try adoptProblem(a, &c, "/usr/lib/os-release")).?, "yos adopts files under /etc");
+    try testing.expectStringStartsWith((try adoptProblem(a, &c, "/etc")).?, "yos adopts files under /etc");
+    try testing.expectEqualStrings("yos keeps its own state there", (try adoptProblem(a, &c, "/etc/yos/machine.toml")).?);
     try testing.expect(try adoptProblem(a, &c, "/etc/../etc/hosts") != null);
     try testing.expect(try adoptProblem(a, &c, "etc/hosts") != null);
 }

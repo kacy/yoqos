@@ -71,7 +71,7 @@ fn write(m: *const Machine, path: []const u8, text: []const u8) !?[]const u8 {
     return rootfs.writeWhole(m.a, m.io, path, text);
 }
 
-/// the loader's own config, which os adds its entries to.
+/// the loader's own config, which yos adds its entries to.
 fn loaderConf(m: *const Machine) !?[]const u8 {
     const path = m.boot.loader_conf orelse return null;
     return std.Io.Dir.cwd().readFileAlloc(m.io, path, m.a, .limited(1 << 20)) catch null;
@@ -89,12 +89,12 @@ fn writeLimine(m: *const Machine, entries: []menu.Entry, held: ?usize) anyerror!
     return write(m, m.boot.loader_conf.?, try menu.spliceLimine(m.a, conf, try menu.limine(m.a, entries)));
 }
 
-/// os's entry files in systemd-boot's loader/entries, beside
-/// loader.conf. yoq-*.conf files no entry needs any more go.
+/// yos's entry files in systemd-boot's loader/entries, beside
+/// loader.conf. yos-*.conf files no entry needs any more go.
 ///
 /// with a held default, every file but the newest's goes in first, the
 /// held entry, there now, becomes the default, and only then does
-/// yoq-head.conf, the default until then, name the new generation.
+/// yos-head.conf, the default until then, name the new generation.
 fn writeSdboot(m: *const Machine, entries: []menu.Entry, held: ?usize) anyerror!?[]const u8 {
     const dir = try m.sdbootEntries();
     if (try m.run(&.{ "mkdir", "-p", dir })) |w| return w;
@@ -112,7 +112,7 @@ fn writeSdboot(m: *const Machine, entries: []menu.Entry, held: ?usize) anyerror!
         if (try write(m, try std.fs.path.join(m.a, &.{ dir, f.name }), f.text)) |w| return w;
         try names.append(m.a, f.name);
     }
-    bootfiles.removeUnused(m, dir, names.items, "yoq-", ".conf");
+    bootfiles.removeUnused(m, dir, names.items, "yos-", ".conf");
     return null;
 }
 
@@ -132,8 +132,8 @@ pub fn sdbootEntries(m: *const Machine) ![]const u8 {
 }
 
 /// refind reads btrfs through its driver, so entries boot from each
-/// root's own /boot, unless the root is on luks. os's entries go in
-/// yoq.conf beside refind.conf, which includes it, and the driver goes
+/// root's own /boot, unless the root is on luks. yos's entries go in
+/// yos.conf beside refind.conf, which includes it, and the driver goes
 /// in if it's missing.
 fn writeRefind(m: *const Machine, entries: []menu.Entry, held: ?usize) anyerror!?[]const u8 {
     const conf = try loaderConf(m) orelse return "can't read refind.conf";
@@ -220,7 +220,7 @@ pub fn entry(m: *const Machine, id: []const u8, name: []const u8, subvol: []cons
 
 /// the title of the entry refind's own config defaults to, when it isn't
 /// the newest: `entries[held]`, or with a trial waiting, the generation it
-/// falls back to, `pending`. refind keeps its default in os's file.
+/// falls back to, `pending`. refind keeps its default in yos's file.
 fn heldTitle(a: Allocator, entries: []const menu.Entry, held: ?usize, pending: u32) !?[]const u8 {
     if (held) |i| return entries[i].title;
     if (pending == 0) return null;
@@ -278,8 +278,8 @@ pub fn grubEfiPath(a: Allocator, io: std.Io, esp: []const u8) ![]const u8 {
 /// a menu for generation 3, which goes on trial, and generation 2, the
 /// one it falls back to, for the tests of a held default.
 const held_entries = [_]menu.Entry{
-    .{ .id = "head", .title = "yoq 3", .subvol = "/@roots/3", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw", .esp_dir = "yoq/boot" },
-    .{ .id = "gen-2", .title = "yoq 2", .subvol = "/@roots/boot-2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw", .esp_dir = "yoq/boot" },
+    .{ .id = "head", .title = "yos 3", .subvol = "/@roots/3", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw", .esp_dir = "yos/boot" },
+    .{ .id = "gen-2", .title = "yos 2", .subvol = "/@roots/boot-2", .kernel = "vmlinuz-linux", .initrds = &.{"initramfs-linux.img"}, .args = "rw", .esp_dir = "yos/boot" },
 };
 
 /// a machine whose esp, loader config, and bootctl are in `base`: the
@@ -320,35 +320,35 @@ test "a generation going on trial leaves the default on the one before, for each
 
     // limine: the efi variable names generation 2 before the section that
     // puts 3 first goes in; until then 2 is the first entry, by that name.
-    const old_limine = "timeout: 3\n" ++ menu.limine_begin ++ "\n/yoq 2\n    protocol: linux\n" ++ menu.limine_end ++ "\n";
+    const old_limine = "timeout: 3\n" ++ menu.limine_begin ++ "\n/yos 2\n    protocol: linux\n" ++ menu.limine_end ++ "\n";
     try tmp.dir.writeFile(io, .{ .sub_path = "limine.conf", .data = old_limine });
     const limine_conf = try std.fmt.allocPrint(a, "{s}/limine.conf", .{base});
     const limine = try heldMachine(a, base, .limine, limine_conf, limine_conf);
     try std.testing.expectEqual(null, try writeLimine(&limine, &entries, 1));
-    try std.testing.expectEqualStrings("set-default yoq-2\n" ++ old_limine, try tmp.dir.readFileAlloc(io, "log", a, .limited(1 << 16)));
-    try std.testing.expect(std.mem.indexOf(u8, try tmp.dir.readFileAlloc(io, "limine.conf", a, .limited(1 << 16)), "\n/yoq 3\n") != null);
+    try std.testing.expectEqualStrings("set-default yos-2\n" ++ old_limine, try tmp.dir.readFileAlloc(io, "log", a, .limited(1 << 16)));
+    try std.testing.expect(std.mem.indexOf(u8, try tmp.dir.readFileAlloc(io, "limine.conf", a, .limited(1 << 16)), "\n/yos 3\n") != null);
     // without a held default, the variable is left alone.
     try tmp.dir.deleteFile(io, "log");
     try std.testing.expectEqual(null, try writeLimine(&limine, &entries, null));
     try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "log", .{}));
 
     // systemd-boot: generation 2's file goes in, becomes the default, and
-    // only then does yoq-head.conf, the default till then, name 3.
+    // only then does yos-head.conf, the default till then, name 3.
     try tmp.dir.createDirPath(io, "esp/loader/entries");
-    try tmp.dir.writeFile(io, .{ .sub_path = "esp/loader/entries/yoq-head.conf", .data = "old head\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "esp/loader/entries/yos-head.conf", .data = "old head\n" });
     const sd_conf = try std.fmt.allocPrint(a, "{s}/esp/loader/loader.conf", .{base});
-    const sd = try heldMachine(a, base, .@"systemd-boot", sd_conf, try std.fmt.allocPrint(a, "{s}/esp/loader/entries/yoq-head.conf {s}/esp/loader/entries/yoq-gen-2.conf", .{ base, base }));
+    const sd = try heldMachine(a, base, .@"systemd-boot", sd_conf, try std.fmt.allocPrint(a, "{s}/esp/loader/entries/yos-head.conf {s}/esp/loader/entries/yos-gen-2.conf", .{ base, base }));
     try std.testing.expectEqual(null, try writeSdboot(&sd, &entries, 1));
     const log = try tmp.dir.readFileAlloc(io, "log", a, .limited(1 << 16));
-    try std.testing.expect(std.mem.startsWith(u8, log, "set-default yoq-gen-2.conf\nold head\n# written by os. edits here are overwritten.\ntitle yoq 2\n"));
-    const head = try tmp.dir.readFileAlloc(io, "esp/loader/entries/yoq-head.conf", a, .limited(1 << 16));
-    try std.testing.expect(std.mem.indexOf(u8, head, "title yoq 3\n") != null);
-    _ = try tmp.dir.statFile(io, "esp/loader/entries/yoq-trial+1.conf", .{});
+    try std.testing.expect(std.mem.startsWith(u8, log, "set-default yos-gen-2.conf\nold head\n# written by yos. edits here are overwritten.\ntitle yos 2\n"));
+    const head = try tmp.dir.readFileAlloc(io, "esp/loader/entries/yos-head.conf", a, .limited(1 << 16));
+    try std.testing.expect(std.mem.indexOf(u8, head, "title yos 3\n") != null);
+    _ = try tmp.dir.statFile(io, "esp/loader/entries/yos-trial+1.conf", .{});
 
-    // refind: os's file defaults to generation 2, held or with a trial
+    // refind: yos's file defaults to generation 2, held or with a trial
     // waiting that falls back to it.
-    try std.testing.expectEqualStrings("yoq 2", (try heldTitle(a, &entries, 1, 0)).?);
-    try std.testing.expectEqualStrings("yoq 2", (try heldTitle(a, &entries, null, 2)).?);
+    try std.testing.expectEqualStrings("yos 2", (try heldTitle(a, &entries, 1, 0)).?);
+    try std.testing.expectEqualStrings("yos 2", (try heldTitle(a, &entries, null, 2)).?);
     try std.testing.expectEqual(null, try heldTitle(a, &entries, null, 0));
     try std.testing.expectEqual(null, try heldTitle(a, &entries, null, 7));
 }
@@ -439,7 +439,7 @@ test "a boot file named with more than letters, digits, and ._+- stays out of th
         .top = try std.fmt.allocPrint(a, "{s}/top", .{base}),
         .unsettled_note = try std.fmt.allocPrint(a, "{s}/note", .{base}),
     };
-    const e = try m.entry("gen-2", "yoq 2", "/@roots/2", "");
+    const e = try m.entry("gen-2", "yos 2", "/@roots/2", "");
     try std.testing.expectEqualStrings("vmlinuz-linux", e.kernel);
     try std.testing.expectEqual(2, e.initrds.len);
     try std.testing.expectEqualStrings("amd-ucode.img", e.initrds[0]);

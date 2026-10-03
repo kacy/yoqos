@@ -1,5 +1,5 @@
-//! `os init`: write a config that describes this machine as it is. it
-//! changes nothing on the machine; the first `os plan` afterwards should
+//! `yos init`: write a config that describes this machine as it is. it
+//! changes nothing on the machine; the first `yos plan` afterwards should
 //! be empty, or show only what's out of date.
 
 const std = @import("std");
@@ -18,7 +18,7 @@ const Context = cli.Context;
 
 pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (args.len > 0 and cli.eql(args[0], "--new")) return initNew(ctx, args[1..]);
-    if (try cli.noArgs(ctx, args, "os init")) |code| return code;
+    if (try cli.noArgs(ctx, args, "yos init")) |code| return code;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
@@ -60,7 +60,7 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     }
     try cli.record(ctx, a, top, try std.fmt.allocPrint(a, "init: {s} as found on {s}", .{ f.hostname orelse "this machine", date }));
     if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.init/1", .{
+        try output.writeDoc(ctx.out, "yos.init/1", .{
             .config = top,
             .imported = imported_path,
             .imported_packages = imported.len,
@@ -69,7 +69,7 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         return 0;
     }
     if (locked) |path| try ctx.out.print("wrote {s}\n", .{path});
-    try ctx.out.writeAll("\nnothing on this machine changed. next: os plan\n");
+    try ctx.out.writeAll("\nnothing on this machine changed. next: yos plan\n");
     return 0;
 }
 
@@ -104,7 +104,7 @@ fn lockNew(ctx: *Context, w: *cli.Work, loaded: *const compose.Loaded, date: []c
 fn reportLater(ctx: *Context, w: *cli.Work) !?[]const u8 {
     try w.diags.render(ctx.err);
     w.diags.items.clearRetainingCapacity();
-    if (!ctx.json) try ctx.out.writeAll("no machine.lock yet: fix the above, then `os update`.\n");
+    if (!ctx.json) try ctx.out.writeAll("no machine.lock yet: fix the above, then `yos update`.\n");
     return null;
 }
 
@@ -120,11 +120,11 @@ fn explicitCount(f: *const facts.Facts) usize {
     return n;
 }
 
-/// `os init --new`: a config for a machine with nothing on it yet, like one
+/// `yos init --new`: a config for a machine with nothing on it yet, like one
 /// booted from the live iso, from a few answers and the hardware the live
-/// system sees. `os install` builds the machine from it.
+/// system sees. `yos install` builds the machine from it.
 fn initNew(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os init --new [--hostname <name>] [--user <name>] [--timezone <zone>] [--ssh] [--encrypt] [--tpm]";
+    const usage_text = "yos init --new [--hostname <name>] [--user <name>] [--timezone <zone>] [--ssh] [--encrypt] [--tpm]";
     var hostname: ?[]const u8 = null;
     var user: ?[]const u8 = null;
     var timezone: ?[]const u8 = null;
@@ -175,10 +175,10 @@ fn initNew(ctx: *Context, args: []const [:0]const u8) !u8 {
     _ = try w.config() orelse return w.fail();
     try cli.record(ctx, a, top, try std.fmt.allocPrint(a, "init: {s}, new", .{name}));
     if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.init/1", .{ .config = top, .new = true });
+        try output.writeDoc(ctx.out, "yos.init/1", .{ .config = top, .new = true });
         return 0;
     }
-    try ctx.out.print("\nwrote {s}, for {s}. it has no lock yet: `os install {s} --disk <disk> --update` makes one and installs it.\n", .{ top, name, std.fs.path.dirnamePosix(top) orelse "." });
+    try ctx.out.print("\nwrote {s}, for {s}. it has no lock yet: `yos install {s} --disk <disk> --update` makes one and installs it.\n", .{ top, name, std.fs.path.dirnamePosix(top) orelse "." });
     return 0;
 }
 
@@ -188,13 +188,13 @@ fn initNew(ctx: *Context, args: []const [:0]const u8) !u8 {
 fn answer(ctx: *Context, a: std.mem.Allocator, given: ?[]const u8, question: []const u8, default: ?[]const u8, comptime problem: fn ([]const u8) ?[]const u8) !?[]const u8 {
     if (given) |g| {
         if (problem(g)) |why| {
-            try ctx.err.print("os: \"{s}\": {s}\n", .{ g, why });
+            try ctx.err.print("yos: \"{s}\": {s}\n", .{ g, why });
             return null;
         }
         return g;
     }
     if (!ctx.interactive) {
-        try ctx.err.writeAll("os: without a terminal to ask at, `os init --new` needs --hostname, --user, and --timezone.\n");
+        try ctx.err.writeAll("yos: without a terminal to ask at, `yos init --new` needs --hostname, --user, and --timezone.\n");
         return null;
     }
     while (true) {
@@ -224,7 +224,7 @@ test "init writes a config that loads, and refuses to overwrite one" {
     var t: TestRun = .{};
     defer t.deinit();
     try t.fs.put("f.json",
-        \\{"schema":"yoq.facts/1","hostname":"atlas.lan","timezone":"UTC","cpu":"intel",
+        \\{"schema":"yos.facts/1","hostname":"atlas.lan","timezone":"UTC","cpu":"intel",
         \\ "packages":[{"name":"base","version":"3"},{"name":"linux","version":"6"},{"name":"intel-ucode","version":"1"},
         \\             {"name":"git","version":"2"},{"name":"glibc","version":"2","reason":"dependency"}],
         \\ "units":[{"name":"sshd.service","enabled":true,"active":true}],
@@ -236,15 +236,15 @@ test "init writes a config that loads, and refuses to overwrite one" {
     try std.testing.expectEqual(0, t.code);
     try std.testing.expect(std.mem.startsWith(u8, t.out.buffered(), "read this machine: 4 explicit packages, 1 enabled units, 1 users, intel cpu.\n"));
 
-    const imported = t.fs.get("/etc/yoq/imported.toml").?;
+    const imported = t.fs.get("/etc/yos/imported.toml").?;
     try std.testing.expect(std.mem.indexOf(u8, imported, "  \"base\",\n  \"git\",\n]") != null);
-    const machine = t.fs.get("/etc/yoq/machine.toml").?;
+    const machine = t.fs.get("/etc/yos/machine.toml").?;
     try std.testing.expect(std.mem.indexOf(u8, machine, "[services.ssh]\nenabled = true\n") != null);
     try std.testing.expect(std.mem.startsWith(u8, t.recorder.messages.items[0], "init: atlas.lan as found on "));
 
     try t.exec(&.{ "--facts", "f.json", "init" });
     try std.testing.expectEqual(1, t.code);
-    try std.testing.expectEqualStrings("os: /etc/yoq/machine.toml already exists. edit it, or move it away to start over.\n", t.err.buffered());
+    try std.testing.expectEqualStrings("yos: /etc/yos/machine.toml already exists. edit it, or move it away to start over.\n", t.err.buffered());
 }
 
 test "init locks against today's databases" {
@@ -261,11 +261,11 @@ test "init locks against today's databases" {
     defer t.deinit();
     try t.fs.put(try std.fs.path.join(a, &.{ root, "etc/pacman.conf" }), "[core]\nServer = https://m.example/$repo\n[extra]\nServer = https://m.example/$repo\n");
     try t.fs.put("f.json",
-        \\{"schema":"yoq.facts/1","hostname":"atlas",
+        \\{"schema":"yos.facts/1","hostname":"atlas",
         \\ "packages":[{"name":"linux","version":"6.16.8.arch1-1"},{"name":"git","version":"2.51.0-1"}]}
     );
     try t.exec(&.{ "--root", root, "--facts", "f.json", "init" });
     try std.testing.expectEqualStrings("", t.err.buffered());
-    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "wrote /etc/yoq/machine.lock\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.perl-error]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "wrote /etc/yos/machine.lock\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yos/machine.lock").?, "[packages.perl-error]") != null);
 }

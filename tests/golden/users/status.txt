@@ -1,5 +1,5 @@
 atlas · lock from 2026-09-25 (today)
 
 ok        11 packages
-changed   users not as configured: kacy, guest  -> os plan
+changed   users not as configured: kacy, guest  -> yos plan
 failing   none

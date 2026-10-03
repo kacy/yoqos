@@ -1,4 +1,4 @@
-//! `os apply`: make the machine match its config. it shows the plan, asks,
+//! `yos apply`: make the machine match its config. it shows the plan, asks,
 //! applies, and then plans again to check that nothing's left.
 
 const std = @import("std");
@@ -33,7 +33,7 @@ const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
 pub fn applyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os apply [<saved plan>] [--yes]";
+    const usage_text = "yos apply [<saved plan>] [--yes]";
     var yes = false;
     var saved: ?[]const u8 = null;
     var it: cli.ArgIter = .{ .args = args };
@@ -53,17 +53,17 @@ pub fn applyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     return recordGeneration(ctx, done, "apply");
 }
 
-/// the hash in a plan `os plan -o` saved, or null after saying why
+/// the hash in a plan `yos plan -o` saved, or null after saying why
 /// there isn't one.
 fn savedHash(ctx: *Context, a: Allocator, path: []const u8) !?[]const u8 {
     const text = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, a, .limited(64 << 20)) catch |e| {
-        try ctx.err.print("os: can't read {s}: {s}\n", .{ path, @errorName(e) });
+        try ctx.err.print("yos: can't read {s}: {s}\n", .{ path, @errorName(e) });
         return null;
     };
     const Saved = struct { schema: []const u8, hash: []const u8 };
     const doc = std.json.parseFromSliceLeaky(Saved, a, text, .{ .ignore_unknown_fields = true }) catch null;
     if (doc) |d| if (cli.eql(d.schema, planner.schema)) return d.hash;
-    try ctx.err.print("os: {s} isn't a plan. `os plan -o <file>` saves one.\n", .{path});
+    try ctx.err.print("yos: {s} isn't a plan. `yos plan -o <file>` saves one.\n", .{path});
     return null;
 }
 
@@ -90,7 +90,7 @@ pub const Then = struct {
     }
 };
 
-/// why os can't change the machine here at all, if it can't.
+/// why yos can't change the machine here at all, if it can't.
 pub fn blocker(ctx: *Context) ?[]const u8 {
     if (!alpm.available) return "this build can't change packages. build with -Dalpm";
     if (!cli.eql(ctx.root, "/")) return null;
@@ -99,7 +99,7 @@ pub fn blocker(ctx: *Context) ?[]const u8 {
 }
 
 /// why apply can't run here, if it can't: `blocker`, or a boot into an
-/// older generation's copy, which os remakes from its record.
+/// older generation's copy, which yos remakes from its record.
 fn applyBlocker(ctx: *Context) ?[]const u8 {
     if (blocker(ctx)) |why| return why;
     if (!cli.eql(ctx.root, "/")) return null;
@@ -112,8 +112,8 @@ fn applyBlocker(ctx: *Context) ?[]const u8 {
 pub fn bootBlocker(io: std.Io) ?[]const u8 {
     return switch (bootState(io)) {
         .normal => null,
-        .copy => "this boot runs a copy of an older generation from the boot menu, and os remakes that copy from its record. `os rollback --to-booted` keeps it as a generation of its own; reboot into that first",
-        .pending => "a new generation is waiting for the next boot, and a change now would land on the root being left. reboot first, or `os rollback` to go back to the generation before it",
+        .copy => "this boot runs a copy of an older generation from the boot menu, and yos remakes that copy from its record. `yos rollback --to-booted` keeps it as a generation of its own; reboot into that first",
+        .pending => "a new generation is waiting for the next boot, and a change now would land on the root being left. reboot first, or `yos rollback` to go back to the generation before it",
     };
 }
 
@@ -180,7 +180,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     if (opts.expect) |want| {
         const got = try p.hash();
         if (!cli.eql(want, &got)) {
-            try w.diags.add(.plan_changed, null, "this machine's plan isn't the saved one any more (saved {s}, now {s})", .{ want[0..@min(12, want.len)], got[0..12] }, "`os plan -o <file>` saves the plan as it is now");
+            try w.diags.add(.plan_changed, null, "this machine's plan isn't the saved one any more (saved {s}, now {s})", .{ want[0..@min(12, want.len)], got[0..12] }, "`yos plan -o <file>` saves the plan as it is now");
             return Outcome.failed(&w);
         }
     }
@@ -193,27 +193,27 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
         const short = begin.plan[0..@min(12, begin.plan.len)];
         switch (afterCutOff(true, p.empty())) {
             .none => {},
-            .warn => try ctx.err.print("os: the last apply (plan {s}) didn't finish. this one starts from the machine as it is now.\n", .{short}),
+            .warn => try ctx.err.print("yos: the last apply (plan {s}) didn't finish. this one starts from the machine as it is now.\n", .{short}),
             .settle => {
                 // pacman's lock outlives a power cut after the commit too.
                 try clearStaleLock(ctx, a, try observe.pacmanDb(a, ctx.io, ctx.root));
                 try journal.settle(a, ctx.io, ctx.root, begin);
-                try ctx.err.print("os: the last apply (plan {s}) was cut off after it made its changes. the machine matches the config, so it's recorded as done.\n", .{short});
+                try ctx.err.print("yos: the last apply (plan {s}) was cut off after it made its changes. the machine matches the config, so it's recorded as done.\n", .{short});
                 // its changes never became a generation either.
-                if (cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol)) {
+                if (cli.eql(ctx.root, "/") and generation.on(result.facts.boot)) {
                     settled_generation = unrecorded(begin.time, try gens.readRecords(a, ctx.io, "/var"));
                 }
             },
         }
     }
-    // modules os kept for the kernel before the last reboot are done with,
+    // modules yos kept for the kernel before the last reboot are done with,
     // whatever this apply does.
     var uts: std.os.linux.utsname = undefined;
     const running_kernel = if (cli.eql(ctx.root, "/")) modules.running(&uts) else null;
     if (running_kernel) |r| try modules.dropKept(a, ctx.io, "/", r);
     if (p.empty()) {
         if (ctx.json) {
-            try output.writeDoc(ctx.out, "yoq.apply/1", .{ .applied = 0, .skipped = p.changes });
+            try output.writeDoc(ctx.out, "yos.apply/1", .{ .applied = 0, .skipped = p.changes });
         } else try ctx.out.writeAll("nothing to do. this machine matches its config.\n");
         return .{ .code = 0, .matches = true, .changed_generation = settled_generation, .reason = if (settled_generation) "apply" else null };
     }
@@ -222,7 +222,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     if (try cli.approve(ctx, yes, "apply", "apply this?")) |code| return .{ .code = code, .matches = false };
     if (try movedSince(ctx, in, &(try p.hash()))) return .{ .code = 1, .matches = false };
 
-    const on_generations = cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol);
+    const on_generations = cli.eql(ctx.root, "/") and generation.on(result.facts.boot);
     const needs_reboot = (try p.rebootReasons(a)).len > 0;
     // a change that needs a reboot, on a machine with generations, goes
     // into the next root instead of the running one.
@@ -297,7 +297,7 @@ test "a cut-off apply gets a generation unless one came after it" {
 
 fn clearStaleLock(ctx: *Context, a: Allocator, dbpath: []const u8) !void {
     if (try alpm.clearStaleLock(a, ctx.io, dbpath)) |path| {
-        try ctx.err.print("os: removed {s}, left from before this boot by a transaction that never finished.\n", .{path});
+        try ctx.err.print("yos: removed {s}, left from before this boot by a transaction that never finished.\n", .{path});
     }
 }
 
@@ -319,7 +319,7 @@ fn movedSince(ctx: *Context, in: pipeline.Inputs, shown: []const u8) !bool {
 }
 
 /// adds the system accounts packages made to the history of system ids,
-/// which `os status` checks later ids against.
+/// which `yos status` checks later ids against.
 fn recordIds(ctx: *Context, a: Allocator) !void {
     const fs: rootfs.Root = .{ .a = a, .io = ctx.io, .dir = ctx.root };
     const seen = try accounts.systemIds(a, try fs.read("etc/passwd"), try fs.read("etc/group"));
@@ -339,7 +339,7 @@ fn scriptsFailed(ctx: *Context, problems: []const diag.Diagnostic) !u8 {
             while (lines.next()) |line| try ctx.err.print("   | {s}\n", .{line});
         }
     }
-    try ctx.err.writeAll("os: the packages changed, but a hook or package script failed. fix what it says, then run it again or reinstall the package.\n");
+    try ctx.err.writeAll("yos: the packages changed, but a hook or package script failed. fix what it says, then run it again or reinstall the package.\n");
     return 1;
 }
 
@@ -358,7 +358,7 @@ pub fn recordGeneration(ctx: *Context, done: Outcome, caller_reason: []const u8)
     const boot = try w.generations() orelse return lost;
     var why: []const u8 = "";
     const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse {
-        try ctx.err.print("os: applied, but not recorded as a generation: {s}\n", .{why});
+        try ctx.err.print("yos: applied, but not recorded as a generation: {s}\n", .{why});
         return lost;
     };
     defer m.close();
@@ -366,8 +366,8 @@ pub fn recordGeneration(ctx: *Context, done: Outcome, caller_reason: []const u8)
     const recorded = if (done.staged_root) |root| try m.recordStaged(root, stamp) else try m.record(stamp);
     if (recorded) |problem| {
         if (done.staged_root != null) {
-            try ctx.err.print("os: the change was built, but couldn't be recorded, so it's gone again: {s}. the running system is as it was; `os apply` tries again.\n", .{problem});
-        } else try ctx.err.print("os: applied, but not recorded as a generation: {s}\n", .{problem});
+            try ctx.err.print("yos: the change was built, but couldn't be recorded, so it's gone again: {s}. the running system is as it was; `yos apply` tries again.\n", .{problem});
+        } else try ctx.err.print("yos: applied, but not recorded as a generation: {s}\n", .{problem});
         return lost;
     }
     const records = try gens.readRecords(a, ctx.io, "/var");
@@ -382,7 +382,7 @@ pub fn recordGeneration(ctx: *Context, done: Outcome, caller_reason: []const u8)
 
 /// a generation that needs a reboot boots once on trial: the next boot
 /// tries it, the default stays on the one before, as the menu that
-/// recorded it left it, and `os health` makes it the default once it has
+/// recorded it left it, and `yos health` makes it the default once it has
 /// come up healthy.
 fn armTrial(ctx: *Context, a: Allocator, m: *const gens.Machine, boot: facts.Boot) !void {
     gens.blockHibernation(ctx.io);
@@ -396,10 +396,10 @@ fn armTrial(ctx: *Context, a: Allocator, m: *const gens.Machine, boot: facts.Boo
         // with no trial, the new generation is the default after all.
         const head = try std.fmt.allocPrint(a, "/{s}", .{records[records.len - 1].root});
         if (try m.writeMenu(head, records)) |w| {
-            try ctx.err.print("os: couldn't set up the trial boot: {s}, or make generation {d} the default: {s}. the next boot runs generation {d}; `os gc` writes the menu again.\n", .{ problem, n, w, before });
+            try ctx.err.print("yos: couldn't set up the trial boot: {s}, or make generation {d} the default: {s}. the next boot runs generation {d}; `yos gc` writes the menu again.\n", .{ problem, n, w, before });
             return;
         }
-        try ctx.err.print("os: couldn't set up the trial boot: {s}. the next boot runs generation {d} without a fallback.\n", .{ problem, n });
+        try ctx.err.print("yos: couldn't set up the trial boot: {s}. the next boot runs generation {d} without a fallback.\n", .{ problem, n });
         return;
     }
     try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .trial, .step = .armed, .generation = n });
@@ -414,10 +414,10 @@ fn armTrial(ctx: *Context, a: Allocator, m: *const gens.Machine, boot: facts.Boo
 pub fn skipBroken(ctx: *Context, store: trial.Store, n: u32, before: u32) !bool {
     const broken = try store.brokenFile() orelse return false;
     if (try store.skip()) |w| {
-        try ctx.err.print("os: generation {d}'s boot files are broken ({s}), and the trial couldn't be called off: {s}\n", .{ n, broken, w });
+        try ctx.err.print("yos: generation {d}'s boot files are broken ({s}), and the trial couldn't be called off: {s}\n", .{ n, broken, w });
         return true;
     }
-    try ctx.err.print("os: generation {d}'s boot files are broken ({s}), so the next boot won't try it. it runs generation {d}, which counts as the trial failing.\n", .{ n, broken, before });
+    try ctx.err.print("yos: generation {d}'s boot files are broken ({s}), so the next boot won't try it. it runs generation {d}, which counts as the trial failing.\n", .{ n, broken, before });
     return true;
 }
 
@@ -426,7 +426,7 @@ pub fn skipBroken(ctx: *Context, store: trial.Store, n: u32, before: u32) !bool 
 pub fn collectOld(ctx: *Context, m: *const gens.Machine, keep: usize) !void {
     var removed: std.ArrayList(u32) = .empty;
     if (try m.collect(keep, &removed)) |problem| {
-        try ctx.err.print("os: couldn't remove old generations: {s}\n", .{problem});
+        try ctx.err.print("yos: couldn't remove old generations: {s}\n", .{problem});
         return;
     }
     if (removed.items.len == 0) return;
@@ -434,7 +434,7 @@ pub fn collectOld(ctx: *Context, m: *const gens.Machine, keep: usize) !void {
     if (ctx.json) return;
     try ctx.out.writeAll("removed old generations:");
     for (removed.items) |n| try ctx.out.print(" {d}", .{n});
-    try ctx.out.writeAll(". `os pin <n>` keeps one.\n");
+    try ctx.out.writeAll(". `yos pin <n>` keeps one.\n");
 }
 
 /// the config directory and its newest commit, if it has history.
@@ -503,7 +503,7 @@ fn verify(ctx: *Context, in: pipeline.Inputs, applied: usize, skipped: []const p
         try told.append(a, if (c.to) |to| try std.fmt.allocPrint(a, "{s} ({s})", .{ c.subject, to }) else c.subject);
     }
     if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.apply/1", .{ .applied = applied, .skipped = skipped, .left = left.items });
+        try output.writeDoc(ctx.out, "yos.apply/1", .{ .applied = applied, .skipped = skipped, .left = left.items });
     } else {
         try ctx.out.print("\napplied {d} {s}.\n", .{ applied, if (applied == 1) "change" else "changes" });
         if (skipped.len > 0) {
@@ -513,7 +513,7 @@ fn verify(ctx: *Context, in: pipeline.Inputs, applied: usize, skipped: []const p
         }
     }
     if (left.items.len == 0) return 0;
-    if (!ctx.json) try ctx.err.print("os: applied, but these still differ from the config: {s}\n", .{try std.mem.join(a, ", ", told.items)});
+    if (!ctx.json) try ctx.err.print("yos: applied, but these still differ from the config: {s}\n", .{try std.mem.join(a, ", ", told.items)});
     return 1;
 }
 
@@ -535,7 +535,7 @@ fn targetFor(ctx: *Context, w: *cli.Work, c: *const config.Config, l: *const loc
         .root = ctx.root,
         .dbpath = try observe.pacmanDb(a, ctx.io, ctx.root),
         .dbs = try sync.withServers(a, dbs, if (old) try sync.pastServers(a, pc.repos, l.sync_date) else rs),
-        .cachedir = try cli.machinePath(ctx, a, "/var/cache/yoq/pkg"),
+        .cachedir = try cli.machinePath(ctx, a, "/var/cache/yos/pkg"),
         .gpgdir = try keyring(ctx, a),
         .download_user = pc.download_user,
         .sandbox = pc.sandbox,
@@ -572,7 +572,7 @@ test "apply installs, sets, and removes, and the plan comes back empty" {
     var t: TestRun = .{};
     defer t.deinit();
     try t.fs.put(m.conf_path, m.conf);
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n[system]\nhostname = \"atlas\"\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n[system]\nhostname = \"atlas\"\n");
     try t.exec(&.{ "--root", root, "update", "--dbs", cache, "--date", "2026-09-25" });
     try std.testing.expectEqual(0, t.code);
 
@@ -596,7 +596,7 @@ test "apply installs, sets, and removes, and the plan comes back empty" {
     try t.exec(&.{ "--root", root, "remove", "--yes", "git" });
     try std.testing.expectEqual(1, t.code);
     try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0126]: applying would remove filesystem, glibc,"));
-    try t.fs.put("/etc/yoq/machine.toml", "[boot]\nkernel = \"none\"\n[system]\nhostname = \"atlas\"\n[remove]\npackages = [\"filesystem\", \"glibc\"]\n");
+    try t.fs.put("/etc/yos/machine.toml", "[boot]\nkernel = \"none\"\n[system]\nhostname = \"atlas\"\n[remove]\npackages = [\"filesystem\", \"glibc\"]\n");
     try t.exec(&.{ "--root", root, "apply", "--yes" });
     try std.testing.expectEqualStrings("", t.err.buffered());
     try t.exec(&.{ "--root", root, "plan" });
@@ -605,17 +605,17 @@ test "apply installs, sets, and removes, and the plan comes back empty" {
 
     // update applies before it writes the lock: saying no leaves the lock
     // as it was, and --yes moves both.
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n[system]\nhostname = \"atlas\"\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n[system]\nhostname = \"atlas\"\n");
     const update = [_][:0]const u8{ "--root", root, "update", "--dbs", cache, "--date", "2026-09-25" };
     t.input = "n\n";
     try t.exec(&update);
     try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "the machine is as it was.") != null);
-    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.git]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yos/machine.lock").?, "[packages.git]") == null);
     t.input = null;
     try t.exec(&(update ++ .{"--yes"}));
     try std.testing.expectEqualStrings("", t.err.buffered());
     try std.testing.expectEqual(0, t.code);
-    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.git]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yos/machine.lock").?, "[packages.git]") != null);
     try cwd.access(io, try std.fs.path.join(a, &.{ root, "usr/share/doc/git/README" }), .{});
 }
 
@@ -639,13 +639,13 @@ test "a hook that fails after the packages change fails the apply, with a warnin
     var t: TestRun = .{};
     defer t.deinit();
     try t.fs.put(m.conf_path, m.conf);
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n");
     try t.exec(&.{ "--root", m.root, "update", "--dbs", m.cache, "--date", "2026-09-25", "--no-apply" });
     try std.testing.expectEqual(0, t.code);
     try t.exec(&.{ "--root", m.root, "apply", "--yes" });
     try std.testing.expectEqual(1, t.code);
     try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "warning: hook 90-fails.hook: command failed to execute correctly\n   | call to execv failed"));
-    try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "os: the packages changed, but a hook or package script failed.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "yos: the packages changed, but a hook or package script failed.") != null);
     // the packages did change.
     try std.Io.Dir.cwd().access(io, try std.fs.path.join(a, &.{ m.root, "usr/share/doc/git/README" }), .{});
 }
@@ -654,10 +654,10 @@ test "apply refuses when the plan changes while it waits for a yes" {
     if (!alpm.available) return error.SkipZigTest;
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n");
-    try t.fs.put("/etc/yoq/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n[packages.git]\nversion = \"2.51.0-1\"\nrepo = \"extra\"\nsha256 = \"" ++ "a" ** 64 ++ "\"\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n");
+    try t.fs.put("/etc/yos/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n[packages.git]\nversion = \"2.51.0-1\"\nrepo = \"extra\"\nsha256 = \"" ++ "a" ** 64 ++ "\"\n");
     try t.fs.put("f.json",
-        \\{"schema":"yoq.facts/1","packages":[{"name":"nano","version":"8.6-1"}]}
+        \\{"schema":"yos.facts/1","packages":[{"name":"nano","version":"8.6-1"}]}
     );
     // says yes, but only after nano went away behind the plan's back.
     const Answer = struct {
@@ -670,7 +670,7 @@ test "apply refuses when the plan changes while it waits for a yes" {
             const self: *@This() = @fieldParentPtr("reader", r);
             if (self.answered) return error.EndOfStream;
             self.answered = true;
-            self.fs.put("f.json", "{\"schema\":\"yoq.facts/1\",\"packages\":[]}") catch return error.ReadFailed;
+            self.fs.put("f.json", "{\"schema\":\"yos.facts/1\",\"packages\":[]}") catch return error.ReadFailed;
             try w.writeAll("y\n");
             return 2;
         }
@@ -695,14 +695,14 @@ test "an apply cut off after its changes is settled by the next one" {
     const root = try std.fmt.allocPrintSentinel(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}, 0);
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "[boot]\nkernel = \"none\"\n");
-    try t.fs.put("/etc/yoq/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n");
-    try t.fs.put("f.json", "{\"schema\":\"yoq.facts/1\",\"packages\":[]}");
+    try t.fs.put("/etc/yos/machine.toml", "[boot]\nkernel = \"none\"\n");
+    try t.fs.put("/etc/yos/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n");
+    try t.fs.put("f.json", "{\"schema\":\"yos.facts/1\",\"packages\":[]}");
     try journal.record(a, io, root, 7, "begin", "0123456789abcdef");
 
     try t.exec(&.{ "--root", root, "--facts", "f.json", "apply", "--yes" });
     try std.testing.expectEqual(0, t.code);
-    try std.testing.expectEqualStrings("os: the last apply (plan 0123456789ab) was cut off after it made its changes. the machine matches the config, so it's recorded as done.\n", t.err.buffered());
+    try std.testing.expectEqualStrings("yos: the last apply (plan 0123456789ab) was cut off after it made its changes. the machine matches the config, so it's recorded as done.\n", t.err.buffered());
     try std.testing.expectEqual(null, try journal.unfinished(a, io, root));
     try std.testing.expectEqual(7, (try journal.lastDone(a, io, root)).?);
 
@@ -730,7 +730,7 @@ test "a full disk fails the apply with a message, not a crash" {
     var t: TestRun = .{};
     defer t.deinit();
     try t.fs.put(m.conf_path, m.conf);
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n[boot]\nkernel = \"none\"\n");
     try t.exec(&.{ "--root", m.root, "update", "--dbs", m.cache, "--date", "2026-09-25", "--no-apply" });
     try std.testing.expectEqual(0, t.code);
     // everything that's left goes to one file.

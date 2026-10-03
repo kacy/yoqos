@@ -18,7 +18,7 @@ pub fn main(init: std.process.Init) !void {
     const stdout = std.Io.File.stdout();
     var out = stdout.writer(init.io, &out_buf);
     var err = std.Io.File.stderr().writer(init.io, &err_buf);
-    // what os prints goes through these, which escape control characters,
+    // what yos prints goes through these, which escape control characters,
     // since some of it comes from places others control.
     var plain_out_buf: [1024]u8 = undefined;
     var plain_err_buf: [1024]u8 = undefined;
@@ -51,14 +51,14 @@ pub fn main(init: std.process.Init) !void {
         .interactive = tty,
         .in_tty = in_tty,
         .in_own_transaction = env.get(alpm.own_env) != null,
-        .aur_url = env.get("YOQ_AUR") orelse aur.default_url,
+        .aur_url = env.get("YOS_AUR") orelse aur.default_url,
         .editor = env.get("VISUAL") orelse env.get("EDITOR") orelse "vi",
         .progress = if (err_tty) .terminal else .log,
         .secrets = secret_store.store(),
         .set_echo = setEcho,
     };
     const code = cli.run(&ctx, argv[1..]) catch |e| blk: {
-        plain_err.interface.print("os: {s}\n", .{@errorName(e)}) catch {};
+        plain_err.interface.print("yos: {s}\n", .{@errorName(e)}) catch {};
         break :blk 1;
     };
 
@@ -69,7 +69,7 @@ pub fn main(init: std.process.Init) !void {
 
 /// the terminal as it was before echo went off, while it's off.
 var echo_saved: ?std.os.linux.termios = null;
-/// the signals that end os while it waits on a typed value. each puts
+/// the signals that end yos while it waits on a typed value. each puts
 /// the terminal back first, so ctrl-c doesn't leave it without echo.
 const echo_signals = [_]std.posix.SIG{ .INT, .TERM, .HUP, .QUIT };
 
@@ -96,7 +96,7 @@ fn onEchoSignals(handler: ?std.posix.Sigaction.handler_fn) void {
     for (echo_signals) |sig| std.posix.sigaction(sig, &act, null);
 }
 
-/// puts the terminal back, then lets the signal end os as it would have.
+/// puts the terminal back, then lets the signal end yos as it would have.
 fn restoreAndDie(sig: std.posix.SIG) callconv(.c) void {
     if (echo_saved) |saved| _ = std.os.linux.tcsetattr(0, .NOW, &saved);
     onEchoSignals(std.os.linux.SIG.DFL);
@@ -104,7 +104,7 @@ fn restoreAndDie(sig: std.posix.SIG) callconv(.c) void {
 }
 
 /// the config this machine reads unless --config says otherwise:
-/// /etc/yoq/machine.toml, or in a repository for several machines, the one
+/// /etc/yos/machine.toml, or in a repository for several machines, the one
 /// under hosts/ named for this machine's hostname.
 fn hostConfig(a: std.mem.Allocator, io: std.Io) ![]const u8 {
     const cwd = std.Io.Dir.cwd();

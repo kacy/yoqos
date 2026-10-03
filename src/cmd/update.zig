@@ -1,4 +1,4 @@
-//! `os update`: resolve the config against arch's package databases, apply
+//! `yos update`: resolve the config against arch's package databases, apply
 //! the result, and write machine.lock once that worked. with --no-apply,
 //! or no one to ask, it only writes the lock.
 
@@ -19,7 +19,7 @@ const eql = cli.eql;
 const Allocator = std.mem.Allocator;
 
 pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os update [--yes] [--trust-aur] [--no-apply] [-v] [--dbs <dir>] [--date yyyy-mm-dd]";
+    const usage_text = "yos update [--yes] [--trust-aur] [--no-apply] [-v] [--dbs <dir>] [--date yyyy-mm-dd]";
     var dbs_dir: ?[]const u8 = null;
     var date: ?[]const u8 = null;
     var then: applying.Then = .{ .apply = true };
@@ -59,7 +59,7 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     }
     const rs = try pastRepos(ctx, a, try locking.repos(ctx, a, &loaded.config), sync_date);
     const cache = try locking.cacheDir(ctx, a);
-    // the databases without os's aur repository, which may not exist yet:
+    // the databases without yos's aur repository, which may not exist yet:
     // aur recipes are checked against them before anything builds.
     const arch_dbs = if (dbs_dir) |dir|
         try syncDbs(ctx, a, dir) orelse return 1
@@ -87,7 +87,7 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (now) {
         // apply against the new lock first. machine.lock moves only once
         // the machine does, so saying no, or a failure, changes nothing.
-        const pending = try cli.machinePath(ctx, a, "/var/lib/yoq/update.lock");
+        const pending = try cli.machinePath(ctx, a, "/var/lib/yos/update.lock");
         _ = try locking.writeLockTo(ctx, a, pending, &l) orelse return w.fail();
         var in = cli.inputs(ctx);
         in.lock_path = pending;
@@ -101,7 +101,7 @@ pub fn updateCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     try cli.record(ctx, a, top, message);
     // the generation comes after the commit, so it records the new lock.
     const code = try applying.recordGeneration(ctx, outcome, message);
-    if (ctx.json) try output.writeDoc(ctx.out, "yoq.update/1", .{ .lock = path, .sync_date = l.sync_date, .packages = l.packages.len, .diff = d, .news = posted });
+    if (ctx.json) try output.writeDoc(ctx.out, "yos.update/1", .{ .lock = path, .sync_date = l.sync_date, .packages = l.packages.len, .diff = d, .news = posted });
     return code;
 }
 
@@ -122,15 +122,15 @@ fn buildAur(ctx: *Context, w: *cli.Work, c: *const config.Config, old: ?*const l
     for (c.aur.items.items) |pkg| {
         var why: []const u8 = "";
         const commit = try b.fetch(pkg.name, &why) orelse {
-            try ctx.err.print("os: can't fetch {s}'s recipe: {s}\n", .{ pkg.name, why });
+            try ctx.err.print("yos: can't fetch {s}'s recipe: {s}\n", .{ pkg.name, why });
             return null;
         };
         const info = try b.srcInfo(pkg.name, commit) orelse {
-            try ctx.err.print("os: {s}'s recipe has no .SRCINFO at {s}\n", .{ pkg.name, commit[0..@min(12, commit.len)] });
+            try ctx.err.print("yos: {s}'s recipe has no .SRCINFO at {s}\n", .{ pkg.name, commit[0..@min(12, commit.len)] });
             return null;
         };
         if (try aur.nameProblem(a, pkg.name, info)) |problem| {
-            try ctx.err.print("os: {s}\n", .{problem});
+            try ctx.err.print("yos: {s}\n", .{problem});
             return null;
         }
         try infos.append(a, info);
@@ -147,13 +147,13 @@ fn buildAur(ctx: *Context, w: *cli.Work, c: *const config.Config, old: ?*const l
     }
     var why: []const u8 = "";
     const order = try aur.buildOrder(a, infos.items, &why) orelse {
-        try ctx.err.print("os: these aur packages need each other: {s}\n", .{why});
+        try ctx.err.print("yos: these aur packages need each other: {s}\n", .{why});
         return null;
     };
     for (order) |info| {
         if (!ctx.json) try ctx.out.print("building {s} {s}-{s} from the aur...\n", .{ info.pkgbase, info.pkgver, info.pkgrel });
         if (try b.build(info, try aur.aurNeeds(a, infos.items, info))) |problem| {
-            try ctx.err.print("os: building {s} failed: {s}\n", .{ info.pkgbase, problem });
+            try ctx.err.print("yos: building {s} failed: {s}\n", .{ info.pkgbase, problem });
             return null;
         }
         try out.put(a, info.pkgbase, info.commit);
@@ -175,9 +175,9 @@ fn checkNeeds(ctx: *Context, w: *cli.Work, recipes: []const aur.SrcInfo, dbs: []
     const missing = try aur.missingNeeds(a, recipes, unresolvable);
     for (missing) |m| {
         if (m.split_from) |base| {
-            try w.diags.addHint(.aur_missing, null, "{s} needs {s}, which {s}'s recipe splits off", .{ m.by, m.need, base }, "os installs only the package named after a recipe, so it can't build {s} yet", .{m.by});
+            try w.diags.addHint(.aur_missing, null, "{s} needs {s}, which {s}'s recipe splits off", .{ m.by, m.need, base }, "yos installs only the package named after a recipe, so it can't build {s} yet", .{m.by});
         } else {
-            try w.diags.addHint(.aur_missing, null, "{s} needs {s}, which isn't in the arch repositories or in `aur`", .{ m.by, m.need }, "if it's on the aur, add it: os add --aur {s}", .{m.need});
+            try w.diags.addHint(.aur_missing, null, "{s} needs {s}, which isn't in the arch repositories or in `aur`", .{ m.by, m.need }, "if it's on the aur, add it: yos add --aur {s}", .{m.need});
         }
     }
     return missing.len == 0;
@@ -192,7 +192,7 @@ fn reviewRecipe(ctx: *Context, a: Allocator, b: aur.Builder, name: []const u8, w
         return true;
     }
     if (!ctx.interactive) {
-        try ctx.err.print("os: {s}'s aur recipe is {s}. review it in a terminal, or pass --trust-aur to build it unreviewed.\n", .{ name, what });
+        try ctx.err.print("yos: {s}'s aur recipe is {s}. review it in a terminal, or pass --trust-aur to build it unreviewed.\n", .{ name, what });
         return false;
     }
     try ctx.out.print("\n{s}'s recipe is {s}. aur recipes run as code when they build, so read it first:\n\n{s}\n", .{ name, what, try b.review(name, was, commit) });
@@ -203,11 +203,11 @@ fn reviewRecipe(ctx: *Context, a: Allocator, b: aur.Builder, name: []const u8, w
 
 /// what to say when today, by the clock, is before `locked`, the lock's
 /// date: a clock reset to an old date, like a dead cmos battery's, before
-/// ntp sets it. the new lock would be dated then, and only `os update`
+/// ntp sets it. the new lock would be dated then, and only `yos update`
 /// moves the date, which should only go forward. null when it's fine.
 fn clockBehind(a: Allocator, today: []const u8, locked: []const u8) !?[]const u8 {
     if (!std.mem.lessThan(u8, today, locked)) return null;
-    return try std.fmt.allocPrint(a, "the clock says it's {s}, before the lock's date, {s}, so nothing changed. set the clock, or if it's right and the lock's date isn't, `os update --date {s}` resolves as of today", .{ today, locked, today });
+    return try std.fmt.allocPrint(a, "the clock says it's {s}, before the lock's date, {s}, so nothing changed. set the clock, or if it's right and the lock's date isn't, `yos update --date {s}` resolves as of today", .{ today, locked, today });
 }
 
 /// `rs`, or for a --date before today, arch's own repositories as the arch
@@ -230,7 +230,7 @@ fn withoutLocal(a: Allocator, rs: []const sync.Repo) ![]const sync.Repo {
 fn newsSince(ctx: *Context, a: Allocator, old: []const u8, new: []const u8) ![]const news.Item {
     if (!std.mem.lessThan(u8, old, new)) return &.{};
     const xml = try ctx.fetcher.fetch(a, news.feed_url) orelse {
-        try ctx.err.writeAll("os: couldn't fetch arch news. read https://archlinux.org/news/ before applying.\n");
+        try ctx.err.writeAll("yos: couldn't fetch arch news. read https://archlinux.org/news/ before applying.\n");
         return &.{};
     };
     return news.between(a, try news.parse(a, xml), old, new);
@@ -245,7 +245,7 @@ fn writeNews(ctx: *Context, since: []const u8, items: []const news.Item) !void {
 /// every `<repo>.db` file in `dir`, in pacman's repository order.
 fn syncDbs(ctx: *Context, a: Allocator, dir: []const u8) !?[]const alpm.SyncDb {
     var d = std.Io.Dir.cwd().openDir(ctx.io, dir, .{ .iterate = true }) catch {
-        try ctx.err.print("os: can't open {s}\n", .{dir});
+        try ctx.err.print("yos: can't open {s}\n", .{dir});
         return null;
     };
     defer d.close(ctx.io);
@@ -257,7 +257,7 @@ fn syncDbs(ctx: *Context, a: Allocator, dir: []const u8) !?[]const alpm.SyncDb {
         try dbs.append(a, .{ .name = name, .path = try std.fmt.allocPrint(a, "{s}/{s}.db", .{ dir, name }) });
     }
     if (dbs.items.len == 0) {
-        try ctx.err.print("os: no .db files in {s}\n", .{dir});
+        try ctx.err.print("yos: no .db files in {s}\n", .{dir});
         return null;
     }
     sortRepos(dbs.items);
@@ -286,7 +286,7 @@ test "a clock behind the lock's date stops an update" {
     try std.testing.expectEqual(null, try clockBehind(a, "2026-09-25", "2026-09-25"));
     try std.testing.expectEqual(null, try clockBehind(a, "2026-10-02", "2026-09-25"));
     try std.testing.expectEqualStrings(
-        "the clock says it's 2000-01-01, before the lock's date, 2026-09-25, so nothing changed. set the clock, or if it's right and the lock's date isn't, `os update --date 2000-01-01` resolves as of today",
+        "the clock says it's 2000-01-01, before the lock's date, 2026-09-25, so nothing changed. set the clock, or if it's right and the lock's date isn't, `yos update --date 2000-01-01` resolves as of today",
         (try clockBehind(a, "2000-01-01", "2026-09-25")).?,
     );
 }
@@ -305,16 +305,16 @@ test "update resolves the fixture repos into a lock" {
     if (!alpm.available) return error.SkipZigTest;
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n");
     try t.exec(&.{ "update", "--dbs", "tests/alpm/repos", "--date", "2026-09-25" });
     try std.testing.expectEqualStrings("", t.err.buffered());
     try std.testing.expectEqual(0, t.code);
-    const written = t.fs.get("/etc/yoq/machine.lock").?;
+    const written = t.fs.get("/etc/yos/machine.lock").?;
     try std.testing.expect(std.mem.indexOf(u8, written, "sync_date = \"2026-09-25\"\nkeyring = \"none\"\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "[packages.perl-error]") != null);
 
     // the new lock covers the config, so planning works.
-    try t.fs.put("f.json", "{\"schema\":\"yoq.facts/1\"}");
+    try t.fs.put("f.json", "{\"schema\":\"yos.facts/1\"}");
     try t.exec(&.{ "--facts", "f.json", "plan" });
     try std.testing.expectEqual(0, t.code);
     try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "+ git 2.51.0-1") != null);
@@ -324,7 +324,7 @@ test "update asks for providers and saves the answer" {
     if (!alpm.available) return error.SkipZigTest;
     var t: TestRun = .{ .input = "x\n2\n" };
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"jdk-tool\"]\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"jdk-tool\"]\n");
     // --no-apply: this is about the question, not the machine running it.
     try t.exec(&.{ "update", "--no-apply", "--dbs", "tests/alpm/repos", "--date", "2026-09-25" });
     try std.testing.expectEqualStrings("", t.err.buffered());
@@ -335,18 +335,18 @@ test "update asks for providers and saves the answer" {
         \\  2) jre17-openjdk
         \\pick one [1]: pick a number from 1 to 2.
         \\pick one [1]: + providers.java-runtime = "jre17-openjdk"
-        \\resolved 8 packages as of 2026-09-25: +8. next: os plan, then os apply
+        \\resolved 8 packages as of 2026-09-25: +8. next: yos plan, then yos apply
         \\
     , t.out.buffered());
-    try std.testing.expectEqualStrings("packages = [\"jdk-tool\"]\n\n[providers]\njava-runtime = \"jre17-openjdk\"\n", t.fs.get("/etc/yoq/machine.toml").?);
-    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.jre17-openjdk]") != null);
+    try std.testing.expectEqualStrings("packages = [\"jdk-tool\"]\n\n[providers]\njava-runtime = \"jre17-openjdk\"\n", t.fs.get("/etc/yos/machine.toml").?);
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yos/machine.lock").?, "[packages.jre17-openjdk]") != null);
 }
 
 test "update without a terminal says which choices to make" {
     if (!alpm.available) return error.SkipZigTest;
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"jdk-tool\"]\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"jdk-tool\"]\n");
     try t.exec(&.{ "update", "--dbs", "tests/alpm/repos" });
     try std.testing.expectEqual(1, t.code);
     try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0123]: java-runtime has more than one provider: jre-openjdk, jre17-openjdk"));
@@ -363,13 +363,13 @@ test "update downloads the databases pacman.conf names, once per date" {
     var mirror: cli.FixtureMirror = .{};
     var t: TestRun = .{ .fetcher = mirror.fetcher() };
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n");
     try t.fs.put(try std.fs.path.join(arena.allocator(), &.{ root, "etc/pacman.conf" }), "[options]\n[core]\nServer = https://mirror.example/$repo/os/$arch\n[extra]\nServer = https://mirror.example/$repo/os/$arch\n");
     try t.exec(&.{ "--root", root, "update", "--date", "2026-09-25" });
     try std.testing.expectEqualStrings("", t.err.buffered());
     try std.testing.expectEqual(0, t.code);
     try std.testing.expectEqual(2, mirror.fetched);
-    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yoq/machine.lock").?, "[packages.perl-error]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yos/machine.lock").?, "[packages.perl-error]") != null);
 
     try t.exec(&.{ "--root", root, "update", "--date", "2026-09-25" });
     try std.testing.expectEqual(0, t.code);

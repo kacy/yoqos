@@ -147,7 +147,7 @@ const Reader = struct {
         return out.items;
     }
 
-    /// a mkinitcpio array from mkinitcpio.conf and every drop-in os
+    /// a mkinitcpio array from mkinitcpio.conf and every drop-in yos
     /// didn't write, in the order mkinitcpio reads them.
     fn mkinitcpio(r: Reader, comptime key: []const u8) ![]const []const u8 {
         var out: std.ArrayList([]const u8) = .empty;
@@ -216,10 +216,11 @@ const Reader = struct {
             b.unsigned = try r.unsigned(esp);
         }
         if (generation.running(b.root_subvol)) {
-            b.menu_missing = try r.menuMissing(b);
             var recorded: std.ArrayList(facts.Generation) = .empty;
             for (try gens.readRecords(r.a, r.io, "/var")) |g| try recorded.append(r.a, .{ .n = g.n, .root = g.root, .pinned = g.pinned });
             b.generations = recorded.items;
+            b.left_root = recorded.items.len == 0;
+            if (!b.left_root) b.menu_missing = try r.menuMissing(b);
         }
         if (b.root_subvol != null) {
             b.top_is_default = switch (try exec.output(r.a, r.io, &.{ "btrfs", "subvolume", "get-default", "/" })) {
@@ -232,11 +233,11 @@ const Reader = struct {
         return b;
     }
 
-    /// the efi binaries on the esp at `esp` without a signature: os's
+    /// the efi binaries on the esp at `esp` without a signature: yos's
     /// images, and everything under EFI, by path.
     fn unsigned(r: Reader, esp: []const u8) ![]const []const u8 {
         var out: std.ArrayList([]const u8) = .empty;
-        // os's images need sbctl's db key; the bootloader's files may be
+        // yos's images need sbctl's db key; the bootloader's files may be
         // signed with another the firmware has, like microsoft's.
         const key = try images.dbKey(r.a, r.io, try r.path(secureboot.db_cert_rel));
         for (try r.names(try std.fs.path.join(r.a, &.{ esp[1..], bootfiles.esp_boot_dir }), .file)) |name| {
@@ -307,7 +308,7 @@ const Reader = struct {
         return out.items;
     }
 
-    /// the file that should hold os's boot entries, if it doesn't.
+    /// the file that should hold yos's boot entries, if it doesn't.
     fn menuMissing(r: Reader, b: facts.Boot) !?[]const u8 {
         const kind = menu.Loader.of(b) orelse return null;
         const esp = b.esp orelse return null;
@@ -318,7 +319,7 @@ const Reader = struct {
         };
         const text = try r.file(menu_file[1..]) orelse return menu_file;
         const ok = switch (kind) {
-            .grub, .@"systemd-boot" => std.mem.startsWith(u8, text, "# written by os"),
+            .grub, .@"systemd-boot" => std.mem.startsWith(u8, text, "# written by yos"),
             .limine => std.mem.indexOf(u8, text, menu.limine_begin) != null,
             .refind => std.mem.indexOf(u8, text, menu.refind_include) != null,
         };
@@ -535,7 +536,7 @@ fn files(a: Allocator, io: std.Io, root: []const u8, wanted: facts.Wanted, key: 
             .path = p,
             .sha256 = try a.dupe(u8, &hex),
             .mode = mode,
-            .ours = std.mem.startsWith(u8, content, "# written by os"),
+            .ours = std.mem.startsWith(u8, content, "# written by yos"),
         });
     }
     return out.items;
@@ -577,7 +578,7 @@ fn secretFacts(a: Allocator, store: ?secrets.Store, names: []const []const u8, k
     return out.items;
 }
 
-/// whether pacman.conf reads os's repositories, and which of `keys` the
+/// whether pacman.conf reads yos's repositories, and which of `keys` the
 /// keyring has.
 fn pacmanSetup(a: Allocator, io: std.Io, r: Reader, keys: []const []const u8) !facts.Pacman {
     var out: facts.Pacman = .{};
@@ -728,12 +729,12 @@ fn stagedChanges(a: Allocator, io: std.Io, running: ?[]const u8, pacman: []const
 
 /// files in /etc a new root gets from the running one as it boots, or that
 /// aren't the machine's to begin with: passwords and accounts, its
-/// identity, host keys, the keyring, and os's own config.
+/// identity, host keys, the keyring, and yos's own config.
 pub fn carriedEtc(path: []const u8) bool {
     for ([_][]const u8{ "shadow", "gshadow", "passwd", "group", "machine-id", "adjtime", "subuid", "subgid", "ld.so.cache" }) |f| {
         if (std.mem.eql(u8, path, f) or (std.mem.startsWith(u8, path, f) and path.len == f.len + 1 and path[f.len] == '-')) return true;
     }
-    return lists.startsWithAny(path, &.{ "ssh/ssh_host_", "pacman.d/gnupg/", "yoq/" });
+    return lists.startsWithAny(path, &.{ "ssh/ssh_host_", "pacman.d/gnupg/", "yos/" });
 }
 
 /// users from /etc/passwd with their groups from /etc/group.
@@ -851,7 +852,7 @@ test "a secret's file bigger than any value differs from it" {
     try testing.expectEqualStrings(&secrets.keyedHex(&key, &zeros), got);
 }
 
-test "mkinitcpio drop-ins read in name order, past os's own" {
+test "mkinitcpio drop-ins read in name order, past yos's own" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
@@ -861,19 +862,19 @@ test "mkinitcpio drop-ins read in name order, past os's own" {
     try tmp.dir.writeFile(io, .{ .sub_path = "etc/mkinitcpio.conf", .data = "MODULES=(a)\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = "etc/mkinitcpio.conf.d/30-c.conf", .data = "MODULES+=(c)\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = "etc/mkinitcpio.conf.d/20-b.conf", .data = "MODULES+=(b)\n" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "etc/mkinitcpio.conf.d/10-yoq-nvidia.conf", .data = "MODULES+=(nvidia)\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "etc/mkinitcpio.conf.d/10-yos-nvidia.conf", .data = "MODULES+=(nvidia)\n" });
     const r: Reader = .{ .a = arena.allocator(), .io = io, .root = try std.fmt.allocPrint(arena.allocator(), ".zig-cache/tmp/{s}", .{tmp.sub_path}) };
     const got = try r.mkinitcpio("MODULES");
     try testing.expectEqual(3, got.len);
     for ([_][]const u8{ "a", "b", "c" }, got) |want, have| try testing.expectEqualStrings(want, have);
-    // the drop-in for luks is os's too, though it isn't named 10-yoq-.
+    // the drop-in for luks is yos's too, though it isn't named 10-yos-.
     try tmp.dir.writeFile(io, .{ .sub_path = "etc/mkinitcpio.conf", .data = "HOOKS=(base systemd filesystems)\n" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "etc/mkinitcpio.conf.d/90-yoq-encrypt.conf", .data = "HOOKS=(base systemd sd-encrypt filesystems)\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "etc/mkinitcpio.conf.d/90-yos-encrypt.conf", .data = "HOOKS=(base systemd sd-encrypt filesystems)\n" });
     try testing.expectEqual(3, (try r.mkinitcpio("HOOKS")).len);
     const b = try r.boot("usr/lib/sysimage/pacman");
     try testing.expect(b.encrypt_dropin);
     try testing.expect(b.unlocksLuks());
-    try testing.expect(!facts.osDropIn("50-yoq-test.conf"));
+    try testing.expect(!facts.osDropIn("50-yos-test.conf"));
 }
 
 test "the luks volume under the root" {
@@ -926,7 +927,7 @@ test "files in /etc a new root gets anyway" {
     try testing.expect(carriedEtc("shadow"));
     try testing.expect(carriedEtc("shadow-"));
     try testing.expect(carriedEtc("ssh/ssh_host_ed25519_key"));
-    try testing.expect(carriedEtc("yoq/machine.toml"));
+    try testing.expect(carriedEtc("yos/machine.toml"));
     try testing.expect(!carriedEtc("hosts"));
     try testing.expect(!carriedEtc("shadowsocks.json"));
 }

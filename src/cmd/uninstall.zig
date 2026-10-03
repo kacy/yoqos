@@ -1,4 +1,4 @@
-//! `os uninstall`: leaves plain arch on the running generation. it shows
+//! `yos uninstall`: leaves plain arch on the running generation. it shows
 //! the checks and the steps, asks, and carries them out in order. every
 //! step is safe to run twice, so after a failure, running it again
 //! finishes the job.
@@ -24,7 +24,7 @@ const doctor = @import("doctor.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
-const usage_text = "os uninstall [--yes] [--delete-generations]";
+const usage_text = "yos uninstall [--yes] [--delete-generations]";
 
 pub fn uninstallCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var yes = false;
@@ -43,12 +43,12 @@ pub fn uninstallCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer w.deinit();
     const a = w.allocator();
     const f = try w.facts() orelse return w.fail();
-    const running = generation.running(f.boot.root_subvol);
+    const running = generation.on(f.boot);
     const unsigned = try unsignedKernels(a, ctx.io, f.boot);
     const tpm = if (try doctor.luks(a, ctx.io, &f.boot)) |l| l.tpm else false;
     var p = try uninstall.plan(a, &f, drop, unsigned, tpm);
     if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.uninstall/1", .{ .ready = p.ready(), .checks = p.checks, .steps = p.steps, .notes = p.notes });
+        try output.writeDoc(ctx.out, "yos.uninstall/1", .{ .ready = p.ready(), .checks = p.checks, .steps = p.steps, .notes = p.notes });
         return if (p.ready()) 0 else 1;
     }
     try uninstall.writeText(ctx.out, &p);
@@ -70,15 +70,15 @@ pub fn uninstallCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     for (p.steps) |s| {
         try ctx.out.print("  {s}\n", .{s.what});
         try ctx.out.flush();
-        if (try u.step(s.kind)) |why| return cli.fail(ctx, "{s}\nos: the steps above are done; `os uninstall` again finishes the rest.", .{why});
+        if (try u.step(s.kind)) |why| return cli.fail(ctx, "{s}\nos: the steps above are done; `yos uninstall` again finishes the rest.", .{why});
     }
-    try ctx.out.writeAll("\nos is off this machine, and the config stays in /etc/yoq.\n");
+    try ctx.out.writeAll("\nos is off this machine, and the config stays in /etc/yos.\n");
     try uninstall.writeNotes(ctx.out, &p);
     return 0;
 }
 
 /// the kernels on the esp's top without a signature, which plain arch
-/// boots once os's signed images are gone. only looked for while the
+/// boots once yos's signed images are gone. only looked for while the
 /// firmware enforces secure boot.
 fn unsignedKernels(a: Allocator, io: std.Io, boot: facts.Boot) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
@@ -130,21 +130,21 @@ const Uninstaller = struct {
         return m.at(&.{ u.boot.root_subvol.?, rel });
     }
 
-    /// the config goes into the running root's own /etc/yoq, under the
-    /// bind mount, which then goes, so /etc/yoq is that directory.
+    /// the config goes into the running root's own /etc/yos, under the
+    /// bind mount, which then goes, so /etc/yos is that directory.
     fn configDir(u: *Uninstaller) !?[]const u8 {
         const home = enable.config_home;
         if (u.exists(home)) {
-            const dest = try u.root("etc/yoq");
+            const dest = try u.root("etc/yos");
             if (try u.run(&.{ "mkdir", "-p", dest })) |w| return w;
             if (try u.run(&.{ "cp", "-a", "--reflink=auto", home ++ "/.", dest })) |w| return w;
         }
-        _ = try u.run(&.{ "umount", "/etc/yoq" });
+        _ = try u.run(&.{ "umount", "/etc/yos" });
         const text = std.Io.Dir.cwd().readFileAlloc(u.ctx.io, "/etc/fstab", u.a, .limited(1 << 20)) catch return "can't read /etc/fstab";
         var out: std.ArrayList(u8) = .empty;
         var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, text, "\n"), '\n');
         while (lines.next()) |line| {
-            if (std.mem.startsWith(u8, line, home ++ " /etc/yoq ")) continue;
+            if (std.mem.startsWith(u8, line, home ++ " /etc/yos ")) continue;
             try out.print(u.a, "{s}\n", .{line});
         }
         rootfs.writeAtomic(u.ctx.io, "/etc/fstab", out.items, null) catch return "can't write /etc/fstab";
@@ -168,7 +168,7 @@ const Uninstaller = struct {
     fn pacmanDb(u: *Uninstaller) !?[]const u8 {
         const moved = "/" ++ generation.pacman_db;
         const db = "/var/lib/pacman";
-        const fresh = db ++ ".yoq-new";
+        const fresh = db ++ ".yos-new";
         if (!u.exists(moved)) return null;
         // a run that stopped after the move left a real directory at db;
         // mv would put the copy inside it.
@@ -197,8 +197,8 @@ const Uninstaller = struct {
             // and grub-mkconfig names this root's subvolume.
             .grub => {
                 // grub-mkconfig's entries take their arguments from grub's
-                // defaults, which may lack what unlocks a luks root: os
-                // passed it in its own entries, as after `os install
+                // defaults, which may lack what unlocks a luks root: yos
+                // passed it in its own entries, as after `yos install
                 // --encrypt`.
                 const defaults = "/etc/default/grub";
                 if (std.Io.Dir.cwd().readFileAlloc(u.ctx.io, defaults, u.a, .limited(1 << 20))) |text| {
@@ -219,7 +219,7 @@ const Uninstaller = struct {
             .limine => {
                 const conf_path = u.boot.loader_conf orelse return "can't find limine.conf";
                 const conf = std.Io.Dir.cwd().readFileAlloc(u.ctx.io, conf_path, u.a, .limited(1 << 20)) catch return "can't read limine.conf";
-                // an earlier run may have replaced os's section already.
+                // an earlier run may have replaced yos's section already.
                 if (std.mem.indexOf(u8, conf, menu.limine_begin) != null) {
                     const text = try menu.spliceLimine(u.a, conf, try menu.limineOne(u.a, try u.plainEntry()));
                     rootfs.writeAtomic(u.ctx.io, conf_path, text, null) catch return "can't write limine.conf";
@@ -240,7 +240,7 @@ const Uninstaller = struct {
                 defer d.close(u.ctx.io);
                 var it = d.iterate();
                 while (it.next(u.ctx.io) catch null) |f| {
-                    if (std.mem.startsWith(u8, f.name, "yoq-")) d.deleteFile(u.ctx.io, f.name) catch {};
+                    if (std.mem.startsWith(u8, f.name, "yos-")) d.deleteFile(u.ctx.io, f.name) catch {};
                 }
                 return null;
             },
@@ -255,7 +255,7 @@ const Uninstaller = struct {
                 const dir = std.fs.path.dirnamePosix(conf_path).?;
                 // a trial waiting: its firmware entry and copy of refind go.
                 if (trial.Store.of(u.a, u.ctx.io, u.boot)) |store| _ = try store.end();
-                return u.run(&.{ "rm", "-f", try std.fs.path.join(u.a, &.{ dir, "yoq.conf" }) });
+                return u.run(&.{ "rm", "-f", try std.fs.path.join(u.a, &.{ dir, "yos.conf" }) });
             },
         }
     }
@@ -297,13 +297,13 @@ const Uninstaller = struct {
         return null;
     }
 
-    /// os's state in /var, and on the esp its env file and limine's
+    /// yos's state in /var, and on the esp its env file and limine's
     /// copies of boot files. with the esp at /boot, the running root's
     /// copies of its own boot files go too.
     fn state(u: *Uninstaller) !?[]const u8 {
-        if (try u.run(&.{ "rm", "-rf", "/var/lib/yoq" })) |w| return w;
+        if (try u.run(&.{ "rm", "-rf", "/var/lib/yos" })) |w| return w;
         const esp = u.boot.esp orelse return null;
-        if (try u.run(&.{ "rm", "-rf", try std.fs.path.join(u.a, &.{ esp, "yoq" }) })) |w| return w;
+        if (try u.run(&.{ "rm", "-rf", try std.fs.path.join(u.a, &.{ esp, "yos" }) })) |w| return w;
         const m = &(u.m orelse return null);
         if (!m.bootOnEsp()) return null;
         return u.run(&.{ "find", try u.root("boot"), "-maxdepth", "1", "-type", "f", "-delete" });

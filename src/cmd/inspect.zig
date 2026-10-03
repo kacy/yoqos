@@ -18,7 +18,7 @@ const Context = cli.Context;
 const eql = cli.eql;
 
 pub fn configCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os config show [--resolved]";
+    const usage_text = "yos config show [--resolved]";
     var it: cli.ArgIter = .{ .args = args };
     if (!eql(it.next() orelse "", "show")) return cli.usageError(ctx, usage_text);
     var sources = false;
@@ -32,7 +32,7 @@ pub fn configCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const loaded = try w.config() orelse return w.fail();
 
     if (ctx.json) {
-        try output.writeDoc(ctx.out, "yoq.config/1", .{ .files = loaded.files.items, .config = show.Json{ .config = &loaded.config } });
+        try output.writeDoc(ctx.out, "yos.config/1", .{ .files = loaded.files.items, .config = show.Json{ .config = &loaded.config } });
         return 0;
     }
     try show.writeToml(ctx.out, &loaded.config, sources);
@@ -40,7 +40,7 @@ pub fn configCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 pub fn factsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (try cli.noArgs(ctx, args, "os facts")) |code| return code;
+    if (try cli.noArgs(ctx, args, "yos facts")) |code| return code;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const f = try w.facts() orelse return w.fail();
@@ -61,7 +61,7 @@ pub fn factsCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 pub fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    const usage_text = "os plan [--lock <file>] [-o <file>] [-v]";
+    const usage_text = "yos plan [--lock <file>] [-o <file>] [-v]";
     var in = cli.inputs(ctx);
     var verbose = false;
     var save: ?[]const u8 = null;
@@ -89,18 +89,18 @@ pub fn planCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try planview.writeText(ctx.out, result.allocator(), &result.plan, .{ .verbose = verbose });
     }
     if (save) |path| {
-        // the same document --json prints: `os apply <file>` checks its hash.
+        // the same document --json prints: `yos apply <file>` checks its hash.
         var doc: std.Io.Writer.Allocating = .init(result.allocator());
         try planview.writeJson(&doc.writer, result.allocator(), &result.plan);
         std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = path, .data = doc.written() }) catch |e|
             return cli.fail(ctx, "can't write {s}: {s}", .{ path, @errorName(e) });
-        if (!ctx.json) try ctx.out.print("\nsaved to {s}. `os apply {s}` applies this plan, and refuses if it changed.\n", .{ path, path });
+        if (!ctx.json) try ctx.out.print("\nsaved to {s}. `yos apply {s}` applies this plan, and refuses if it changed.\n", .{ path, path });
     }
     return 0;
 }
 
 pub fn statusCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
-    if (try cli.noArgs(ctx, args, "os status")) |code| return code;
+    if (try cli.noArgs(ctx, args, "yos status")) |code| return code;
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const result = try w.plan(cli.inputs(ctx)) orelse return w.fail();
@@ -110,7 +110,7 @@ pub fn statusCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try status.writeJson(ctx.out, &s);
     } else {
         try status.writeText(ctx.out, &s);
-        // something os did on its own, like falling back from a generation.
+        // something yos did on its own, like falling back from a generation.
         const fs: rootfs.Root = .{ .a = result.allocator(), .io = ctx.io, .dir = ctx.root };
         const notice = try fs.read(gens.notice_path[1..]);
         if (notice.len > 0) try ctx.out.print("\nnote: {s}", .{notice});
@@ -122,7 +122,7 @@ pub fn whyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var buf: [1][]const u8 = undefined;
     var it: cli.ArgIter = .{ .args = args };
     const names = it.names(&buf) orelse &.{};
-    if (names.len != 1 or names[0].len == 0) return cli.usageError(ctx, "os why <package | file | unit>");
+    if (names.len != 1 or names[0].len == 0) return cli.usageError(ctx, "yos why <package | file | unit>");
     const arg = names[0];
     var w: cli.Work = .init(ctx);
     defer w.deinit();
@@ -164,14 +164,14 @@ const TestRun = cli.TestRun;
 test "config show prints the merged config" {
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/base.toml", "packages = [\"git\"]\n");
-    try t.fs.put("/etc/yoq/machine.toml", "include = [\"base.toml\"]\npackages = [\"neovim\"]\n");
+    try t.fs.put("/etc/yos/base.toml", "packages = [\"git\"]\n");
+    try t.fs.put("/etc/yos/machine.toml", "include = [\"base.toml\"]\npackages = [\"neovim\"]\n");
     try t.exec(&.{ "config", "show" });
     try std.testing.expectEqual(0, t.code);
     try std.testing.expectEqualStrings("packages = [\n  \"git\",\n  \"neovim\",\n]\n", t.out.buffered());
 
     try t.exec(&.{ "config", "show", "--resolved" });
-    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "\"git\",  # /etc/yoq/base.toml:1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "\"git\",  # /etc/yos/base.toml:1") != null);
 }
 
 test "config show takes --config and reports problems" {
@@ -183,7 +183,7 @@ test "config show takes --config and reports problems" {
     try std.testing.expectEqualStrings(
         \\error[E0213]: unknown service "sshd"
         \\  --> /tmp/m.toml:2:1
-        \\   | did you mean "ssh"?  (os explain E0213)
+        \\   | did you mean "ssh"?  (yos explain E0213)
         \\
     , t.err.buffered());
 
@@ -199,19 +199,19 @@ test "config show with no config file" {
     defer t.deinit();
     try t.exec(&.{ "config", "show" });
     try std.testing.expectEqual(1, t.code);
-    try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0100]: /etc/yoq/machine.toml doesn't exist"));
+    try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0100]: /etc/yos/machine.toml doesn't exist"));
 }
 
 test "config show --json" {
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "[system]\nhostname = \"atlas\"\n");
+    try t.fs.put("/etc/yos/machine.toml", "[system]\nhostname = \"atlas\"\n");
     try t.exec(&.{ "--json", "config", "show" });
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, t.out.buffered(), .{});
     defer parsed.deinit();
     const obj = parsed.value.object;
-    try std.testing.expectEqualStrings("yoq.config/1", obj.get("schema").?.string);
-    try std.testing.expectEqualStrings("/etc/yoq/machine.toml", obj.get("files").?.array.items[0].string);
+    try std.testing.expectEqualStrings("yos.config/1", obj.get("schema").?.string);
+    try std.testing.expectEqualStrings("/etc/yos/machine.toml", obj.get("files").?.array.items[0].string);
     try std.testing.expectEqualStrings("atlas", obj.get("config").?.object.get("system").?.object.get("hostname").?.object.get("value").?.string);
 }
 
@@ -219,7 +219,7 @@ test "facts reads a fixture" {
     var t: TestRun = .{};
     defer t.deinit();
     try t.fs.put("f.json",
-        \\{"schema":"yoq.facts/1","hostname":"atlas","packages":[{"name":"git","version":"2.51.0-1"}]}
+        \\{"schema":"yos.facts/1","hostname":"atlas","packages":[{"name":"git","version":"2.51.0-1"}]}
     );
     try t.exec(&.{ "--facts", "f.json", "facts" });
     try std.testing.expectEqual(0, t.code);
@@ -234,8 +234,8 @@ test "facts reads a fixture" {
 test "plan from fixture files" {
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
-    try t.fs.put("/etc/yoq/machine.lock",
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n");
+    try t.fs.put("/etc/yos/machine.lock",
         \\version = 1
         \\sync_date = "2026-09-25"
         \\keyring = "1"
@@ -254,7 +254,7 @@ test "plan from fixture files" {
         \\
     );
     try t.fs.put("f.json",
-        \\{"schema":"yoq.facts/1","packages":[{"name":"linux","version":"6.16.8-1"},{"name":"nano","version":"8.6-1"}]}
+        \\{"schema":"yos.facts/1","packages":[{"name":"linux","version":"6.16.8-1"},{"name":"nano","version":"8.6-1"}]}
     );
     try t.exec(&.{ "--facts", "f.json", "plan" });
     try std.testing.expectEqual(0, t.code);
@@ -276,14 +276,14 @@ test "plan from fixture files" {
 test "why reads the config and lock" {
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n");
-    try t.fs.put("/etc/yoq/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n" ++
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n");
+    try t.fs.put("/etc/yos/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n" ++
         "[packages.git]\nversion = \"1\"\nrepo = \"extra\"\nsha256 = \"" ++ "a" ** 64 ++ "\"\ndepends = [\"zlib\"]\n" ++
         "[packages.linux]\nversion = \"1\"\nrepo = \"core\"\nsha256 = \"" ++ "a" ** 64 ++ "\"\n" ++
         "[packages.zlib]\nversion = \"1\"\nrepo = \"core\"\nsha256 = \"" ++ "a" ** 64 ++ "\"\n");
     try t.exec(&.{ "why", "zlib" });
     try std.testing.expectEqual(0, t.code);
-    try std.testing.expectEqualStrings("zlib: needed by git -> zlib\ngit: in packages  (/etc/yoq/machine.toml:1)\n", t.out.buffered());
+    try std.testing.expectEqualStrings("zlib: needed by git -> zlib\ngit: in packages  (/etc/yos/machine.toml:1)\n", t.out.buffered());
 
     try t.exec(&.{ "why", "nano", "--json" });
     try std.testing.expectEqual(1, t.code);
@@ -298,25 +298,25 @@ test "why reads the config and lock" {
 test "why takes files and units too" {
     var t: TestRun = .{};
     defer t.deinit();
-    try t.fs.put("/etc/yoq/machine.toml", "packages = [\"git\"]\n[sysctl]\n\"vm.swappiness\" = 10\n[services]\nssh = true\n");
-    try t.fs.put("/etc/yoq/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n" ++
+    try t.fs.put("/etc/yos/machine.toml", "packages = [\"git\"]\n[sysctl]\n\"vm.swappiness\" = 10\n[services]\nssh = true\n");
+    try t.fs.put("/etc/yos/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n" ++
         "[packages.git]\nversion = \"1\"\nrepo = \"extra\"\nsha256 = \"" ++ "a" ** 64 ++ "\"\n");
-    try t.exec(&.{ "why", "/etc/sysctl.d/99-yoq.conf" });
+    try t.exec(&.{ "why", "/etc/sysctl.d/99-yos.conf" });
     try std.testing.expectEqual(0, t.code);
-    try std.testing.expectEqualStrings("/etc/sysctl.d/99-yoq.conf: os writes it for sysctl  (/etc/yoq/machine.toml:3)\n", t.out.buffered());
+    try std.testing.expectEqualStrings("/etc/sysctl.d/99-yos.conf: yos writes it for sysctl  (/etc/yos/machine.toml:3)\n", t.out.buffered());
 
     try t.exec(&.{ "--root", "/nonexistent", "why", "/etc/hosts" });
     try std.testing.expectEqual(1, t.code);
-    try std.testing.expect(std.mem.startsWith(u8, t.out.buffered(), "/etc/hosts: not managed by os\n"));
+    try std.testing.expect(std.mem.startsWith(u8, t.out.buffered(), "/etc/hosts: not managed by yos\n"));
 
     try t.exec(&.{ "why", "sshd.service" });
-    try std.testing.expectEqualStrings("sshd.service: enabled by services.ssh  (/etc/yoq/machine.toml:5)\n", t.out.buffered());
+    try std.testing.expectEqualStrings("sshd.service: enabled by services.ssh  (/etc/yos/machine.toml:5)\n", t.out.buffered());
     // a name that's a service and no package goes to its unit.
     try t.exec(&.{ "why", "ssh", "--json" });
     try std.testing.expectEqual(0, t.code);
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, t.out.buffered(), .{});
     defer parsed.deinit();
-    try std.testing.expectEqualStrings("yoq.why-unit/1", parsed.value.object.get("schema").?.string);
+    try std.testing.expectEqualStrings("yos.why-unit/1", parsed.value.object.get("schema").?.string);
     try std.testing.expectEqualStrings("sshd.service", parsed.value.object.get("unit").?.string);
     try std.testing.expectEqualStrings("services.ssh", parsed.value.object.get("cause").?.string);
 }

@@ -4,7 +4,27 @@
 
 ### new
 
-- man pages: `man os` and `man os-generations`, made from docs/usage.md
+- yoq os is now yos, and its command is `yos`, not `os`. the package is
+  `yos` (and `yos-git`), the config lives in `/etc/yos`, state in
+  `/var/lib/yos`, and everything yos writes says yos: units like
+  `yos-health`, the esp's `yos` directory, boot entries, `yos.trial` on
+  the kernel command line, `YOS_*` variables, and json documents named
+  `yos.plan/1` and the like. a short name of its own, apart from the yoq
+  scheduler it came from, and no `/usr/bin/os` to bump into another
+  package's.
+- on a machine yoq os set up, yos stops with E0138, since it reads none of
+  yoq os's state. the way over: with the old package installed, `os
+  uninstall`, then `mv /etc/yoq /etc/yos` and `mv /var/cache/yoq
+  /var/cache/yos`. `yos plan` reads the config as
+  it was, history and all, and `yos enable-rollback` turns generations on
+  again. the two packages install side by side while you switch. ci runs
+  that whole move, from a machine 0.1.5 set up.
+- `yos enable-rollback` turns generations on again after an uninstall.
+  the root an uninstall leaves running is in @roots, and yos took that as
+  generations being on already, said so, and did nothing. a root in @roots
+  without yos's records is a plain machine's now, everywhere yos looks, and
+  the first generation is numbered after it.
+- man pages: `man yos` and `man yos-generations`, made from docs/usage.md
   and docs/generations.md with lowdown when the package builds, so
   they're never out of step with the docs. the release tarball and the
   live iso have them too, and ci lints them with mandoc.

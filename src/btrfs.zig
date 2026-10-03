@@ -165,7 +165,7 @@ test "ioctl argument layouts match the kernel's" {
 
 test "not btrfs" {
     try testing.expect(!try isSubvolume("/proc"));
-    try testing.expectError(error.NotBtrfs, create("/proc/os-test"));
+    try testing.expectError(error.NotBtrfs, create("/proc/yos-test"));
 }
 
 /// a small btrfs filesystem for tests, loop-mounted at a scratch path.
@@ -177,7 +177,7 @@ const Scratch = struct {
     pub fn mount(a: std.mem.Allocator) !?Scratch {
         if (linux.geteuid() != 0) return null;
         const io = testing.io;
-        const base = try std.fmt.allocPrint(a, "/tmp/os-btrfs-{d}", .{std.Io.Timestamp.now(io, .real).toNanoseconds()});
+        const base = try std.fmt.allocPrint(a, "/tmp/yos-btrfs-{d}", .{std.Io.Timestamp.now(io, .real).toNanoseconds()});
         const s: Scratch = .{ .dir = try std.fmt.allocPrint(a, "{s}/mnt", .{base}), .image = try std.fmt.allocPrint(a, "{s}/image", .{base}) };
         try std.Io.Dir.cwd().createDirPath(io, s.dir);
         for ([_][]const []const u8{

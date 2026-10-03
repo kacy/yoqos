@@ -67,7 +67,7 @@ pub const Job = struct {
     lock: *const lock.Lock,
     /// the files the plan was made from, with what each one holds.
     files: []const desired.File,
-    /// where secrets' values come from, when os can read them.
+    /// where secrets' values come from, when yos can read them.
     store: ?secrets.Store,
     target: Target,
     /// systemd runs the machine, so units change too, and files that
@@ -188,7 +188,7 @@ fn writeFile(a: Allocator, io: std.Io, job: Job, path: []const u8, diags: *diag.
 }
 
 /// the value of the secret `name` for the file at `path`, as long as it's
-/// the one `p` was made for: `os secret set` may have run since. null
+/// the one `p` was made for: `yos secret set` may have run since. null
 /// after saying why not. the caller wipes it.
 fn secretValue(a: Allocator, store: ?secrets.Store, p: *const planner.Plan, path: []const u8, name: []const u8, diags: *diag.List) !?[]u8 {
     const s = store orelse return secretUnread(diags, path, name, "secrets need root");
@@ -207,7 +207,7 @@ fn secretValue(a: Allocator, store: ?secrets.Store, p: *const planner.Plan, path
 }
 
 fn secretUnread(diags: *diag.List, path: []const u8, name: []const u8, why: []const u8) !?[]u8 {
-    try diags.addHint(.apply_failed, null, "can't write {s}: can't read the secret \"{s}\": {s}", .{ path, name, why }, "`os secret set {s}` sets it", .{name});
+    try diags.addHint(.apply_failed, null, "can't write {s}: can't read the secret \"{s}\": {s}", .{ path, name, why }, "`yos secret set {s}` sets it", .{name});
     return null;
 }
 
@@ -231,14 +231,14 @@ fn includeRepos(a: Allocator, io: std.Io, root: []const u8, diags: *diag.List) !
     const conf = try fs.read("etc/pacman.conf");
     const sep: []const u8 = if (conf.len > 0 and conf[conf.len - 1] != '\n') "\n" else "";
     const mode = try fs.mode("etc/pacman.conf") orelse 0o644;
-    fs.writeMode("etc/pacman.conf", try std.mem.concat(a, u8, &.{ conf, sep, "\n# the repositories in os's config.\n", facts.repos_include, "\n" }), mode) catch {
+    fs.writeMode("etc/pacman.conf", try std.mem.concat(a, u8, &.{ conf, sep, "\n# the repositories in yos's config.\n", facts.repos_include, "\n" }), mode) catch {
         try diags.add(.apply_failed, null, "can't write {s}", .{try fs.path("etc/pacman.conf")}, null);
         return false;
     };
     return true;
 }
 
-/// removes a file os generated that nothing asks for now.
+/// removes a file yos generated that nothing asks for now.
 fn removeFile(a: Allocator, io: std.Io, root: []const u8, path: []const u8, diags: *diag.List) !bool {
     _ = io;
     if (try rootfs.removeChecked(a, root, std.mem.trimStart(u8, path, "/"))) |why| {
@@ -417,8 +417,8 @@ test "values kept without a key get one, so a stale file still shows" {
 }
 
 test "mkinitcpio drop-ins rebuild the initramfs once" {
-    const drop: planner.Change = .{ .op = .add, .kind = .file, .subject = "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf" };
-    const other: planner.Change = .{ .op = .add, .kind = .file, .subject = "/etc/sysctl.d/99-yoq.conf" };
+    const drop: planner.Change = .{ .op = .add, .kind = .file, .subject = "/etc/mkinitcpio.conf.d/10-yos-nvidia.conf" };
+    const other: planner.Change = .{ .op = .add, .kind = .file, .subject = "/etc/sysctl.d/99-yos.conf" };
     const sibling: planner.Change = .{ .op = .add, .kind = .file, .subject = "/etc/mkinitcpio.conf.dx/a.conf" };
     const gone: planner.Change = .{ .op = .remove, .kind = .file, .subject = "/etc/mkinitcpio.conf.d/50-local.conf" };
     const pkg: planner.Change = .{ .op = .add, .kind = .package, .subject = "/etc/mkinitcpio.conf.d/x", .to = "1" };
@@ -437,9 +437,9 @@ test "mkinitcpio runs in the root it builds for" {
     try testing.expectEqual(2, live.len);
     try testing.expectEqualStrings("/usr/bin/mkinitcpio", live[0]);
     try testing.expectEqualStrings("-P", live[1]);
-    const staged = try mkinitcpioArgv(a, "/run/yoq/next");
+    const staged = try mkinitcpioArgv(a, "/run/yos/next");
     try testing.expectEqual(4, staged.len);
     try testing.expectEqualStrings("chroot", staged[0]);
-    try testing.expectEqualStrings("/run/yoq/next", staged[1]);
+    try testing.expectEqualStrings("/run/yos/next", staged[1]);
     try testing.expectEqualStrings("/usr/bin/mkinitcpio", staged[2]);
 }

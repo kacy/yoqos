@@ -1,5 +1,5 @@
 //! arch's news feed. news is how arch announces updates that need a hand,
-//! so `os update` shows what was posted between the old lock's date and
+//! so `yos update` shows what was posted between the old lock's date and
 //! the new one.
 
 const std = @import("std");

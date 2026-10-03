@@ -170,11 +170,11 @@ const Statfs = extern struct {
     spare: [4]i64,
 };
 
-/// gives os a mount namespace of its own, with every mount in it
+/// gives yos a mount namespace of its own, with every mount in it
 /// private, for commands that mount a root to build in. what they mount
 /// then never reaches another namespace, like a service's, where an
 /// unmount wouldn't follow and the mount would keep its disk busy, and it
-/// all goes when os exits. the programs os runs see it too. an esp that
+/// all goes when yos exits. the programs yos runs see it too. an esp that
 /// systemd automounts is mounted first, since its automount can't reach
 /// in here. call it before mounting anything: a mount from before is a
 /// copy here, and unmounting it here leaves the original. null when it
@@ -189,20 +189,20 @@ pub fn privateMounts(io: std.Io) ?[]const u8 {
 fn namespaceProblem(e: std.os.linux.E) ?[]const u8 {
     return switch (e) {
         .SUCCESS => null,
-        .PERM => "can't give os mounts of its own: that needs root",
-        .NOMEM, .NOSPC => "can't give os mounts of its own: the kernel is out of room for them",
-        else => "can't give os mounts of its own",
+        .PERM => "can't give yos mounts of its own: that needs root",
+        .NOMEM, .NOSPC => "can't give yos mounts of its own: the kernel is out of room for them",
+        else => "can't give yos mounts of its own",
     };
 }
 
-/// os's directory under /run, where it locks the machine and mounts
+/// yos's directory under /run, where it locks the machine and mounts
 /// roots. others can go through it: libalpm downloads into a staged
-/// root's cache, under /run/yoq/next, as pacman's download user.
-pub const run_dir = "/run/yoq";
+/// root's cache, under /run/yos/next, as pacman's download user.
+pub const run_dir = "/run/yos";
 
 /// the directory in `run_dir` that's root's alone, where the top level of
 /// the root's filesystem is mounted. through that mount, anyone could
-/// reach every root's world-writable /tmp, where os builds and signs
+/// reach every root's world-writable /tmp, where yos builds and signs
 /// images.
 pub const private_dir = run_dir ++ "/private";
 
@@ -242,37 +242,37 @@ test "the run directory stays open, and the private one in it is root's alone" {
     const io = std.testing.io;
     const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     // one a run before made root's alone goes back to open.
-    try tmp.dir.createDirPath(io, "yoq");
-    try tmp.dir.setFilePermissions(io, "yoq", @enumFromInt(0o700), .{});
-    try std.testing.expect(makeDir(try std.fmt.allocPrintSentinel(a, "{s}/yoq", .{base}, 0), 0o755));
-    try std.testing.expect(makeDir(try std.fmt.allocPrintSentinel(a, "{s}/yoq/private", .{base}, 0), 0o700));
-    try std.testing.expectEqual(0o755, @intFromEnum((try tmp.dir.statFile(io, "yoq", .{})).permissions) & 0o7777);
-    try std.testing.expectEqual(0o700, @intFromEnum((try tmp.dir.statFile(io, "yoq/private", .{})).permissions) & 0o7777);
+    try tmp.dir.createDirPath(io, "yos");
+    try tmp.dir.setFilePermissions(io, "yos", @enumFromInt(0o700), .{});
+    try std.testing.expect(makeDir(try std.fmt.allocPrintSentinel(a, "{s}/yos", .{base}, 0), 0o755));
+    try std.testing.expect(makeDir(try std.fmt.allocPrintSentinel(a, "{s}/yos/private", .{base}, 0), 0o700));
+    try std.testing.expectEqual(0o755, @intFromEnum((try tmp.dir.statFile(io, "yos", .{})).permissions) & 0o7777);
+    try std.testing.expectEqual(0o700, @intFromEnum((try tmp.dir.statFile(io, "yos/private", .{})).permissions) & 0o7777);
     // a symlink in its place isn't used.
     try tmp.dir.createDirPath(io, "theirs");
-    try tmp.dir.symLink(io, "../theirs", "yoq/linked", .{});
-    try std.testing.expect(!makeDir(try std.fmt.allocPrintSentinel(a, "{s}/yoq/linked", .{base}, 0), 0o700));
+    try tmp.dir.symLink(io, "../theirs", "yos/linked", .{});
+    try std.testing.expect(!makeDir(try std.fmt.allocPrintSentinel(a, "{s}/yos/linked", .{base}, 0), 0o700));
     try std.testing.expect(@intFromEnum((try tmp.dir.statFile(io, "theirs", .{})).permissions) & 0o777 != 0o700);
 }
 
 /// sets the mask on the modes of new files and directories to 022, as
-/// pacman does, whatever os was started with. a root shell with umask 0
-/// would otherwise make every directory os and its tools create, like
-/// those under /var/lib/yoq or the config's .git, writable by anyone.
+/// pacman does, whatever yos was started with. a root shell with umask 0
+/// would otherwise make every directory yos and its tools create, like
+/// those under /var/lib/yos or the config's .git, writable by anyone.
 /// returns the mask there was.
 pub fn standardUmask() u32 {
     return @intCast(std.os.linux.syscall1(.umask, 0o022));
 }
 
-test "os makes directories others can't write to, whatever its umask" {
+test "yos makes directories others can't write to, whatever its umask" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const io = std.testing.io;
     const before: u32 = @intCast(std.os.linux.syscall1(.umask, 0));
     defer _ = std.os.linux.syscall1(.umask, before);
     try std.testing.expectEqual(0, standardUmask());
-    try tmp.dir.createDirPath(io, "var/lib/yoq");
-    try std.testing.expectEqual(0o755, @intFromEnum((try tmp.dir.statFile(io, "var/lib/yoq", .{})).permissions) & 0o7777);
+    try tmp.dir.createDirPath(io, "var/lib/yos");
+    try std.testing.expectEqual(0o755, @intFromEnum((try tmp.dir.statFile(io, "var/lib/yos", .{})).permissions) & 0o7777);
 }
 
 pub fn pathExists(io: std.Io, path: []const u8) bool {
@@ -378,7 +378,7 @@ pub fn removeChecked(a: Allocator, root: []const u8, rel: []const u8) error{OutO
 
 const Parent = union(enum) {
     dir: std.os.linux.fd_t,
-    /// why os won't write there.
+    /// why yos won't write there.
     refused: []const u8,
     /// a directory on the way isn't there, and wasn't to be made.
     missing,
@@ -451,7 +451,7 @@ fn openParent(a: Allocator, root: []const u8, rel: []const u8, make: bool) error
                 const opened = linux.openat(at, z, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true }, 0);
                 if (linux.errno(opened) != .SUCCESS) return .{ .refused = try std.fmt.allocPrint(a, "can't open the directory {s}", .{part}) };
                 try stack.append(a, @intCast(opened));
-                // checked once open, so it's the directory os goes on in.
+                // checked once open, so it's the directory yos goes on in.
                 if (try dirProblem(a, @intCast(opened), part)) |why| return .{ .refused = why };
             },
             else => return .{ .refused = try std.fmt.allocPrint(a, "{s} on the way isn't a directory", .{part}) },
@@ -474,7 +474,7 @@ fn trustedOwner(uid: std.os.linux.uid_t) bool {
     return uid == 0 or uid == std.os.linux.geteuid();
 }
 
-/// why os won't write through the open directory `fd`, named `name`, or
+/// why yos won't write through the open directory `fd`, named `name`, or
 /// null if it will. a group that can write to it counts as others, unless
 /// it's root's group, or this process's.
 fn dirProblem(a: Allocator, fd: std.os.linux.fd_t, name: []const u8) !?[]const u8 {
@@ -603,10 +603,10 @@ test "an atomic write keeps its mode, and a symlink in the way stays untouched" 
     try std.testing.expectEqual(0o600, @intFromEnum(st.permissions) & 0o777);
 }
 
-test "why os can't have mounts of its own" {
+test "why yos can't have mounts of its own" {
     try std.testing.expectEqual(null, namespaceProblem(.SUCCESS));
-    try std.testing.expectEqualStrings("can't give os mounts of its own: that needs root", namespaceProblem(.PERM).?);
-    try std.testing.expectEqualStrings("can't give os mounts of its own", namespaceProblem(.INVAL).?);
+    try std.testing.expectEqualStrings("can't give yos mounts of its own: that needs root", namespaceProblem(.PERM).?);
+    try std.testing.expectEqualStrings("can't give yos mounts of its own", namespaceProblem(.INVAL).?);
 }
 
 test "the boot time from /proc/stat" {
@@ -638,8 +638,8 @@ test "write, read, and append under a root" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const r: Root = .{ .a = arena.allocator(), .io = std.testing.io, .dir = try std.fmt.allocPrint(arena.allocator(), ".zig-cache/tmp/{s}", .{tmp.sub_path}) };
-    try std.testing.expectEqualStrings("", try r.read("var/lib/yoq/ids"));
-    try r.append("var/lib/yoq/ids", "kacy 1000\n");
-    try r.append("var/lib/yoq/ids", "guest 1001\n");
-    try std.testing.expectEqualStrings("kacy 1000\nguest 1001\n", try r.read("var/lib/yoq/ids"));
+    try std.testing.expectEqualStrings("", try r.read("var/lib/yos/ids"));
+    try r.append("var/lib/yos/ids", "kacy 1000\n");
+    try r.append("var/lib/yos/ids", "guest 1001\n");
+    try std.testing.expectEqualStrings("kacy 1000\nguest 1001\n", try r.read("var/lib/yos/ids"));
 }
