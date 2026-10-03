@@ -1,21 +1,35 @@
 # using yoq os
 
-yoq os describes an arch linux machine in one short file and shows you
-exactly what would change to make the machine match it. this page covers how
-to use it today.
+yoq os keeps an arch linux machine in one short file, and shows you
+exactly what would change to make the machine match it before it changes
+anything. this page is the manual: installing it, every command, and the
+config format. if you just want the feel of it, the
+[readme](../README.md) is shorter.
+
+## five words
+
+everything `os` prints uses these, and nothing else you need to learn:
+
+| word | what it means |
+| --- | --- |
+| config | `machine.toml` and the files it includes: what you want |
+| lock | `machine.lock`: the exact package versions your config resolved to |
+| plan | what `os` is about to do, shown before it does it |
+| generation | a recorded version of the system you can boot or go back to |
+| rollback | going back to an earlier generation, recorded as a new one |
 
 ## what works today
 
-`os` reads a machine, writes a config for it, keeps that config and its lock
-up to date, tells you what's different, and applies the difference. `os
-apply` installs and removes packages, sets the `[system]` settings, turns
-services on and off, creates users and sets their shells and groups, and
-writes files, secrets, and sysctl settings. on a btrfs root with grub,
-limine, refind, or systemd-boot, `os enable-rollback` adds whole-system
-generations, and a change that needs a reboot is then built beside the
-running system instead of into it; see [generations.md](generations.md).
-generations can also boot unified kernel images, signed for secure boot,
-and `os install` can put a new machine on an encrypted disk.
+`os` reads a machine, writes a config for it, keeps that config and its
+lock up to date, tells you what's different, and applies the difference.
+on any arch install, `os apply` handles packages, the `[system]` settings,
+services, users and their groups, files, secrets, and sysctl. on a btrfs
+root with grub, limine, refind, or systemd-boot, `os enable-rollback` adds
+whole-system generations: a change that needs a reboot is built beside the
+running system, boots once on trial, and falls back by itself if it
+doesn't come up healthy (see [generations.md](generations.md)).
+generations can boot unified kernel images signed for secure boot, and
+`os install` can put a new machine on an encrypted disk.
 
 | command | what it does |
 | --- | --- |
@@ -100,7 +114,8 @@ zig build test -Dfuzz --fuzz=1M -Dtest-filter="fuzz lock"
 
 ## getting started
 
-on an arch machine, as root:
+the first step only writes files under `/etc/yoq`, so it's fine to take
+on the machine you use every day. on an arch machine, as root:
 
 ```
 os init
@@ -136,6 +151,9 @@ ones you don't. `os plan` shows what that would remove, and `os apply`
 removes it.
 
 ## the everyday commands
+
+most days it's `status`, `add`, `update`, and now and then a `rollback`.
+here's each one with what it prints.
 
 ### status
 
@@ -548,7 +566,7 @@ and the exit code is 1 when one does.
 
 ## leaving
 
-`os uninstall` takes `os` off the machine and leaves plain arch running the
+no hard feelings. `os uninstall` takes `os` off the machine and leaves plain arch running the
 system you have now. like `enable-rollback`, it lists its steps and asks
 first; `--yes` skips the question.
 
@@ -594,6 +612,11 @@ config and its git history stay in
 it stopped.
 
 ## installing a new machine
+
+the fun one: a blank disk, a usb stick, and your config repository, and
+you get the same machine back, packages, settings, and lock. secrets stay
+with each machine: you set them on the live system for the install, and
+again once the new machine runs.
 
 ### what you need
 
@@ -867,7 +890,9 @@ blank disk instead of a directory.
 
 ## the config
 
-`machine.toml` is plain toml. a full example:
+`machine.toml` is plain toml: no functions, no loops, no variables. if you
+want those, write a script that generates the toml. a normal config should
+read in half a minute. a full example:
 
 ```toml
 version = 1
