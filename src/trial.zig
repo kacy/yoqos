@@ -13,6 +13,7 @@ const rootfs = @import("rootfs.zig");
 const generation = @import("generation.zig");
 const facts = @import("facts.zig");
 const menu = @import("menu.zig");
+const events = @import("events.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Trial = struct {
@@ -53,7 +54,12 @@ pub const Store = struct {
 
     /// the trial waiting for its boot, or running, if there is one.
     pub fn current(s: Store) !?Trial {
-        if (s.loader == .grub) return grubTrial(try s.state(), try s.number("yoq_trial"), try s.number("yoq_default"), try s.value("yoq_tried") != null);
+        if (s.loader == .grub) {
+            const env_trial = try s.number("yoq_trial");
+            const env_default = try s.number("yoq_default");
+            const noted = try s.state() orelse try s.journalNote(env_trial, env_default);
+            return grubTrial(noted, env_trial, env_default, try s.value("yoq_tried") != null);
+        }
         const words = try s.state() orelse return null;
         return .{
             .n = std.fmt.parseInt(u32, words[0], 10) catch return null,
@@ -226,6 +232,16 @@ pub const Store = struct {
         const text = std.Io.Dir.cwd().readFileAlloc(s.io, state_path, s.a, .limited(128)) catch return null;
         var words = std.mem.tokenizeAny(u8, text, " \n");
         return .{ words.next() orelse return null, words.next() orelse "0", words.next() orelse "" };
+    }
+
+    /// a grub trial os armed before 0.1.4, which noted it only as an
+    /// armed event in the journal, as the words of a note. the journal is
+    /// root's alone, like the note, so a trial armed just before os was
+    /// upgraded still falls back if it fails.
+    fn journalNote(s: Store, n: ?u32, fallback: ?u32) !?[3][]const u8 {
+        const t = n orelse return null;
+        if (!try events.armedLast(s.a, s.io, "/", t)) return null;
+        return .{ try std.fmt.allocPrint(s.a, "{d}", .{t}), try std.fmt.allocPrint(s.a, "{d}", .{fallback orelse 0}), "" };
     }
 
     fn write(s: Store, path: []const u8, text: []const u8) !?[]const u8 {

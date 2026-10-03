@@ -24,6 +24,11 @@
   secure boot on: limine loads a kernel without the firmware's check, so
   someone who can change its menu can boot their own with the disk
   unlocked.
+- a grub trial that os 0.1.3 armed falls back if it fails, when the os
+  that judges it is newer, like one in /usr/local upgraded before the
+  reboot. 0.1.4 took only its own note in /var as a sign that os armed a
+  trial, so it ended that one and kept the failed boot. the journal's
+  armed event, which 0.1.3 wrote, counts now too.
 
 ## 0.1.4
 
