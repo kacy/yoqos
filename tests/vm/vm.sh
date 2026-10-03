@@ -211,7 +211,7 @@ archinstall() {
 }
 
 # the test image's root password, "yos". tests log in with the key.
-root_hash='$6$yostest$1O8KkkgUFxpfgynUcFNHA3HfsIzEwgQTT08V4e4qLTP41SDhe6dXugxAvBde5MUV0ZSq9J/0tyDLUqA..mecu0'
+root_hash='$6$yostest$JTDVgwmpDH/rIv3Uo09iioZFrv.xRS4jXLHm6TdyrCFjurZ4wyGrGdWEHX/aTSBS2X.cl9ymPESR953IFz1az0'
 
 case ${1:-} in
 image)

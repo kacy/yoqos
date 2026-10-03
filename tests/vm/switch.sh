@@ -58,7 +58,11 @@ check "git -C /etc/yos log --format=%s | grep -c 'add tree'" 1
 "$vm" ssh "yos enable-rollback --yes" | tail -n 2
 "$vm" reboot
 settled
-check "test -e /var/lib/yos/generations/1.json && echo yes" yes
+# its first generation comes after the root the uninstall left in @roots,
+# which stays in the menu as the system before generations.
+check "ls /var/lib/yos/generations | wc -l" 1
+check "findmnt -no FSROOT /" "/$(newest_root)"
+check "grep -c 'the system before generations' $VM_ESP/grub/grub.cfg" 1
 "$vm" ssh "yos add --yes amd-ucode" | tail -n 2
 on_trial yes
 "$vm" reboot
