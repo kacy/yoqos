@@ -29,7 +29,47 @@ pub const Trial = struct {
     /// pass, as one armed before os noted grub's there did, but never
     /// makes the machine fall back.
     noted: bool = true,
+    /// how far os got with it.
+    phase: Phase = .armed,
 };
+
+/// how far a trial got, by os's note of it. a power cut can stop os
+/// between any two steps, and the note says where.
+pub const Phase = enum {
+    /// the note went in before the menu that holds the default on the
+    /// fallback, and the bootloader may not be set up yet. the next boot
+    /// sets the trial up again.
+    arming,
+    /// the next boot tries it.
+    armed,
+    /// it came up healthy, and is on its way to being the default. the
+    /// next boot finishes that, whichever generation it runs.
+    passed,
+};
+
+/// os's note of a trial: its phase, then its generation, the one before
+/// it, and for refind, the firmware entry. a note without a phase, like
+/// one from an older os, is an armed trial.
+const Note = struct {
+    phase: Phase,
+    words: [3][]const u8,
+};
+
+fn parseNote(text: []const u8) ?Note {
+    var words = std.mem.tokenizeAny(u8, text, " \n");
+    var first = words.next() orelse return null;
+    var phase: Phase = .armed;
+    if (std.meta.stringToEnum(Phase, first)) |p| {
+        phase = p;
+        first = words.next() orelse return null;
+    }
+    return .{ .phase = phase, .words = .{ first, words.next() orelse "0", words.next() orelse "" } };
+}
+
+fn formatNote(a: Allocator, phase: Phase, words: [3][]const u8) ![]const u8 {
+    const entry = if (words[2].len > 0) try std.fmt.allocPrint(a, " {s}", .{words[2]}) else "";
+    return std.fmt.allocPrint(a, "{s} {s} {s}{s}\n", .{ @tagName(phase), words[0], words[1], entry });
+}
 
 /// where a machine keeps its trial.
 pub const Store = struct {
@@ -64,21 +104,36 @@ pub const Store = struct {
             const noted = try s.state() orelse try s.journalNote(env_trial, env_default);
             return grubTrial(noted, env_trial, env_default, try s.value("yoq_tried") != null);
         }
-        const words = try s.state() orelse return null;
+        const note = try s.state() orelse return null;
         // the bootloader, or for refind the firmware, clears the one-shot
         // variable when it reads it, whatever then boots. an entry picked
         // by hand in its place didn't try the trial.
         const cleared = !rootfs.pathExists(s.io, if (s.loader == .refind) bootnext_var else oneshot_var);
         return .{
-            .n = std.fmt.parseInt(u32, words[0], 10) catch return null,
-            .fallback = std.fmt.parseInt(u32, words[1], 10) catch 0,
+            .n = std.fmt.parseInt(u32, note.words[0], 10) catch return null,
+            .fallback = std.fmt.parseInt(u32, note.words[1], 10) catch 0,
             .tried = cleared and !byHand(s.loader, .{
                 .selected = try s.efiText(selected_var),
                 .default = try s.efiText(default_var),
                 .boot_current = try s.efiNumber(bootcurrent_var),
-                .trial_entry = words[2],
+                .trial_entry = note.words[2],
             }),
+            .phase = note.phase,
         };
+    }
+
+    /// notes that generation `n` is about to go on trial, falling back to
+    /// `fallback`. it goes in before the menu that holds the default on
+    /// `fallback` (see gens.Machine.add), so a power cut from there on
+    /// leaves a note that says the trial was never set up.
+    pub fn prepare(s: Store, n: u32, fallback: u32) !?[]const u8 {
+        return s.write(state_path, try std.fmt.allocPrint(s.a, "{s} {d} {d}\n", .{ @tagName(Phase.arming), n, fallback }));
+    }
+
+    /// notes that the trial passed, before it's made the default.
+    pub fn pass(s: Store) !?[]const u8 {
+        const note = try s.state() orelse return "no trial to pass";
+        return s.write(state_path, try formatNote(s.a, .passed, note.words));
     }
 
     /// an efi variable's text, as the boot loader interface stores it:
@@ -100,6 +155,7 @@ pub const Store = struct {
     /// makes the next boot try the newest generation, `n`, once, and
     /// fall back to `fallback` if it doesn't come up.
     pub fn arm(s: Store, n: u32, fallback: generation.Record) !?[]const u8 {
+        if (try s.prepare(n, fallback.n)) |w| return w;
         const why = switch (s.loader) {
             .grub => blk: {
                 _ = try s.edit("unset", &.{"yoq_tried"});
@@ -282,8 +338,8 @@ pub const Store = struct {
             .limine => s.bootctl("set-oneshot", try menu.limineId(s.a, menu.trial_title)),
             .@"systemd-boot" => s.bootctl("set-oneshot", menu.sdboot_trial),
             .refind => {
-                const words = try s.state() orelse return "no trial to try again";
-                return exec.run(s.a, s.io, &.{ "efibootmgr", "-q", "-n", words[2] });
+                const note = try s.state() orelse return "no trial to try again";
+                return exec.run(s.a, s.io, &.{ "efibootmgr", "-q", "-n", note.words[2] });
             },
         };
     }
@@ -318,22 +374,20 @@ pub const Store = struct {
         return s.write(yoq_path, try menu.refindDefault(s.a, yoq, head));
     }
 
-    /// the words of the trial's note: its generation, the one before it,
-    /// and for refind, the firmware entry.
-    fn state(s: Store) !?[3][]const u8 {
+    /// os's note of the trial.
+    fn state(s: Store) !?Note {
         const text = std.Io.Dir.cwd().readFileAlloc(s.io, state_path, s.a, .limited(128)) catch return null;
-        var words = std.mem.tokenizeAny(u8, text, " \n");
-        return .{ words.next() orelse return null, words.next() orelse "0", words.next() orelse "" };
+        return parseNote(text);
     }
 
     /// a grub trial os armed before 0.1.4, which noted it only as an
     /// armed event in the journal, as the words of a note. the journal is
     /// root's alone, like the note, so a trial armed just before os was
     /// upgraded still falls back if it fails.
-    fn journalNote(s: Store, n: ?u32, fallback: ?u32) !?[3][]const u8 {
+    fn journalNote(s: Store, n: ?u32, fallback: ?u32) !?Note {
         const t = n orelse return null;
         if (!try events.armedLast(s.a, s.io, "/", t)) return null;
-        return .{ try std.fmt.allocPrint(s.a, "{d}", .{t}), try std.fmt.allocPrint(s.a, "{d}", .{fallback orelse 0}), "" };
+        return .{ .phase = .armed, .words = .{ try std.fmt.allocPrint(s.a, "{d}", .{t}), try std.fmt.allocPrint(s.a, "{d}", .{fallback orelse 0}), "" } };
     }
 
     fn write(s: Store, path: []const u8, text: []const u8) !?[]const u8 {
@@ -396,17 +450,35 @@ pub const Store = struct {
 /// grub's trial, from os's note of it, `noted`, or without one, from the
 /// env file's `env_trial` and `env_default`. whether the boot has started
 /// is the env file's either way: grub sets it.
-fn grubTrial(noted: ?[3][]const u8, env_trial: ?u32, env_default: ?u32, tried: bool) ?Trial {
-    const words = noted orelse return .{ .n = env_trial orelse return null, .fallback = env_default orelse 0, .tried = tried, .noted = false };
+fn grubTrial(noted: ?Note, env_trial: ?u32, env_default: ?u32, tried: bool) ?Trial {
+    const note = noted orelse return .{ .n = env_trial orelse return null, .fallback = env_default orelse 0, .tried = tried, .noted = false };
     return .{
-        .n = std.fmt.parseInt(u32, words[0], 10) catch return null,
-        .fallback = std.fmt.parseInt(u32, words[1], 10) catch 0,
+        .n = std.fmt.parseInt(u32, note.words[0], 10) catch return null,
+        .fallback = std.fmt.parseInt(u32, note.words[1], 10) catch 0,
         .tried = tried,
+        .phase = note.phase,
     };
 }
 
+test "a trial's note says how far it got" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // one from an older os has no phase, and was armed.
+    const old = parseNote("7 6\n").?;
+    try std.testing.expectEqual(Phase.armed, old.phase);
+    try std.testing.expectEqualStrings("6", old.words[1]);
+    const refind = parseNote("arming 7 6 0004\n").?;
+    try std.testing.expectEqual(Phase.arming, refind.phase);
+    try std.testing.expectEqualStrings("0004", refind.words[2]);
+    try std.testing.expectEqualStrings("passed 7 6 0004\n", try formatNote(a, .passed, refind.words));
+    try std.testing.expectEqualStrings("passed 7 6\n", try formatNote(a, .passed, old.words));
+    try std.testing.expectEqual(null, parseNote(""));
+    try std.testing.expectEqual(null, parseNote("arming\n"));
+}
+
 test "grub's trial is os's note of it, not the esp's" {
-    const t = grubTrial(.{ "7", "6", "" }, 9, 2, true).?;
+    const t = grubTrial(.{ .phase = .armed, .words = .{ "7", "6", "" } }, 9, 2, true).?;
     try std.testing.expectEqual(7, t.n);
     try std.testing.expectEqual(6, t.fallback);
     try std.testing.expect(t.tried and t.noted);

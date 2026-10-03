@@ -91,6 +91,33 @@ pub fn trialFallback(records: []const Record, pending: u32) ?u32 {
     return records[records.len - 2].n;
 }
 
+/// the generation a fallback from trial `tried` made already, with
+/// `reason`, as when a power cut stopped it before the trial ended. only
+/// one newer than the trial counts, so a fallback from an earlier trial
+/// of the same number, since collected and made again, doesn't.
+pub fn made(records: []const Record, tried: u32, reason: []const u8) ?u32 {
+    var i = records.len;
+    while (i > 0) {
+        i -= 1;
+        const r = records[i];
+        if (r.n <= tried) return null;
+        if (std.mem.eql(u8, r.reason, reason)) return r.n;
+    }
+    return null;
+}
+
+test "a fallback that made its generation already isn't made twice" {
+    const recs = [_]Record{
+        .{ .n = 4, .time = 4, .root = "@roots/1", .reason = "apply" },
+        .{ .n = 5, .time = 5, .root = "@roots/2", .reason = "update" },
+        .{ .n = 6, .time = 6, .root = "@roots/3", .reason = "fell back from 5 to 4" },
+    };
+    try testing.expectEqual(6, made(&recs, 5, "fell back from 5 to 4"));
+    try testing.expectEqual(null, made(recs[0..2], 5, "fell back from 5 to 4"));
+    // one from an older trial doesn't count.
+    try testing.expectEqual(null, made(&recs, 7, "fell back from 5 to 4"));
+}
+
 test "a trial falls back to the generation that booted last" {
     const r = struct {
         fn at(n: u32) Record {

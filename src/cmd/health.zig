@@ -48,7 +48,12 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         _ = try store.end();
         return 0;
     };
-    if (!std.mem.eql(u8, boot.root_subvol.?[1..], record.root)) {
+    // a power cut stopped os partway: after the trial passed, or before
+    // it was armed.
+    if (t.phase == .passed) return finishPass(ctx, a, store, boot, record, false);
+    const on_trial_root = std.mem.eql(u8, boot.root_subvol.?[1..], record.root);
+    if (t.phase == .arming and !on_trial_root) return rearm(ctx, a, store, boot, t, record);
+    if (!on_trial_root) {
         // an older entry picked by hand before the trial ran isn't a
         // failed trial: the next boot tries it again.
         if (!t.tried) {
@@ -69,38 +74,90 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 
     const problems = try check(ctx, a, try trialInputs(ctx, a, record));
     if (problems.len == 0) {
-        if (try headDefault(ctx, a, boot)) |why| try ctx.err.print("os: generation {d} is healthy, but couldn't make it grub.cfg's default: {s}. `os gc` writes the menu again.\n", .{ t.n, why });
-        if (try store.end()) |why| return cli.fail(ctx, "generation {d} is healthy, but couldn't make it the default: {s}", .{ t.n, why });
-        try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .trial, .step = .passed, .generation = t.n });
-        try ctx.out.print("generation {d} came up healthy. it's the default now.\n", .{t.n});
-        if (try settleBoot(ctx, a, boot)) |why| try ctx.err.print("os: {s}\n", .{why});
-        return 0;
+        // noted first: the default moves in more than one step, and a
+        // power cut between them mustn't look like a failed trial.
+        if (try store.pass()) |why| try ctx.err.print("os: couldn't note that generation {d} passed: {s}\n", .{ t.n, why });
+        return finishPass(ctx, a, store, boot, record, true);
     }
     try ctx.out.print("generation {d} isn't healthy: {s}. going back to the generation before.\n", .{ t.n, try std.mem.join(a, "; ", problems) });
+    // a trial that was never armed may still be the default, so it's
+    // armed first, and the next boot tries it once more before it falls
+    // back.
+    if (t.phase == .arming) _ = try rearm(ctx, a, store, boot, t, record);
     // the trial stays marked, so the boot that falls back knows why.
     try ctx.out.flush();
     _ = try exec.run(a, ctx.io, &.{ "systemctl", "reboot" });
     return 1;
 }
 
+/// the trial passed: grub.cfg's default and the bootloader's choices
+/// move to it, and the trial ends. `fresh` is false when an earlier boot
+/// passed it and a power cut stopped os before it finished, and this boot
+/// may run another generation.
+fn finishPass(ctx: *Context, a: Allocator, store: trial.Store, boot: facts.Boot, record: generation.Record, fresh: bool) !u8 {
+    if (try headDefault(ctx, a, boot)) |why| try ctx.err.print("os: generation {d} is healthy, but couldn't make it grub.cfg's default: {s}. `os gc` writes the menu again.\n", .{ record.n, why });
+    if (try store.end()) |why| return cli.fail(ctx, "generation {d} is healthy, but couldn't make it the default: {s}", .{ record.n, why });
+    if (fresh) {
+        try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .trial, .step = .passed, .generation = record.n });
+        try ctx.out.print("generation {d} came up healthy. it's the default now.\n", .{record.n});
+    } else if (std.mem.eql(u8, boot.root_subvol.?[1..], record.root)) {
+        try ctx.out.print("generation {d} came up healthy before the machine went down. it's the default now.\n", .{record.n});
+    } else {
+        try ctx.out.print("generation {d} came up healthy, but the machine went down before it was the default. it is now; reboot to run it.\n", .{record.n});
+    }
+    if (try settleBoot(ctx, a, boot)) |why| try ctx.err.print("os: {s}\n", .{why});
+    return 0;
+}
+
+/// a trial whose note went in, but whose bootloader setup a power cut may
+/// have stopped: the menu that holds the default on its fallback is
+/// written again, and the trial is armed, so the next boot tries it.
+fn rearm(ctx: *Context, a: Allocator, store: trial.Store, boot: facts.Boot, t: trial.Trial, record: generation.Record) !u8 {
+    const records = try gens.readRecords(a, ctx.io, "/var");
+    const fallback = generation.find(records, t.fallback) orelse {
+        _ = try store.end();
+        try ctx.err.print("os: generation {d}'s trial was never set up, and the generation it falls back to, {d}, is gone. it's ended; the next boot runs {d}.\n", .{ t.n, t.fallback, t.n });
+        return 1;
+    };
+    var why: []const u8 = "";
+    const m = try gens.Machine.open(a, ctx.io, boot, &why) orelse return cli.fail(ctx, "generation {d}'s trial was never set up, and can't be now: {s}", .{ t.n, why });
+    defer m.close();
+    const head = try std.fmt.allocPrint(a, "/{s}", .{record.root});
+    if (try m.writeMenuHolding(head, records, t.fallback)) |w| return cli.fail(ctx, "generation {d}'s trial was never set up, and the menu for it can't be written: {s}", .{ t.n, w });
+    if (try store.arm(t.n, fallback)) |w| return cli.fail(ctx, "generation {d}'s trial was never set up, and can't be now: {s}", .{ t.n, w });
+    try ctx.out.print("generation {d}'s trial wasn't set up before the machine went down. the next boot tries it once; if it doesn't come up healthy, the machine goes back to generation {d}.\n", .{ t.n, t.fallback });
+    return 0;
+}
+
 /// the trial didn't come up healthy, and this boot runs the generation
 /// before it, from its copy. that becomes the newest generation, with its
-/// config, the trial ends, and a notice says what happened.
+/// config, the trial ends, and a notice says what happened. a fallback a
+/// power cut stopped after it made its generation isn't made twice: the
+/// trial just ends.
 fn fellBack(ctx: *Context, a: Allocator, store: trial.Store, boot: facts.Boot, tried: u32) !u8 {
     const running = boot.root_subvol.?;
     const n = generation.bootCopyOf(running) orelse 0;
-    const target = generation.find(try gens.readRecords(a, ctx.io, "/var"), n) orelse {
+    const records = try gens.readRecords(a, ctx.io, "/var");
+    const target = generation.find(records, n) orelse {
         try ctx.err.print("os: generation {d} didn't start, and this boot isn't one os knows ({s}).\n", .{ tried, running });
         _ = try store.end();
         return 1;
     };
-    try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .trial, .step = .failed, .generation = tried });
     const reason = try std.fmt.allocPrint(a, "fell back from {d} to {d}", .{ tried, n });
+    if (generation.made(records, tried, reason)) |made| {
+        if (try store.end()) |why| try ctx.err.print("os: couldn't end generation {d}'s trial: {s}\n", .{ tried, why });
+        return fellBackNotice(ctx, a, tried, n, made);
+    }
+    try cli.note(ctx, a, .{ .time = journal.now(ctx.io), .kind = .trial, .step = .failed, .generation = tried });
     var left: std.ArrayList([]const u8) = .empty;
     const m = try rollback.openWayBack(ctx, a, boot, &left) orelse return 1;
     defer m.close();
     const made = try rollback.startFrom(ctx, a, &m, boot, target, running, reason) orelse return 1;
     try rollback.warnUnsigned(ctx, a, left.items);
+    return fellBackNotice(ctx, a, tried, n, made);
+}
+
+fn fellBackNotice(ctx: *Context, a: Allocator, tried: u32, n: u32, made: u32) !u8 {
     const notice = try std.fmt.allocPrint(a, "generation {d} didn't come up healthy, so this machine went back to generation {d}. it's generation {d} now, with its config. `os rollback {d}` tries {d} again.\n", .{ tried, n, made, tried, tried });
     if (try gens.writeNotice(a, ctx.io, notice)) |why| try ctx.err.print("os: {s}\n", .{why});
     try ctx.out.writeAll(notice);
