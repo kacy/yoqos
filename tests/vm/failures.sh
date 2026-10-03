@@ -200,8 +200,8 @@ disk_full() {
     check "$os plan" "$empty"
 }
 
-# fills the esp up, leaving 2 MiB: less than a new initramfs, or the
-# 8 MiB file esp_restore makes.
+# fills the esp up, leaving 2 MiB: less than a new initramfs, or a
+# kernel.
 fill_esp() {
     "$vm" ssh "avail=\$(df --output=avail -B1M $VM_ESP | tail -n 1); dd if=/dev/zero of=$VM_ESP/yoq-filler bs=1M count=\$((avail - 2)) status=none; sync; df -m $VM_ESP | tail -n 1"
 }
@@ -236,19 +236,16 @@ esp_full() {
 }
 
 # with grub and the esp at /boot, only the running root's boot files are
-# on the esp, and a rollback puts the target's there. with the esp full,
-# the rollback goes ahead all the same, copies nothing, and says so; the
-# new generation boots the kernel in its own root, and the first good
-# boot once there's room puts its files on the esp.
+# on the esp, and a rollback puts the target's there. kernel.sh left a
+# pinned generation with an older kernel than today's. with the esp full,
+# the rollback to it goes ahead all the same, copies nothing, and says so;
+# the new generation boots the older kernel from its own root, where its
+# modules are, and the first good boot once there's room puts its files on
+# the esp. then forward again, to the newest.
 esp_restore() {
-    # a boot file only the older generation has, so the rollback has one
-    # to copy. grub's entries boot vmlinuz-linux, whatever else is there.
-    fake=$VM_ESP/vmlinuz-yoq-test
-    "$vm" ssh "head -c 8M /dev/urandom > $fake"
-    "$vm" ssh "$os add --yes figlet" | tail -n 1
-    target=$("$vm" ssh "$newest_cmd")
-    "$vm" ssh "rm $fake"
-    "$vm" ssh "$os remove --yes figlet" | tail -n 1
+    target=$("$vm" ssh "cat /root/old-kernel-gen")
+    back=$("$vm" ssh "$newest_cmd")
+    running=$("$vm" ssh "uname -r")
     check "$os plan" "$empty"
     fill_esp
     check "$os rollback --yes $target >/tmp/out 2>&1; echo \$?" 0
@@ -256,20 +253,25 @@ esp_restore() {
     check "grep -c 'boot files don.t fit on the esp, so nothing was copied there' /tmp/out" 1
     check "grep -c 'the esp at $VM_ESP has .* MiB free, and the new boot files need' /tmp/out" 1
     check "grep -c 'removing generations won.t help' /tmp/out" 1
-    check "ls $VM_ESP | grep -c -e yoq-new -e vmlinuz-yoq-test || true" 0
+    check "ls $VM_ESP | grep -c yoq-new || true" 0
     root=$(newest_root)
     check "cat /var/lib/yoq/unsettled" "/$root"
     "$vm" ssh "rm -f $VM_ESP/yoq-filler; sync"
     "$vm" reboot
     settled
     check "findmnt -no FSROOT /" "/$root"
+    # the older kernel, from the root's own /boot, not today's on the esp,
+    # and its modules with it.
+    check "test \"\$(uname -r)\" != $running && echo older" older
+    check "grep -c 'BOOT_IMAGE=[^ ]*/$root/boot/vmlinuz-linux' /proc/cmdline" 1
+    kernel_matches
     check "test -e /var/lib/yoq/unsettled && echo noted || echo none" none
-    check "test -s $fake && echo moved" moved
-    # the rolled-back config has figlet; the next generation drops it,
-    # and the esp's files, without the fake, go into its root.
     check "$os plan" "$empty"
-    "$vm" ssh "rm $fake"
-    "$vm" ssh "$os remove --yes figlet" | tail -n 1
+    "$vm" ssh "$os rollback --yes $back" | tail -n 1
+    "$vm" reboot
+    settled
+    check "uname -r" "$running"
+    kernel_matches
     check "$os plan" "$empty"
 }
 

@@ -54,6 +54,8 @@ ext4)
     # after its transaction, and no network.
     tests/vm/failures.sh crash committed download
     tests/vm/secrets.sh
+    # a new kernel, applied live, and the old one's modules kept for it.
+    tests/vm/kernel-live.sh
     # generations need btrfs: enable-rollback says so, and changes nothing.
     tests/vm/manage.sh "root filesystem: ext4"
     tests/vm/aur.sh
@@ -86,6 +88,10 @@ refind)
     ;;
 *)
     tests/vm/rollback.sh
+    # the kernel changing through generations: back a few weeks, the
+    # weekly update forward, and rollbacks across it. it leaves a pinned
+    # generation with the older kernel for failures.sh restore.
+    if [ "${VM_IMAGE:-cloud}" = archinstall ]; then tests/vm/kernel.sh; fi
     # a drop-in built into a staged root, on one image of the two.
     if [ "${VM_IMAGE:-cloud}" = cloud ]; then tests/vm/initramfs.sh; fi
     tests/vm/trial.sh
