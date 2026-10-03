@@ -1,0 +1,5 @@
+# the smallest config that's still a whole machine. everything not named
+# here, like the kernel (linux) and its firmware, comes from os's defaults
+# or as a dependency.
+version = 1
+packages = ["base", "linux-firmware", "grub", "efibootmgr", "git", "ripgrep"]

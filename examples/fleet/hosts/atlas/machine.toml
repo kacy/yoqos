@@ -1,0 +1,15 @@
+# the desktop. includes merge in order, and this file has the last word:
+# package lists add up, and every other value replaces what came before.
+include = ["../../base.toml", "../../profiles/desktop.toml"]
+packages = ["obs-studio", "gimp"]
+
+[system]
+hostname = "atlas"
+
+[hardware]
+cpu = "amd"
+gpu = "amd"
+
+[remove]
+# base.toml wants nano everywhere; not on this one.
+packages = ["nano"]

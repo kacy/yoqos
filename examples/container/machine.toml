@@ -1,0 +1,20 @@
+# a machine with no kernel of its own: a systemd-nspawn container, or a
+# toolbox for a project. `kernel = "none"` keeps os from installing or
+# expecting one; everything else works the same.
+version = 1
+packages = ["base", "git", "base-devel", "zig", "ripgrep", "fd"]
+
+[system]
+hostname = "builder"
+timezone = "UTC"
+locale = "C.UTF-8"
+
+[boot]
+kernel = "none"
+
+[users.dev]
+shell = "bash"
+groups = ["wheel"]
+
+[files."/etc/profile.d/zig-cache.sh"]
+text = "export ZIG_GLOBAL_CACHE_DIR=/var/cache/zig\n"

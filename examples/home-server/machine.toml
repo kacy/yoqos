@@ -1,0 +1,54 @@
+# a headless box in a closet: containers, file sync, a vpn to reach it
+# from anywhere, and an ssh that only takes keys. the lts kernel means
+# fewer reboots for kernel updates.
+version = 1
+packages = [
+  "base", "linux-firmware", "grub", "efibootmgr", "btrfs-progs", "sudo",
+  "docker-compose", "htop", "tmux", "rsync", "smartmontools",
+]
+
+[system]
+hostname = "closet"
+timezone = "UTC"
+locale = "en_US.UTF-8"
+
+[boot]
+kernel = "linux-lts"
+
+[users.admin]
+shell = "bash"
+groups = ["wheel", "docker"]
+
+[services]
+ssh = true
+docker = true
+tailscale = true
+firewalld = true
+fstrim = true
+resolved = true
+
+# a service os doesn't know by name: give its unit and package.
+[services.syncthing]
+unit = "syncthing@admin.service"
+package = "syncthing"
+
+[services.smartd]
+unit = "smartd.service"
+package = "smartmontools"
+
+# a drop-in instead of editing sshd_config, which stays the package's.
+[files."/etc/ssh/sshd_config.d/10-keys-only.conf"]
+text = """
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+"""
+
+# a backup job's credentials, kept out of the config.
+[files."/etc/restic/env"]
+secret = "restic/env"
+
+[sysctl]
+# docker and tailscale both route.
+"net.ipv4.ip_forward" = 1
+"net.ipv6.conf.all.forwarding" = 1

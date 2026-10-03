@@ -1,0 +1,16 @@
+# what a desktop adds to the base.
+packages = ["firefox", "kitty", "wofi", "waybar", "noto-fonts", "noto-fonts-emoji"]
+
+[desktop]
+session = "hyprland"
+audio = "pipewire"
+login = "greetd"
+
+[users.jo]
+groups = ["wheel", "video", "input"]
+
+[services]
+networkmanager = true
+bluetooth = true
+# a desktop doesn't need to be reached over ssh.
+ssh = false

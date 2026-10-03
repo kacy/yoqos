@@ -1,0 +1,27 @@
+# what every machine in the fleet shares. hosts include this first, then a
+# profile, then say what makes them different.
+version = 1
+packages = [
+  "base", "linux-firmware", "grub", "efibootmgr", "btrfs-progs", "sudo",
+  "git", "neovim", "htop", "nano",
+]
+
+[system]
+timezone = "America/Chicago"
+locale = "en_US.UTF-8"
+keymap = "us"
+
+[users.jo]
+shell = "zsh"
+groups = ["wheel"]
+
+[services]
+ssh = true
+tailscale = true
+timesyncd = true
+
+[files."/etc/motd"]
+source = "files/motd"
+
+[sysctl]
+"kernel.sysrq" = 1

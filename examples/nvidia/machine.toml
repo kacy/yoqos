@@ -1,0 +1,40 @@
+# a desktop with an nvidia card, for games and streaming. `gpu = "nvidia"`
+# brings the open kernel modules and nvidia-utils, and loads the modules
+# early from the initramfs. a driver change needs a reboot, and on a
+# machine with generations that reboot is a trial: if the desktop doesn't
+# come up, the machine goes back to the generation before.
+version = 1
+packages = [
+  "base", "linux-firmware", "grub", "efibootmgr", "btrfs-progs", "sudo",
+  "plasma-meta", "konsole", "dolphin",
+  "gamemode", "mangohud", "obs-studio", "firefox", "noto-fonts",
+]
+
+[providers]
+# a few kde packages accept either; say which, and os never has to ask.
+phonon-qt6-backend = "phonon-qt6-vlc"
+
+[system]
+hostname = "rig"
+timezone = "America/Los_Angeles"
+locale = "en_US.UTF-8"
+
+[hardware]
+cpu = "amd"
+gpu = "nvidia"
+
+[desktop]
+audio = "pipewire"
+login = "sddm"
+
+[users.alex]
+shell = "bash"
+groups = ["wheel", "video", "gamemode"]
+
+[services]
+networkmanager = true
+bluetooth = true
+
+[sysctl]
+# some games map a lot of memory.
+"vm.max_map_count" = 2147483642
