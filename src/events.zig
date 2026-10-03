@@ -162,6 +162,22 @@ fn merge(a: Allocator, x: []const Event, y: []const Event) ![]Event {
     return out;
 }
 
+/// whether the journal under `root` says os armed a trial of generation
+/// `n` and nothing has happened to trials or generations since: its last
+/// trial or generation event is that trial's `armed`. before 0.1.4, that
+/// event was all os noted of a grub trial.
+pub fn armedLast(a: Allocator, io: std.Io, root: []const u8, n: u32) !bool {
+    const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
+    var last: ?Event = null;
+    var lines = std.mem.tokenizeScalar(u8, try fs.readTail(journal.path, window), '\n');
+    while (lines.next()) |line| {
+        const e = decode(a, line) orelse continue;
+        if (e.kind == .trial or e.kind == .generation) last = e;
+    }
+    const e = last orelse return false;
+    return e.kind == .trial and e.step == .armed and e.generation == n;
+}
+
 /// the unix milliseconds `--since` names: a number of them, or a utc date,
 /// yyyy-mm-dd, or date and time, yyyy-mm-ddThh:mm[:ss], with or without a
 /// trailing Z. null for anything else.
@@ -264,6 +280,32 @@ test "an event recorded under a /var of its own is in that /var's journal" {
     const got = try poll(a, testing.io, root, &offsets);
     try testing.expectEqual(1, got.len);
     try testing.expectEqual(.@"enable-rollback", got[0].kind);
+}
+
+test "a trial armed last, as os before 0.1.4 noted a grub trial" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try testing.expect(!try armedLast(a, testing.io, root, 4));
+    // a line as 0.1.3 wrote it.
+    try tmp.dir.createDirPath(testing.io, "var/lib/yoq");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = journal.path, .data =
+        \\{"schema":"yoq.event/1","time":1,"kind":"generation","generation":4,"message":"add amd-ucode"}
+        \\{"schema":"yoq.event/1","time":2,"kind":"trial","step":"armed","generation":4}
+        \\{"time":3,"event":"done","plan":"abc"}
+        \\
+    });
+    try testing.expect(try armedLast(a, testing.io, root, 4));
+    try testing.expect(!try armedLast(a, testing.io, root, 3));
+    // ended, or followed by another generation, it's not armed any more.
+    try record(a, testing.io, root, .{ .time = 4, .kind = .trial, .step = .passed, .generation = 4 });
+    try testing.expect(!try armedLast(a, testing.io, root, 4));
+    try record(a, testing.io, root, .{ .time = 5, .kind = .trial, .step = .armed, .generation = 4 });
+    try record(a, testing.io, root, .{ .time = 6, .kind = .generation, .generation = 5 });
+    try testing.expect(!try armedLast(a, testing.io, root, 4));
 }
 
 test "the journal's apply lines and the drift log's lines are events too" {

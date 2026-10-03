@@ -35,6 +35,13 @@ trap '"$vm" stop' EXIT
 "$vm" ssh pacman -Syu --noconfirm --noprogressbar --needed git >/dev/null
 "$vm" reboot
 
+# the upgrade from an older os runs on its own: os goes in /usr/bin there,
+# so nothing may shadow it in /usr/local/bin.
+if [ "${VM_SUITE:-}" = upgrade ]; then
+    tests/vm/upgrade.sh /tmp/old/0.1.0/zig-out/bin/os /tmp/old/0.1.3/zig-out/bin/os "$os"
+    exit 0
+fi
+
 "$vm" copy "$os" /usr/local/bin/os
 "$vm" copy tests/arch/smoke.sh /root/smoke.sh
 "$vm" ssh mkdir -p /root/dist
