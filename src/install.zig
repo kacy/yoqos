@@ -96,11 +96,19 @@ pub const tools = [_][]const u8{ "wipefs", "sfdisk", "udevadm", "blkid", "mkfs.f
 pub const encrypt_tools = [_][]const u8{"cryptsetup"};
 pub const tpm_tools = [_][]const u8{"systemd-cryptenroll"};
 
-/// what the tpm's key is sealed to: pcr 7, the firmware's secure boot
-/// state. it has to be said: since systemd 258, systemd-cryptenroll seals
-/// to nothing by default, and the tpm then hands the key to anything that
-/// boots.
-pub const tpm_pcrs = "--tpm2-pcrs=7";
+/// systemd-cryptenroll's arguments for a tpm key on `part`, sealed to pcr
+/// 7, the firmware's secure boot state. that has to be said: since systemd
+/// 258, systemd-cryptenroll seals to nothing by default, and the tpm then
+/// hands the key to anything that boots. with `key_on_stdin`, the
+/// passphrase that opens the volume comes on standard input; without it,
+/// systemd-cryptenroll asks for it.
+pub fn enrollArgv(a: Allocator, part: []const u8, key_on_stdin: bool) ![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.append(a, "systemd-cryptenroll");
+    if (key_on_stdin) try argv.append(a, "--unlock-key-file=/dev/stdin");
+    try argv.appendSlice(a, &.{ "--tpm2-device=auto", "--tpm2-pcrs=7", part });
+    return argv.items;
+}
 
 /// the tpm2-tss library systemd-cryptenroll loads to talk to the tpm.
 /// it's missing as "tpm2-tss", the package that has it.
@@ -553,4 +561,14 @@ fn notes(lines: []const []const u8) usize {
     var n: usize = 0;
     for (lines) |l| n += @intFromBool(std.mem.startsWith(u8, l, "note: "));
     return n;
+}
+
+test "a tpm key is sealed to pcr 7" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const piped = try enrollArgv(a, "/dev/vda2", true);
+    try testing.expectEqualStrings("systemd-cryptenroll --unlock-key-file=/dev/stdin --tpm2-device=auto --tpm2-pcrs=7 /dev/vda2", try std.mem.join(a, " ", piped));
+    const asked = try enrollArgv(a, "/dev/vda2", false);
+    try testing.expectEqualStrings("systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7 /dev/vda2", try std.mem.join(a, " ", asked));
 }
