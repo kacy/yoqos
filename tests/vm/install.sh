@@ -48,7 +48,8 @@ check "/usr/local/bin/os install /root/machines --disk /dev/vdc --tpm --passphra
 check "cryptsetup isLuks --type luks2 /dev/vdc2 && echo luks2" luks2
 check "cryptsetup luksDump /dev/vdc2 | grep -c 'systemd-tpm2'" 1
 # sealed to pcr 7: systemd-cryptenroll seals to nothing unless told.
-check "cryptsetup luksDump /dev/vdc2 | sed -n 's/^[[:space:]]*tpm2-hash-pcrs:[[:space:]]*//p'" 7
+# systemd's token plugin prints its part of the dump on stderr.
+check "cryptsetup luksDump /dev/vdc2 2>&1 | sed -n 's/^[[:space:]]*tpm2-hash-pcrs:[[:space:]]*//p'" 7
 check "printf 'correct horse battery' | cryptsetup open --test-passphrase /dev/vdc2 && echo opens" opens
 # if it's still open, what holds it: a mount in another namespace, a
 # holder, a loop device, or gpg's daemons for the build's keyring.
