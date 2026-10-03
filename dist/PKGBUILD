@@ -24,7 +24,7 @@ depends=(glibc pacman systemd systemd-libs git shadow util-linux coreutils findu
 optdepends=('grub: generations and rollback (os enable-rollback)'
             'efibootmgr: grub-install on machines that boot grub by name'
             'mkinitcpio: initramfs changes for gpu drivers')
-makedepends=(zig)
+makedepends=(zig lowdown)
 # zig's own debug info stays in the binary; there's no separate package.
 options=(!debug)
 source=("yoqos::git+${YOQ_SOURCE:-https://github.com/kacy/yoqos.git}$_ref")
@@ -42,6 +42,8 @@ build() {
   export ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache"
   # a baseline cpu, so the package runs on any x86_64 machine.
   zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline --prefix "$srcdir/out"
+  # os(1) and os-generations(7), from the docs.
+  dist/man.sh "$srcdir/man"
 }
 
 check() {
@@ -56,5 +58,7 @@ package() {
   install -Dm644 dist/yoq-drift.hook "$pkgdir/usr/share/libalpm/hooks/yoq-drift.hook"
   install -Dm644 -t "$pkgdir/usr/share/yoq/profiles" dist/profiles/*.toml
   install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md docs/*.md
+  install -Dm644 "$srcdir/man/os.1" "$pkgdir/usr/share/man/man1/os.1"
+  install -Dm644 "$srcdir/man/os-generations.7" "$pkgdir/usr/share/man/man7/os-generations.7"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
