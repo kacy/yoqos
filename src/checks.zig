@@ -300,6 +300,12 @@ pub fn checkSecureBoot(c: *const config.Config, f: *const facts.Facts, diags: *d
         try diags.add(.secure_boot_keys, v.src, "secure_boot is on, but sbctl has no keys in {s} to sign with", .{secureboot.keys_dir}, "run `sbctl create-keys`, then plan again. enroll the keys only once a generation with signed images is ready");
         return false;
     }
+    // images signed with keys the firmware doesn't have won't start, and
+    // limine and refind stop there for good instead of falling back.
+    if (f.boot.secure_boot == true and f.boot.db_enrolled == false) {
+        try diags.add(.secure_boot_enrolled, v.src, "the firmware enforces secure boot, but sbctl's keys in {s} aren't enrolled in it", .{secureboot.keys_dir}, "images signed with them wouldn't start. put the firmware in setup mode and run `sbctl enroll-keys -m`, or turn secure boot off in the firmware until then");
+        return false;
+    }
     if (std.mem.eql(u8, f.boot.loader orelse "", "grub") and f.boot.tpm2 == false) {
         try diags.add(.secure_boot_tpm, v.src, "secure_boot is on, but grub can't start under secure boot without a tpm 2.0", .{}, "turn the tpm on in the firmware setup, or leave secure_boot off on this machine");
         return false;
@@ -387,6 +393,18 @@ test "secure boot without sbctl's keys stops the plan" {
     var sdboot = grub;
     sdboot.loader = "systemd-boot";
     try testing.expect(try checkSecureBoot(&c, &.{ .boot = sdboot }, &t.diags));
+    // enforced, with keys the firmware doesn't have. in setup mode the
+    // firmware enforces nothing, which is when keys get enrolled.
+    var other_keys = sdboot;
+    other_keys.secure_boot = true;
+    other_keys.db_enrolled = false;
+    try testing.expect(!try checkSecureBoot(&c, &.{ .boot = other_keys }, &t.diags));
+    try testing.expectEqual(diag.Code.secure_boot_enrolled, t.diags.items.items[2].code);
+    other_keys.secure_boot = false;
+    try testing.expect(try checkSecureBoot(&c, &.{ .boot = other_keys }, &t.diags));
+    other_keys.secure_boot = true;
+    other_keys.db_enrolled = true;
+    try testing.expect(try checkSecureBoot(&c, &.{ .boot = other_keys }, &t.diags));
 }
 
 test "how much room a plan's new boot files take on the esp" {
