@@ -145,6 +145,9 @@ other boot: by itself with a tpm key, or with someone typing the
 passphrase. the watchdog's five minutes start once the root's systemd
 does, so the time at the prompt doesn't count.
 
+[examples/laptop](../examples/laptop/machine.toml) has a config with luks,
+unified kernel images, and secure boot all on.
+
 ## unified kernel images
 
 with `[boot] uki = true` in the config, generations boot unified kernel

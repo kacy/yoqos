@@ -71,7 +71,7 @@ each release on github has an arch package and a tarball, with a
 `sha256sums.txt` beside them:
 
 ```
-sudo pacman -U yoq-os-0.1.4-1-x86_64.pkg.tar.zst
+sudo pacman -U yoq-os-0.1.5-1-x86_64.pkg.tar.zst
 ```
 
 the package holds the `os` command, a pacman hook that records direct
@@ -85,7 +85,7 @@ repository's `main` branch, or `yoq-os` from a release tag with
 ```
 cd dist
 makepkg -si                              # yoq-os-git, from main
-YOQ_VERSION=0.1.4 makepkg -si            # yoq-os 0.1.4, from v0.1.4
+YOQ_VERSION=0.1.5 makepkg -si            # yoq-os 0.1.5, from v0.1.5
 YOQ_SOURCE=file://$PWD/.. makepkg -si    # this checkout
 ```
 
@@ -638,7 +638,7 @@ again once the new machine runs.
    drive is erased; `lsblk` says which one it is.
 
    ```
-   sudo dd if=yoq-os-0.1.4-x86_64.iso of=/dev/sdX bs=4M status=progress oflag=sync
+   sudo dd if=yoq-os-0.1.5-x86_64.iso of=/dev/sdX bs=4M status=progress oflag=sync
    ```
 
 2. boot the new machine from the drive, in uefi mode. its boot menu says
@@ -992,6 +992,9 @@ package = "syncthing"
 
 services the config doesn't mention are left alone, and so are users.
 
+[examples/home-server](../examples/home-server/machine.toml) turns on a
+handful, and names two that `os` doesn't know.
+
 ### users
 
 ```toml
@@ -1131,6 +1134,11 @@ reading values needs root, so `os plan` without root can't tell whether a
 file holds the current value, and only shows it when it's missing or its
 mode differs. `apply` runs as root and sees all of it.
 
+[examples/laptop](../examples/laptop/machine.toml) keeps its wi-fi
+password this way, and
+[examples/home-server](../examples/home-server/machine.toml) a backup job's
+credentials.
+
 ### the desktop
 
 ```toml
@@ -1168,6 +1176,10 @@ for anyone without a config of their own in `~/.config/hypr`, and a user
 config can include it with `source = /etc/xdg/hypr/hyprland.conf`. that
 makes it the machine's default, and part of every generation. everything
 else in your home directory is yours; `os` doesn't touch it.
+
+[examples/hyprland](../examples/hyprland) is a whole hyprland desktop,
+`hyprland.conf` included, and [examples/nvidia](../examples/nvidia/machine.toml)
+is kde on an nvidia card with sddm.
 
 ### omarchy
 
@@ -1351,6 +1363,9 @@ without the key starts too.
 machine has no keys yet. install without it, then follow the steps above
 there.
 
+[examples/laptop](../examples/laptop/machine.toml) is a whole machine with
+luks, `uki`, and `secure_boot` on.
+
 ### repositories
 
 ```toml
@@ -1419,6 +1434,9 @@ isn't today, so they match what the lock installs. `os add`, `os
 remove`, and the like keep the recipes the lock already has; only `os
 update` builds.
 
+[examples/aur](../examples/aur/machine.toml) has aur packages beside
+chaotic-aur as a repository.
+
 ### includes
 
 a repository for several machines can share files:
@@ -1456,6 +1474,9 @@ packages = [
   "ripgrep",  # hosts/atlas/machine.toml:3
 ]
 ```
+
+[examples/fleet](../examples/fleet) is a whole repository like this for two
+machines, with `[remove]` and `unset` at work.
 
 ## errors
 
