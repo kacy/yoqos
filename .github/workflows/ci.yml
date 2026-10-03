@@ -68,8 +68,15 @@ jobs:
       fail-fast: false
       matrix:
         image: [cloud, archinstall, ext4, limine, refind, sdboot, snapper]
+        suite: [full]
+        # os upgraded from 0.1.0, on a machine 0.1.0 set up.
+        include:
+          - image: cloud
+            suite: upgrade
     env:
       VM_IMAGE: ${{ matrix.image }}
+      VM_SUITE: ${{ matrix.suite }}
+      VM_OLD_OS: /tmp/old/zig-out/bin/os
     container:
       image: archlinux:latest
       options: --device /dev/kvm
@@ -80,6 +87,9 @@ jobs:
         with:
           version: 0.16.0
       - run: zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline
+      # the os the upgrade starts from, built from its tag.
+      - if: matrix.suite == 'upgrade'
+        run: git config --global --add safe.directory "$PWD" && git fetch --depth=1 origin tag v0.1.0 && mkdir -p /tmp/old && git archive v0.1.0 | tar -x -C /tmp/old && cd /tmp/old && zig build -Dalpm -Dsystemd -Doptimize=ReleaseSafe -Dcpu=baseline
       - id: week
         run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
       # saved right after it's made, so a failing test doesn't mean
