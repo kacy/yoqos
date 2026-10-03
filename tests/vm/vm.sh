@@ -246,14 +246,14 @@ reboot-answer)
     from=$(($(stat -c %s "$dir/console.log") + 1))
     run systemctl reboot || true
     for _ in $(seq 100); do
-        tail -c +"$from" "$dir/console.log" | grep -a -q -- "$2" && break
+        tail -c +"$from" "$dir/console.log" | grep -a -- "$2" >/dev/null && break
         if [ -n "${VM_ANSWER_MAYBE:-}" ]; then
             id=$(timeout 20 ssh $ssh_opts -p "$port" root@127.0.0.1 cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
             if [ -n "$id" ] && [ "$id" != "$old" ]; then exit 0; fi
         fi
         sleep 3
     done
-    if ! tail -c +"$from" "$dir/console.log" | grep -a -q -- "$2"; then
+    if ! tail -c +"$from" "$dir/console.log" | grep -a -- "$2" >/dev/null; then
         echo "vm: no '$2' on the console after 5 minutes; the console log is $dir/console.log" >&2
         exit 1
     fi
