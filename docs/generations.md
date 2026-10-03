@@ -447,13 +447,36 @@ into the generation before.
 
 a trial boot that hangs without panicking, for example on a service that
 never finishes starting, gets five minutes. then `yoq-watchdog.timer`
-reboots it, and the bootloader picks the generation before.
+reboots it, and the bootloader picks the generation before. the timer
+starts with the root's systemd, before `sysinit.target`, so a unit that
+holds up early boot can't stop it. a trial that drops to an emergency
+shell, because the initramfs can't mount the root or a mount in fstab
+never comes, would wait there for a password. `yoq-emergency.service`,
+wanted by `emergency.target` and only on a trial boot, reboots it
+instead, in the root and in a systemd initramfs, where mkinitcpio's
+`yoq-trial` hook puts it (`/etc/initcpio/install/yoq-trial`, added by
+`/etc/mkinitcpio.conf.d/95-yoq-trial.conf`). a busybox initramfs gets
+the hook too, but stops at its own shell, so there the machine waits.
 
 if the new generation can't boot at all, the next boot lands on the default
 by itself, since the trial entry was only for one boot. a kernel panic
-reboots after 10 seconds, on every bootloader. either way, `os` notices on
-that boot, makes it the newest generation with its config,
-and `os status` explains what happened:
+reboots after 10 seconds, on every bootloader. a kernel or image the
+bootloader can't load is different:
+
+- grub falls back to the generation before by itself.
+- systemd-boot, from 258, reboots when an entry with a boot counter
+  fails to start, and the trial's entry has one,
+  `yoq-trial+1.conf`. the boot after gets the default.
+- limine stops at an error screen until someone presses a key. so does
+  an older systemd-boot. `os` looks at the files the trial's entry loads
+  right after it sets up the trial, and again at shutdown, from
+  `yoq-carry.service`: a missing file, a kernel or image cut short, or a
+  copy whose content no longer matches the hash in its name. if one is
+  broken, the trial isn't tried, and the next boot runs the generation
+  before, which counts as the trial failing.
+
+either way, `os` notices on that boot, makes it the newest generation with
+its config, and `os status` explains what happened:
 
 ```
 note: generation 7 didn't come up healthy, so this machine went back to generation 6. it's generation 8 now, with its config. `os rollback 7` tries 7 again.
@@ -464,11 +487,15 @@ bootloader, which would start the new generation's kernel with the memory
 of the one running now, so `os` turns hibernation off in `/run`, which the
 next boot clears. suspending to memory still works.
 
-on grub, if you pick an older entry from the menu before the trial
-has run, that doesn't count as a failure; the next boot tries the new
-generation again. limine, systemd-boot, and the firmware for refind forget
-the trial as soon as they read it, so there, picking an older entry counts
-as the trial failing.
+if you pick an older entry from the menu before the trial has run, that
+doesn't count as a failure; the next boot tries the new generation again.
+grub notes the trial entry starting in its env file. limine and
+systemd-boot clear the trial's one-shot whatever boots, but name the
+entry they booted, and `os` compares that with the default, the
+generation the trial falls back to. on refind, the trial starts its own
+copy of refind from a firmware entry, and a pick there boots from that
+entry. picking the generation the trial falls back to itself looks the
+same as the trial failing, except on grub.
 
 ## keeping and cleaning up
 

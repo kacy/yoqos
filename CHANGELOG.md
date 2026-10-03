@@ -20,6 +20,25 @@
   generation the trial falls back to. grub was given that generation by
   name, which it ignores for a fallback, so it showed the failed entry
   again and again instead of falling back, and the watchdog never started.
+- an older entry picked by hand while a trial waits leaves the trial
+  waiting, on limine, systemd-boot, and refind too. those cleared the
+  trial's one-shot whatever booted, so `os` took the pick as the trial
+  failing, and rolled the machine back to the generation picked, config
+  and all. on refind, the check for a trial that hadn't booted yet looked
+  at the wrong efi variable, so every boot looked like it had.
+- a trial whose kernel or image the bootloader can't load falls back
+  instead of stopping at an error screen. systemd-boot's trial entry has
+  a boot counter, which makes systemd-boot 258 and later reboot into the
+  default when it can't start it, and `os` doesn't try a trial whose
+  files are missing, cut short, or changed since it put them on the esp,
+  checking right after it sets the trial up and again at shutdown.
+  limine waits for a key otherwise.
+- a trial that drops to an emergency shell, in the initramfs or the
+  root, reboots into the generation before instead of waiting for a
+  password, through `yoq-emergency.service`, which a mkinitcpio hook puts
+  into a systemd initramfs too. the watchdog starts with the root's
+  systemd, so a unit that hangs before `sysinit.target` can't keep it
+  from rebooting the machine. the next generation gets both.
 - `os doctor` warns when the tpm unlocks the root on limine, even with
   secure boot on: limine loads a kernel without the firmware's check, so
   someone who can change its menu can boot their own with the disk
