@@ -71,7 +71,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool, unsigne
             .fix = try std.fmt.allocPrint(a, "without os, {s} boots arch's kernel in /boot, not os's signed images. sign it with `sbctl sign -s /boot/vmlinuz-linux`, and sbctl's pacman hook signs each new one too, or turn secure boot off in the firmware setup.", .{@tagName(loader)}),
         });
         try steps.append(a, .{ .kind = .config_dir, .what = "move the config from " ++ enable.config_home ++ " back into /etc/yoq" });
-        try steps.append(a, .{ .kind = .units, .what = "remove os's units that run at boot and shutdown: yoq-health, yoq-watchdog, and yoq-carry" });
+        try steps.append(a, .{ .kind = .units, .what = "remove os's units that run at boot and shutdown: yoq-health, yoq-watchdog, yoq-emergency, and yoq-carry, and its mkinitcpio hook" });
         if (b.pacman_moved) try steps.append(a, .{ .kind = .pacman_db, .what = "move the pacman database back to /var/lib/pacman" });
         try steps.append(a, .{ .kind = .boot_menu, .what = switch (loader) {
             .grub => try std.fmt.allocPrint(a, "reinstall grub with a menu from grub-mkconfig in /boot/grub, booting this root{s}{s}", .{
