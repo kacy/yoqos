@@ -567,6 +567,13 @@ boot the running root without `os`:
 - systemd-boot gets one entry of its own, `arch-linux.conf`, as its
   default, where os's were.
 
+on a luks root the tpm unlocks, a machine that boots unified kernel
+images boots arch's plain kernel after `os uninstall`, which leaves pcr 7
+without the os separator systemd's stub adds, so the tpm's key doesn't
+match. the plan says so: the next boot asks for the passphrase once, and
+`systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7
+<partition>` makes the key again.
+
 limine, refind, and systemd-boot need the esp mounted at `/boot` for this,
 since that's where arch installs the kernel. while the firmware enforces
 secure boot, grub, refind, and systemd-boot also need that kernel signed, since

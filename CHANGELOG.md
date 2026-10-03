@@ -22,7 +22,10 @@
   opening anything. after turning secure boot on, it doesn't until it's
   made again, and the boot asks for the passphrase. the same goes for
   switching between unified kernel images and plain kernels, since
-  systemd's stub adds to pcr 7.
+  systemd's stub adds to pcr 7. `os uninstall` on a machine that boots
+  images says so before it starts: arch's plain kernel boots next, so
+  the passphrase is asked once, and it names the `systemd-cryptenroll`
+  command that makes the key again.
 
 ### fixes
 
