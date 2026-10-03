@@ -48,11 +48,11 @@ pub fn plan(a: Allocator, f: *const facts.Facts, drop_generations: bool, unsigne
     // a boot through systemd's stub, as every unified kernel image has,
     // adds an os separator to pcr 7, and arch's plain kernel boots without
     // one. a tpm key made while images booted doesn't match then.
-    if (tpm_unlock and b.uki and generation.running(b.root_subvol)) if (b.luks_uuid) |uuid| {
+    if (tpm_unlock and b.uki and generation.on(b)) if (b.luks_uuid) |uuid| {
         const device = b.luks_device orelse try std.fmt.allocPrint(a, "/dev/disk/by-uuid/{s}", .{uuid});
         try notes.append(a, try std.fmt.allocPrint(a, "the next boot asks for the passphrase once: the tpm's key was made while this machine booted unified kernel images, whose stub adds to pcr 7, and arch's plain kernel boots without one. after that boot, run `systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 {s}` and type the passphrase, and the tpm unlocks it again.", .{device}));
     };
-    if (generation.running(b.root_subvol)) {
+    if (generation.on(b)) {
         const loader = menu.Loader.of(b) orelse .grub;
         // a plain limine, refind, or systemd-boot finds arch's kernels in
         // /boot only when that's the esp, as archinstall sets them up.

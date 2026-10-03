@@ -55,6 +55,42 @@ pub fn enableRollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
 }
 
 /// carries out the plan's steps, inside the btrfs top level.
+/// the first generation's number: one past the highest that roots or
+/// records under `roots` and `gens` already use, like the root an
+/// uninstall left running, or 1 when there are none. names that aren't a
+/// number, like boot copies (boot-<n>), count by their number too.
+fn firstFree(io: std.Io, roots: []const u8, gens_dir: []const u8) u32 {
+    var top: u32 = 0;
+    for ([_][]const u8{ roots, gens_dir }) |path| {
+        var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch continue;
+        defer dir.close(io);
+        var it = dir.iterate();
+        while (it.next(io) catch null) |d| {
+            const name = if (std.mem.startsWith(u8, d.name, "boot-")) d.name[5..] else d.name;
+            const n = std.fmt.parseInt(u32, name, 10) catch continue;
+            top = @max(top, n);
+        }
+    }
+    return top + 1;
+}
+
+test "the first generation's number comes after roots an uninstall left" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    var buf: [2][128]u8 = undefined;
+    const roots = try std.fmt.bufPrint(&buf[0], ".zig-cache/tmp/{s}/@roots", .{tmp.sub_path});
+    const gens_dir = try std.fmt.bufPrint(&buf[1], ".zig-cache/tmp/{s}/@gens", .{tmp.sub_path});
+    // a clean disk: generation 1.
+    try std.testing.expectEqual(1, firstFree(io, roots, gens_dir));
+    // an uninstall left the root it ran from, and a boot copy, and records.
+    try tmp.dir.createDirPath(io, "@roots/3");
+    try tmp.dir.createDirPath(io, "@roots/boot-2");
+    try tmp.dir.createDirPath(io, "@gens/4");
+    try tmp.dir.createDirPath(io, "@roots/not-a-number");
+    try std.testing.expectEqual(5, firstFree(io, roots, gens_dir));
+}
+
 const Enabler = struct {
     ctx: *Context,
     a: Allocator,
@@ -72,6 +108,10 @@ const Enabler = struct {
     undo: std.ArrayList(Undo) = .empty,
     /// /etc/yos's commit before it moves, for generation 1's record.
     config: ?generation.Config = null,
+    /// the first generation's number, and its root: 1 and @roots/1, unless
+    /// roots an uninstall left are there already, like the one running.
+    n: u32 = 1,
+    new_root: []const u8 = "",
 
     fn run(e: *Enabler, p: *const enable.Plan) !bool {
         var why: []const u8 = "";
@@ -79,6 +119,8 @@ const Enabler = struct {
         if (entries.len > 0) e.config = .{ .dir = "/etc/yos", .rev = entries[entries.len - 1].rev };
         e.m = try gens.Machine.open(e.a, e.ctx.io, e.boot, &why) orelse return e.failed("{s}", .{why});
         defer e.m.close();
+        e.n = firstFree(e.ctx.io, try e.m.at(&.{generation.roots_dir}), try e.m.at(&.{generation.gens_dir}));
+        e.new_root = try std.fmt.allocPrint(e.a, "/{s}/{d}", .{ generation.roots_dir, e.n });
 
         for (p.steps) |s| {
             try e.ctx.out.print("  {s}\n", .{s.what});
@@ -100,7 +142,7 @@ const Enabler = struct {
             }
         }
         // into the /var the next boot mounts, while it's still reachable.
-        try events.recordIn(e.a, e.ctx.io, e.var_dir, .{ .time = journal.now(e.ctx.io), .kind = .@"enable-rollback", .step = .done, .generation = 1 });
+        try events.recordIn(e.a, e.ctx.io, e.var_dir, .{ .time = journal.now(e.ctx.io), .kind = .@"enable-rollback", .step = .done, .generation = e.n });
         return true;
     }
 
@@ -146,9 +188,7 @@ const Enabler = struct {
         try e.ctx.err.writeAll(if (clean) "yos: took back the steps above; the machine is as it was.\n" else "yos: took back what it could; see the lines above.\n");
     }
 
-    const new_root = "/" ++ generation.roots_dir ++ "/1";
-
-    /// the running root's writable copy, @roots/1.
+    /// the running root's writable copy, @roots/<n>.
     fn snapshot(e: *Enabler) !bool {
         for ([_][]const u8{ generation.roots_dir, generation.gens_dir }) |d| {
             const dir = try e.m.at(&.{d});
@@ -156,12 +196,12 @@ const Enabler = struct {
             if (!try e.sh(&.{ "mkdir", "-p", dir })) return false;
             if (!had) try e.later(&.{ "rmdir", dir });
         }
-        const root = try e.m.at(&.{new_root});
+        const root = try e.m.at(&.{e.new_root});
         if (!try e.tried(btrfs.snapshot(try e.m.at(&.{e.boot.root_subvol.?}), root, false), "snapshot the running root")) return false;
         try e.laterDrop(root);
         // with the esp at /boot, both roots in the menu keep the kernel
         // they boot with. the running root's /boot was an empty mount point.
-        if (try e.m.keepBoot(new_root)) |why| return e.failed("{s}", .{why});
+        if (try e.m.keepBoot(e.new_root)) |why| return e.failed("{s}", .{why});
         if (e.m.bootOnEsp()) try e.later(&.{ "find", try e.m.at(&.{ e.boot.root_subvol.?, "boot" }), "-maxdepth", "1", "-type", "f", "-delete" });
         if (try e.m.keepBoot(e.boot.root_subvol.?)) |why| return e.failed("{s}", .{why});
         return true;
@@ -194,7 +234,7 @@ const Enabler = struct {
         const dest = try e.m.at(&.{subvol});
         if (!try e.tried(btrfs.create(dest), try std.fmt.allocPrint(e.a, "create {s}", .{subvol}))) return false;
         try e.laterDrop(dest);
-        const src = try e.m.at(&.{ new_root, dir });
+        const src = try e.m.at(&.{ e.new_root, dir });
         // a missing one, often /srv, still needs a place to mount.
         if (!rootfs.pathExists(e.ctx.io, src) and !try e.sh(&.{ "mkdir", "-p", src })) return false;
         if (!try e.sh(&.{ "cp", "-a", "--reflink=auto", try std.fs.path.join(e.a, &.{ src, "." }), dest })) return false;
@@ -210,7 +250,7 @@ const Enabler = struct {
     /// now, so the running root gets its own copy of the database too.
     fn movePacmanDb(e: *Enabler) !bool {
         const db = try std.fs.path.join(e.a, &.{ e.var_dir, "lib/pacman" });
-        const moved = try e.m.at(&.{ new_root, generation.pacman_db });
+        const moved = try e.m.at(&.{ e.new_root, generation.pacman_db });
         if (!try e.sh(&.{ "mkdir", "-p", std.fs.path.dirnamePosix(moved).? })) return false;
         if (e.moved_var) {
             if (!try e.sh(&.{ "mv", db, moved })) return false;
@@ -232,7 +272,7 @@ const Enabler = struct {
     /// generation 1's /etc/yos moves into its /var, and fstab mounts it
     /// back where it was.
     fn moveConfig(e: *Enabler) !bool {
-        const src = try e.m.at(&.{ new_root, "etc/yos" });
+        const src = try e.m.at(&.{ e.new_root, "etc/yos" });
         const dest = try std.fs.path.join(e.a, &.{ e.var_dir, "lib/yos/config" });
         if (!try e.sh(&.{ "mkdir", "-p", std.fs.path.dirnamePosix(dest).? })) return false;
         if (rootfs.pathExists(e.ctx.io, src)) {
@@ -248,7 +288,7 @@ const Enabler = struct {
     /// generation, so a snapshot before and after each pacman run is two
     /// more of the same.
     fn stopSnapPac(e: *Enabler) !bool {
-        const path = try e.m.at(&.{ new_root, "etc/snap-pac.ini" });
+        const path = try e.m.at(&.{ e.new_root, "etc/snap-pac.ini" });
         const old = std.Io.Dir.cwd().readFileAlloc(e.ctx.io, path, e.a, .limited(1 << 16)) catch "";
         rootfs.writeAtomic(e.ctx.io, path, try enable.snapPac(e.a, old), null) catch return e.failed("can't write {s}", .{path});
         return true;
@@ -270,7 +310,7 @@ const Enabler = struct {
     /// the new root's fstab mounts its own subvolume, @var at /var, and
     /// the esp; then it's recorded, read-only, as @gens/1.
     fn seal(e: *Enabler) !bool {
-        const fstab_path = try e.m.at(&.{ new_root, "etc/fstab" });
+        const fstab_path = try e.m.at(&.{ e.new_root, "etc/fstab" });
         const old = std.Io.Dir.cwd().readFileAlloc(e.ctx.io, fstab_path, e.a, .limited(1 << 20)) catch "";
         const fstab = try enable.rewriteFstab(e.a, old, .{
             .uuid = e.m.root_uuid,
@@ -281,21 +321,21 @@ const Enabler = struct {
         });
         rootfs.writeAtomic(e.ctx.io, fstab_path, fstab, null) catch return e.failed("can't write {s}", .{fstab_path});
         if (!try e.healthUnit()) return false;
-        const gen = try e.m.at(&.{ generation.gens_dir, "1" });
-        if (!try e.tried(btrfs.snapshot(try e.m.at(&.{new_root}), gen, true), "record generation 1")) return false;
+        const gen = try e.m.at(&.{ generation.gens_dir, try std.fmt.allocPrint(e.a, "{d}", .{e.n}) });
+        if (!try e.tried(btrfs.snapshot(try e.m.at(&.{e.new_root}), gen, true), "record the first generation")) return false;
         try e.laterDrop(gen);
         const record: generation.Record = .{
-            .n = 1,
+            .n = e.n,
             .time = e.time,
-            .root = new_root[1..],
+            .root = e.new_root[1..],
             .reason = "enable-rollback",
             .from = e.boot.root_subvol.?,
             .config_dir = if (e.config) |c| c.dir else null,
             .config_rev = if (e.config) |c| c.rev else null,
         };
         if (try gens.writeRecord(e.a, e.ctx.io, e.var_dir, record)) |why| return e.failed("{s}", .{why});
-        if (!e.moved_var) try e.later(&.{ "rm", "-f", try gens.recordPath(e.a, e.var_dir, 1) });
-        rootfs.writeAtomic(e.ctx.io, generation.pending_path, new_root[1..], null) catch return e.failed("can't write {s}", .{generation.pending_path});
+        if (!e.moved_var) try e.later(&.{ "rm", "-f", try gens.recordPath(e.a, e.var_dir, e.n) });
+        rootfs.writeAtomic(e.ctx.io, generation.pending_path, e.new_root[1..], null) catch return e.failed("can't write {s}", .{generation.pending_path});
         try e.later(&.{ "rm", "-f", generation.pending_path });
         return true;
     }
@@ -304,7 +344,7 @@ const Enabler = struct {
     fn healthUnit(e: *Enabler) !bool {
         // the packaged yos outlasts a copy run from a build directory.
         const os_path = if (rootfs.pathExists(e.ctx.io, "/usr/bin/yos")) "/usr/bin/yos" else try std.process.executablePathAlloc(e.ctx.io, e.a);
-        const why = try gens.writeUnits(e.a, e.ctx.io, try e.m.at(&.{new_root}), os_path) orelse return true;
+        const why = try gens.writeUnits(e.a, e.ctx.io, try e.m.at(&.{e.new_root}), os_path) orelse return true;
         return e.failed("{s}", .{why});
     }
 
@@ -345,7 +385,7 @@ const Enabler = struct {
         const own_dir = try std.fs.path.join(e.a, &.{ esp, "yos" });
         if (!try e.keep(own_dir, "/run/yos/esp-backup")) return false;
         const records = try gens.readRecords(e.a, e.ctx.io, e.var_dir);
-        if (try e.m.writeMenu(new_root, records)) |why| return e.failed("{s}", .{why});
+        if (try e.m.writeMenu(e.new_root, records)) |why| return e.failed("{s}", .{why});
         if (e.m.loader == .@"systemd-boot") {
             // taken back, the variable goes, and loader.conf's default is
             // the default again.

@@ -54,10 +54,17 @@ pub const pending_path = "/var/lib/yos/pending";
 /// boot.
 pub const grub_signed_path = "/var/lib/yos/grub-signed";
 
-/// whether a machine runs a generation: its root is one of @roots.
+/// whether a root is one of @roots.
 pub fn running(root_subvol: ?[]const u8) bool {
     const sv = root_subvol orelse return false;
     return std.mem.startsWith(u8, sv, "/" ++ roots_dir ++ "/");
+}
+
+/// whether a machine runs a generation, from its boot facts: its root is
+/// one of @roots, and yos has records for it. a root an uninstall left in
+/// @roots, without them, is a plain machine's.
+pub fn on(boot: anytype) bool {
+    return running(boot.root_subvol) and !boot.left_root;
 }
 
 /// what yos keeps about a generation.

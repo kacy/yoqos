@@ -307,7 +307,7 @@ fn secureBootFile(c: *const config.Config, f: *const facts.Facts) ?File {
 fn menuFile(key: ?config.Val(bool), f: *const facts.Facts, file: File) ?File {
     const v = key orelse return null;
     if (!v.v) return null;
-    if (f.boot.root_fs != null and !generation.running(f.boot.root_subvol)) return null;
+    if (f.boot.root_fs != null and !generation.on(f.boot)) return null;
     var out = file;
     out.src = v.src;
     return out;

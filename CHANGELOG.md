@@ -18,6 +18,11 @@
   it was, history and all, and `yos enable-rollback` turns generations on
   again. the two packages install side by side while you switch. ci runs
   that whole move, from a machine 0.1.5 set up.
+- `yos enable-rollback` turns generations on again after an uninstall.
+  the root an uninstall leaves running is in @roots, and yos took that as
+  generations being on already, said so, and did nothing. a root in @roots
+  without yos's records is a plain machine's now, everywhere yos looks, and
+  the first generation is numbered after it.
 - man pages: `man yos` and `man yos-generations`, made from docs/usage.md
   and docs/generations.md with lowdown when the package builds, so
   they're never out of step with the docs. the release tarball and the

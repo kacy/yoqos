@@ -200,7 +200,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
                 try journal.settle(a, ctx.io, ctx.root, begin);
                 try ctx.err.print("yos: the last apply (plan {s}) was cut off after it made its changes. the machine matches the config, so it's recorded as done.\n", .{short});
                 // its changes never became a generation either.
-                if (cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol)) {
+                if (cli.eql(ctx.root, "/") and generation.on(result.facts.boot)) {
                     settled_generation = unrecorded(begin.time, try gens.readRecords(a, ctx.io, "/var"));
                 }
             },
@@ -222,7 +222,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     if (try cli.approve(ctx, yes, "apply", "apply this?")) |code| return .{ .code = code, .matches = false };
     if (try movedSince(ctx, in, &(try p.hash()))) return .{ .code = 1, .matches = false };
 
-    const on_generations = cli.eql(ctx.root, "/") and generation.running(result.facts.boot.root_subvol);
+    const on_generations = cli.eql(ctx.root, "/") and generation.on(result.facts.boot);
     const needs_reboot = (try p.rebootReasons(a)).len > 0;
     // a change that needs a reboot, on a machine with generations, goes
     // into the next root instead of the running one.

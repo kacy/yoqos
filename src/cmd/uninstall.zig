@@ -43,7 +43,7 @@ pub fn uninstallCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer w.deinit();
     const a = w.allocator();
     const f = try w.facts() orelse return w.fail();
-    const running = generation.running(f.boot.root_subvol);
+    const running = generation.on(f.boot);
     const unsigned = try unsignedKernels(a, ctx.io, f.boot);
     const tpm = if (try doctor.luks(a, ctx.io, &f.boot)) |l| l.tpm else false;
     var p = try uninstall.plan(a, &f, drop, unsigned, tpm);

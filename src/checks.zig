@@ -50,7 +50,7 @@ pub const EspNeed = struct {
 /// the stub. turning `[boot] uki` on or off makes every kernel's boot
 /// files new.
 pub fn espNeed(p: *const Plan, b: *const facts.Boot, uki_on: bool) ?EspNeed {
-    if (!generation.running(b.root_subvol)) return null;
+    if (!generation.on(b)) return null;
     const esp = b.esp orelse return null;
     if (menu.Loader.of(b.*) == null) return null;
     const hashed = menu.copiesOnEsp(b.*) or uki_on;
@@ -197,7 +197,7 @@ pub fn checkEsp(a: Allocator, p: *const Plan, f: *const facts.Facts, diags: *dia
 /// esp lack a signature.
 fn resignRoom(a: Allocator, p: *const Plan, f: *const facts.Facts, uki_on: bool) !u64 {
     const b = &f.boot;
-    if (p.changes.len == 0 or !uki_on or !generation.running(b.root_subvol)) return 0;
+    if (p.changes.len == 0 or !uki_on or !generation.on(b)) return 0;
     const esp = b.esp orelse return 0;
     if (!signsAfter(p, f) or (try secureboot.ours(a, b.unsigned, esp)).len == 0) return 0;
     return largestImage(b);
@@ -232,7 +232,7 @@ fn largestImage(b: *const facts.Boot) u64 {
 /// gives every generation's entry, and the trial's, a new image.
 fn embeddedRoom(p: *const Plan, f: *const facts.Facts, uki_on: bool) u64 {
     const b = &f.boot;
-    if (p.changes.len == 0 or !uki_on or !generation.running(b.root_subvol) or b.esp == null) return 0;
+    if (p.changes.len == 0 or !uki_on or !generation.on(b) or b.esp == null) return 0;
     if (!signsAfter(p, f)) return 0;
     const signs_now = secureboot.enforcedWithKeys(b.secure_boot, b.sbctl_keys) or f.file(secureboot.config_path) != null;
     // the new generation's, the ones already there, and the trial's.
@@ -295,7 +295,7 @@ pub fn checkSecrets(c: *const config.Config, f: *const facts.Facts, diags: *diag
 /// itself. returns whether the plan can go ahead.
 pub fn checkSecureBoot(c: *const config.Config, f: *const facts.Facts, diags: *diag.List) !bool {
     const v = c.boot.secure_boot orelse return true;
-    if (!v.v or !generation.running(f.boot.root_subvol)) return true;
+    if (!v.v or !generation.on(f.boot)) return true;
     if (!f.boot.sbctl_keys) {
         try diags.add(.secure_boot_keys, v.src, "secure_boot is on, but sbctl has no keys in {s} to sign with", .{secureboot.keys_dir}, "run `sbctl create-keys`, then plan again. enroll the keys only once a generation with signed images is ready");
         return false;

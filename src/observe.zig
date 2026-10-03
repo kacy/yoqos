@@ -216,10 +216,11 @@ const Reader = struct {
             b.unsigned = try r.unsigned(esp);
         }
         if (generation.running(b.root_subvol)) {
-            b.menu_missing = try r.menuMissing(b);
             var recorded: std.ArrayList(facts.Generation) = .empty;
             for (try gens.readRecords(r.a, r.io, "/var")) |g| try recorded.append(r.a, .{ .n = g.n, .root = g.root, .pinned = g.pinned });
             b.generations = recorded.items;
+            b.left_root = recorded.items.len == 0;
+            if (!b.left_root) b.menu_missing = try r.menuMissing(b);
         }
         if (b.root_subvol != null) {
             b.top_is_default = switch (try exec.output(r.a, r.io, &.{ "btrfs", "subvolume", "get-default", "/" })) {

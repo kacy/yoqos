@@ -63,7 +63,7 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (cli.eql(ctx.root, "/")) {
         const f = try w.facts() orelse return w.fail();
         const b = f.boot;
-        if (generation.running(b.root_subvol)) {
+        if (generation.on(b)) {
             try checks.append(a, .{
                 .what = "boot menu",
                 .ok = b.menu_missing == null,

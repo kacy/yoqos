@@ -134,6 +134,9 @@ pub const Boot = struct {
     setup_mode: ?bool = null,
     /// the machine has a tpm 2.0. null under another root.
     tpm2: ?bool = null,
+    /// the root is one of @roots, but yos has no record of it: an
+    /// uninstall left it there. it's a plain machine's root.
+    left_root: bool = false,
     /// sbctl's db certificate is in the firmware's db, so images signed
     /// with sbctl's key start. null without both to compare.
     db_enrolled: ?bool = null,

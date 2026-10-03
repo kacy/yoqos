@@ -133,13 +133,15 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
         .fix = try std.fmt.allocPrint(a, "yos adds its entries to the config {s} reads, on the esp, and couldn't find it.", .{loader}),
     });
     const layout = b.root_subvol orelse "unknown";
-    const known_layout = knownLayout(layout);
-    const running_gen = generation.running(b.root_subvol);
+    // a root in @roots is a generation's, or one an uninstall left there,
+    // which converts like any other.
+    const known_layout = knownLayout(layout) or generation.running(b.root_subvol);
+    const running_gen = generation.on(b);
     try checks.append(a, .{
         .what = "root layout",
-        .ok = known_layout or running_gen,
+        .ok = known_layout,
         .found = layout,
-        .fix = "enable-rollback converts a root in the btrfs top level, archinstall's @ subvolume, or a snapshot snapper rolled back to. other layouts come later.",
+        .fix = "enable-rollback converts a root in the btrfs top level, archinstall's @ subvolume, a snapshot snapper rolled back to, or one an uninstall left in @roots. other layouts come later.",
     });
     if (try luksCheck(a, &b)) |c| try checks.append(a, c);
     try checks.append(a, .{
@@ -157,7 +159,7 @@ pub fn plan(a: Allocator, f: *const facts.Facts) !Plan {
     var steps: std.ArrayList(Step) = .empty;
     try steps.append(a, .{
         .kind = .snapshot,
-        .what = "snapshot the running root as generation 1",
+        .what = "snapshot the running root as the first generation",
         .why = "the first generation to go back to. changes made after it and before the reboot are left behind",
     });
     if (!b.var_subvol) try steps.append(a, .{
@@ -553,6 +555,27 @@ test "a machine on btrfs and grub is ready, with every step" {
     try testing.expectEqualStrings("install grub's boot files on the esp (/efi), reading that menu", p.steps[6].what);
 }
 
+test "a root an uninstall left in @roots converts; one with records has generations" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var f: facts.Facts = .{ .boot = .{
+        .uefi = true,
+        .esp = "/efi",
+        .loader = "grub",
+        .root_fs = "btrfs",
+        .root_subvol = "/@roots/3",
+        .left_root = true,
+    } };
+    const left = try plan(arena.allocator(), &f);
+    try testing.expect(left.ready());
+    try testing.expectEqual(null, left.running);
+    try testing.expectEqual(Kind.snapshot, left.steps[0].kind);
+    f.boot.left_root = false;
+    const on = try plan(arena.allocator(), &f);
+    try testing.expectEqualStrings("/@roots/3", on.running.?);
+    try testing.expectEqual(0, on.steps.len);
+}
+
 test "a luks root converts when the initramfs unlocks it" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -683,11 +706,11 @@ test "what stops a machine, and the steps it no longer needs" {
         \\  no  bootloader: efistub
         \\        generations support grub, limine, refind, and systemd-boot.
         \\  no  root layout: /@arch
-        \\        enable-rollback converts a root in the btrfs top level, archinstall's @ subvolume, or a snapshot snapper rolled back to. other layouts come later.
+        \\        enable-rollback converts a root in the btrfs top level, archinstall's @ subvolume, a snapshot snapper rolled back to, or one an uninstall left in @roots. other layouts come later.
         \\  ok  generations: none yet
         \\
         \\steps
-        \\  1. snapshot the running root as generation 1
+        \\  1. snapshot the running root as the first generation
         \\     the first generation to go back to. changes made after it and before the reboot are left behind
         \\  2. keep the config in /var/lib/yos/config, mounted at /etc/yos
         \\     the config and its history stay put when a rollback changes the root; a rollback puts back the config that generation had

@@ -434,7 +434,7 @@ pub const Work = struct {
         if (!eql(w.ctx.root, "/") or w.ctx.facts_path != null) return null;
         // only how the machine boots: no packages or units to read.
         const f = try observe.observe(w.allocator(), w.ctx.io, .{ .packages = false, .units = false }, &w.diags);
-        return if (generation.running(f.boot.root_subvol)) f.boot else null;
+        return if (generation.on(f.boot)) f.boot else null;
     }
 
     /// the merged config, or null if it has problems.
