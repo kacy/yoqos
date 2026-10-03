@@ -121,13 +121,16 @@ fn packageSummary(w: *std.Io.Writer, p: *const Plan) !void {
     const n = p.tally(&.{ .package, .dependency });
     if (n.total() == 0) return;
     try w.print("packages\n  upgrades {d}    new {d}    removed {d}   (-v lists them)\n", .{ n.change, n.add, n.remove });
+    // what needs a reboot first, so the kernel is never among "and n more".
     var shown: usize = 0;
-    for (p.changes) |c| {
-        if ((c.kind != .package and c.kind != .dependency) or c.op != .change or !notable(c)) continue;
-        if (shown < max_notable) {
-            try w.print("  {s:<9}{s} {s} -> {s}\n", .{ if (shown == 0) "notable" else "", c.subject, c.from.?, c.to.? });
+    for (std.enums.values(Notable)) |rank| {
+        for (p.changes) |c| {
+            if ((c.kind != .package and c.kind != .dependency) or c.op != .change or notable(c) != rank) continue;
+            if (shown < max_notable) {
+                try w.print("  {s:<9}{s} {s} -> {s}\n", .{ if (shown == 0) "notable" else "", c.subject, c.from.?, c.to.? });
+            }
+            shown += 1;
         }
-        shown += 1;
     }
     if (shown > max_notable) try w.print("           and {d} more\n", .{shown - max_notable});
 }
@@ -138,9 +141,13 @@ const max_notable = 8;
 
 /// an upgrade worth a look: one that needs a reboot, one the catalog
 /// flags, like graphics and boot, or a new major version.
-fn notable(c: Change) bool {
-    if (catalog.rebootReason(c.subject) != null or catalog.notable(c.subject)) return true;
-    return !std.mem.eql(u8, majorOf(c.from.?), majorOf(c.to.?));
+/// why an upgrade is worth a look, in the order the screen lists them.
+const Notable = enum { reboot, named, major };
+
+fn notable(c: Change) ?Notable {
+    if (c.reboot != null or catalog.rebootReason(c.subject) != null) return .reboot;
+    if (catalog.notable(c.subject)) return .named;
+    return if (std.mem.eql(u8, majorOf(c.from.?), majorOf(c.to.?))) null else .major;
 }
 
 /// "1:2.3.4-1" and "2.3.4-1" are both major version "2".
@@ -212,6 +219,21 @@ test "the update summary counts packages and names the notable ones" {
         \\plan: 1 to add, 4 to change, 1 to remove · reboot needed: kernel
         \\
     , out.written());
+}
+
+test "the kernel comes first among notable packages, ahead of major versions" {
+    var t: T = .{};
+    defer t.deinit();
+    var changes: [11]Change = undefined;
+    for (changes[0..10], 0..) |*c, i| {
+        c.* = .{ .op = .change, .kind = .dependency, .subject = try std.fmt.allocPrint(t.a(), "lib{d}", .{i}), .from = "1.0-1", .to = "2.0-1" };
+    }
+    changes[10] = .{ .op = .change, .kind = .package, .subject = "linux", .from = "6.16.8-1", .to = "6.16.9-1", .reboot = "kernel" };
+    const p: Plan = .{ .changes = &changes };
+    var out: std.Io.Writer.Allocating = .init(t.a());
+    try writeText(&out.writer, t.a(), &p, .{ .summary = true });
+    try testing.expect(std.mem.indexOf(u8, out.written(), "  notable  linux 6.16.8-1 -> 6.16.9-1\n           lib0 1.0-1 -> 2.0-1\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "           and 3 more\n") != null);
 }
 
 test "the update summary stops naming notable packages after a screenful" {
