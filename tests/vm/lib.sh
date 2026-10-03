@@ -231,8 +231,8 @@ break_trial_kernel() {
         ;;
     *)
         staged=$(newest_root)
-        if [ "$1" = missing ]; then how="mv /run/yoq-top/$staged/boot/vmlinuz-linux /run/yoq-top/$staged/boot/vmlinuz-linux.gone"; else how="echo not a kernel > /run/yoq-top/$staged/boot/vmlinuz-linux"; fi
-        "$vm" ssh "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && $how; umount /run/yoq-top"
+        if [ "$1" = missing ]; then breakage="mv /run/yoq-top/$staged/boot/vmlinuz-linux /run/yoq-top/$staged/boot/vmlinuz-linux.gone"; else breakage="echo not a kernel > /run/yoq-top/$staged/boot/vmlinuz-linux"; fi
+        "$vm" ssh "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && $breakage; umount /run/yoq-top"
         ;;
     esac
 }
@@ -255,10 +255,10 @@ break_trial_early() {
     fi
     staged=$(newest_root)
     case $1 in
-    fstab) how="echo 'UUID=00000000-0000-4000-8000-000000000000 /mnt/yoq-missing ext4 defaults 0 2' >> /run/yoq-top/$staged/etc/fstab" ;;
-    sysinit) how="printf '[Unit]\\nDescription=hang before sysinit\\nDefaultDependencies=no\\nBefore=sysinit.target\\n[Service]\\nType=oneshot\\nTimeoutStartSec=infinity\\nExecStart=/usr/bin/sleep infinity\\n[Install]\\nWantedBy=sysinit.target\\n' > /run/yoq-top/$staged/etc/systemd/system/yoq-test-hang.service && mkdir -p /run/yoq-top/$staged/etc/systemd/system/sysinit.target.wants && ln -sf ../yoq-test-hang.service /run/yoq-top/$staged/etc/systemd/system/sysinit.target.wants/" ;;
+    fstab) breakage="echo 'UUID=00000000-0000-4000-8000-000000000000 /mnt/yoq-missing ext4 defaults 0 2' >> /run/yoq-top/$staged/etc/fstab" ;;
+    sysinit) breakage="printf '[Unit]\\nDescription=hang before sysinit\\nDefaultDependencies=no\\nBefore=sysinit.target\\n[Service]\\nType=oneshot\\nTimeoutStartSec=infinity\\nExecStart=/usr/bin/sleep infinity\\n[Install]\\nWantedBy=sysinit.target\\n' > /run/yoq-top/$staged/etc/systemd/system/yoq-test-hang.service && mkdir -p /run/yoq-top/$staged/etc/systemd/system/sysinit.target.wants && ln -sf ../yoq-test-hang.service /run/yoq-top/$staged/etc/systemd/system/sysinit.target.wants/" ;;
     esac
-    "$vm" ssh "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && $how; umount /run/yoq-top"
+    "$vm" ssh "mkdir -p /run/yoq-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yoq-top && $breakage; umount /run/yoq-top"
 }
 
 # the newest generation's root, like @roots/7.

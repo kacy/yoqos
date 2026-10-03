@@ -374,11 +374,13 @@ pub const emergency_unit = "yoq-emergency.service";
 /// the root, and its content.
 pub const RootFile = struct { path: []const u8, text: []const u8 };
 
-/// mkinitcpio's hook that puts yoq-emergency.service into a systemd
-/// initramfs, wanted by emergency.target, and the drop-in that adds the
-/// hook to HOOKS. the drop-in comes after os's others, since the luks one
-/// sets HOOKS whole. a busybox initramfs gets the files too, and never
-/// starts them.
+/// mkinitcpio's hook that reboots a trial from the initramfs's emergency
+/// shell, and the drop-in that adds it to HOOKS. the drop-in comes after
+/// os's others, since the luks one sets HOOKS whole. a systemd initramfs
+/// gets yoq-emergency.service, wanted by emergency.target. a busybox one
+/// gets a runtime hook instead: mkinitcpio's init reads each one into its
+/// own shell before it mounts the root, so on a trial boot it can make
+/// the shell that a failed mount drops to a reboot.
 pub const trial_hook = [_]RootFile{
     .{
         .path = "etc/initcpio/install/yoq-trial",
@@ -387,13 +389,36 @@ pub const trial_hook = [_]RootFile{
         \\# written by os: a generation on trial that drops to an emergency
         \\# shell in the initramfs reboots instead.
         \\build() {
-        \\    local dir=/usr/lib/systemd/system
-        \\    add_file /etc/systemd/system/yoq-emergency.service "$dir/yoq-emergency.service"
-        \\    add_symlink "$dir/emergency.target.wants/yoq-emergency.service" "$dir/yoq-emergency.service"
+        \\    if [[ " ${HOOKS[*]} " == *" systemd "* ]]; then
+        \\        local dir=/usr/lib/systemd/system
+        \\        add_file /etc/systemd/system/yoq-emergency.service "$dir/yoq-emergency.service"
+        \\        add_symlink "$dir/emergency.target.wants/yoq-emergency.service" "$dir/yoq-emergency.service"
+        \\    else
+        \\        add_runscript
+        \\    fi
         \\}
         \\
         \\help() {
         \\    echo "reboots a generation on trial that drops to an emergency shell"
+        \\}
+        \\
+        ,
+    },
+    .{
+        .path = "etc/initcpio/hooks/yoq-trial",
+        .text =
+        \\#!/usr/bin/ash
+        \\# written by os: on a trial boot, the shell a failed mount drops to
+        \\# is a reboot, into the generation before.
+        \\run_hook() {
+        \\    case " $(cat /proc/cmdline) " in
+        \\    *" yoq.trial "*)
+        \\        launch_interactive_shell() {
+        \\            echo "yoq: this generation on trial can't boot; rebooting into the one before."
+        \\            reboot -f
+        \\        }
+        \\        ;;
+        \\    esac
         \\}
         \\
         ,

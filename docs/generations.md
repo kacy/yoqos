@@ -455,8 +455,9 @@ never comes, would wait there for a password. `yoq-emergency.service`,
 wanted by `emergency.target` and only on a trial boot, reboots it
 instead, in the root and in a systemd initramfs, where mkinitcpio's
 `yoq-trial` hook puts it (`/etc/initcpio/install/yoq-trial`, added by
-`/etc/mkinitcpio.conf.d/95-yoq-trial.conf`). a busybox initramfs gets
-the hook too, but stops at its own shell, so there the machine waits.
+`/etc/mkinitcpio.conf.d/95-yoq-trial.conf`). a busybox initramfs gets a
+runtime hook from it instead, `/etc/initcpio/hooks/yoq-trial`, which on a
+trial boot makes the shell a failed mount drops to a reboot.
 
 if the new generation can't boot at all, the next boot lands on the default
 by itself, since the trial entry was only for one boot. a kernel panic

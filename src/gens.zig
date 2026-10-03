@@ -715,8 +715,9 @@ test "units from enable-rollback in 0.1.0 are brought up to date, and the missin
     // the unit for emergency shells, and the hook that puts it in the
     // initramfs.
     _ = try tmp.dir.statFile(io, dir ++ "/emergency.target.wants/" ++ enable.emergency_unit, .{});
-    try std.testing.expectEqualStrings(enable.trial_hook[1].text, try tmp.dir.readFileAlloc(io, "top/@roots/1/etc/mkinitcpio.conf.d/" ++ facts.trial_dropin, a, .limited(4096)));
+    try std.testing.expectEqualStrings(enable.trial_hook[2].text, try tmp.dir.readFileAlloc(io, "top/@roots/1/etc/mkinitcpio.conf.d/" ++ facts.trial_dropin, a, .limited(4096)));
     _ = try tmp.dir.statFile(io, "top/@roots/1/etc/initcpio/install/yoq-trial", .{});
+    _ = try tmp.dir.statFile(io, "top/@roots/1/etc/initcpio/hooks/yoq-trial", .{});
     // a root os never set up gets nothing.
     try tmp.dir.createDirPath(io, "top/@roots/2/etc/systemd/system");
     try m.refreshUnits("/@roots/2");

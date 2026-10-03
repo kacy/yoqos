@@ -36,9 +36,10 @@
 - a trial that drops to an emergency shell, in the initramfs or the
   root, reboots into the generation before instead of waiting for a
   password, through `yoq-emergency.service`, which a mkinitcpio hook puts
-  into a systemd initramfs too. the watchdog starts with the root's
-  systemd, so a unit that hangs before `sysinit.target` can't keep it
-  from rebooting the machine. the next generation gets both.
+  into a systemd initramfs too; a busybox one gets a hook that does the
+  same. the watchdog starts with the root's systemd, so a unit that hangs
+  before `sysinit.target` can't keep it from rebooting the machine. the
+  next generation gets both.
 - `os doctor` warns when the tpm unlocks the root on limine, even with
   secure boot on: limine loads a kernel without the firmware's check, so
   someone who can change its menu can boot their own with the disk
