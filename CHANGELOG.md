@@ -34,10 +34,12 @@
   for the root. every generation there now has
   `x-systemd.device-timeout=infinity` in its `rootflags`.
 - `os install --tpm` seals the tpm's key to pcr 7, the firmware's secure
-  boot state, as the docs always said. since systemd 258,
-  systemd-cryptenroll seals to nothing unless told, so the tpm handed the
-  key to anything that booted, a system on a usb stick included. `os
-  doctor` fails on a key sealed to nothing and says how to make it again.
+  boot state, as the docs always said. machines installed with
+  `os install --tpm` on systemd 258 or later got a tpm key bound to no
+  pcrs, since systemd-cryptenroll seals to nothing unless told, so the tpm
+  handed the key to anything that booted, a system on a usb stick
+  included. `os doctor` now fails on a key like that and shows the
+  `systemd-cryptenroll ... --tpm2-pcrs=7` command that enrolls it again.
 - on grub, an entry that can't load its kernel or image falls back to the
   generation the trial falls back to. grub was given that generation by
   name, which it ignores for a fallback, so it showed the failed entry
