@@ -6,6 +6,7 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 const output = @import("output.zig");
 const diag = @import("diag.zig");
+const lists = @import("lists.zig");
 const compose = @import("compose.zig");
 const pipeline = @import("pipeline.zig");
 const facts_mod = @import("facts.zig");
@@ -204,6 +205,14 @@ pub fn run(ctx: *Context, raw: []const [:0]const u8) !u8 {
     if (eql(name, "-h") or eql(name, "--help")) return help(ctx, args[1..]);
     if (eql(name, "--version")) return version(ctx, args[1..]);
 
+    if (ctx.facts_path == null and !lists.contains(&anywhere, name)) {
+        if (try legacyState(ctx)) |found| {
+            var w: Work = .init(ctx);
+            defer w.deinit();
+            try w.diags.add(.legacy_state, null, "this machine was set up by yoq os, the name yos had before 0.2.0: {s} is still here", .{found}, "with the old package installed, run `os uninstall`, then `mv /etc/yoq /etc/yos`. `yos explain E0138` has the rest");
+            return w.fail();
+        }
+    }
     for (commands) |c| {
         if (eql(c.name, name)) return c.handler(ctx, args[1..]);
     }
@@ -211,6 +220,25 @@ pub fn run(ctx: *Context, raw: []const [:0]const u8) !u8 {
     try ctx.err.print("yos: unknown command '{s}'\n\n", .{name});
     try usage(ctx.err);
     return 2;
+}
+
+/// commands that only print, and work on any machine.
+const anywhere = [_][]const u8{ "help", "version", "explain", "docs", "schema" };
+
+/// where yoq os, yos's name before 0.2.0, kept its config and its state.
+/// yos reads neither, so a machine that still has one isn't one it can
+/// plan for (E0138).
+const legacy_paths = [_][]const u8{ "/etc/yoq", "/var/lib/yoq" };
+
+/// the first of `legacy_paths` under the machine's root, or null.
+fn legacyState(ctx: *Context) !?[]const u8 {
+    for (legacy_paths) |p| {
+        const path = try std.fs.path.join(ctx.gpa, &.{ ctx.root, p[1..] });
+        defer ctx.gpa.free(path);
+        std.Io.Dir.cwd().access(ctx.io, path, .{}) catch continue;
+        return p;
+    }
+    return null;
 }
 
 /// pulls global flags out of the args wherever they appear before `--`, so
@@ -821,6 +849,21 @@ test "version prints the build version" {
 
     try t.exec(&.{"--version"});
     try std.testing.expectEqualStrings("yos " ++ build_options.version ++ "\n", t.out.buffered());
+}
+
+test "a machine yoq os set up stops with E0138, but help still works" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "var/lib/yoq");
+    var buf: [256]u8 = undefined;
+    const root = try std.fmt.bufPrintZ(&buf, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var t: TestRun = .{};
+    try t.exec(&.{ "--root", root, "status" });
+    try std.testing.expectEqual(1, t.code);
+    try std.testing.expect(std.mem.indexOf(u8, t.err.buffered(), "error[E0138]: this machine was set up by yoq os, the name yos had before 0.2.0: /var/lib/yoq is still here") != null);
+    var v: TestRun = .{};
+    try v.exec(&.{ "--root", root, "version" });
+    try std.testing.expectEqual(0, v.code);
 }
 
 test "unknown command is a usage error" {

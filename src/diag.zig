@@ -38,6 +38,7 @@ pub const Code = enum {
     secure_boot_tpm,
     secure_boot_enrolled,
     luks_locked,
+    legacy_state,
 };
 
 pub const Entry = struct {
@@ -286,6 +287,18 @@ pub const table = [_]Entry{
             "remove it and build an initramfs that can't open the root, and the machine wouldn't boot. keep " ++
             "`encrypt = true` under [boot], or first add sd-encrypt (or encrypt, for busybox's hooks) to HOOKS " ++
             "in /etc/mkinitcpio.conf, then plan again.",
+    },
+    .{
+        .code = .legacy_state,
+        .id = "E0138",
+        .title = "this machine was set up by yoq os",
+        .explanation = "yos was called yoq os before 0.2.0, and its command was `os`. that version kept its " ++
+            "state in /var/lib/yoq and its config in /etc/yoq, and yos reads neither, so it stops rather " ++
+            "than plan against a machine it can't see. with the old yoq-os package still installed, run " ++
+            "`os uninstall`: it leaves plain arch running the system you have, and keeps the config in " ++
+            "/etc/yoq. then `mv /etc/yoq /etc/yos`, and `yos plan` reads it as it was. `yos " ++
+            "enable-rollback` turns generations back on. the two packages can be installed side by side " ++
+            "while you switch.",
     },
 };
 

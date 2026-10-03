@@ -91,6 +91,23 @@ YOS_VERSION=0.1.5 makepkg -si            # yos 0.1.5, from v0.1.5
 YOS_SOURCE=file://$PWD/.. makepkg -si    # this checkout
 ```
 
+## coming from yoq os
+
+yos was called yoq os before 0.2.0, with a command called `os`. yos reads
+none of that version's state, so on a machine it set up, every yos command
+stops with E0138 until you move over. with the old `yoq-os` package still
+installed:
+
+```
+sudo os uninstall --delete-generations   # plain arch again; removes yoq-os, keeps /etc/yoq
+sudo mv /etc/yoq /etc/yos
+yos plan                                  # nothing to do, and the history is there
+sudo yos enable-rollback                  # generations again, if you had them
+```
+
+the two packages install side by side, so it doesn't matter which you put
+on first.
+
 ## building by hand
 
 you need zig 0.16.
