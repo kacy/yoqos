@@ -13,6 +13,14 @@
   kernel signed, as on systemd-boot and refind. grub's tpm
   module needs a tpm 2.0, so without one, `secure_boot` on grub stops
   `os plan` with E0136, and facts carry `tpm2`.
+- `os plan` and `os apply` stop with E0137 while the firmware enforces
+  secure boot without sbctl's key in its db, as after `sbctl create-keys`
+  makes new keys. images signed with it wouldn't start, and limine and
+  refind hang on one instead of falling back. facts carry `db_enrolled`,
+  and `os doctor` has a "firmware keys" check.
+- `os doctor` checks that the tpm's key still opens a luks root, without
+  opening anything. after turning secure boot on, it doesn't until it's
+  made again, and the boot asks for the passphrase.
 
 ### fixes
 

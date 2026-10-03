@@ -537,9 +537,11 @@ when the tpm unlocks it while secure boot is off, or with limine, which
 loads kernels without secure boot's check. a warning shows as
 `warn` and doesn't count as a failure. with
 `secure_boot` in the config, or firmware that enforces secure boot, it
-checks that sbctl and its keys are there, says whether the firmware
-enforces secure boot or is in setup mode, and lists the efi files on the
-esp without a signature. a sudo
+checks that sbctl and its keys are there, that the firmware has sbctl's
+key, says whether the firmware enforces secure boot or is in setup mode,
+and lists the efi files on the esp without a signature. when the tpm
+unlocks the root, it also checks that the tpm's key opens it now, without
+opening anything. a sudo
 rule without a password shows up too: anything running as that user could
 change the machine without asking. each check that fails says what to do,
 and the exit code is 1 when one does.
@@ -774,6 +776,8 @@ or not, and `os doctor` says so.
 turning secure boot on changes pcr 7, so the tpm won't unlock the disk
 until its key is enrolled again: type the passphrase once, then run
 `systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto <partition>`.
+`os doctor` warns until then. a trial boot waits at the passphrase as
+long as it takes: its watchdog only starts counting once the root is up.
 
 the config has to say the root is encrypted, or the new machine's
 initramfs can't unlock it: `[boot] encrypt = true` (see [encrypted
@@ -1230,6 +1234,14 @@ job, in this order:
    firmware signed with them, and some machines won't start without it.
 5. turn secure boot on in the firmware setup, if enrolling didn't, and
    reboot.
+
+if the firmware enforces secure boot already, with keys of its own, like
+on a machine that boots through shim, enroll sbctl's keys before step 2.
+`os plan` and `os apply` stop with E0137 while the firmware enforces
+secure boot without sbctl's key, and so they do after `sbctl create-keys`
+makes new ones: images signed with a key the firmware doesn't have won't
+start. grub falls back from one to the generation before, but limine
+halts and refind waits for a key, for good, so os checks first.
 
 without the keys, `os plan` and `os apply` stop with E0134. a way back
 doesn't: `os rollback`, a fallback from a failed trial, and `os gc` write
