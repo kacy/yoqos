@@ -178,7 +178,9 @@ falls_back() {
     check "/usr/local/bin/os history | tail -n 1 | grep -c 'fell back from'" 1
     case $proof in
     console:*)
-        if ! tail -c +"$((mark + 1))" "$console" | tr -d '\r' | grep -a -E -q -e "${proof#console:}"; then
+        # grep reads it all, not -q: an early exit would kill tail with
+        # sigpipe, and pipefail would call that a miss.
+        if ! tail -c +"$((mark + 1))" "$console" | tr -d '\r' | grep -a -E -e "${proof#console:}" >/dev/null; then
             echo "$name: the trial wasn't tried: nothing on the console matches '${proof#console:}'"
             # the boots since, without the journal's own lines (see
             # test.sh), which would bury the bootloader's and the kernel's.
