@@ -33,6 +33,10 @@ trap '"$vm" stop' EXIT
 # git is what an os package would depend on, for the config's history.
 # a new kernel needs a reboot before its modules load.
 "$vm" ssh pacman -Syu --noconfirm --noprogressbar --needed git >/dev/null
+# the journal goes to the serial console too, so when a boot never answers
+# over ssh, the console log shows what sshd and the network did. it's in
+# /etc, so every root made from this one has it.
+"$vm" ssh "mkdir -p /etc/systemd/journald.conf.d && printf '[Journal]\\nForwardToConsole=yes\\nTTYPath=/dev/ttyS0\\nMaxLevelConsole=info\\n' > /etc/systemd/journald.conf.d/yoq-test-console.conf"
 "$vm" reboot
 
 # the upgrade from an older os runs on its own: os goes in /usr/bin there,
@@ -67,8 +71,9 @@ limine | sdboot)
     tests/vm/load-failures.sh
     # unified kernel images, started by each loader's own kind of entry.
     tests/vm/uki.sh
-    # boot files live on the esp here, so it can run out of room.
-    if [ "$VM_IMAGE" = sdboot ]; then tests/vm/failures.sh esp; fi
+    # boot files live on the esp here, so it can run out of room. both
+    # lose power partway through a trial.
+    if [ "$VM_IMAGE" = sdboot ]; then tests/vm/failures.sh esp trial; else tests/vm/failures.sh trial; fi
     # signed images under secure boot; it takes the keys out at the end.
     if [ "$VM_IMAGE" = sdboot ]; then tests/vm/secureboot.sh; fi
     tests/vm/leave.sh
@@ -86,6 +91,8 @@ refind)
     tests/vm/rollback.sh
     tests/vm/trial.sh
     tests/vm/load-failures.sh
+    # the firmware's one-shot boot, with the power lost partway through.
+    tests/vm/failures.sh trial
     tests/vm/leave.sh
     ;;
 *)
@@ -103,7 +110,7 @@ refind)
     tests/vm/desktop.sh
     tests/vm/ids.sh
     # failures with generations, on one image of the two.
-    if [ "${VM_IMAGE:-cloud}" = cloud ]; then tests/vm/failures.sh crash committed download disk; fi
+    if [ "${VM_IMAGE:-cloud}" = cloud ]; then tests/vm/failures.sh crash committed download disk trial; fi
     # the esp is /boot here, so a rollback puts a kernel on it.
     if [ "${VM_IMAGE:-cloud}" = archinstall ]; then tests/vm/failures.sh restore; fi
     # grub under secure boot, with the keys left enrolled for leave.sh.

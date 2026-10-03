@@ -178,8 +178,12 @@ falls_back() {
     check "/usr/local/bin/os history | tail -n 1 | grep -c 'fell back from'" 1
     case $proof in
     console:*)
-        if ! tail -c +"$((mark + 1))" "$console" | tr -d '\r' | grep -E -q -e "${proof#console:}"; then
+        if ! tail -c +"$((mark + 1))" "$console" | tr -d '\r' | grep -a -E -q -e "${proof#console:}"; then
             echo "$name: the trial wasn't tried: nothing on the console matches '${proof#console:}'"
+            # the boots since, without the journal's own lines (see
+            # test.sh), which would bury the bootloader's and the kernel's.
+            echo "--- the console since the reboot"
+            tail -c +"$((mark + 1))" "$console" | tr -d '\r' | sed 's/\x1b\[[0-9;?=!]*[a-zA-Z]//g' | grep -a -v -E '^\[ *[0-9.]+\] [A-Za-z0-9_.@-]+\[[0-9]+\]:' | head -n 150
             exit 1
         fi
         ;;

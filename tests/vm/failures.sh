@@ -13,9 +13,11 @@
 #             limine and systemd-boot need copies of them
 #   restore   with grub and the esp at /boot, a rolled-back generation's
 #             boot files don't fit on the esp
+#   trial     the power goes while a trial is set up, while one that
+#             passed is made the default, and while a fallback ends one
 #
 # runs after the smoke test; on a machine with generations, after
-# rollback.sh. disk, esp, and restore need generations.
+# rollback.sh. disk, esp, restore, and trial need generations.
 set -eu
 . tests/vm/lib.sh
 
@@ -275,9 +277,124 @@ esp_restore() {
     check "$os plan" "$empty"
 }
 
+# a stand-in for $1 in /usr/local/bin, ahead of the real one in PATH,
+# that cuts the power the first time os runs it with arguments that match
+# the case pattern $2, before that call runs. it takes itself out first,
+# so the boot after runs the real one. /usr/local is shared by every root,
+# so os health sees it at boot too.
+power_cut_on() {
+    f=$(mktemp)
+    cat > "$f" <<EOF
+#!/bin/sh
+case "\$*" in
+$2)
+    rm -f /usr/local/bin/$1
+    sync
+    echo b > /proc/sysrq-trigger
+    sleep 60
+    ;;
+esac
+exec /usr/bin/$1 "\$@"
+EOF
+    "$vm" copy "$f" "/usr/local/bin/$1"
+    rm -f "$f"
+    "$vm" ssh "chmod 755 /usr/local/bin/$1 && sync"
+}
+
+# waits for the boot after power_cut_on's stand-in for $1 cut the power:
+# the stand-in is gone, the machine runs the root $2, and yoq-health has
+# finished. the boot the power went out on had the health check running
+# when it did.
+wait_cut() {
+    for _ in $(seq 60); do
+        got=$(timeout 20 "$vm" ssh "test ! -e /usr/local/bin/$1 && test \"\$(systemctl show -p ExecMainExitTimestampMonotonic --value yoq-health)\" != 0 && findmnt -no FSROOT /" 2>/dev/null || true)
+        [ "$got" = "$2" ] && return 0
+        sleep 10
+    done
+    echo "$name: no boot into $2 with the health check done after the power cut"
+    "$vm" ssh "findmnt -no FSROOT /; ls /usr/local/bin; journalctl -b -u yoq-health --no-pager -o cat | tail -n 10" || true
+    exit 1
+}
+
+# fails unless the machine has $2 generations newer than generation $1.
+newer_than() {
+    check "ls /var/lib/yoq/generations | cut -d. -f1 | awk '\$1 > $1' | wc -l" "$2"
+}
+
+# the trial's own steps, with the power cut at each: while the trial is
+# set up, while a trial that passed is made the default, and while a
+# fallback ends the trial it fell back from. each step is one call os
+# makes to the bootloader's tool, and the cut comes just before it.
+trial_cuts() {
+    case $VM_LOADER in
+    grub) arm_tool=grub-editenv arm_cut='*yoq_next=head*' end_tool=grub-editenv end_cut='*"unset yoq_default"*' ;;
+    limine | systemd-boot) arm_tool=bootctl arm_cut='"set-oneshot "*trial*' end_tool=bootctl end_cut='"set-oneshot "' ;;
+    refind) arm_tool=efibootmgr arm_cut='*"-n "*' end_tool=efibootmgr end_cut='*-B*' ;;
+    esac
+    pkg=$(ucode)
+
+    # arming: the menu holds the default on the generation before, and the
+    # power goes before the bootloader is told to try the new one. that
+    # boot runs the generation before, whose health check sets the trial
+    # up again, and the boot after tries it.
+    before=$("$vm" ssh "$newest_cmd")
+    power_cut_on "$arm_tool" "$arm_cut"
+    crash "$os add --yes $pkg"
+    wait_cut "$arm_tool" "/@roots/boot-$before"
+    n=$("$vm" ssh "$newest_cmd")
+    check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'trial wasn.t set up before the machine went down'" 1
+    on_trial yes
+    "$vm" reboot
+    settled
+    check "findmnt -no FSROOT /" "/$(newest_root)"
+    check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'the default now'" 1
+    on_trial no
+    check "pacman -Q $pkg >/dev/null && echo installed" installed
+    newer_than "$n" 0
+
+    # blessing: the trial comes up healthy, and the power goes while it's
+    # made the default. the bootloader still boots the generation before,
+    # whose health check finishes the job instead of falling back.
+    before=$("$vm" ssh "$newest_cmd")
+    "$vm" ssh "$os remove --yes $pkg" | tail -n 1
+    on_trial yes
+    n=$("$vm" ssh "$newest_cmd")
+    power_cut_on "$end_tool" "$end_cut"
+    "$vm" reboot || true
+    wait_cut "$end_tool" "/@roots/boot-$before"
+    check "journalctl -b -u yoq-health --no-pager -o cat | grep -c 'machine went down before it was the default'" 1
+    on_trial no
+    newer_than "$n" 0
+    "$vm" reboot
+    settled
+    check "findmnt -no FSROOT /" "/$(newest_root)"
+    check "pacman -Q $pkg >/dev/null 2>&1 || echo removed" removed
+    check "$os plan" "$empty"
+
+    # falling back: a trial that can't boot, then the power goes as the
+    # fallback ends the trial, after it made its generation. the boot after
+    # finds that generation made, and only ends the trial.
+    "$vm" ssh "$os add --yes $pkg" | tail -n 1
+    on_trial yes
+    before=$(second_newest)
+    n=$("$vm" ssh "$newest_cmd")
+    break_trial_boot
+    power_cut_on "$end_tool" "$end_cut"
+    "$vm" reboot || true
+    wait_cut "$end_tool" "/@roots/boot-$before"
+    newer_than "$n" 1
+    check "/usr/local/bin/os history | tail -n 1 | grep -c 'fell back from $n to $before'" 1
+    on_trial no
+    "$vm" reboot
+    settled
+    check "findmnt -no FSROOT /" "/$(newest_root)"
+    check "$os plan" "$empty"
+}
+
 for what in "$@"; do
     case $what in
     crash) crash_apply ;;
+    trial) trial_cuts ;;
     committed) crash_committed ;;
     download) download ;;
     disk) disk_full ;;

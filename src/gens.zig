@@ -240,6 +240,14 @@ pub const Machine = struct {
         if (try writeRecord(m.a, m.io, "/var", rec)) |w| return w;
         const all = try std.mem.concat(m.a, generation.Record, &.{ records, &.{rec} });
         const hold = if (on_trial) generation.trialFallback(all, try m.pendingFallback()) else null;
+        // the trial's note goes in before the menu that holds the default,
+        // so a power cut before the trial is armed leaves a note saying so,
+        // and the next boot arms it (see `os health`).
+        if (hold) |fallback| {
+            if (trial.Store.of(m.a, m.io, m.boot)) |store| {
+                if (try store.prepare(n, fallback)) |w| return w;
+            }
+        }
         return m.writeMenuHolding(root, all, hold);
     }
 

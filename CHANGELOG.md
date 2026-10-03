@@ -57,6 +57,18 @@
 - the update screen lists the kernel and the other packages that need a
   reboot first among the notable ones. they were in name order, so a few
   weeks of major version bumps could push the kernel into "and n more".
+- a power cut while a trial is set up no longer leaves the machine on the
+  generation before with nothing saying why. os notes the trial before the
+  menu that holds the default back, and the next boot sets the trial up
+  again, so the boot after tries it. before, that boot ran the older
+  generation for good, while the config and lock said the newer one.
+- a power cut while a trial that passed is made the default no longer
+  looks like a failed trial. os notes that it passed first, and the next
+  boot finishes making it the default, where it used to fall back and
+  make a new generation from the one before, though nothing was wrong.
+- a fallback cut off after it made its generation, before it ended the
+  trial, doesn't make a second one at the next boot. it ends the trial
+  and says what happened.
 
 ## 0.1.4
 
