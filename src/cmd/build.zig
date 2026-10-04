@@ -250,11 +250,23 @@ pub const Builder = struct {
                 // those.
                 if (c.kind != .unit or (c.op == .remove) != removing or std.mem.indexOf(u8, c.to orelse "", verb) == null) continue;
                 if (try b.run(&.{ "systemctl", try std.fmt.allocPrint(b.a, "--root={s}", .{b.dir}), verb, "--", c.subject })) |why| {
+                    // one whose package the change took out is off already:
+                    // systemctl took its links out, and says it's gone.
+                    if (removing and !try b.hasUnit(c.subject)) continue;
                     return cli.fail(ctx, "couldn't {s} {s} in the build: {s}", .{ verb, c.subject, why });
                 }
             }
         }
         return 0;
+    }
+
+    /// whether the new root has a unit file called `name`, from a package
+    /// or written there.
+    fn hasUnit(b: *Builder, name: []const u8) !bool {
+        for ([_][]const u8{ "usr/lib/systemd/system", "etc/systemd/system" }) |dir| {
+            if (rootfs.pathExists(b.ctx.io, try b.in(try std.fs.path.join(b.a, &.{ dir, name })))) return true;
+        }
+        return false;
     }
 
     /// what this machine has that the build doesn't: files in /etc and
