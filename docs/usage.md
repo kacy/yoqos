@@ -71,7 +71,7 @@ each release on github has an arch package and a tarball, with a
 `sha256sums.txt` beside them:
 
 ```
-sudo pacman -U yos-0.1.5-1-x86_64.pkg.tar.zst
+sudo pacman -U yos-0.2.0-1-x86_64.pkg.tar.zst
 ```
 
 the package holds the `yos` command, a pacman hook that records direct
@@ -87,7 +87,7 @@ repository's `main` branch, or `yos` from a release tag with
 ```
 cd dist
 makepkg -si                              # yos-git, from main
-YOS_VERSION=0.1.5 makepkg -si            # yos 0.1.5, from v0.1.5
+YOS_VERSION=0.2.0 makepkg -si            # yos 0.2.0, from v0.2.0
 YOS_SOURCE=file://$PWD/.. makepkg -si    # this checkout
 ```
 
@@ -102,9 +102,23 @@ installed:
 sudo os uninstall --delete-generations   # plain arch again; removes yoq-os, keeps /etc/yoq
 sudo mv /etc/yoq /etc/yos
 sudo mv /var/cache/yoq /var/cache/yos     # the packages and databases your lock came from
-yos plan                                  # nothing to do, and the history is there
+yos plan                                  # removes what yoq os generated under its own names
+sudo yos apply
 sudo yos enable-rollback                  # generations again, if you had them
 ```
+
+a config with `[repos]` or `aur` has two more steps before `yos plan`. yoq
+os had pacman include its own repository file, which still points at the old
+cache:
+
+```
+sudo rm /etc/pacman.d/yoq-repos.conf
+sudo sed -i '\|/etc/pacman.d/yoq-repos.conf|d' /etc/pacman.conf
+sudo yos update                           # with aur: builds them again, into yos's repository
+```
+
+and a config that includes a profile, like omarchy's, names it under
+`/usr/share/yos/profiles` now, not `/usr/share/yoq/profiles`.
 
 the two packages install side by side, so it doesn't matter which you put
 on first.
@@ -658,7 +672,7 @@ again once the new machine runs.
    drive is erased; `lsblk` says which one it is.
 
    ```
-   sudo dd if=yos-0.1.5-x86_64.iso of=/dev/sdX bs=4M status=progress oflag=sync
+   sudo dd if=yos-0.2.0-x86_64.iso of=/dev/sdX bs=4M status=progress oflag=sync
    ```
 
 2. boot the new machine from the drive, in uefi mode. its boot menu says
@@ -1538,6 +1552,10 @@ code:
 | E0131 | a change whose new boot files won't fit on the esp |
 | E0133 | a secret the config names that this machine doesn't have, or can't decrypt |
 | E0134 | `secure_boot` is on, but sbctl has no keys to sign with |
+| E0135 | the initramfs a change builds wouldn't unlock the encrypted root |
+| E0136 | `secure_boot` on grub, on a machine without a tpm 2.0 |
+| E0137 | the firmware doesn't trust sbctl's keys |
+| E0138 | the machine was set up by yoq os, yos's name before 0.2.0 |
 | E0213 | a service name `[services]` doesn't know |
 
 ## scripting
