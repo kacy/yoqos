@@ -22,6 +22,7 @@ const lists = @import("lists.zig");
 const uki = @import("uki.zig");
 const secureboot = @import("secureboot.zig");
 const desired = @import("desired.zig");
+const firewall = @import("firewall.zig");
 const Allocator = std.mem.Allocator;
 
 pub const schema = "yos.plan/1";
@@ -182,6 +183,7 @@ pub fn wants(a: Allocator, c: *const config.Config) ![]const Want {
         // a tty login without a session is a plain console: nothing to start.
         if (v.v != .tty or c.desktop.session != null) try addWants(a, &out, catalog.loginPackages(v.v), "desktop.login", v.src);
     }
+    if (c.firewall.backend) |v| try addWant(a, &out, firewall.package, "firewall.backend", v.src);
     for (c.services.entries.items) |e| {
         if (!e.value.isEnabled()) continue;
         try addWant(a, &out, e.value.packageFor(e.name), try std.fmt.allocPrint(a, "services.{s}", .{e.name}), e.value.src);
@@ -339,6 +341,9 @@ fn planUnits(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
         const unit = e.value.unitFor(e.name);
         const step = unitStep(e.value.isEnabled(), f.unit(unit)) orelse continue;
         try units.append(a, .{ .op = step.op, .kind = .unit, .subject = unit, .to = step.to, .cause = try std.fmt.allocPrint(a, "services.{s}", .{e.name}) });
+    }
+    if (c.firewall.backend != null) {
+        if (unitStep(true, f.unit(firewall.unit))) |step| try units.append(a, .{ .op = step.op, .kind = .unit, .subject = firewall.unit, .to = step.to, .cause = "firewall.backend" });
     }
     // a login choice owns the display manager: its own is enabled, the
     // others disabled. neither starts nor stops now, since that would end
@@ -967,6 +972,35 @@ test "a login choice owns the display manager, and changes it at the next boot" 
         \\plan: 2 to add, 0 to change, 1 to remove · reboot needed: display manager
         \\
     , out.written());
+}
+
+test "a firewall brings ufw, its files, and its unit" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("[boot]\nkernel = \"none\"\n[firewall]\nbackend = \"ufw\"\nallow = [\"22/tcp\", \"53/udp from 172.16.0.0/12 to 172.17.0.1\"]\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{lockPkg("ufw", "1", &.{})} };
+    const p = (try plan(t.a(), &c, &l, &.{}, &t.diags)).?;
+    var out: std.Io.Writer.Allocating = .init(t.a());
+    try planview.writeText(&out.writer, t.a(), &p, .{});
+    try testing.expectEqualStrings(
+        \\packages
+        \\  + ufw 1  (firewall.backend)
+        \\services
+        \\  + ufw.service: enable, start  (firewall.backend)
+        \\files
+        \\  + /etc/ufw/ufw.conf: write, mode 0644  (firewall.backend)
+        \\  + /etc/ufw/user.rules: write, mode 0644  (firewall.backend)
+        \\  + /etc/ufw/user6.rules: write, mode 0644  (firewall.backend)
+        \\
+        \\plan: 5 to add, 0 to change, 0 to remove · no reboot
+        \\
+    , out.written());
+    const want = try desired.files(t.a(), &c, &.{});
+    const v4 = lists.find(want, "path", firewall.rules_path).?.content;
+    const v6 = lists.find(want, "path", firewall.rules6_path).?.content;
+    try testing.expect(std.mem.indexOf(u8, v4, "-A ufw-user-input -p udp -d 172.17.0.1 --dport 53 -s 172.16.0.0/12 -j ACCEPT\n") != null);
+    try testing.expect(std.mem.indexOf(u8, v6, "172.17.0.1") == null);
+    try testing.expect(std.mem.indexOf(u8, v6, "-A ufw6-user-input -p tcp --dport 22 -j ACCEPT\n") != null);
 }
 
 test "logging in on tty1 starts the session through uwsm" {
