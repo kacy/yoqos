@@ -144,18 +144,29 @@ pub fn addToList(a: Allocator, text_in: []const u8, path: []const []const u8, ke
         return try splice(a, text, last.span.end, 0, try std.fmt.allocPrint(a, ", {s}", .{q}));
     }
 
-    const indent = text[d.lineStart(last.span.start.offset)..last.span.start.offset];
+    // what's before the last item on its line: only its indent, when
+    // it's on a line of its own.
+    const before = text[d.lineStart(last.span.start.offset)..last.span.start.offset];
+    const indent = before[0 .. before.len - std.mem.trimStart(u8, before, " \t").len];
+    const alone = indent.len == before.len;
 
     // the last item shares the closing bracket's line: the new item goes
     // right after it, on its own line if the last item is on its own line.
     if (std.mem.indexOfScalar(u8, text[last.span.end..close], '\n') == null) {
-        const sep = if (std.mem.trim(u8, indent, " \t").len == 0)
+        const sep = if (alone)
             try std.fmt.allocPrint(a, "\n{s}", .{indent})
         else
             " ";
         const comma = std.mem.indexOfScalarPos(u8, text[0..close], last.span.end, ',');
         if (comma) |c| return try splice(a, text, c + 1, 0, try std.fmt.allocPrint(a, "{s}{s}", .{ sep, q }));
         return try splice(a, text, last.span.end, 0, try std.fmt.allocPrint(a, ",{s}{s}", .{ sep, q }));
+    }
+
+    // a list wrapped with several items a line: the new one goes after
+    // the last, on its line.
+    if (!alone) {
+        if (commaAfter(text, last.span.end, close)) |c| return try splice(a, text, c + 1, 0, try std.fmt.allocPrint(a, " {s},", .{q}));
+        return try splice(a, text, last.span.end, 0, try std.fmt.allocPrint(a, ", {s}", .{q}));
     }
 
     // a list over several lines: a new line before the closing bracket,
@@ -395,6 +406,14 @@ test "add to a list over several lines" {
         \\]
         \\
     );
+}
+
+test "add to a list wrapped with several items a line" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectEdit(addToList(a, "packages = [\n  \"base\", \"grub\",\n  \"git\", \"nano\",\n]\n", &.{}, "packages", "ripgrep"), "packages = [\n  \"base\", \"grub\",\n  \"git\", \"nano\", \"ripgrep\",\n]\n");
+    try expectEdit(addToList(a, "packages = [\"a\", \"b\"\n]\n", &.{}, "packages", "c"), "packages = [\"a\", \"b\", \"c\"\n]\n");
 }
 
 test "add to a list whose last item shares the closing bracket's line" {
