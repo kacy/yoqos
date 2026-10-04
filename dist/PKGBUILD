@@ -1,18 +1,21 @@
 # the yos command. by default, yos-git from this repository's main
-# branch; with YOS_VERSION=0.1.0, yos from the tag v0.1.0. YOS_SOURCE
-# points either at another clone, like ci's own checkout:
+# branch; with YOS_VERSION=0.2.0, yos from the tag v0.2.0, the first
+# under this name. YOS_SOURCE points either at another clone, like ci's
+# own checkout:
 #   YOS_SOURCE=file:///path/to/yos
+# makepkg writes pkgver() back only over a pkgver= line that starts the
+# line, so yos-git's stays out of the if.
+pkgname=yos-git
+pkgver=r0
+_ref=
+provides=(yos)
+conflicts=(yos)
 if [ -n "${YOS_VERSION:-}" ]; then
   pkgname=yos
   pkgver=$YOS_VERSION
   _ref="#tag=v$YOS_VERSION"
+  provides=()
   conflicts=(yos-git)
-else
-  pkgname=yos-git
-  pkgver=r0
-  _ref=
-  provides=(yos)
-  conflicts=(yos)
 fi
 pkgrel=1
 pkgdesc='declarative arch linux with rollback'
