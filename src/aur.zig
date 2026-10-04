@@ -370,8 +370,12 @@ pub const Builder = struct {
         if (try b.dropPackages(work)) |w| return w;
         if (try b.run(&.{ "chown", "-R", build_user, work })) |w| return w;
         var argv: std.ArrayList([]const u8) = .empty;
+        // under sudo, makechrootpkg reads the caller's makepkg.conf as root,
+        // and its PKGDEST, and gives the caller the package it built.
+        // neither is theirs to say: the build is root's, and lands in work.
+        try argv.appendSlice(b.a, &.{ "env", "-u", "SUDO_USER", "-u", "SUDO_UID", "-u", "SUDO_GID", "HOME=/root", "USER=root", try std.fmt.allocPrint(b.a, "PKGDEST={s}", .{work}), "-C", work });
         // -c starts from a clean copy of the chroot; -u brings it up to date.
-        try argv.appendSlice(b.a, &.{ "env", "-C", work, "makechrootpkg", "-c", "-u", "-U", build_user, "-r", b.dirs.chroot });
+        try argv.appendSlice(b.a, &.{ "makechrootpkg", "-c", "-u", "-U", build_user, "-r", b.dirs.chroot });
         for (with) |pkg| try argv.appendSlice(b.a, &.{ "-I", pkg });
         const log = try std.fmt.allocPrint(b.a, "{s}/{s}.log", .{ b.dirs.src, name });
         if (try exec.runLogged(b.a, b.io, argv.items, log)) |w| return w;
@@ -382,7 +386,9 @@ pub const Builder = struct {
         const file = ownPackage(try b.packagesIn(work), name) orelse
             return try std.fmt.allocPrint(b.a, "building {s} made no package called {s}", .{ name, name });
         const dest = try std.fs.path.join(b.a, &.{ b.dirs.repo, std.fs.path.basename(file) });
-        if (try b.run(&.{ "mv", "-f", file, dest })) |w| return w;
+        // root's alone: a package someone else can change would go into
+        // later builds' chroots, and onto this machine.
+        if (try b.run(&.{ "install", "-o", "root", "-g", "root", "-m", "0644", file, dest })) |w| return w;
         if (try b.run(&.{ "repo-add", "-q", "-R", db, dest })) |w| return w;
         return b.write(marker, commit);
     }
