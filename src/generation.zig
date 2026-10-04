@@ -146,12 +146,15 @@ test "a trial falls back to the generation that booted last" {
 /// ctrl-c, a rollback between its snapshot and its record, or gc between
 /// a record and its snapshots. nothing would ever remove them, and a
 /// staged root can hold gigabytes. the root `running` runs stays, and so
-/// do names yos doesn't make.
+/// do names yos doesn't make, and numbers below the first generation's:
+/// those are generations an uninstall kept, from before this /var.
 pub fn strays(a: Allocator, records: []const Record, roots: []const []const u8, gens: []const []const u8, running_root: []const u8) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     if (records.len == 0) return out.items;
+    const lowest = firstNumber(records);
     for (gens) |name| {
         const n = std.fmt.parseInt(u32, name, 10) catch continue;
+        if (n < lowest) continue;
         if (find(records, n) == null) try out.append(a, try std.fmt.allocPrint(a, gens_dir ++ "/{s}", .{name}));
     }
     for (roots) |name| {
@@ -159,9 +162,10 @@ pub fn strays(a: Allocator, records: []const Record, roots: []const []const u8, 
         if (std.mem.eql(u8, std.mem.trimStart(u8, running_root, "/"), path)) continue;
         const used = if (std.mem.startsWith(u8, name, "boot-")) blk: {
             const n = std.fmt.parseInt(u32, name["boot-".len..], 10) catch continue;
-            break :blk find(records, n) != null;
+            break :blk n < lowest or find(records, n) != null;
         } else blk: {
-            _ = std.fmt.parseInt(u32, name, 10) catch continue;
+            const n = std.fmt.parseInt(u32, name, 10) catch continue;
+            if (n < lowest) break :blk true;
             for (records) |r| {
                 if (std.mem.eql(u8, r.root, path)) break :blk true;
                 if (r.from) |f| if (std.mem.eql(u8, std.mem.trimStart(u8, f, "/"), path)) break :blk true;
@@ -207,16 +211,34 @@ test "subvolumes no generation uses" {
     // with no records in this /var, as before enable-rollback's reboot,
     // nothing is a stray.
     try testing.expectEqual(0, (try strays(a, &.{}, &.{ "1", "boot-1" }, &.{"1"}, "/")).len);
+    // generations an uninstall kept stay through a later enable-rollback,
+    // whose first generation is numbered after them.
+    const after = [_]Record{
+        .{ .n = 7, .time = 7, .root = "@roots/7", .reason = "enable-rollback", .from = "/@roots/6" },
+        .{ .n = 8, .time = 8, .root = "@roots/8", .reason = "add fd" },
+    };
+    const kept = try strays(a, &after, &.{ "2", "6", "7", "8", "9", "boot-3", "boot-7" }, &.{ "1", "5", "7", "8" }, "/@roots/8");
+    try testing.expectEqual(1, kept.len);
+    try testing.expectEqualStrings("@roots/9", kept[0]);
 }
 
 /// how many generations garbage collection keeps, besides pinned ones and
 /// the first.
 pub const default_keep = 5;
 
+/// the number of the first of `records`, the generation enable-rollback
+/// made. it's 1 unless an uninstall left roots behind, which it's
+/// numbered after. `records` has `n`, like a `Record`.
+pub fn firstNumber(records: anytype) u32 {
+    var lowest: u32 = std.math.maxInt(u32);
+    for (records) |r| lowest = @min(lowest, r.n);
+    return lowest;
+}
+
 /// the generations to keep of `records`, sorted by number: the newest
 /// `keep`, the first, and every pinned one.
 pub fn keeps(r: Record, records: []const Record, keep: usize) bool {
-    if (r.n == 1 or r.pinned) return true;
+    if (r.n == firstNumber(records) or r.pinned) return true;
     var newer: usize = 0;
     for (records) |o| newer += @intFromBool(o.n > r.n);
     return newer < keep;
@@ -419,9 +441,10 @@ pub fn gcHint(a: Allocator, records: anytype, running_root: []const u8) ![]const
     for (records) |r| {
         if (std.mem.eql(u8, r.root, std.mem.trimStart(u8, running_root, "/"))) runs = r.n;
     }
+    const first = firstNumber(records);
     var old: std.ArrayList(u32) = .empty;
     for (records, 0..) |r, i| {
-        if (r.n == 1 or r.pinned or r.n == runs or i == records.len - 1) continue;
+        if (r.n == first or r.pinned or r.n == runs or i == records.len - 1) continue;
         try old.append(a, r.n);
     }
     const n = old.items.len;
@@ -497,6 +520,11 @@ test "which generations collection keeps" {
     var kept: [6]bool = undefined;
     for (recs, &kept) |r, *k| k.* = keeps(r, &recs, 2);
     try testing.expectEqualSlices(bool, &.{ true, false, true, false, true, true }, &kept);
+    // after an uninstall left roots behind, the first generation has a
+    // later number, and stays all the same.
+    var later: [3]bool = undefined;
+    for (recs[3..], &later) |r, *k| k.* = keeps(r, recs[3..], 1);
+    try testing.expectEqualSlices(bool, &.{ true, false, true }, &later);
 }
 
 test "boot files that don't fit on the esp name what gc would remove" {

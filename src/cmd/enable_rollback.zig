@@ -50,7 +50,7 @@ pub fn enableRollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var e: Enabler = .{ .ctx = ctx, .a = a, .boot = f.boot, .time = std.Io.Timestamp.now(ctx.io, .real).toSeconds() };
     if (!try e.run(&p)) return 1;
     gens.blockHibernation(ctx.io);
-    try ctx.out.writeAll("\ngeneration 1 is ready. reboot to start it; the boot menu also keeps the system as it is now.\n");
+    try ctx.out.print("\ngeneration {d} is ready. reboot to start it; the boot menu also keeps the system as it is now.\n", .{e.n});
     return 0;
 }
 

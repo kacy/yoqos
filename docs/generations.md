@@ -514,7 +514,8 @@ same as the trial failing, except on grub.
 
 ## keeping and cleaning up
 
-after each new generation, `yos` keeps the newest five, generation 1, any
+after each new generation, `yos` keeps the newest five, the first one
+(generation 1, or the number after the roots an earlier uninstall left), any
 you pin, and the fallback of a trial that's waiting. it removes the rest,
 meaning their records, snapshots, boot copies, and any writable root that
 nothing else uses, and it lists which ones went.
