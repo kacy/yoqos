@@ -1,0 +1,150 @@
+# omarchy's desktop, rebuilt from parts arch ships: hyprland with its
+# keybindings, look, and tokyo night colors, a bar, a launcher, a lock
+# screen, and the services omarchy turns on. its own scripts, its quickshell
+# ui, and the packages only its repository has are left out. every program
+# here comes from arch's own repositories, so `yos install` builds this
+# from the live iso with nothing else:
+#
+#   yos install https://example.com/you/machines.git --disk /dev/nvme0n1 --encrypt --update
+#
+# the files next to this one are the machine's defaults, in /etc/xdg. a
+# user's own in ~/.config wins over each of them.
+version = 1
+packages = [
+  # the machine itself.
+  "base", "linux-firmware", "grub", "efibootmgr", "btrfs-progs", "sudo",
+  "man-db", "bash-completion", "wireless-regdb", "kernel-modules-hook",
+  # the desktop: hyprland's own tools, a bar, a launcher, notifications,
+  # the polkit agent, and the background.
+  "hyprlock", "hypridle", "hyprsunset", "hyprpicker", "hyprpolkitagent",
+  "waybar", "fuzzel", "mako", "swaybg", "swayosd", "uwsm",
+  "xdg-desktop-portal-gtk", "qt6-wayland", "gnome-themes-extra",
+  "gnome-keyring", "libsecret",
+  # screenshots and the clipboard.
+  "grim", "slurp", "satty", "wl-clipboard", "cliphist", "wtype",
+  # hardware: brightness, media keys, disks, monitors over ddc.
+  "brightnessctl", "playerctl", "pamixer", "udiskie", "ddcutil",
+  # fonts.
+  "ttf-jetbrains-mono-nerd", "noto-fonts", "noto-fonts-emoji",
+  "noto-fonts-cjk", "woff2-font-awesome",
+  # the terminal and what runs in it, as omarchy has it.
+  "foot", "neovim", "git", "lazygit", "btop", "fastfetch", "starship",
+  "zoxide", "eza", "fzf", "ripgrep", "fd", "bat", "tldr", "plocate",
+  "mise", "gum", "jq", "bluetui", "wiremix", "lazydocker",
+  # apps.
+  "chromium", "nautilus", "sushi", "gvfs-mtp", "gvfs-smb", "imv", "mpv",
+  "evince", "xournalpp",
+  # docker, started on demand by its socket below.
+  "docker-compose", "docker-buildx",
+]
+
+[providers]
+# arch has more than one package for these, and yos asks instead of picking
+# the first one the way pacman does. naming them here means it never has to.
+"libxtables.so" = "iptables"
+initramfs = "mkinitcpio"
+jack = "pipewire-jack"
+
+[system]
+hostname = "atlas"
+timezone = "America/Chicago"
+locale = "en_US.UTF-8"
+keymap = "us"
+
+# omarchy encrypts the disk, and logs straight in once it's unlocked: the
+# passphrase at boot is the only one. install with --encrypt for this.
+[boot]
+encrypt = true
+
+# `yos init --new` on the machine fills these in from what it finds:
+# [hardware]
+# cpu = "amd"
+# gpu = "amd"
+
+[desktop]
+session = "hyprland"
+audio = "pipewire"
+login = "sddm"
+session_config = "hypr/hyprland.lua"
+
+[users.kacy]
+groups = ["wheel"]
+
+[services]
+networkmanager = true
+resolved = true
+timesyncd = true
+bluetooth = true
+cups = true
+avahi = true
+power-profiles = true
+fstrim = true
+# nothing in, everything out, where omarchy uses ufw.
+firewalld = true
+
+# started when something first talks to it, rather than at every boot. the
+# user isn't in the docker group, which would be root by another name; the
+# docker cli runs under sudo.
+[services.docker]
+unit = "docker.socket"
+package = "docker"
+
+# kills one runaway app instead of letting memory pressure take the
+# session down.
+[services.oomd]
+unit = "systemd-oomd.service"
+package = "systemd"
+
+# sddm logs the user in by itself, into hyprland under uwsm.
+[files."/etc/sddm.conf.d/10-autologin.conf"]
+text = """
+[Autologin]
+User=kacy
+Session=hyprland-uwsm
+"""
+
+# ssh notices a dropped connection in a minute, not when tcp gives up.
+[files."/etc/ssh/ssh_config.d/20-keepalive.conf"]
+text = """
+Host *
+  ServerAliveInterval 15
+  ServerAliveCountMax 3
+  ConnectTimeout 10
+"""
+
+# the session's own config, beside hyprland's.
+[files."/etc/xdg/hypr/hypridle.conf"]
+source = "hypr/hypridle.conf"
+
+[files."/etc/xdg/hypr/hyprlock.conf"]
+source = "hypr/hyprlock.conf"
+
+[files."/etc/xdg/hypr/hyprsunset.conf"]
+source = "hypr/hyprsunset.conf"
+
+[files."/etc/xdg/waybar/config.jsonc"]
+source = "waybar/config.jsonc"
+
+[files."/etc/xdg/waybar/style.css"]
+source = "waybar/style.css"
+
+[files."/etc/xdg/fuzzel/fuzzel.ini"]
+source = "fuzzel/fuzzel.ini"
+
+[files."/etc/xdg/mako/config"]
+source = "mako/config"
+
+[files."/etc/xdg/foot/foot.ini"]
+source = "foot/foot.ini"
+
+[files."/etc/xdg/swayosd/style.css"]
+source = "swayosd/style.css"
+
+# the power menu and the keybinding list, which hyprland's binds call.
+[files."/etc/xdg/hypr/scripts/menu-power"]
+source = "hypr/scripts/menu-power"
+mode = "0755"
+
+[files."/etc/xdg/hypr/scripts/menu-keybindings"]
+source = "hypr/scripts/menu-keybindings"
+mode = "0755"

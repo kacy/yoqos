@@ -1,0 +1,31 @@
+/* the volume and brightness display, in tokyo night. from
+   examples/omarchy-lite. */
+window#osd {
+  padding: 12px 20px;
+  border-radius: 0;
+  border: 2px solid #7aa2f7;
+  background: #1a1b26;
+}
+
+window#osd #container {
+  margin: 16px;
+}
+
+window#osd image,
+window#osd label {
+  color: #a9b1d6;
+}
+
+window#osd progressbar,
+window#osd trough {
+  min-height: 6px;
+  border-radius: 0;
+}
+
+window#osd trough {
+  background: #414868;
+}
+
+window#osd progress {
+  background: #7aa2f7;
+}

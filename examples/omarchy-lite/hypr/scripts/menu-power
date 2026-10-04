@@ -1,0 +1,12 @@
+#!/bin/sh
+# lock, suspend, log out, restart, or shut down, picked in the launcher.
+# super + escape. from examples/omarchy-lite.
+choice=$(printf '%s\n' "  lock" "󰒲  suspend" "󰍃  log out" "󰜉  restart" "󰐥  shut down" |
+  fuzzel --dmenu --prompt "system  " --lines 5 --width 20) || exit 0
+case $choice in
+*lock) loginctl lock-session ;;
+*suspend) systemctl suspend ;;
+*"log out") uwsm stop ;;
+*restart) systemctl reboot ;;
+*"shut down") systemctl poweroff ;;
+esac
