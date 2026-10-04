@@ -141,6 +141,12 @@ const Enabler = struct {
         // a step that fails with an error rather than false, like output
         // to a closed pipe, takes the others back all the same.
         errdefer e.takeBack() catch {};
+        // ctrl-c, or a dropped ssh session, stops it after the step it's
+        // in, or with that step, as the program the step runs gets it
+        // too, and what's done is taken back, rather than leaving
+        // subvolumes that stop every run after.
+        const stops = exec.Stops.note();
+        defer stops.restore();
         for (p.steps) |s| {
             try e.ctx.out.print("  {s}\n", .{s.what});
             try e.ctx.out.flush();
@@ -155,7 +161,8 @@ const Enabler = struct {
                 .boot_entry => try e.seal() and try e.bootEntry(),
                 .boot_files => try e.bootFiles(),
             };
-            if (!ok) {
+            if (!ok or exec.Stops.asked()) {
+                if (ok) try e.ctx.err.writeAll("yos: stopped, as asked.\n");
                 try e.takeBack();
                 return false;
             }
