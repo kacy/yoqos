@@ -361,7 +361,11 @@ pub fn spliceLimine(a: Allocator, conf: []const u8, section: []const u8) ![]cons
             if (t.len == 0) continue;
         }
         if (std.mem.eql(u8, t, limine_begin)) {
-            in_section = true;
+            // without its end line, nothing says where yos's section stops,
+            // and the entries after it may be the machine's own: only the
+            // begin line goes, and what was yos's stays, out of date but
+            // harmless, until it's taken out by hand.
+            in_section = std.mem.indexOf(u8, lines.rest(), limine_end) != null;
             continue;
         }
         if (std.mem.startsWith(u8, t, "default_entry:") or std.mem.startsWith(u8, t, "remember_last_entry:")) continue;
@@ -684,6 +688,9 @@ test "limine's entries, and where they go in its config" {
     try testing.expectEqualStrings("timeout: 5\n\n" ++ section2 ++ "\n/Arch Linux (linux)\n    protocol: linux\n", twice);
     // a config with no entries gets the section at the end.
     try testing.expectEqualStrings("timeout: 5\n\nS\n", try spliceLimine(a, "timeout: 5\nremember_last_entry: yes\n", "S\n"));
+    // a begin line with no end line: the entries after it stay.
+    const cut = "timeout: 5\n" ++ limine_begin ++ "\n/yos 1\n    protocol: linux\n/Windows\n    protocol: efi\n";
+    try testing.expectEqualStrings("timeout: 5\nS\n\n/yos 1\n    protocol: linux\n/Windows\n    protocol: efi\n", try spliceLimine(a, cut, "S\n"));
 }
 
 test "systemd-boot's entry files" {
