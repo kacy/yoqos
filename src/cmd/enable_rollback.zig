@@ -201,6 +201,9 @@ const Enabler = struct {
     /// reverses every step done so far, newest first, and says whether
     /// the machine is back as it was.
     fn takeBack(e: *Enabler) !void {
+        // taking back, cut off, would leave things worse.
+        const stops = exec.Stops.ignore();
+        defer stops.restore();
         var clean = true;
         var i = e.undo.items.len;
         while (i > 0) {
