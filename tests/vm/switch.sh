@@ -3,8 +3,9 @@
 # 0.1.5 sets the machine up with generations and a trial. yos stops on it
 # with E0138, since it doesn't read yoq os's state. the way over is the
 # one E0138 gives: the old `os uninstall`, then /etc/yoq moved to
-# /etc/yos, after which yos plans nothing, turns generations on again,
-# and runs a trial of its own. runs on the cloud image, in a vm of its own.
+# /etc/yos, after which yos plans only replacing the files yoq os
+# generated, turns generations on again, and runs a trial of its own.
+# runs on the cloud image, in a vm of its own.
 # usage: tests/vm/switch.sh <yoq os 0.1.5's tree, built> <yos>
 set -eu
 . tests/vm/lib.sh
@@ -25,8 +26,10 @@ old_settled() {
 }
 
 # yoq os sets the machine up: a config, generations, a live apply, and a
-# trial it blesses.
+# trial it blesses. the sysctl is a file it generates under its own name,
+# /etc/sysctl.d/99-yoq.conf.
 "$vm" ssh "os init >/dev/null"
+"$vm" ssh "printf '\n[sysctl]\n\"vm.swappiness\" = 10\n' >> /etc/yoq/machine.toml"
 "$vm" ssh "os apply --yes" | tail -n 2
 "$vm" ssh "os enable-rollback --yes" | tail -n 2
 "$vm" reboot
@@ -43,6 +46,8 @@ check "grub-editenv $VM_ESP/yoq/grubenv list | grep -c -e ^yoq_trial -e ^yoq_def
 check "yos status >/dev/null 2>/tmp/err; echo \$?" 1
 check "grep -c 'error\\[E0138\\]: this machine was set up by yoq os' /tmp/err" 1
 check "yos version" "yos $("$new" version | cut -d' ' -f2)"
+# its drift hook stays quiet, so pacman doesn't report it failing.
+check "yos record-pacman 2>&1; echo \$?" 0
 
 # the way over, as E0138 says: the old uninstall, generations and all, and
 # the config moved.
@@ -51,6 +56,16 @@ check "test -e /var/lib/yoq && echo state || echo none" none
 "$vm" ssh "rm -f /usr/bin/os /usr/share/libalpm/hooks/yoq-drift.hook"
 "$vm" reboot
 "$vm" ssh "mv /etc/yoq /etc/yos && mv /var/cache/yoq /var/cache/yos"
+# yoq os's repository file, from a config with repos or aur, has to go too.
+"$vm" ssh "touch /etc/pacman.d/yoq-repos.conf"
+check "yos plan 2>&1 | grep -c 'E0138.*/etc/pacman.d/yoq-repos.conf is still here'" 1
+"$vm" ssh "rm /etc/pacman.d/yoq-repos.conf"
+# the file yoq os generated goes, and yos writes its own.
+check "yos plan | grep -c -e 99-yoq.conf -e 99-yos.conf" 2
+"$vm" ssh "yos apply --yes" | tail -n 1
+check "ls /etc/sysctl.d | grep -c -e 99-yoq.conf -e 99-yos.conf" 1
+check "ls /etc/sysctl.d | grep -c 99-yos.conf" 1
+check "sysctl -n vm.swappiness" 10
 check "yos plan" "nothing to do. this machine matches its config."
 check "git -C /etc/yos log --format=%s | grep -c 'add tree'" 1
 

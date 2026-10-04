@@ -53,7 +53,7 @@ pub fn uninstallCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     }
     try uninstall.writeText(ctx.out, &p);
     if (!p.ready()) {
-        try ctx.out.writeAll("\nos can't leave this machine until the checks above pass.\n");
+        try ctx.out.writeAll("\nyos can't leave this machine until the checks above pass.\n");
         return 1;
     }
     if (try cli.needsHost(ctx, "uninstall changes the running machine")) return 1;
@@ -70,9 +70,9 @@ pub fn uninstallCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     for (p.steps) |s| {
         try ctx.out.print("  {s}\n", .{s.what});
         try ctx.out.flush();
-        if (try u.step(s.kind)) |why| return cli.fail(ctx, "{s}\nos: the steps above are done; `yos uninstall` again finishes the rest.", .{why});
+        if (try u.step(s.kind)) |why| return cli.fail(ctx, "{s}\nyos: the steps above are done; `yos uninstall` again finishes the rest.", .{why});
     }
-    try ctx.out.writeAll("\nos is off this machine, and the config stays in /etc/yos.\n");
+    try ctx.out.writeAll("\nyos is off this machine, and the config stays in /etc/yos.\n");
     try uninstall.writeNotes(ctx.out, &p);
     return 0;
 }

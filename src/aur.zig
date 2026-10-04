@@ -327,13 +327,16 @@ pub const Builder = struct {
     /// builds the recipe `info` names, at its commit, in the chroot, with
     /// `needs`, aur packages from the local repository, installed there
     /// first, and adds what it builds to the local repository. a commit
-    /// built before isn't built again.
+    /// built before, into the repository there now, isn't built again.
     pub fn build(b: Builder, info: SrcInfo, needs: []const []const u8) !?[]const u8 {
         const name = info.pkgbase;
         const commit = info.commit;
         const with = try b.packageFiles(needs);
         const marker = try std.fmt.allocPrint(b.a, "{s}/.built/{s}-{s}", .{ b.dirs.repo, name, commit });
-        if (rootfs.pathExists(b.io, marker)) return null;
+        const db = try std.fmt.allocPrint(b.a, "{s}/{s}.db.tar.gz", .{ b.dirs.repo, repo_name });
+        // a marker counts only beside the database the package went into.
+        // a cache moved over from yoq os has its markers but no yos-aur.db.
+        if (rootfs.pathExists(b.io, marker) and rootfs.pathExists(b.io, db)) return null;
         const dir = try b.recipeDir(name);
         if (try b.git(&.{ "-C", dir, "checkout", "-q", "--detach", commit })) |w| return w;
         if (try b.git(&.{ "-C", dir, "clean", "-q", "-fdx" })) |w| return w;
@@ -378,7 +381,6 @@ pub const Builder = struct {
         if (try b.createDir(try std.fs.path.join(b.a, &.{ b.dirs.repo, ".built" }))) |w| return w;
         const file = ownPackage(try b.packagesIn(work), name) orelse
             return try std.fmt.allocPrint(b.a, "building {s} made no package called {s}", .{ name, name });
-        const db = try std.fmt.allocPrint(b.a, "{s}/{s}.db.tar.gz", .{ b.dirs.repo, repo_name });
         const dest = try std.fs.path.join(b.a, &.{ b.dirs.repo, std.fs.path.basename(file) });
         if (try b.run(&.{ "mv", "-f", file, dest })) |w| return w;
         if (try b.run(&.{ "repo-add", "-q", "-R", db, dest })) |w| return w;

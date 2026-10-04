@@ -207,9 +207,13 @@ pub fn run(ctx: *Context, raw: []const [:0]const u8) !u8 {
 
     if (ctx.facts_path == null and !lists.contains(&anywhere, name)) {
         if (try legacyState(ctx)) |found| {
+            // the drift hook runs on every pacman transaction during the
+            // switch, the old package's removal too, and has nothing to
+            // record yet.
+            if (eql(name, "record-pacman")) return 0;
             var w: Work = .init(ctx);
             defer w.deinit();
-            try w.diags.add(.legacy_state, null, "this machine was set up by yoq os, the name yos had before 0.2.0: {s} is still here", .{found}, "with the old package installed, run `os uninstall`, then `mv /etc/yoq /etc/yos` and `mv /var/cache/yoq /var/cache/yos`. `yos explain E0138` has the rest");
+            try w.diags.add(.legacy_state, null, "this machine was set up by yoq os, the name yos had before 0.2.0: {s} is still here", .{found}, "`yos explain E0138` has the steps to move over");
             return w.fail();
         }
     }
@@ -225,10 +229,11 @@ pub fn run(ctx: *Context, raw: []const [:0]const u8) !u8 {
 /// commands that only print, and work on any machine.
 const anywhere = [_][]const u8{ "help", "version", "explain", "docs", "schema" };
 
-/// where yoq os, yos's name before 0.2.0, kept its config and its state.
-/// yos reads neither, so a machine that still has one isn't one it can
-/// plan for (E0138).
-const legacy_paths = [_][]const u8{ "/etc/yoq", "/var/lib/yoq" };
+/// where yoq os, yos's name before 0.2.0, kept its config and its state,
+/// and the repository file it had pacman.conf include, which points at
+/// its cache. yos reads none of them, so a machine that still has one
+/// isn't one it can plan for (E0138).
+const legacy_paths = [_][]const u8{ "/etc/yoq", "/var/lib/yoq", "/etc/pacman.d/yoq-repos.conf" };
 
 /// the first of `legacy_paths` under the machine's root, or null.
 fn legacyState(ctx: *Context) !?[]const u8 {
@@ -851,7 +856,7 @@ test "version prints the build version" {
     try std.testing.expectEqualStrings("yos " ++ build_options.version ++ "\n", t.out.buffered());
 }
 
-test "a machine yoq os set up stops with E0138, but help still works" {
+test "a machine yoq os set up stops with E0138, but help and the drift hook still work" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDirPath(std.testing.io, "var/lib/yoq");
@@ -864,6 +869,12 @@ test "a machine yoq os set up stops with E0138, but help still works" {
     var v: TestRun = .{};
     try v.exec(&.{ "--root", root, "version" });
     try std.testing.expectEqual(0, v.code);
+    // pacman runs the hook during the switch, and a failing hook worries
+    // its user for nothing.
+    var h: TestRun = .{};
+    try h.exec(&.{ "--root", root, "record-pacman" });
+    try std.testing.expectEqual(0, h.code);
+    try std.testing.expectEqual(0, h.err.buffered().len);
 }
 
 test "unknown command is a usage error" {

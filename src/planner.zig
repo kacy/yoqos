@@ -453,7 +453,7 @@ fn planFiles(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
         const d = lists.find(want, "path", ch.subject).?;
         try content.print(a, "{s} {s}\n", .{ d.path, try contentHash(a, d.*, f) orelse unknown_hash });
     }
-    for (desired.generated_paths) |p| {
+    for (desired.generated_paths ++ desired.legacy_paths) |p| {
         if (lists.indexOf(want, "path", p) != null) continue;
         const have = f.file(p) orelse continue;
         if (!have.ours) continue;
@@ -1008,6 +1008,24 @@ test "a file yos generated goes when nothing asks for it, but one it didn't writ
     try testing.expectEqual(1, p.changes.len);
     try testing.expectEqual(Op.remove, p.changes[0].op);
     try testing.expectEqualStrings(desired.sysctl_path, p.changes[0].subject);
+}
+
+test "what yoq os wrote goes once the machine moved over, even when yos writes the same now" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("[boot]\nkernel = \"none\"\n[sysctl]\n\"vm.swappiness\" = 10\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
+    var files = [_]facts.File{
+        .{ .path = "/etc/sysctl.d/99-yoq.conf", .sha256 = "x", .mode = "0644", .ours = true },
+        .{ .path = "/etc/modules-load.d/99-yoq.conf", .sha256 = "y", .mode = "0644", .ours = false },
+    };
+    const f: facts.Facts = .{ .files = &files };
+    const p = (try plan(t.a(), &c, &l, &f, &t.diags)).?;
+    try testing.expectEqual(2, p.changes.len);
+    try testing.expectEqualStrings("/etc/sysctl.d/99-yoq.conf", p.changes[0].subject);
+    try testing.expectEqual(Op.remove, p.changes[0].op);
+    try testing.expectEqualStrings(desired.sysctl_path, p.changes[1].subject);
+    try testing.expectEqual(Op.add, p.changes[1].op);
 }
 
 test "a unit that can't be enabled only starts and stops" {

@@ -78,6 +78,11 @@ pub const secure_boot_reboot = "secure boot";
 /// session's own config isn't here: it's the user's file.
 pub const generated_paths = [_][]const u8{ sysctl_path, modules_path, greetd_config_path, tty_session_path, nvidia_initramfs_path, encrypt_initramfs_path, uki.config_path, secureboot.config_path };
 
+/// the same files under the names yoq os, yos's name before 0.2.0, gave
+/// them, each starting with a "written by os" line. a machine that moved
+/// over loses them at its next apply, beside yos's own.
+pub const legacy_paths = [_][]const u8{ "/etc/sysctl.d/99-yoq.conf", "/etc/modules-load.d/99-yoq.conf", "/etc/profile.d/yoq-session.sh", "/etc/mkinitcpio.conf.d/10-yoq-nvidia.conf", "/etc/mkinitcpio.conf.d/90-yoq-encrypt.conf", "/etc/kernel/yoq-uki.conf", "/etc/kernel/yoq-secure-boot.conf" };
+
 /// the first line of a file yos makes from `key`.
 fn header(comptime key: []const u8) []const u8 {
     return "# written by yos from " ++ key ++ " in the config. edits here are overwritten.\n";
@@ -316,7 +321,7 @@ fn menuFile(key: ?config.Val(bool), f: *const facts.Facts, file: File) ?File {
 pub fn paths(a: Allocator, c: *const config.Config) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     for (try files(a, c, &.{})) |d| try out.append(a, d.path);
-    for (generated_paths) |p| {
+    for (generated_paths ++ legacy_paths) |p| {
         if (!lists.contains(out.items, p)) try out.append(a, p);
     }
     return out.items;

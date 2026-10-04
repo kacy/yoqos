@@ -175,3 +175,5 @@ jobs:
           test -f /usr/share/yos/profiles/omarchy.toml
           test -f /usr/share/man/man1/yos.1.gz && test -f /usr/share/man/man7/yos-generations.7.gz
           pacman -Qi yos-git
+          # makepkg wrote the version pkgver() gave it.
+          test "$(pacman -Q yos-git)" != "yos-git r0-1"

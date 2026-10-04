@@ -296,11 +296,14 @@ pub const table = [_]Entry{
             "state in /var/lib/yoq and its config in /etc/yoq, and yos reads neither, so it stops rather " ++
             "than plan against a machine it can't see. with the old yoq-os package still installed, run " ++
             "`os uninstall`: it leaves plain arch running the system you have, and keeps the config in " ++
-            "/etc/yoq. then `mv /etc/yoq /etc/yos`, and `yos plan` reads it as it was. move " ++
-            "/var/cache/yoq to /var/cache/yos too: it holds the package databases and packages your lock " ++
-            "was made from, which `yos add` and rollbacks use. `yos enable-rollback` turns generations " ++
-            "back on. the two packages can be installed side by side " ++
-            "while you switch.",
+            "/etc/yoq. then `mv /etc/yoq /etc/yos`, and move /var/cache/yoq to /var/cache/yos: it holds " ++
+            "the package databases and packages your lock was made from. if the config has [repos] or " ++
+            "aur, delete /etc/pacman.d/yoq-repos.conf and the Include line for it in /etc/pacman.conf, " ++
+            "and run `yos update`, which builds the aur packages again into yos's own repository. an " ++
+            "include of /usr/share/yoq/profiles becomes /usr/share/yos/profiles. the next `yos apply` " ++
+            "removes the files yoq os generated under its own names, like /etc/sysctl.d/99-yoq.conf, and " ++
+            "`yos enable-rollback` turns generations back on. the two packages can be installed side by " ++
+            "side while you switch.",
     },
 };
 

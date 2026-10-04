@@ -313,7 +313,7 @@ fn replaceAt(dfd: std.os.linux.fd_t, name: []const u8, bytes: []const u8, bits: 
     // the kernel would read a name with a nul in it only up to there.
     if (std.mem.indexOfScalar(u8, name, 0) != null) return error.WriteFailed;
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp = std.fmt.bufPrintZ(&buf, "{s}.os-tmp", .{name}) catch return error.WriteFailed;
+    const tmp = std.fmt.bufPrintZ(&buf, "{s}.yos-tmp", .{name}) catch return error.WriteFailed;
     var dest_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dest = std.fmt.bufPrintZ(&dest_buf, "{s}", .{name}) catch return error.WriteFailed;
     const mode: linux.mode_t = @intCast(bits orelse 0o644);
@@ -595,7 +595,7 @@ test "an atomic write keeps its mode, and a symlink in the way stays untouched" 
     const io = std.testing.io;
     const dir = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     try tmp.dir.writeFile(io, .{ .sub_path = "victim", .data = "keep" });
-    try tmp.dir.symLink(io, "victim", "secret.os-tmp", .{});
+    try tmp.dir.symLink(io, "victim", "secret.yos-tmp", .{});
     try writeAtomic(io, try std.fmt.allocPrint(a, "{s}/secret", .{dir}), "hash", 0o600);
     try std.testing.expectEqualStrings("keep", try tmp.dir.readFileAlloc(io, "victim", a, .limited(16)));
     try std.testing.expectEqualStrings("hash", try tmp.dir.readFileAlloc(io, "secret", a, .limited(16)));
