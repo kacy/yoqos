@@ -305,6 +305,28 @@ test "a file's sha256, read in pieces" {
     try std.testing.expectEqualStrings("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", &sha256Of(io, file).?);
 }
 
+/// whether only root can change what's at `path`: it and every directory
+/// above it are root's, and none is writable by a group or others. a
+/// program root runs at every boot has to be.
+pub fn rootOnly(path: []const u8) bool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var at: []const u8 = path;
+    while (true) {
+        const z = std.fmt.bufPrintZ(&buf, "{s}", .{at}) catch return false;
+        const linux = std.os.linux;
+        var st: linux.Statx = undefined;
+        if (linux.errno(linux.statx(linux.AT.FDCWD, z, 0, .{ .MODE = true, .UID = true }, &st)) != .SUCCESS) return false;
+        if (st.uid != 0 or st.mode & 0o022 != 0) return false;
+        at = std.fs.path.dirname(at) orelse return true;
+    }
+}
+
+test "only root can change a file under /usr" {
+    try std.testing.expect(rootOnly("/usr/bin"));
+    try std.testing.expect(!rootOnly("/tmp"));
+    try std.testing.expect(!rootOnly("/no/such/file"));
+}
+
 /// replaces the file at `path` in one step, making its directory if
 /// needed, so a crash leaves the old or the new content, never half of
 /// each. the new file has mode `bits`, or 0644, whatever the umask, from

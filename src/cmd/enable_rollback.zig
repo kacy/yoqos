@@ -49,13 +49,23 @@ pub fn enableRollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     // a first generation already waiting for its boot: another would undo
     // that one's boot files.
     if (try cli.refused(ctx, applying.bootBlocker(ctx.io))) return 1;
+    const os_path = try unitYos(ctx, a);
+    // root runs it at every boot and shutdown, in every generation.
+    if (!rootfs.rootOnly(os_path)) return cli.fail(ctx, "{s}, or a directory it's in, can be changed by someone other than root, and every generation would run it as root at boot. install the yos package, or copy yos where only root can write, like /usr/local/bin, and run that.", .{os_path});
     if (try cli.approve(ctx, yes, "enable rollback", "enable rollback?")) |code| return code;
     try ctx.out.writeByte('\n');
-    var e: Enabler = .{ .ctx = ctx, .a = a, .boot = f.boot, .time = std.Io.Timestamp.now(ctx.io, .real).toSeconds() };
+    var e: Enabler = .{ .ctx = ctx, .a = a, .boot = f.boot, .os_path = os_path, .time = std.Io.Timestamp.now(ctx.io, .real).toSeconds() };
     if (!try e.run(&p)) return 1;
     gens.blockHibernation(ctx.io);
     try ctx.out.print("\ngeneration {d} is ready. reboot to start it; the boot menu also keeps the system as it is now.\n", .{e.n});
     return 0;
+}
+
+/// the yos generation 1's units run: the packaged one, which outlasts a
+/// copy run from somewhere else, or this one.
+fn unitYos(ctx: *Context, a: Allocator) ![]const u8 {
+    if (rootfs.pathExists(ctx.io, gens.packaged_yos)) return gens.packaged_yos;
+    return std.process.executablePathAlloc(ctx.io, a);
 }
 
 /// carries out the plan's steps, inside the btrfs top level.
@@ -99,6 +109,8 @@ const Enabler = struct {
     ctx: *Context,
     a: Allocator,
     boot: facts.Boot,
+    /// the yos generation 1's boot and shutdown units run.
+    os_path: []const u8,
     time: i64,
     m: gens.Machine = undefined,
     /// where generation 1's /var is being built: the new subvolume, or the
@@ -386,9 +398,7 @@ const Enabler = struct {
 
     /// the units generation 1 gets (see enable.units), turned on.
     fn healthUnit(e: *Enabler) !bool {
-        // the packaged yos outlasts a copy run from a build directory.
-        const os_path = if (rootfs.pathExists(e.ctx.io, "/usr/bin/yos")) "/usr/bin/yos" else try std.process.executablePathAlloc(e.ctx.io, e.a);
-        const why = try gens.writeUnits(e.a, e.ctx.io, try e.m.at(&.{e.new_root}), os_path) orelse return true;
+        const why = try gens.writeUnits(e.a, e.ctx.io, try e.m.at(&.{e.new_root}), e.os_path) orelse return true;
         return e.failed("{s}", .{why});
     }
 
