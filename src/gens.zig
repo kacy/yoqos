@@ -295,13 +295,20 @@ pub const Machine = struct {
     /// read the same whichever yos wrote them, and only ones yos wrote.
     /// units an older yos didn't write at all, like yos-carry.service on a
     /// machine that turned generations on with 0.1.0, go in and are turned
-    /// on, running the yos the health service there runs.
+    /// on, running the yos the health service there runs. once the root
+    /// has the yos package, the units that name a yos run its: a copy
+    /// `yos install` left in /usr/local would outlast every upgrade.
     fn refreshUnits(m: *const Machine, subvol: []const u8) !void {
         const dir = try m.at(&.{ subvol, "etc/systemd/system" });
         const health = std.Io.Dir.cwd().readFileAlloc(m.io, try std.fs.path.join(m.a, &.{ dir, "yos-health.service" }), m.a, .limited(64 << 10)) catch "";
         const a = try enable.units(m.a, "a");
         const b = try enable.units(m.a, "b");
-        const os_path = if (ours(health)) execPath(health, " health") else null;
+        const runs: ?[]const u8 = if (ours(health)) execPath(health, " health") else null;
+        // only the path changes in those: the rest is as the yos they run
+        // reads it.
+        const to_package = runs != null and !std.mem.eql(u8, runs.?, packaged_yos) and
+            rootfs.pathExists(m.io, try m.at(&.{ subvol, packaged_yos[1..] }));
+        const os_path = if (to_package) packaged_yos else runs;
         const named = try enable.units(m.a, os_path orelse "");
         for (a, b, named) |u, other, with_os| {
             const path = try std.fs.path.join(m.a, &.{ dir, u.name });
@@ -312,7 +319,11 @@ pub const Machine = struct {
                 },
                 else => continue,
             };
-            if (!std.mem.eql(u8, u.text, other.text)) continue;
+            if (!std.mem.eql(u8, u.text, other.text)) {
+                if (!to_package or !ours(now)) continue;
+                rootfs.writeAtomic(m.io, path, try std.mem.replaceOwned(u8, m.a, now, runs.?, packaged_yos), null) catch {};
+                continue;
+            }
             const want = try std.fmt.allocPrint(m.a, "{s}{s}", .{ unit_header, u.text });
             if (!ours(now) or std.mem.eql(u8, now, want)) continue;
             rootfs.writeAtomic(m.io, path, want, null) catch {};
@@ -488,6 +499,9 @@ pub fn writeNotice(a: Allocator, io: std.Io, text: []const u8) !?[]const u8 {
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = notice_path, .data = text }) catch return try std.fmt.allocPrint(a, "can't write {s}", .{notice_path});
     return null;
 }
+
+/// where the yos package puts yos.
+pub const packaged_yos = "/usr/bin/yos";
 
 /// machine state every root gets from the running system. ssh host keys
 /// are added by name, and passwords are merged into /etc/shadow.
@@ -696,6 +710,11 @@ test "a watchdog timer an older yos wrote is brought up to date in a new generat
     try std.testing.expect(std.mem.indexOf(u8, now, "OnBootSec") == null);
     try std.testing.expectEqualStrings(health, try tmp.dir.readFileAlloc(io, dir ++ "/yos-health.service", a, .limited(4096)));
     try std.testing.expectEqualStrings("[Service]\nExecStart=/usr/bin/mine\n", try tmp.dir.readFileAlloc(io, dir ++ "/yos-watchdog.service", a, .limited(4096)));
+    // once the package is in, the health service runs its yos.
+    try tmp.dir.createDirPath(io, "top/@roots/1/usr/bin");
+    try tmp.dir.writeFile(io, .{ .sub_path = "top/@roots/1/usr/bin/yos", .data = "" });
+    try m.refreshUnits("/@roots/1");
+    try std.testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}{s}", .{ unit_header, units[0].text }), try tmp.dir.readFileAlloc(io, dir ++ "/yos-health.service", a, .limited(4096)));
 }
 
 test "units from enable-rollback in 0.1.0 are brought up to date, and the missing one goes in" {

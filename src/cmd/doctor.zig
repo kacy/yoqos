@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const rootfs = @import("../rootfs.zig");
+const gens = @import("../gens.zig");
 const cli = @import("../cli.zig");
 const enable = @import("../enable.zig");
 const exec = @import("../exec.zig");
@@ -88,9 +89,12 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             // anything: it doesn't once the firmware's state it was sealed
             // to changes, like after turning secure boot on.
             if (l.token == true) {
-                if (try tpmUnsealed(a, l.dump.?)) try checks.append(a, try tpmSealCheck(a, l.device));
-                const opens = try exec.run(a, ctx.io, &.{ "cryptsetup", "open", "--test-passphrase", "--token-only", "--token-type", "systemd-tpm2", l.device }) == null;
-                try checks.append(a, try tpmOpensCheck(a, l.device, opens));
+                const tokens = try tpmTokens(a, l.dump.?);
+                if (tokens.unsealed) try checks.append(a, try tpmSealCheck(a, l.device));
+                if (!tokens.pin) {
+                    const opens = try exec.run(a, ctx.io, &.{ "cryptsetup", "open", "--test-passphrase", "--token-only", "--token-type", "systemd-tpm2", l.device }) == null;
+                    try checks.append(a, try tpmOpensCheck(a, l.device, opens));
+                }
             }
         }
         const wants = if (loaded) |l| if (l.config.boot.secure_boot) |v| v.v else false else false;
@@ -106,6 +110,15 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
                 .fix = "a new kernel and initramfs may not fit. `yos gc --keep 2` removes older generations and their copies there.",
             });
         }
+        // `yos install` puts yos in /usr/local/bin, which comes first in
+        // PATH, so the package's upgrades would pass it by.
+        if (rootfs.pathExists(ctx.io, "/usr/local/bin/yos") and rootfs.pathExists(ctx.io, gens.packaged_yos)) try checks.append(a, .{
+            .what = "yos",
+            .ok = false,
+            .warn = true,
+            .found = "/usr/local/bin/yos is there beside the package's",
+            .fix = "it runs instead of the package's, which upgrades. `rm /usr/local/bin/yos`; the boot units move to the package's with the next generation.",
+        });
         if (try passwordlessSudo(ctx, a)) |where| try checks.append(a, .{
             .what = "sudo",
             .ok = false,
@@ -170,18 +183,22 @@ fn tpmToken(a: Allocator, dump: ?[]const u8) !?bool {
     return false;
 }
 
-/// whether a systemd-tpm2 token in `dump`, cryptsetup's luks header as
-/// json, has a key sealed to nothing: no pcrs, no signed policy, and no
-/// pcrlock policy. systemd-cryptenroll makes one by default since systemd
-/// 258.
-fn tpmUnsealed(a: Allocator, dump: []const u8) !bool {
+/// the systemd-tpm2 tokens in `dump`, cryptsetup's luks header as json:
+/// whether one has a key sealed to nothing, with no pcrs, no signed
+/// policy, no pcrlock policy, and no pin, which systemd-cryptenroll makes
+/// by default since systemd 258; and whether one needs a pin, so trying
+/// it without one says nothing.
+const TpmTokens = struct { unsealed: bool = false, pin: bool = false };
+
+fn tpmTokens(a: Allocator, dump: []const u8) !TpmTokens {
+    var out: TpmTokens = .{};
     const v = std.json.parseFromSliceLeaky(std.json.Value, a, dump, .{}) catch |e| switch (e) {
         error.OutOfMemory => return e,
-        else => return false,
+        else => return out,
     };
-    if (v != .object) return false;
-    const tokens = v.object.get("tokens") orelse return false;
-    if (tokens != .object) return false;
+    if (v != .object) return out;
+    const tokens = v.object.get("tokens") orelse return out;
+    if (tokens != .object) return out;
     for (tokens.object.values()) |t| {
         if (t != .object) continue;
         const kind = t.object.get("type") orelse continue;
@@ -191,9 +208,13 @@ fn tpmUnsealed(a: Allocator, dump: []const u8) !bool {
             if (t.object.get(name)) |pcrs| sealed = sealed or (pcrs == .array and pcrs.array.items.len > 0);
         }
         if (t.object.get("tpm2_pcrlock")) |l| sealed = sealed or (l == .bool and l.bool);
-        if (!sealed) return true;
+        // a pin, with the tpm's lockout behind it, keeps the key from
+        // whatever boots.
+        const pin = if (t.object.get("tpm2-pin")) |p| p == .bool and p.bool else false;
+        out.pin = out.pin or pin;
+        if (!sealed and !pin) out.unsealed = true;
     }
-    return false;
+    return out;
 }
 
 /// the check for a tpm key sealed to nothing, on the luks volume at
@@ -473,13 +494,16 @@ test "a tpm key sealed to no pcr fails" {
     defer arena.deinit();
     const a = arena.allocator();
     // systemd 258's default: an empty pcr list.
-    try std.testing.expect(try tpmUnsealed(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-tpm2\",\"keyslots\":[\"1\"],\"tpm2-pcrs\":[]}}}"));
-    try std.testing.expect(!try tpmUnsealed(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-tpm2\",\"keyslots\":[\"1\"],\"tpm2-pcrs\":[7]}}}"));
+    try std.testing.expect((try tpmTokens(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-tpm2\",\"keyslots\":[\"1\"],\"tpm2-pcrs\":[]}}}")).unsealed);
+    // a pin keeps it, and trying it without one says nothing.
+    const pinned = try tpmTokens(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-tpm2\",\"tpm2-pcrs\":[],\"tpm2-pin\":true}}}");
+    try std.testing.expect(!pinned.unsealed and pinned.pin);
+    try std.testing.expect(!(try tpmTokens(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-tpm2\",\"keyslots\":[\"1\"],\"tpm2-pcrs\":[7]}}}")).unsealed);
     // a signed policy, or pcrlock's, counts.
-    try std.testing.expect(!try tpmUnsealed(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-tpm2\",\"tpm2-pcrs\":[],\"tpm2_pubkey_pcrs\":[11]}}}"));
-    try std.testing.expect(!try tpmUnsealed(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-tpm2\",\"tpm2-pcrs\":[],\"tpm2_pcrlock\":true}}}"));
-    try std.testing.expect(!try tpmUnsealed(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-fido2\"}}}"));
-    try std.testing.expect(!try tpmUnsealed(a, "not json"));
+    try std.testing.expect(!(try tpmTokens(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-tpm2\",\"tpm2-pcrs\":[],\"tpm2_pubkey_pcrs\":[11]}}}")).unsealed);
+    try std.testing.expect(!(try tpmTokens(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-tpm2\",\"tpm2-pcrs\":[],\"tpm2_pcrlock\":true}}}")).unsealed);
+    try std.testing.expect(!(try tpmTokens(a, "{\"tokens\":{\"0\":{\"type\":\"systemd-fido2\"}}}")).unsealed);
+    try std.testing.expect(!(try tpmTokens(a, "not json")).unsealed);
     const c = try tpmSealCheck(a, "/dev/vda2");
     try std.testing.expect(!c.ok and !c.warn);
 }

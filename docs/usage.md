@@ -760,9 +760,12 @@ again once the new machine runs.
 the new machine runs generation 1, with generations from its first boot.
 `/etc/yos` is the repository you installed from, and a machine whose
 hostname matches a directory under `hosts/` reads its config from there.
-`yos` itself comes along as `/usr/local/bin/yos`; installing the `yos`
-package on the new machine puts the packaged one, and its pacman hook, in
-place.
+`yos` itself comes along as `/usr/local/bin/yos`. install the `yos`
+package on the new machine for its pacman hook, its upgrades, and the
+profiles in `/usr/share/yos/profiles` a config may include, then
+remove `/usr/local/bin/yos`, which comes first in `PATH` (`yos doctor`
+says so while both are there). the boot units move to the package's with
+the next generation.
 
 ### what it does
 
@@ -770,9 +773,10 @@ place.
 build --clean` builds a root. it records the machine as generation 1 of
 the layout `enable-rollback` makes. grub goes on the disk's removable boot
 path, which every firmware checks, and gets a boot entry of its own too.
-with `--yes`, it doesn't ask anything, and the accounts stay locked until
-you give them a password with `passwd -R /mnt/yos <user>` before
-rebooting.
+with `--yes`, it doesn't ask anything, and the accounts have no
+passwords: an ssh key in the config's `[files]` is the way in, or the
+commands it prints, which mount the new root and run `passwd -R` there
+before you reboot.
 
 it checks first that the firmware is uefi and that the disk is a whole
 disk of 16 gib or more that nothing has mounted. it also checks that the
@@ -1488,6 +1492,10 @@ hosts/atlas/machine.toml
 # hosts/atlas/machine.toml
 include = ["../../base.toml", "../../profiles/workstation.toml"]
 ```
+
+with a repository like that in `/etc/yos`, a machine reads
+`hosts/<its hostname>/machine.toml` when there is one, and `machine.toml`
+at the top otherwise.
 
 includes merge in order, and the including file always wins.
 

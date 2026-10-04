@@ -62,6 +62,9 @@ serial_console /dev/vdc1
 check "findmnt -no FSROOT /" /@roots/1
 check "findmnt -no FSROOT /var" /@var
 check "findmnt -no FSROOT /etc/yos" /@var/lib/yos/config
+# the data subvolumes have arch's modes: /root isn't for everyone.
+check "stat -c %a /root /home" "750
+755"
 check "readlink /var/lib/pacman" /usr/lib/sysimage/pacman
 check "ls /var/lib/yos/generations" 1.json
 check "lsinitcpio /boot/initramfs-linux.img | grep -c etc/yos-initramfs-marker" 1
