@@ -83,8 +83,21 @@ cups = true
 avahi = true
 power-profiles = true
 fstrim = true
-# nothing in, everything out, where omarchy uses ufw.
-firewalld = true
+
+# boot doesn't wait for the network to come up.
+[services.wait-online]
+unit = "NetworkManager-wait-online.service"
+masked = true
+
+# nothing in, everything out, with ufw, as omarchy has it. docker's
+# containers may ask the host for dns. omarchy also opens localsend's port,
+# but localsend isn't here.
+[firewall]
+backend = "ufw"
+allow = [
+  "53/udp from 172.16.0.0/12 to 172.17.0.1",
+  "53/udp from 192.168.0.0/16 to 172.17.0.1",
+]
 
 # started when something first talks to it, rather than at every boot. the
 # user isn't in the docker group, which would be root by another name; the

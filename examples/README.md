@@ -100,7 +100,7 @@ to update, change the commit, check what's new, and log in again.
 | the menus and app launcher | fuzzel, with a power menu and a keybinding list on it |
 | screenshots and the clipboard manager | grim, slurp, and satty; cliphist through fuzzel |
 | limine and snapper snapshots | yos's own generations and rollback |
-| ufw | firewalld, which yos knows by name |
+| ufw | ufw, through `[firewall]`, with omarchy's rules for docker's dns. ufw-docker, which keeps docker's published ports behind ufw, isn't in arch's repositories |
 
 what's left out: omarchy's menu, theme switching, web apps, its own apps
 like omacalc, and the dns switch in the network panel, since on yos that's
