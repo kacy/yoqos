@@ -49,7 +49,12 @@ pub fn keep(a: Allocator, io: std.Io, root: []const u8, release: []const u8, cha
     var buf: [256]u8 = undefined;
     const pkgbase = std.mem.trim(u8, rootfs.readHead(io, try std.fs.path.join(a, &.{ dir, "pkgbase" }), &buf) orelse return .{ .release = release, .copied = false }, " \n");
     if (!replaced(changes, pkgbase)) return .{ .release = release, .copied = false };
-    const copied = try exec.run(a, io, &.{ "cp", "-a", dir, backup }) == null;
+    // a copy yos put back before belongs to no package, so it moves out of
+    // the way: a transaction putting that release back, like a rollback
+    // before the reboot, would find its files there and stop.
+    const ours = rootfs.pathExists(io, try std.fs.path.join(a, &.{ dir, marker }));
+    const argv: []const []const u8 = if (ours) &.{ "mv", dir, backup } else &.{ "cp", "-a", dir, backup };
+    const copied = try exec.run(a, io, argv) == null;
     return .{ .release = release, .copied = copied };
 }
 
@@ -69,6 +74,24 @@ pub fn restore(a: Allocator, io: std.Io, root: []const u8, k: Kept) !void {
         });
     }
     _ = try exec.run(a, io, &.{ "rm", "-rf", backup });
+}
+
+/// the packages the kernels installed under `root` came from, whatever
+/// they're called, like linux-cachyos: each /usr/lib/modules/<release>
+/// has a pkgbase file naming one.
+pub fn kernelPackages(a: Allocator, io: std.Io, root: []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    const path = try std.fs.path.join(a, &.{ root, dir_rel });
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return out.items;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |e| {
+        if (e.kind != .directory) continue;
+        var buf: [256]u8 = undefined;
+        const name = std.mem.trim(u8, rootfs.readHead(io, try std.fs.path.join(a, &.{ path, e.name, "pkgbase" }), &buf) orelse continue, " \n");
+        if (name.len > 0) try out.append(a, try a.dupe(u8, name));
+    }
+    return out.items;
 }
 
 /// removes the modules yos kept for kernels other than `release`, the
@@ -119,10 +142,39 @@ test "the running kernel's modules outlast its package's upgrade" {
     // still running that kernel: the next apply leaves them.
     try dropKept(a, io, root, "7.1.0-arch1-1");
     try tmp.dir.access(io, "usr/lib/modules/7.1.0-arch1-1/kernel/dummy.ko", .{});
+    // going back to that kernel before the reboot: the kept copy moves
+    // aside so the package's files go in, and they stay the package's.
+    const back = [_]planner.Change{.{ .kind = .package, .op = .change, .subject = "linux", .from = "7.2.0.arch1-1", .to = "7.1.0.arch1-1" }};
+    const k2 = try keep(a, io, root, "7.1.0-arch1-1", &back);
+    try testing.expectError(error.FileNotFound, tmp.dir.access(io, "usr/lib/modules/7.1.0-arch1-1", .{}));
+    try tmp.dir.createDirPath(io, "usr/lib/modules/7.1.0-arch1-1/kernel");
+    try tmp.dir.writeFile(io, .{ .sub_path = "usr/lib/modules/7.1.0-arch1-1/modules.dep", .data = "" });
+    try restore(a, io, root, k2);
+    try testing.expectError(error.FileNotFound, tmp.dir.access(io, "usr/lib/modules/7.1.0-arch1-1/" ++ marker, .{}));
+    try testing.expectError(error.FileNotFound, tmp.dir.access(io, "usr/lib/modules/" ++ backup_name, .{}));
+    // put the kept copy back as it was, for the rest.
+    try tmp.dir.writeFile(io, .{ .sub_path = "usr/lib/modules/7.1.0-arch1-1/" ++ marker, .data = "" });
+    try tmp.dir.deleteFile(io, "usr/lib/modules/7.1.0-arch1-1/modules.dep");
     // after a reboot into the new one, they go.
     try dropKept(a, io, root, "7.2.0-arch1-1");
     try testing.expectError(error.FileNotFound, tmp.dir.access(io, "usr/lib/modules/7.1.0-arch1-1", .{}));
     try tmp.dir.access(io, "usr/lib/modules/7.2.0-arch1-1", .{});
+}
+
+test "kernel packages, by what their modules say" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "usr/lib/modules/6.17.1-cachyos/kernel");
+    try tmp.dir.writeFile(io, .{ .sub_path = "usr/lib/modules/6.17.1-cachyos/pkgbase", .data = "linux-cachyos\n" });
+    try tmp.dir.createDirPath(io, "usr/lib/modules/extramodules-6.17");
+    const got = try kernelPackages(a, io, root);
+    try testing.expectEqual(1, got.len);
+    try testing.expectEqualStrings("linux-cachyos", got[0]);
 }
 
 test "modules a reinstall leaves in place stay the package's" {

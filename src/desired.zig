@@ -51,18 +51,23 @@ pub const nvidia_initramfs_path = "/etc/mkinitcpio.conf.d/10-yos-nvidia.conf";
 /// mkinitcpio's drop-in that unlocks a luks root.
 pub const encrypt_initramfs_path = facts.initramfs_dropins ++ "/" ++ facts.encrypt_dropin;
 
-/// whether a file yos writes is a mkinitcpio drop-in. changing one changes
-/// the initramfs, so it waits for a reboot like a kernel does, and apply
+/// whether a file yos writes goes into the initramfs or says how it's
+/// built: mkinitcpio's config, its drop-ins and presets, and modprobe's
+/// options, which the modconf hook copies in. changing one changes the
+/// initramfs, so it waits for a reboot like a kernel does, and apply
 /// rebuilds the initramfs in the root it builds.
 pub fn isInitramfsDropIn(path: []const u8) bool {
-    return std.mem.startsWith(u8, path, "/etc/mkinitcpio.conf.d/");
+    return std.mem.eql(u8, path, "/etc/mkinitcpio.conf") or
+        lists.startsWithAny(path, &.{ "/etc/mkinitcpio.conf.d/", "/etc/mkinitcpio.d/", "/etc/modprobe.d/" });
 }
 
-/// why a change to a file yos writes needs a reboot: a drop-in changes the
-/// initramfs, the ukify config changes what the menu boots, and the
-/// secure boot file whether its images are signed.
+/// why a change to a file yos writes needs a reboot: one the initramfs is
+/// built from, the filesystems mounted at boot, the ukify config, which
+/// changes what the menu boots, and the secure boot file, whether its
+/// images are signed.
 pub fn fileReboot(path: []const u8) ?[]const u8 {
     if (isInitramfsDropIn(path)) return "initramfs";
+    if (std.mem.eql(u8, path, "/etc/fstab") or std.mem.eql(u8, path, "/etc/crypttab")) return "filesystems";
     if (std.mem.eql(u8, path, secureboot.config_path)) return secure_boot_reboot;
     return if (std.mem.eql(u8, path, uki.config_path)) uki_reboot else null;
 }
@@ -321,7 +326,9 @@ fn menuFile(key: ?config.Val(bool), f: *const facts.Facts, file: File) ?File {
 pub fn paths(a: Allocator, c: *const config.Config) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     for (try files(a, c, &.{})) |d| try out.append(a, d.path);
-    for (generated_paths ++ legacy_paths) |p| {
+    // the repositories' file stays wanted, emptied, while pacman.conf
+    // includes it, which only facts show, so it's always looked at.
+    for (generated_paths ++ legacy_paths ++ .{facts.repos_conf}) |p| {
         if (!lists.contains(out.items, p)) try out.append(a, p);
     }
     return out.items;
@@ -329,6 +336,19 @@ pub fn paths(a: Allocator, c: *const config.Config) ![]const []const u8 {
 
 test "a mkinitcpio drop-in waits for a reboot, written or removed" {
     try std.testing.expectEqualStrings("initramfs", fileReboot("/etc/mkinitcpio.conf.d/50-local.conf").?);
+    try std.testing.expectEqualStrings("initramfs", fileReboot("/etc/mkinitcpio.conf").?);
+    try std.testing.expectEqualStrings("initramfs", fileReboot("/etc/modprobe.d/nouveau.conf").?);
+    try std.testing.expectEqualStrings("filesystems", fileReboot("/etc/fstab").?);
     try std.testing.expectEqual(null, fileReboot("/etc/mkinitcpio.conf.dx/a.conf"));
     try std.testing.expectEqual(null, fileReboot("/etc/motd"));
+}
+
+test "the repositories' file is looked at even with no repos in the config" {
+    var t: @import("test_helpers.zig").Scratch = .{};
+    defer t.deinit();
+    const c = try t.cfg("packages = [\"git\"]\n");
+    // pacman.conf can include it from an earlier config, and then it's
+    // wanted, emptied: the observer has to see it, or it's written again
+    // on every apply.
+    try std.testing.expect(lists.contains(try paths(t.a(), &c), facts.repos_conf));
 }

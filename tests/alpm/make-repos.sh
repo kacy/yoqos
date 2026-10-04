@@ -66,5 +66,7 @@ for repo in core extra; do
     cp "$work/$repo/$repo.db.tar.gz" "$out/$repo.db"
     mkdir -p "$out/$repo"
     cp "$work/$repo"/*.pkg.tar.gz "$out/$repo/"
+    # where a file:// server keeps it, as pacman reads it.
+    ln -s "../$repo.db" "$out/$repo/$repo.db"
 done
 ls -l "$out"

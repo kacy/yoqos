@@ -1076,10 +1076,13 @@ different content, or has a different mode. files the config doesn't name
 are left alone, and so is a file you take out of the config. `yos adopt
 <path>` writes an entry for a file that's already there.
 
-a file under `/etc/mkinitcpio.conf.d`, yours or nvidia's drop-in, changes
-the initramfs, so the plan says it needs a reboot, and on a machine with
-generations it's built into the next one like a kernel is. `apply` runs
-`mkinitcpio -P` once, after every file is in place. a staged generation, a
+a file the initramfs is built from changes it: `/etc/mkinitcpio.conf`, a
+drop-in under `/etc/mkinitcpio.conf.d` (yours or nvidia's), a preset under
+`/etc/mkinitcpio.d`, or modprobe options under `/etc/modprobe.d`. the plan
+says it needs a reboot, and on a machine with generations it's built into
+the next one like a kernel is. `apply` runs `mkinitcpio -P` once, after
+every file is in place. `/etc/fstab` and `/etc/crypttab` need a reboot
+too, since they're read at boot. a staged generation, a
 clean build, and `yos install` run it inside the root they're building,
 through chroot, the way pacman runs the kernel's own hook there, so that
 root boots with the drop-in. a root without mkinitcpio is skipped.

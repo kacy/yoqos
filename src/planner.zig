@@ -275,7 +275,8 @@ fn planInstalls(a: Allocator, l: *const lock.Lock, f: *const facts.Facts, ws: []
         const want = findWant(ws, name);
         const kind: Kind = if (want != null) .package else .dependency;
         const cause = if (want) |w| w.cause else null;
-        const reboot = catalog.rebootReason(name);
+        // the kernel the config names is one, whatever it's called.
+        const reboot: ?[]const u8 = catalog.rebootReason(name) orelse if (cause != null and std.mem.eql(u8, cause.?, "boot.kernel")) "kernel" else null;
         const have = f.package(name) orelse {
             try changes.append(a, .{ .op = .add, .kind = kind, .subject = name, .to = lp.version, .cause = cause, .reboot = reboot });
             continue;
@@ -1027,6 +1028,17 @@ test "what yoq os wrote goes once the machine moved over, even when yos writes t
     try testing.expectEqual(Op.remove, p.changes[0].op);
     try testing.expectEqualStrings(desired.sysctl_path, p.changes[1].subject);
     try testing.expectEqual(Op.add, p.changes[1].op);
+}
+
+test "the kernel the config names needs a reboot, whatever it's called" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("[boot]\nkernel = \"linux-cachyos\"\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{lockPkg("linux-cachyos", "6.17.1-1", &.{})} };
+    var have = [_]facts.Package{.{ .name = "linux-cachyos", .version = "6.16.8-1" }};
+    const f: facts.Facts = .{ .packages = &have };
+    const p = (try plan(t.a(), &c, &l, &f, &t.diags)).?;
+    try testing.expectEqualStrings("kernel", p.changes[0].reboot.?);
 }
 
 test "a unit that can't be enabled only starts and stops" {

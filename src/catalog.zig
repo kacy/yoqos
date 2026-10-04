@@ -124,7 +124,7 @@ pub fn restartable(unit: []const u8) bool {
 }
 
 /// arch's kernel packages.
-pub const kernels = [_][]const u8{ "linux", "linux-lts", "linux-zen", "linux-hardened" };
+pub const kernels = [_][]const u8{ "linux", "linux-lts", "linux-zen", "linux-hardened", "linux-rt", "linux-rt-lts" };
 
 /// packages `yos` won't remove unless a `[remove]` names them: without
 /// them the machine can't boot or can't manage packages.

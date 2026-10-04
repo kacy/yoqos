@@ -335,10 +335,13 @@ pub fn servedFromDisk(r: Repo) bool {
     return r.servers.len > 0;
 }
 
-/// a local repository's database, where it is.
+/// the database of a repository on this machine's own disk, like yos's
+/// aur builds or one aurutils keeps, where it is. it's read there, not
+/// downloaded per date: the http client has no file://.
 fn localDb(a: Allocator, r: Repo) !?[]const u8 {
-    if (!r.local or r.servers.len == 0 or !std.mem.startsWith(u8, r.servers[0], "file://")) return null;
-    return try std.fmt.allocPrint(a, "{s}/{s}.db", .{ r.servers[0]["file://".len..], r.name });
+    if (!servedFromDisk(r)) return null;
+    const dir = try serverUrl(a, r.servers[0], r.name);
+    return try std.fmt.allocPrint(a, "{s}/{s}.db", .{ dir["file://".len..], r.name });
 }
 
 /// the repository's servers, or the fallback if pacman.conf names none.
@@ -477,6 +480,14 @@ test "one package file in the archive" {
     defer arena.deinit();
     try testing.expectEqualStrings("https://archive.archlinux.org/packages/g/git/git-2.51.0-1-x86_64.pkg.tar.zst", try archivedPackage(arena.allocator(), "git", "2.51.0-1", "x86_64"));
     try testing.expect(archivedRepo("core") and !archivedRepo("chaotic-aur"));
+}
+
+test "a repository on this machine's disk is read where it is" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqualStrings("/srv/repo/custom/custom.db", (try localDb(a, .{ .name = "custom", .servers = &.{"file:///srv/repo/$repo/"} })).?);
+    try testing.expectEqual(null, try localDb(a, .{ .name = "core", .servers = &.{ "file:///srv/core", "https://m.example/$repo" } }));
 }
 
 test "download tries servers in order, then uses the cache" {
