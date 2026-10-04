@@ -6,6 +6,7 @@
 const std = @import("std");
 const rootfs = @import("../rootfs.zig");
 const cli = @import("../cli.zig");
+const systemd = @import("../systemd.zig");
 const exec = @import("../exec.zig");
 const lists = @import("../lists.zig");
 const output = @import("../output.zig");
@@ -244,16 +245,20 @@ pub const Builder = struct {
         // display-manager.service alias with it, which the one replacing
         // it needs.
         for ([_]bool{ true, false }) |removing| {
-            const verb = if (removing) "disable" else "enable";
             for (changes) |c| {
-                // starts and stops are for a running system; the boot does
-                // those.
-                if (c.kind != .unit or (c.op == .remove) != removing or std.mem.indexOf(u8, c.to orelse "", verb) == null) continue;
-                if (try b.run(&.{ "systemctl", try std.fmt.allocPrint(b.a, "--root={s}", .{b.dir}), verb, "--", c.subject })) |why| {
-                    // one whose package the change took out is off already:
-                    // systemctl took its links out, and says it's gone.
-                    if (removing and !try b.hasUnit(c.subject)) continue;
-                    return cli.fail(ctx, "couldn't {s} {s} in the build: {s}", .{ verb, c.subject, why });
+                if (c.kind != .unit or (c.op == .remove) != removing) continue;
+                for (try systemd.parseVerbs(b.a, c.to orelse "")) |v| {
+                    // starts and stops are for a running system; the boot
+                    // does those.
+                    if (v == .start or v == .stop or v == .restart) continue;
+                    const verb = @tagName(v);
+                    if (try b.run(&.{ "systemctl", try std.fmt.allocPrint(b.a, "--root={s}", .{b.dir}), verb, "--", c.subject })) |why| {
+                        // one whose package the change took out is off
+                        // already: systemctl took its links out, and says
+                        // it's gone.
+                        if (removing and !try b.hasUnit(c.subject)) continue;
+                        return cli.fail(ctx, "couldn't {s} {s} in the build: {s}", .{ verb, c.subject, why });
+                    }
                 }
             }
         }
