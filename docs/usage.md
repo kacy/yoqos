@@ -148,8 +148,10 @@ zig build test -Dfuzz --fuzz=1M -Dtest-filter="fuzz lock"
 
 ## getting started
 
-the first step only writes files under `/etc/yos`, so it's fine to take
-on the machine you use every day. on an arch machine, as root:
+the first step only writes yos's own files: the config under `/etc/yos`,
+and the package databases it resolved against and a journal under
+`/var`. nothing else changes, so it's fine to take on the machine you use
+every day. on an arch machine, as root:
 
 ```
 yos init
@@ -169,7 +171,9 @@ yos init
   depends on something several packages provide, and one of them is
   installed, `init` records that one in `[providers]`.
 
-`init` changes nothing else on the machine. then:
+`init` also keeps the package databases it resolved against in
+`/var/cache/yos/sync`, and starts a journal in `/var/lib/yos`. nothing
+else on the machine changes. then:
 
 ```
 yos status
