@@ -234,7 +234,7 @@ pub const Builder = struct {
         defer ctx.root = host;
         var from = b.inputs orelse cli.inputs(ctx);
         from.root = b.dir;
-        const done = try applying.run(ctx, true, from, .{ .render = .{ .quiet = b.staged } });
+        const done = try applying.run(ctx, true, from, .{ .render = .{ .quiet = b.staged }, .units_in_root = true });
         if (!b.staged) std.Io.Dir.cwd().deleteFile(ctx.io, try b.in(no_autodetect)) catch {};
         if (done.code != 0) return done.code;
         var w: cli.Work = .init(ctx);
@@ -273,8 +273,8 @@ pub const Builder = struct {
     /// /usr it lacks, and files in /etc whose content differs.
     fn report(b: *Builder) !u8 {
         const ctx = b.ctx;
-        const here = try b.files("/");
-        const built = try b.files(b.dir);
+        const here = try b.files("/") orelse return 1;
+        const built = try b.files(b.dir) orelse return 1;
         var only_here: std.ArrayList([]const u8) = .empty;
         var differ: std.ArrayList([]const u8) = .empty;
         for (here) |rel| {
@@ -303,11 +303,18 @@ pub const Builder = struct {
 
     /// every file and symlink under etc and usr in `root`, relative and
     /// sorted, from one filesystem, since a mount there isn't the root's.
-    fn files(b: *Builder, root: []const u8) ![]const []const u8 {
+    /// the files in /etc and /usr under `root`, or null after saying why
+    /// they couldn't be listed: a list cut short would pass for one with
+    /// nothing unexplained in it.
+    fn files(b: *Builder, root: []const u8) !?[]const []const u8 {
         const prefix = if (std.mem.eql(u8, root, "/")) "/" else try std.fmt.allocPrint(b.a, "{s}/", .{root});
         const argv = [_][]const u8{ "find", try std.fmt.allocPrint(b.a, "{s}etc", .{prefix}), try std.fmt.allocPrint(b.a, "{s}usr", .{prefix}), "-xdev", "(", "-type", "f", "-o", "-type", "l", ")", "-print0" };
         const text = switch (try exec.output(b.a, b.ctx.io, &argv)) {
-            .ok, .failed => |t| t,
+            .ok => |t| t,
+            .failed => |why| {
+                try b.ctx.err.print("yos: can't list the files under {s}: {s}\n", .{ root, why });
+                return null;
+            },
         };
         var out: std.ArrayList([]const u8) = .empty;
         var it = std.mem.tokenizeScalar(u8, text, 0);

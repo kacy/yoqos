@@ -169,6 +169,9 @@ pub const RunOptions = struct {
     render: planview.RenderOptions = .{},
     /// the hash of a saved plan: the run applies that plan or nothing.
     expect: ?[]const u8 = null,
+    /// a build turns units on or off in its root after the run, with
+    /// `systemctl --root`, so they aren't left as they were.
+    units_in_root: bool = false,
 };
 
 /// plans from `in`, shows the plan, asks unless `yes`, applies it, and
@@ -255,9 +258,9 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     };
     try journal.recordDone(a, ctx.io, ctx.root, journal.now(ctx.io), &hash);
     try recordIds(ctx, a);
-    var code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units);
+    var code = try verify(ctx, in, p.changes.len - done.skipped.len, done.skipped, units, opts.units_in_root);
     if (w.diags.items.items.len > problems) code = try scriptsFailed(ctx, w.diags.items.items[problems..]);
-    if (units and !ctx.json and changesPackages(p)) try offerRestarts(ctx, yes);
+    if (units and !ctx.json and changesPackages(p)) code = @max(code, try offerRestarts(ctx, yes));
     return .{ .code = code, .matches = true, .changed_generation = on_generations, .needs_reboot = needs_reboot };
 }
 
@@ -458,30 +461,28 @@ fn changesPackages(p: *const planner.Plan) bool {
 
 /// arch doesn't restart services after an upgrade. this finds the ones
 /// still running replaced files and offers to restart them, or says how
-/// when there's no one to ask.
-fn offerRestarts(ctx: *Context, yes: bool) !void {
+/// when there's no one to ask. returns 1 if one didn't restart; the
+/// others are restarted all the same.
+fn offerRestarts(ctx: *Context, yes: bool) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    const f = try w.facts() orelse return;
+    const f = try w.facts() orelse return 0;
     var names: std.ArrayList([]const u8) = .empty;
     for (f.units) |u| {
         if (u.stale and catalog.restartable(u.name)) try names.append(a, u.name);
     }
-    if (names.items.len == 0) return;
+    if (names.items.len == 0) return 0;
     const list = try std.mem.join(a, " ", names.items);
     try ctx.out.print("\nthese services still run files the upgrade replaced: {s}\n", .{list});
     if (yes or !ctx.interactive or !try cli.confirm(ctx, "restart them now?")) {
         try ctx.out.print("restart them when it suits: systemctl restart {s}\n", .{list});
-        return;
+        return 0;
     }
-    for (names.items) |n| {
-        if (!try systemd.change(a, n, &.{.restart}, &w.diags)) {
-            _ = try w.fail();
-            return;
-        }
-    }
+    for (names.items) |n| _ = try systemd.change(a, n, &.{.restart}, &w.diags);
+    if (w.failed()) return w.fail();
     try ctx.out.writeAll("restarted.\n");
+    return 0;
 }
 
 /// units change only on the running machine, and only when systemd runs
@@ -492,7 +493,7 @@ fn liveUnits(ctx: *Context) bool {
 
 /// plans again after applying. anything left besides what apply skipped
 /// means something didn't take.
-fn verify(ctx: *Context, in: pipeline.Inputs, applied: usize, skipped: []const planner.Change, units: bool) !u8 {
+fn verify(ctx: *Context, in: pipeline.Inputs, applied: usize, skipped: []const planner.Change, units: bool, units_in_root: bool) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
@@ -512,7 +513,10 @@ fn verify(ctx: *Context, in: pipeline.Inputs, applied: usize, skipped: []const p
         if (skipped.len > 0) {
             var names: std.ArrayList([]const u8) = .empty;
             for (skipped) |c| try names.append(a, c.subject);
-            try ctx.out.print("services not changed, since systemd isn't running this machine: {s}.\n", .{try std.mem.join(a, ", ", names.items)});
+            const list = try std.mem.join(a, ", ", names.items);
+            if (units_in_root) {
+                try ctx.out.print("services turned on or off in the new root, for its first boot: {s}.\n", .{list});
+            } else try ctx.out.print("services not changed, since systemd isn't running this machine: {s}.\n", .{list});
         }
     }
     if (left.items.len == 0) return 0;
