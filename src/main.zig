@@ -145,6 +145,7 @@ test {
     _ = @import("menu.zig");
     _ = @import("uki.zig");
     _ = @import("secureboot.zig");
+    _ = @import("firewall.zig");
     _ = @import("modules.zig");
     _ = @import("bootcheck.zig");
     _ = @import("trial.zig");
