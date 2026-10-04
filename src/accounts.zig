@@ -152,8 +152,12 @@ pub fn changes(a: Allocator, history: []const Id, now: []const Id) ![]const []co
         for (history) |h| {
             if (h.kind != s.kind) continue;
             const kind = @tagName(s.kind);
-            if (std.mem.eql(u8, h.name, s.name) and h.id != s.id) {
-                try out.append(a, try std.fmt.allocPrint(a, "{s} {s} is {d}, but was {d}", .{ kind, s.name, s.id, h.id }));
+            // against the id the name first had: one that went back to it
+            // is as it should be.
+            if (std.mem.eql(u8, h.name, s.name)) {
+                const first = firstFor(history, h);
+                if (first == s.id) continue;
+                try out.append(a, try std.fmt.allocPrint(a, "{s} {s} is {d}, but was {d}", .{ kind, s.name, s.id, first }));
                 break;
             }
             if (h.id == s.id and !std.mem.eql(u8, h.name, s.name) and firstFor(history, h) == h.id) {
@@ -220,4 +224,7 @@ test "the history of system ids, and what changed from it" {
     try testing.expectEqualStrings("user postgres is 970, but was 971", c[0]);
     try testing.expectEqualStrings("user docker has 971, which was postgres's", c[1]);
     try testing.expectEqual(0, (try changes(a, history, try parse(a, "postgres:x:971:971::/:/bin/bash\n", .user))).len);
+    // back at the id it first had, after a time at another.
+    const moved = try parseHistory(a, "user postgres 971\nuser postgres 970\n");
+    try testing.expectEqual(0, (try changes(a, moved, try parse(a, "postgres:x:971:971::/:/bin/bash\n", .user))).len);
 }

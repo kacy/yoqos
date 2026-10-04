@@ -356,9 +356,22 @@ fn cachePath(a: Allocator, cache: []const u8, date: []const u8, repo: []const u8
 
 fn fetchRepo(a: Allocator, fetcher: Fetcher, r: Repo) !?[]const u8 {
     for (serversOf(r)) |s| {
-        if (try fetcher.fetch(a, try dbUrl(a, s, r.name))) |bytes| return bytes;
+        const bytes = try fetcher.fetch(a, try dbUrl(a, s, r.name)) orelse continue;
+        // it's kept for the whole day, so an error page or a cut-off file
+        // from one server mustn't be: the next is tried.
+        if (isDatabase(bytes)) return bytes;
     }
     return null;
+}
+
+/// whether `bytes` look like a package database: a tar, compressed as
+/// repo-add compresses them, with gzip, zstd, xz, or bzip2, or not at all.
+fn isDatabase(bytes: []const u8) bool {
+    const magics = [_][]const u8{ "\x1f\x8b", "\x28\xb5\x2f\xfd", "\xfd7zXZ\x00", "BZh" };
+    for (magics) |m| {
+        if (std.mem.startsWith(u8, bytes, m)) return true;
+    }
+    return bytes.len > 262 and std.mem.eql(u8, bytes[257..262], "ustar");
 }
 
 // -- tests --
@@ -490,6 +503,13 @@ test "a repository on this machine's disk is read where it is" {
     try testing.expectEqual(null, try localDb(a, .{ .name = "core", .servers = &.{ "file:///srv/core", "https://m.example/$repo" } }));
 }
 
+test "a database is a compressed tar, not an error page" {
+    try testing.expect(isDatabase("\x1f\x8b\x08\x00rest"));
+    try testing.expect(isDatabase("\x28\xb5\x2f\xfdrest"));
+    try testing.expect(!isDatabase("<html>captive portal</html>"));
+    try testing.expect(!isDatabase(""));
+}
+
 test "download tries servers in order, then uses the cache" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -504,15 +524,18 @@ test "download tries servers in order, then uses the cache" {
         .{ .name = "core", .servers = &.{ "https://down.example/$repo/os/$arch", "https://up.example/$repo/os/$arch" } },
         .{ .name = "extra", .servers = &.{"https://up.example/$repo/os/$arch"} },
     };
+    // a database starts as gzip does; the first server's error page
+    // doesn't.
     var fake: FakeFetcher = .{ .answers = &.{
-        .{ "https://up.example/core/os/" ++ arch ++ "/core.db", "core bytes" },
-        .{ "https://up.example/extra/os/" ++ arch ++ "/extra.db", "extra bytes" },
+        .{ "https://down.example/core/os/" ++ arch ++ "/core.db", "<html>not found</html>" },
+        .{ "https://up.example/core/os/" ++ arch ++ "/core.db", "\x1f\x8bcore bytes" },
+        .{ "https://up.example/extra/os/" ++ arch ++ "/extra.db", "\x1f\x8bextra bytes" },
     } };
     const dbs = (try databases(a, testing.io, fake.fetcher(), &rs, cache, "2026-09-25", &diags)).?;
     try testing.expectEqual(3, fake.urls.items.len);
     try testing.expectEqualStrings("core", dbs[0].name);
     const bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, dbs[1].path, a, .limited(1024));
-    try testing.expectEqualStrings("extra bytes", bytes);
+    try testing.expectEqualStrings("\x1f\x8bextra bytes", bytes);
 
     // a second run finds everything in the cache.
     _ = (try databases(a, testing.io, fake.fetcher(), &rs, cache, "2026-09-25", &diags)).?;

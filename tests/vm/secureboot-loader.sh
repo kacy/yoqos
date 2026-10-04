@@ -75,8 +75,15 @@ grub)
     # entry added to grub.cfg that boots arch's unsigned kernel, picked
     # once, won't start, and grub falls back to the newest generation.
     "$vm" ssh "printf 'menuentry \"planted\" --id planted {\n  linux (\${yos_esp})/vmlinuz-linux %s yos.planted\n  initrd (\${yos_esp})/initramfs-linux.img\n}\n' \"\$(cat /proc/cmdline)\" >> $conf && grub-editenv $VM_ESP/yos/grubenv set yos_next=planted yos_default=head"
+    mark=$(wc -c < "$console" 2>/dev/null || echo 0)
     "$vm" reboot
     settled
+    # grub tried the planted entry and fell back from it, rather than never
+    # trying it.
+    if ! tail -c +"$((mark + 1))" "$console" | tr -d '\r' | grep -a -e "Falling back to" >/dev/null; then
+        echo "$name: grub never tried the planted entry: no fallback on the console"
+        exit 1
+    fi
     check "grep -c yos.planted /proc/cmdline || true" 0
     check "findmnt -no FSROOT /" "/$(newest_root)"
     "$vm" ssh "grub-editenv $VM_ESP/yos/grubenv unset yos_default yos_next yos_tried && /usr/local/bin/yos gc >/dev/null"

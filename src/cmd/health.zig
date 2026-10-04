@@ -52,7 +52,12 @@ pub fn healthCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         .finish_pass => return finishPass(ctx, a, store, boot, record, false),
         .rearm => return rearm(ctx, a, store, boot, t, record),
         .retry => {
-            _ = try store.retry();
+            // said, not passed over: the next boot runs the default then,
+            // and that reads as the trial failing.
+            if (try store.retry()) |why| {
+                try ctx.err.print("yos: can't set generation {d}, which hasn't been tried yet, to boot next: {s}\n", .{ t.n, why });
+                return 1;
+            }
             try ctx.out.print("generation {d} hasn't been tried yet; the next boot tries it.\n", .{t.n});
             return 0;
         },

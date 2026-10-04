@@ -63,7 +63,7 @@ jobs:
         run: tests/arch/smoke.sh ./zig-out/bin/yos
       - name: the example configs resolve against today's arch packages
         run: tests/examples.sh ./zig-out/bin/yos --resolve
-      - name: the man pages render, and mandoc finds nothing wrong in them
+      - name: the man pages render, with no roff mandoc can't handle
         run: dist/man.sh man && mandoc -T lint -W unsupp man/*
 
   vm:

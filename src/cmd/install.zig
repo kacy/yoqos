@@ -100,6 +100,12 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     // nothing's on the disk yet, so it's as it was.
     if (try in.fetch(source.?, host)) |why| return cli.fail(ctx, "{s}", .{why});
     if (update) {
+        // an aur list stops the install below; it shouldn't be fetched,
+        // reviewed, and built on the live system first.
+        var cw: cli.Work = .init(ctx);
+        defer cw.deinit();
+        if (try cw.config()) |l| if (l.config.aur.items.items.len > 0)
+            return cli.fail(ctx, "the config has aur packages, and they build on a running machine. install without them, then add them back and run `yos update` there.", .{});
         try ctx.out.writeAll("resolving the config against today's packages...\n");
         const code = try updating.updateCmd(ctx, &.{"--no-apply"});
         if (code != 0) return code;
