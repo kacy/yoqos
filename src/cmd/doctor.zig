@@ -2,6 +2,7 @@
 //! do about each one that fails. it changes nothing.
 
 const std = @import("std");
+const history = @import("../history.zig");
 const rootfs = @import("../rootfs.zig");
 const gens = @import("../gens.zig");
 const cli = @import("../cli.zig");
@@ -41,7 +42,7 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const dir = std.fs.path.dirnamePosix(ctx.config_path) orelse "/";
     try checks.append(a, .{
         .what = "config history",
-        .ok = try exec.run(a, ctx.io, &.{ "git", "-C", dir, "rev-parse", "--git-dir" }) == null,
+        .ok = try exec.run(a, ctx.io, try history.gitArgv(a, &.{ "-C", dir, "rev-parse", "--git-dir" })) == null,
         .found = dir,
         .fix = "it isn't a git repository, so changes aren't recorded. `yos init` makes one, or `git init` there.",
     });

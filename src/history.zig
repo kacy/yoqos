@@ -141,6 +141,12 @@ test "commit subjects lose control characters" {
     try std.testing.expectEqualStrings("remove  x2Jy", got[1].message);
 }
 
+/// git with `args`, run as `cleanEnv` runs it, for git outside this
+/// file: fetching a config or a recipe, or reading a config's history.
+pub fn gitArgv(a: Allocator, args: []const []const u8) ![]const []const u8 {
+    return cleanEnv(a, try std.mem.concat(a, []const u8, &.{ &.{"git"}, args }));
+}
+
 /// `argv` run without the variables that point git at another repository.
 /// yos run from a git hook, or under `git rebase --exec`, inherits GIT_DIR,
 /// and git would then commit there instead of in the config directory.

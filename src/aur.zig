@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const btrfs = @import("btrfs.zig");
+const history = @import("history.zig");
 const exec = @import("exec.zig");
 const lists = @import("lists.zig");
 const rootfs = @import("rootfs.zig");
@@ -456,7 +457,7 @@ pub const Builder = struct {
     }
 
     fn gitArgv(b: Builder, args: []const []const u8) ![]const []const u8 {
-        return std.mem.concat(b.a, []const u8, &.{ &.{"git"}, args });
+        return history.gitArgv(b.a, args);
     }
 
     fn run(b: Builder, argv: []const []const u8) !?[]const u8 {
