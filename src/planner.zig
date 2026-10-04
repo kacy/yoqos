@@ -337,7 +337,7 @@ fn planUnits(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
     var units: std.ArrayList(Change) = .empty;
     for (c.services.entries.items) |e| {
         const unit = e.value.unitFor(e.name);
-        const step = unitStep(e.value.isEnabled(), f.unit(unit)) orelse continue;
+        const step = (if (e.value.isMasked()) maskStep(f.unit(unit)) else try unitStepAfterMask(a, e.value, f.unit(unit))) orelse continue;
         try units.append(a, .{ .op = step.op, .kind = .unit, .subject = unit, .to = step.to, .cause = try std.fmt.allocPrint(a, "services.{s}", .{e.name}) });
     }
     // a login choice owns the display manager: its own is enabled, the
@@ -357,6 +357,27 @@ fn planUnits(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
 }
 
 const UnitStep = struct { op: Op, to: []const u8 };
+
+/// masking a unit: it's linked to /dev/null, and stopped if it runs. a
+/// unit facts don't list isn't enabled, running, or masked, so it's
+/// masked.
+fn maskStep(have: ?*const facts.Unit) ?UnitStep {
+    const u = have orelse return .{ .op = .remove, .to = "mask" };
+    if (u.masked) return if (u.active) .{ .op = .remove, .to = "stop" } else null;
+    return .{ .op = .remove, .to = if (u.active) "mask, stop" else "mask" };
+}
+
+/// a masked unit the config turns on is unmasked first. one it turns off
+/// stays masked, unless the config says `masked = false`.
+fn unitStepAfterMask(a: Allocator, s: config.Service, have: ?*const facts.Unit) !?UnitStep {
+    const u = have orelse return unitStep(s.isEnabled(), null);
+    if (!u.masked or (!s.isEnabled() and s.masked == null)) return unitStep(s.isEnabled(), u);
+    var plain = u.*;
+    plain.masked = false;
+    plain.enabled = false;
+    const rest = unitStep(s.isEnabled(), &plain);
+    return .{ .op = if (s.isEnabled()) .add else .remove, .to = if (rest) |r| try std.fmt.allocPrint(a, "unmask, {s}", .{r.to}) else "unmask" };
+}
 
 /// what it takes to get a unit enabled and running (`on`) or off, or
 /// null if it's there already.
@@ -965,6 +986,44 @@ test "a login choice owns the display manager, and changes it at the next boot" 
         \\  + /etc/greetd/config.toml: write, mode 0644  (desktop.login)
         \\
         \\plan: 2 to add, 0 to change, 1 to remove · reboot needed: display manager
+        \\
+    , out.written());
+}
+
+test "a masked service is masked and stopped, and unmasked to turn it on" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg(
+        \\[boot]
+        \\kernel = "none"
+        \\[services.wait-online]
+        \\unit = "NetworkManager-wait-online.service"
+        \\masked = true
+        \\[services.cups]
+        \\masked = true
+        \\[services.ssh]
+        \\[services.bluetooth]
+        \\enabled = false
+        \\
+    );
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{lockPkg("openssh", "1", &.{})} };
+    var units = [_]facts.Unit{
+        .{ .name = "NetworkManager-wait-online.service", .enabled = true, .active = true },
+        .{ .name = "bluetooth.service", .masked = true },
+        .{ .name = "sshd.service", .masked = true },
+    };
+    var have = [_]facts.Package{.{ .name = "openssh", .version = "1" }};
+    const f: facts.Facts = .{ .packages = &have, .units = &units };
+    const p = (try plan(t.a(), &c, &l, &f, &t.diags)).?;
+    var out: std.Io.Writer.Allocating = .init(t.a());
+    try planview.writeText(&out.writer, t.a(), &p, .{});
+    try testing.expectEqualStrings(
+        \\services
+        \\  - NetworkManager-wait-online.service: mask, stop  (services.wait-online)
+        \\  - cups.service: mask  (services.cups)
+        \\  + sshd.service: unmask, enable, start  (services.ssh)
+        \\
+        \\plan: 1 to add, 0 to change, 2 to remove · no reboot
         \\
     , out.written());
 }

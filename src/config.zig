@@ -177,13 +177,22 @@ pub const Service = struct {
 
     src: Src,
     enabled: ?Val(bool) = null,
+    /// off for good: the unit is masked, so nothing can start it, not even
+    /// another unit that asks for it.
+    masked: ?Val(bool) = null,
     /// for services the catalog doesn't know.
     unit: ?Str = null,
     package: ?Str = null,
 
-    /// a service is on unless the config says otherwise.
+    /// a service is on unless the config says otherwise. a masked one is
+    /// off.
     pub fn isEnabled(s: *const Service) bool {
+        if (s.isMasked()) return false;
         return if (s.enabled) |e| e.v else true;
+    }
+
+    pub fn isMasked(s: *const Service) bool {
+        return if (s.masked) |m| m.v else false;
     }
 
     /// the unit, from the config or else the catalog. the service must be
@@ -477,6 +486,10 @@ fn validatePackages(c: *const Config, diags: *diag.List) !void {
 fn validateServices(c: *const Config, diags: *diag.List) !void {
     for (c.services.entries.items) |e| {
         if (!knownService(c, e.name)) try unknownService(diags, e.name, e.value.src);
+        if (e.value.masked) |m| {
+            const on = if (e.value.enabled) |en| en.v else false;
+            if (m.v and on) try diags.add(.bad_value, m.src, "services.{s} can't be both enabled and masked", .{e.name}, "a masked unit can't start; drop one of them");
+        }
         const u = e.value.unit orelse continue;
         if (!validUnitName(u.v)) try diags.add(.bad_value, u.src, "\"{s}\" isn't a unit name", .{u.v}, "a unit name ends in its type, like tailscaled.service, and uses letters, digits, and :-_.@\\");
     }
@@ -571,7 +584,8 @@ fn validateUsers(c: *const Config, diags: *diag.List) !void {
 pub fn knownService(c: *const Config, name: []const u8) bool {
     if (catalog.service(name) != null) return true;
     const s = c.services.get(name) orelse return false;
-    return s.unit != null and s.package != null;
+    // masking a unit needs only its name: no package is installed for it.
+    return s.unit != null and (s.package != null or s.isMasked());
 }
 
 pub fn unknownService(diags: *diag.List, name: []const u8, at: ?diag.Span) !void {
@@ -924,6 +938,15 @@ test "secure boot needs unified kernel images" {
     defer neither.deinit();
     try validate(&neither.part.config, &neither.diags);
     try testing.expectEqual(0, neither.diags.items.items.len);
+}
+
+test "a masked service is off, and needs no package" {
+    const f = try Fixture.init("[services.wait]\nunit = \"NetworkManager-wait-online.service\"\nmasked = true\n[services.ssh]\nenabled = true\nmasked = true\n");
+    defer f.deinit();
+    try validate(&f.part.config, &f.diags);
+    try testing.expectEqual(1, f.diags.items.items.len);
+    try f.expectDiag(0, .bad_value, 6, "services.ssh can't be both enabled and masked");
+    try testing.expect(!f.part.config.services.get("wait").?.isEnabled());
 }
 
 test "a session's config needs a session" {
