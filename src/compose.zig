@@ -293,6 +293,16 @@ fn merge(a: Allocator, comptime T: type, dst: *T, src: *const T) !void {
             if (dst.get(e.name)) |v| try merge(a, T.Value, v, &e.value) else try dst.entries.append(a, e.*);
         }
     } else {
+        // keys only one of which can be set, like a file's source, text,
+        // and secret: the one `src` sets replaces whichever `dst` had.
+        if (@hasDecl(T, "one_of")) {
+            const sets = inline for (T.one_of) |name| {
+                if (@field(src, name) != null) break true;
+            } else false;
+            if (sets) inline for (T.one_of) |name| {
+                @field(dst, name) = null;
+            };
+        }
         inline for (comptime config.keysOf(T)) |name| try merge(a, @FieldType(T, name), &@field(dst, name), &@field(src, name));
     }
 }
@@ -650,6 +660,21 @@ test "files read their source next to the file that names them" {
     try r.fs.put("/etc/yos/machine.toml", "[files.\"/etc/motd\"]\nsource = \"gone\"\n");
     _ = try r.load("/etc/yos/machine.toml");
     try testing.expectEqual(diag.Code.source_missing, r.diags.items.items[0].code);
+}
+
+test "an including file's text for a file replaces the include's source" {
+    var r: Run = .{};
+    defer r.deinit();
+    try r.fs.put("/etc/yos/base.toml", "[files.\"/etc/motd\"]\nsource = \"motd\"\nmode = \"0640\"\n");
+    try r.fs.put("/etc/yos/motd", "welcome\n");
+    try r.fs.put("/etc/yos/machine.toml", "include = [\"base.toml\"]\n[files.\"/etc/motd\"]\ntext = \"forge\\n\"\n");
+    const c = try r.load("/etc/yos/machine.toml");
+    try r.expectClean();
+    const f = c.files.get("/etc/motd").?;
+    try testing.expectEqualStrings("forge\n", f.content.?);
+    try testing.expectEqual(null, f.source);
+    // the rest of the entry still merges.
+    try testing.expectEqualStrings("0640", f.modeOf());
 }
 
 test "the session's config is read next to the file that names it" {
