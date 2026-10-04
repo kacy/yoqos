@@ -10,6 +10,7 @@
 //!   @var             /var, which never rolls back
 
 const std = @import("std");
+const lists = @import("lists.zig");
 const Allocator = std.mem.Allocator;
 
 pub const roots_dir = "@roots";
@@ -338,6 +339,10 @@ pub fn kernelArgs(a: Allocator, cmdline: []const u8, root_uuid: []const u8, subv
         if (std.mem.startsWith(u8, w, "BOOT_IMAGE=") or std.mem.startsWith(u8, w, "initrd=") or std.mem.startsWith(u8, w, "root=")) continue;
         // a trial boot adds this; it's never part of an entry.
         if (std.mem.eql(u8, w, "yos.trial")) continue;
+        // and these are for one boot, typed at the menu to get into a
+        // machine: carried into every entry, the fallbacks too, they'd
+        // stay.
+        if (oneBoot(w)) continue;
         if (std.mem.startsWith(u8, w, "rootflags=")) {
             var opts = std.mem.tokenizeScalar(u8, w["rootflags=".len..], ',');
             while (opts.next()) |o| {
@@ -358,6 +363,16 @@ pub fn kernelArgs(a: Allocator, cmdline: []const u8, root_uuid: []const u8, subv
     // a kernel that panics reboots, so a generation on trial falls back.
     const panic = if (std.mem.indexOf(u8, rest.items, " panic=") == null) " panic=10" else "";
     return std.fmt.allocPrint(a, "root=UUID={s} rootflags={s}{s}{s}", .{ root_uuid, flags.items, rest.items, panic });
+}
+
+/// whether a kernel argument picks how one boot goes, rather than how the
+/// machine boots: a target or a shell to start in, or a runlevel.
+fn oneBoot(w: []const u8) bool {
+    const exact = [_][]const u8{ "single", "emergency", "rescue", "s", "S", "-s", "-b", "1", "2", "3", "4", "5", "rd.break", "rd.emergency", "rd.shell", "systemd.debug_shell" };
+    for (exact) |e| {
+        if (std.mem.eql(u8, w, e)) return true;
+    }
+    return lists.startsWithAny(w, &.{ "systemd.unit=", "rd.systemd.unit=", "init=", "rdinit=", "rd.break=", "systemd.debug_shell=" });
 }
 
 /// the root mount option that keeps sd-encrypt's initramfs at the
@@ -613,6 +628,8 @@ test "a generation's kernel command line" {
     // a quoted argument stays as it was, spaces and all, and a word in
     // its quotes isn't taken for one of the root's.
     try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/2 rw acpi_osi=\"!Windows  2012\" dyndbg=\"file x.c root=y\" panic=10", try kernelArgs(arena.allocator(), "root=/dev/vda2 rw acpi_osi=\"!Windows  2012\" dyndbg=\"file x.c root=y\"\n", "abc", "/@roots/2"));
+    // what was typed at the menu for one boot stays with that boot.
+    try testing.expectEqualStrings("root=UUID=abc rootflags=subvol=/@roots/2 rw quiet panic=10", try kernelArgs(arena.allocator(), "rw systemd.unit=multi-user.target quiet single init=/bin/sh 3 rd.break", "abc", "/@roots/2"));
     try testing.expectEqualStrings("/@roots/boot-2", try bootCopy(arena.allocator(), 2));
     try testing.expectEqual(2, bootCopyOf("/@roots/boot-2"));
     try testing.expectEqual(null, bootCopyOf("/@roots/2"));

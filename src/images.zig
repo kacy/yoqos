@@ -51,10 +51,18 @@ pub fn anyImage(m: *const Machine, entries: []const menu.Entry) !bool {
 /// running one counts since its firmware may enforce secure boot
 /// already, whatever generation goes on top.
 pub fn signs(m: *const Machine, head: []const u8) bool {
-    if (secureboot.enforcedWithKeys(m.boot.secure_boot, m.boot.sbctl_keys)) return true;
+    if (secureboot.enforcedWithKeys(m.boot.secure_boot, m.boot.sbctl_keys) and !untrustedKeys(m)) return true;
     if (has(m, head, secureboot.config_rel) catch false) return true;
     const running = m.boot.root_subvol orelse return false;
     return has(m, running, secureboot.config_rel) catch false;
+}
+
+/// whether the firmware enforces secure boot without sbctl's certificate
+/// in its db, as after `sbctl create-keys` again (E0137). signing with
+/// those keys would make what boots now refuse to, so what's on the esp
+/// already is left as it is.
+fn untrustedKeys(m: *const Machine) bool {
+    return (m.boot.secure_boot orelse false) and m.boot.db_enrolled == false;
 }
 
 /// signs the efi binary at `path` in place, with sbctl's keys.
@@ -113,7 +121,7 @@ fn signGrub(m: *const Machine) !?[]const u8 {
     const esp = m.boot.esp orelse return null;
     const where = try bootmenu.grubEfiPath(m.a, m.io, esp);
     const binary = try bootmenu.grubBinary(m.a, esp, where);
-    if (!rootfs.pathExists(m.io, binary)) return null;
+    if (!rootfs.pathExists(m.io, binary) or untrustedKeys(m)) return null;
     if (try signedNow(m, binary) and grubRecorded(m, binary)) return null;
     const args = try bootmenu.grubInstallAt(m.a, esp, esp, where);
     if (try m.run(try std.mem.concat(m.a, []const u8, &.{ m.grub_install, args[1..], &.{"--no-nvram"} }))) |w| return w;
@@ -141,7 +149,7 @@ fn grubRecorded(m: *const Machine, path: []const u8) bool {
 fn signRefindDriver(m: *const Machine, work: []const u8) !?[]const u8 {
     const conf = m.boot.loader_conf orelse return null;
     const driver = try std.fs.path.join(m.a, &.{ std.fs.path.dirnamePosix(conf).?, refind_driver });
-    if (!rootfs.pathExists(m.io, driver) or try signedNow(m, driver)) return null;
+    if (!rootfs.pathExists(m.io, driver) or untrustedKeys(m) or try signedNow(m, driver)) return null;
     if (!rootfs.pathExists(m.io, m.refind_driver_src)) {
         const why = try std.fmt.allocPrint(m.a, "can't sign {s} for secure boot: refind's own copy, {s}, isn't there to sign", .{ driver, m.refind_driver_src });
         const left = m.left_unsigned orelse return why;
@@ -247,7 +255,7 @@ fn noteImage(m: *const Machine, b: UkiBuild, sums: []const []const u8, cmdline: 
         build.dest = dest;
     } else {
         const there = try std.fs.path.join(m.a, &.{ m.boot.esp.?, bootfiles.esp_boot_dir, name });
-        if (!sign or try signedNow(m, there)) return name;
+        if (!sign or untrustedKeys(m) or try signedNow(m, there)) return name;
         build.dest = there;
         build.again = true;
     }

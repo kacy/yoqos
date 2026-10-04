@@ -582,10 +582,13 @@ next boot tries again once there's room.
 - from an entry the firmware won't start, like an image signed with keys
   it doesn't have, grub falls back, but limine halts ("System halted.")
   and refind waits for a key, and both turn the firmware's watchdog off,
-  so nothing reboots the machine. systemd-boot isn't tested there. yos checks the
-  firmware's db for sbctl's certificate before it signs (E0137), which
-  covers the likely way there. a file that went bad on the esp after
-  that still hangs those two.
+  so nothing reboots the machine. systemd-boot isn't tested there. a plan
+  checks the firmware's db for sbctl's certificate before anything is
+  signed (E0137), and while it's missing, a rollback, a fallback, gc, or
+  the pacman hook leaves the esp's signed files as they are rather than
+  sign them again with keys the firmware would refuse. that covers the
+  likely way there. a file that went bad on the esp after that still
+  hangs those two.
 - secure boot is tested on all four bootloaders, and on luks with a tpm
   key. limine stops booting if its config's checksum was enrolled
   (`limine enroll-config`), since `yos` edits limine.conf. a generation from before `uki` boots a kernel

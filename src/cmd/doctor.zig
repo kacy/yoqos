@@ -35,6 +35,9 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         .found = ctx.config_path,
         .fix = "it doesn't load. `yos plan` says what's wrong, and where.",
     });
+    // the check says so; the config's own problems would stop the rest of
+    // the checks, which don't need it.
+    w.diags.items.clearRetainingCapacity();
     const dir = std.fs.path.dirnamePosix(ctx.config_path) orelse "/";
     try checks.append(a, .{
         .what = "config history",
@@ -82,7 +85,9 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
                 .fix = "trial boots need these. the next change that makes a generation puts them back, as long as yos-health.service is there; without it, `yos uninstall` then `yos enable-rollback` does.",
             });
         }
-        if (try enable.luksCheck(a, &b)) |c| try checks.append(a, c);
+        // what generations need of the root device; a machine without them
+        // boots the way it always has.
+        if (generation.on(b)) if (try enable.luksCheck(a, &b)) |c| try checks.append(a, c);
         if (try luks(a, ctx.io, &b)) |l| {
             if (tpmCheck(&b, l.tpm)) |c| try checks.append(a, c);
             // whether the tpm hands the key over now, without opening
@@ -103,11 +108,15 @@ pub fn doctorCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         }
         if (b.esp) |esp| {
             const room = try freeBytes(ctx, a, esp);
+            // without generations, there's nothing of yos's there to
+            // remove, so it's worth knowing, not a fault.
+            const gens_on = generation.on(b);
             try checks.append(a, .{
                 .what = "esp space",
                 .ok = room == null or room.? >= esp_room,
+                .warn = !gens_on,
                 .found = if (room) |r| try std.fmt.allocPrint(a, "{d} MiB free on {s}", .{ r >> 20, esp }) else esp,
-                .fix = "a new kernel and initramfs may not fit. `yos gc --keep 2` removes older generations and their copies there.",
+                .fix = if (gens_on) "a new kernel and initramfs may not fit. `yos gc --keep 2` removes older generations and their copies there." else "a new kernel and initramfs may not fit, and generations would want room for more.",
             });
         }
         // `yos install` puts yos in /usr/local/bin, which comes first in
