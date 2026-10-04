@@ -107,7 +107,10 @@ pub fn machineToml(a: Allocator, c: *const config.Config, date: []const u8) ![]c
 
 /// with a lock, the packages are grouped under a comment naming their
 /// repository, in pacman's order, so a long list is easier to trim.
-pub fn importedToml(a: Allocator, packages: []const []const u8, date: []const u8, l: ?*const lock.Lock) ![]const u8 {
+/// imported.toml: `packages` from the repositories, grouped by repository
+/// once there's a lock, and `foreign`, the ones none of them has, as
+/// `aur`.
+pub fn importedToml(a: Allocator, packages: []const []const u8, foreign: []const []const u8, date: []const u8, l: ?*const lock.Lock) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(a);
     const w = &out.writer;
     try w.print(
@@ -116,6 +119,22 @@ pub fn importedToml(a: Allocator, packages: []const []const u8, date: []const u8
         \\# deleted from here gets removed by the next apply.
         \\
     , .{date});
+    if (foreign.len > 0) {
+        try w.writeAll(
+            \\
+            \\# these came from outside the repositories, most likely the aur.
+            \\# `yos update` builds them from there. one that isn't on the aur
+            \\# can't be managed, so it has to go from here.
+            \\aur = [
+            \\
+        );
+        for (foreign) |name| {
+            try w.writeAll("  ");
+            try toml.writeString(w, name);
+            try w.writeAll(",\n");
+        }
+        try w.writeAll("]\n\n");
+    }
     const grouped = l != null;
     if (packages.len == 0 and !grouped) return out.written();
 
@@ -225,7 +244,25 @@ test "a config from facts" {
         \\  "neovim",
         \\]
         \\
-    , try importedToml(a, imported, "2026-09-25", null));
+    , try importedToml(a, imported, &.{}, "2026-09-25", null));
+    // ones from outside the repositories are aur packages.
+    try testing.expectEqualStrings(
+        \\# packages that were installed on purpose when `yos init` ran on 2026-09-25.
+        \\# their dependencies aren't listed; the lock records those. anything
+        \\# deleted from here gets removed by the next apply.
+        \\
+        \\# these came from outside the repositories, most likely the aur.
+        \\# `yos update` builds them from there. one that isn't on the aur
+        \\# can't be managed, so it has to go from here.
+        \\aur = [
+        \\  "yay-bin",
+        \\]
+        \\
+        \\packages = [
+        \\  "base",
+        \\]
+        \\
+    , try importedToml(a, imported[0..1], &.{"yay-bin"}, "2026-09-25", null));
 }
 
 test "a luks root sets [boot] encrypt" {
@@ -300,7 +337,7 @@ test "imported packages grouped by repository" {
     steam.repo = "multilib";
     // the lock keeps packages sorted by name.
     const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{ helpers.lockPackage("base", "3", &.{}), git, steam } };
-    const text = try importedToml(arena.allocator(), &.{ "base", "git", "steam", "zz-local" }, "2026-09-25", &l);
+    const text = try importedToml(arena.allocator(), &.{ "base", "git", "steam", "zz-local" }, &.{}, "2026-09-25", &l);
     try testing.expect(std.mem.endsWith(u8, text,
         \\packages = [
         \\  # core
