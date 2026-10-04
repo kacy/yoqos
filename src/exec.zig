@@ -13,6 +13,52 @@ pub const Output = union(enum) {
     failed: []const u8,
 };
 
+/// what ends a run from outside: ctrl-c, a dropped ssh session, a kill,
+/// and ctrl-\.
+const stop_signals = [_]std.posix.SIG{ .INT, .TERM, .HUP, .QUIT };
+
+var stop_asked = std.atomic.Value(bool).init(false);
+
+/// how the stop signals are handled for a while, until `restore`.
+pub const Stops = struct {
+    old: [stop_signals.len]std.posix.Sigaction,
+
+    /// ignored, by yos and by what it runs meanwhile, which inherits
+    /// that: for work that's worse cut off than finished, like a package
+    /// transaction and its hooks.
+    pub fn ignore() Stops {
+        return set(std.posix.SIG.IGN);
+    }
+
+    /// noted rather than ending yos: a program it runs then still gets
+    /// one, and fails, and `asked` says it came, so yos can take back
+    /// what it did, step by step, before it stops.
+    pub fn note() Stops {
+        stop_asked.store(false, .seq_cst);
+        return set(noteStop);
+    }
+
+    pub fn restore(s: Stops) void {
+        for (stop_signals, s.old) |sig, o| std.posix.sigaction(sig, &o, null);
+    }
+
+    /// whether a stop signal came since `note`.
+    pub fn asked() bool {
+        return stop_asked.load(.seq_cst);
+    }
+
+    fn set(handler: ?std.posix.Sigaction.handler_fn) Stops {
+        const act: std.posix.Sigaction = .{ .handler = .{ .handler = handler }, .mask = std.posix.sigemptyset(), .flags = 0 };
+        var s: Stops = undefined;
+        for (stop_signals, &s.old) |sig, *o| std.posix.sigaction(sig, &act, o);
+        return s;
+    }
+
+    fn noteStop(_: std.posix.SIG) callconv(.c) void {
+        stop_asked.store(true, .seq_cst);
+    }
+};
+
 /// runs `argv` and waits for it.
 pub fn output(a: Allocator, io: std.Io, argv: []const []const u8) error{OutOfMemory}!Output {
     const r = std.process.run(a, io, .{ .argv = argv }) catch |e| return .{ .failed = try spawnFailed(a, argv, e) };
