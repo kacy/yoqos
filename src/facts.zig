@@ -32,6 +32,10 @@ pub const Unit = struct {
     /// a oneshot service that ran and finished well: inactive, and as it
     /// should be.
     ran: bool = false,
+    /// systemd didn't start it because a condition of its didn't hold,
+    /// like bluetooth.service without an adapter: stopped, and as it
+    /// should be.
+    skipped: bool = false,
     /// a running service's main process, 0 if there isn't one.
     main_pid: u32 = 0,
     /// that process runs files an upgrade has since replaced, so it needs

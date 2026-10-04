@@ -362,8 +362,9 @@ const UnitStep = struct { op: Op, to: []const u8 };
 fn unitStep(on: bool, have: ?*const facts.Unit) ?UnitStep {
     const u = have orelse return if (on) .{ .op = .add, .to = "enable, start" } else null;
     if (on) {
-        // a oneshot that ran and finished well counts as running.
-        const running = u.active or u.ran;
+        // a oneshot that ran and finished well counts as running, and so
+        // does a unit systemd skipped for a condition that didn't hold.
+        const running = u.active or u.ran or u.skipped;
         if (!u.enabled and !u.fixed) return .{ .op = .add, .to = if (running) "enable" else "enable, start" };
         if (!running) return .{ .op = .change, .to = "start" };
         return null;
@@ -1058,6 +1059,20 @@ test "a oneshot service that ran and finished is as it should be" {
     var units = [_]facts.Unit{.{ .name = "setup.service", .enabled = true, .ran = true }};
     const f: facts.Facts = .{ .packages = &have, .units = &units };
     try testing.expect((try plan(t.a(), &c, &l, &f, &t.diags)).?.empty());
+}
+
+test "a service systemd skipped for a condition is as it should be" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("[boot]\nkernel = \"none\"\n[services]\nbluetooth = true\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{lockPkg("bluez", "1", &.{})} };
+    var have = [_]facts.Package{.{ .name = "bluez", .version = "1" }};
+    // no adapter: enabled, never active.
+    var units = [_]facts.Unit{.{ .name = "bluetooth.service", .enabled = true, .skipped = true }};
+    const f: facts.Facts = .{ .packages = &have, .units = &units };
+    try testing.expect((try plan(t.a(), &c, &l, &f, &t.diags)).?.empty());
+    units[0].skipped = false;
+    try testing.expectEqualStrings("start", (try plan(t.a(), &c, &l, &f, &t.diags)).?.changes[0].to.?);
 }
 
 test "a repository from the config: its file, pacman.conf's include, and its key" {
