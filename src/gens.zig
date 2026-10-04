@@ -243,12 +243,21 @@ pub const Machine = struct {
         // the trial's note goes in before the menu that holds the default,
         // so a power cut before the trial is armed leaves a note saying so,
         // and the next boot arms it (see `yos health`).
+        // as it was before, for a menu that can't be written: a note for a
+        // generation that's gone would misdirect the next fallback.
+        const note_before = std.Io.Dir.cwd().readFileAlloc(m.io, trial.Store.state_path, m.a, .limited(4096)) catch null;
         if (hold) |fallback| {
             if (trial.Store.of(m.a, m.io, m.boot)) |store| {
                 if (try store.prepare(n, fallback)) |w| return w;
             }
         }
-        return m.writeMenuHolding(root, all, hold);
+        const why = try m.writeMenuHolding(root, all, hold) orelse return null;
+        if (hold != null) {
+            if (note_before) |text| {
+                _ = try rootfs.writeWhole(m.a, m.io, trial.Store.state_path, text);
+            } else std.Io.Dir.cwd().deleteFile(m.io, trial.Store.state_path) catch {};
+        }
+        return why;
     }
 
     /// the generation a trial waiting for a reboot falls back to, or 0.

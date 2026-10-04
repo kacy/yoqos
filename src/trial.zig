@@ -400,7 +400,7 @@ pub const Store = struct {
 
     /// where yos keeps a trial: its generation, the one before it, and
     /// refind's firmware entry.
-    const state_path = "/var/lib/yos/trial";
+    pub const state_path = "/var/lib/yos/trial";
     /// the variable limine and systemd-boot boot once from, under the
     /// boot loader interface's vendor guid; the one they boot by default,
     /// which bootctl sets too; and the one they set to the entry this boot
