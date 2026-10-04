@@ -16,7 +16,9 @@ check "findmnt /etc/yos >/dev/null && echo mounted || echo plain" plain
 check "git -C /etc/yos log --format=%s -1 | grep -c ." 1
 check "test -e /var/lib/yos && echo state || echo none" none
 check "test -e $VM_ESP/yos && echo esp || echo none" none
-check "ls /etc/systemd/system | grep -c -e yos-health -e yos-watchdog || true" 0
+# every unit, its links, and the initramfs hook: nothing named for yos,
+# besides the test harness's own drop-ins.
+check "find /etc/systemd/system /etc/initcpio /etc/mkinitcpio.conf.d -name '*yos*' ! -name 'yos-test-*' 2>/dev/null | wc -l" 0
 check_top "ls /run/yos-top/@roots | tr '\\n' ' '" "${running#/@roots/} "
 check_top "test -e /run/yos-top/@gens && echo gens || echo none" none
 # a second run finds nothing left to take back from generations.
