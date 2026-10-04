@@ -50,6 +50,9 @@ pub fn applyCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const expect = if (saved) |path| try savedHash(ctx, w.allocator(), path) orelse return 1 else null;
     if (try cli.refused(ctx, applyBlocker(ctx))) return 1;
     const done = try run(ctx, yes, cli.inputs(ctx), .{ .expect = expect });
+    // hand edits the apply just made real go into the history, so the
+    // generation it records names a commit that has them.
+    if (done.matches) try cli.record(ctx, w.allocator(), ctx.config_path, "apply");
     return recordGeneration(ctx, done, "apply");
 }
 
@@ -738,4 +741,19 @@ test "a full disk fails the apply with a message, not a crash" {
     try t.exec(&.{ "--root", m.root, "apply", "--yes" });
     try std.testing.expectEqual(1, t.code);
     try std.testing.expect(std.mem.startsWith(u8, t.err.buffered(), "error[E0124]: can't write "));
+}
+
+test "an apply commits the hand edits it made real, once" {
+    var t: TestRun = .{};
+    defer t.deinit();
+    try t.fs.put("/etc/yos/machine.toml", "[boot]\nkernel = \"none\"\n");
+    try t.fs.put("/etc/yos/machine.lock", "version = 1\nsync_date = \"2026-09-25\"\nkeyring = \"1\"\n");
+    try t.fs.put("f.json", "{\"schema\":\"yos.facts/1\",\"packages\":[]}");
+    try t.exec(&.{ "--root", "/nonexistent", "--facts", "f.json", "apply", "--yes" });
+    try std.testing.expectEqual(0, t.code);
+    try t.fs.put("/etc/yos/machine.toml", "# by hand\n[boot]\nkernel = \"none\"\n");
+    try t.exec(&.{ "--root", "/nonexistent", "--facts", "f.json", "apply", "--yes" });
+    try std.testing.expectEqual(0, t.code);
+    try std.testing.expectEqual(2, t.recorder.messages.items.len);
+    try std.testing.expectEqualStrings("apply", t.recorder.messages.items[1]);
 }
