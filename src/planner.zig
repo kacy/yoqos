@@ -175,7 +175,7 @@ pub fn wants(a: Allocator, c: *const config.Config) ![]const Want {
         if (v.v) try addWant(a, &out, secureboot.package, "boot.secure_boot", v.src);
     }
     if (c.hardware.cpu) |v| try addWants(a, &out, catalog.cpuPackages(v.v), "hardware.cpu", v.src);
-    if (c.hardware.gpu) |v| try addWants(a, &out, catalog.gpuPackages(v.v), "hardware.gpu", v.src);
+    if (c.hardware.gpu) |v| try addWants(a, &out, try catalog.gpuPackages(a, v.v, if (c.boot.kernel) |k| k.v else catalog.default_kernel), "hardware.gpu", v.src);
     if (c.desktop.session) |v| try addWants(a, &out, catalog.sessionPackages(v.v), "desktop.session", v.src);
     if (c.desktop.audio) |v| try addWants(a, &out, catalog.audioPackages(v.v), "desktop.audio", v.src);
     if (c.desktop.login) |v| {

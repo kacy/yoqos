@@ -230,6 +230,9 @@ pub const File = struct {
 
     pub const default_mode = "0644";
     pub const secret_mode = "0600";
+    /// where the content comes from: one of these, and an including
+    /// file's choice replaces an included one's.
+    pub const one_of = .{ "source", "text", "secret" };
 
     pub fn modeOf(f: *const File) []const u8 {
         if (f.mode) |m| return m.v;

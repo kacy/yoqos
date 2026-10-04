@@ -3,7 +3,7 @@
 version = 1
 packages = [
   "base", "linux-firmware", "grub", "efibootmgr", "btrfs-progs", "sudo",
-  "git", "neovim", "htop", "nano",
+  "git", "neovim", "htop", "nano", "zsh",
 ]
 
 [providers]

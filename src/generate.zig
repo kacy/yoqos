@@ -52,8 +52,13 @@ pub fn fromFacts(a: Allocator, f: *const facts.Facts) !config.Config {
     // with a discrete gpu next to an integrated one, the discrete one needs
     // the driver.
     for ([_]config.Gpu{ .nvidia, .amd, .intel }) |vendor| {
-        if (!lists.contains(f.gpus, @tagName(vendor)) or !installed(f, catalog.gpuPackages(vendor))) continue;
+        const drivers = try catalog.gpuPackages(a, vendor, if (c.boot.kernel) |k| k.v else catalog.default_kernel);
+        if (!lists.contains(f.gpus, @tagName(vendor)) or !installed(f, drivers)) continue;
         c.hardware.gpu = .{ .v = vendor, .src = at };
+        // nvidia's key also loads its modules early, which a machine that
+        // doesn't would get from the first plan: init plans nothing, so
+        // the driver packages are imported as they are instead.
+        if (desired.nvidiaFile(&c, f) != null) c.hardware.gpu = null;
         break;
     }
     for (f.users) |u| {
@@ -177,8 +182,9 @@ test "a config from facts" {
         .{ .name = "base", .version = "3-2" },
         .{ .name = "glibc", .version = "2.42-1", .reason = .dependency },
         .{ .name = "linux-zen", .version = "6.16.8-1" },
+        .{ .name = "linux-zen-headers", .version = "6.16.8-1" },
         .{ .name = "neovim", .version = "0.11.4-1" },
-        .{ .name = "nvidia-open", .version = "580.82.09-1" },
+        .{ .name = "nvidia-open-dkms", .version = "580.82.09-1" },
         .{ .name = "nvidia-utils", .version = "580.82.09-1" },
         .{ .name = "openssh", .version = "10.0p1-4" },
     };
@@ -196,6 +202,7 @@ test "a config from facts" {
         .packages = &pkgs,
         .units = &units,
         .users = &users,
+        .initramfs_modules = &desired.nvidia_modules,
     };
     const c = try fromFacts(a, &f);
     try testing.expectEqualStrings(
@@ -263,6 +270,15 @@ test "a config from facts" {
         \\]
         \\
     , try importedToml(a, imported[0..1], &.{"yay-bin"}, "2026-09-25", null));
+    try testing.expectEqual(0, (try desired.files(a, &c, &f)).len);
+
+    // without nvidia's modules loaded early, the key would plan a
+    // drop-in, so it's left out and the drivers are imported.
+    var early = f;
+    early.initramfs_modules = &.{};
+    const plain = try fromFacts(a, &early);
+    try testing.expectEqual(null, plain.hardware.gpu);
+    try testing.expectEqual(0, (try desired.files(a, &plain, &early)).len);
 }
 
 test "a luks root sets [boot] encrypt" {
