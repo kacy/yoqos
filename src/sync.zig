@@ -202,6 +202,18 @@ pub const HttpFetcher = struct {
 /// for every day.
 const archived_repos = [_][]const u8{ "core", "extra", "multilib", "core-testing", "extra-testing", "multilib-testing" };
 
+/// whether `repo` is one of arch's own, which the archive keeps.
+pub fn archivedRepo(repo: []const u8) bool {
+    return lists.contains(&archived_repos, repo);
+}
+
+/// where the arch linux archive keeps one package file, whatever day it
+/// was built: every version of every package of arch's own repositories
+/// stays there.
+pub fn archivedPackage(a: Allocator, name: []const u8, version: []const u8, package_arch: []const u8) ![:0]const u8 {
+    return std.fmt.allocPrintSentinel(a, "https://archive.archlinux.org/packages/{c}/{s}/{s}-{s}-{s}.pkg.tar.zst", .{ name[0], name, name, version, package_arch }, 0);
+}
+
 /// `rs`, with arch's own repositories served from the arch linux archive
 /// as they were on `date`: the databases, and the packages at the versions
 /// in them. a lock from an earlier day builds from there, since mirrors
@@ -459,6 +471,13 @@ const FakeFetcher = struct {
         return null;
     }
 };
+
+test "one package file in the archive" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectEqualStrings("https://archive.archlinux.org/packages/g/git/git-2.51.0-1-x86_64.pkg.tar.zst", try archivedPackage(arena.allocator(), "git", "2.51.0-1", "x86_64"));
+    try testing.expect(archivedRepo("core") and !archivedRepo("chaotic-aur"));
+}
 
 test "download tries servers in order, then uses the cache" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
