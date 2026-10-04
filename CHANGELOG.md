@@ -4,6 +4,15 @@
 
 ### new
 
+- `[firewall]` with `backend = "ufw"` and `allow` rules like `"22/tcp"`
+  or `"53/udp from 172.16.0.0/12 to 172.17.0.1"`. yos installs ufw,
+  writes its config and rules files the way `ufw allow` does, turns the
+  service on, and runs `ufw reload` when the rules change. nothing comes in
+  but what's allowed, and a rule added by hand shows up as a change.
+- `masked = true` on a service masks its unit, so nothing starts it, and
+  stops it. it needs only the unit's name, like
+  `NetworkManager-wait-online.service`, so boot doesn't wait for the
+  network. turning the service on, or `masked = false`, unmasks it.
 - yoq os is now yos, and its command is `yos`, not `os`. the package is
   `yos` (and `yos-git`), the config lives in `/etc/yos`, state in
   `/var/lib/yos`, and everything yos writes says yos: units like

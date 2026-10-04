@@ -23,11 +23,11 @@ everything `yos` prints uses these, and nothing else you need to learn:
 `yos` reads a machine, writes a config for it, keeps that config and its
 lock up to date, tells you what's different, and applies the difference.
 on any arch install, `yos apply` handles packages, the `[system]` settings,
-services, users and their groups, files, secrets, and sysctl. on a btrfs
-root with grub, limine, refind, or systemd-boot, `yos enable-rollback` adds
-whole-system generations: a change that needs a reboot is built beside the
-running system, boots once on trial, and falls back by itself if it
-doesn't come up healthy (see [generations.md](generations.md)).
+services, users and their groups, files, secrets, sysctl, and a ufw
+firewall. on a btrfs root with grub, limine, refind, or systemd-boot,
+`yos enable-rollback` adds whole-system generations: a change that needs
+a reboot is built beside the running system, boots once on trial, and
+falls back by itself if it doesn't come up healthy (see [generations.md](generations.md)).
 generations can boot unified kernel images signed for secure boot, and
 `yos install` can put a new machine on an encrypted disk.
 
@@ -1032,6 +1032,21 @@ package = "syncthing"
 `ssh = true` is short for `[services.ssh] enabled = true`. a table without
 `enabled` turns the service on, and `enabled = false` turns it off.
 
+`masked = true` turns it off for good: `yos` masks the unit, which links
+it to `/dev/null`, so nothing can start it, not even another unit that
+asks for it, and stops it if it's running. masking needs only the unit's
+name, not its package:
+
+```toml
+# boot doesn't wait for the network to come up.
+[services.wait-online]
+unit = "NetworkManager-wait-online.service"
+masked = true
+```
+
+a masked unit stays masked when the config turns it off, and is unmasked
+when the config turns it on or says `masked = false`.
+
 services the config doesn't mention are left alone, and so are users.
 
 [examples/home-server](../examples/home-server/machine.toml) turns on a
@@ -1114,6 +1129,42 @@ encrypted roots, and the `uki` and `secure_boot` files in `/etc/kernel`)
 start with a "written by yos" line. once nothing asks for one, `apply`
 removes it. a file without that line, one you wrote yourself, is never
 removed.
+
+### firewall
+
+```toml
+[firewall]
+backend = "ufw"
+allow = [
+  "22/tcp",
+  "53317",
+  "53/udp from 172.16.0.0/12 to 172.17.0.1",
+]
+```
+
+`[firewall]` turns on a firewall that lets nothing in except what `allow`
+lists, and lets everything out. `backend` names the tool that keeps the
+rules. ufw is the only one for now. it brings in the `ufw` package and
+enables `ufw.service`.
+
+a rule is a port, a range like `6000:6007`, or a list like `80,443`. a
+range or list needs a protocol after a slash. a single port can go
+without one, and then it covers tcp and udp. after the port, `from` and
+`to` can each name an address or a network, and a rule can have just
+those, like `from 10.0.0.0/8`. addresses are ipv4 and written the way ufw
+writes them: `10.0.0.0/8`, not `10.1.2.3/8`, and `1.2.3.4`, not
+`1.2.3.4/32`. a rule without addresses covers ipv6 too.
+
+`yos` writes the three files ufw keeps its state in: `/etc/ufw/ufw.conf`,
+`user.rules`, and `user6.rules`. it writes them the way `ufw allow` would,
+so `ufw status` lists the rules. on a running machine, `apply` runs `ufw
+reload` once they're all written. a rule added later with `ufw allow`
+changes `user.rules`, so `yos status` shows it and the next apply puts the
+config's rules back. to keep a rule like that, add it to `allow`.
+
+`[firewall]` and the `firewalld` service can't both be on. take
+`[firewall]` out and ufw keeps its files as they are, the same as a file
+you take out of `[files]`.
 
 ### secrets
 

@@ -42,7 +42,7 @@ pub fn running() bool {
 
 /// what can be done to a unit. a plan's unit change lists these in order,
 /// like "disable, stop".
-pub const Verb = enum { enable, disable, start, stop, restart };
+pub const Verb = enum { enable, disable, mask, unmask, start, stop, restart };
 
 /// the verbs in a plan's "enable, start".
 pub fn parseVerbs(a: Allocator, text: []const u8) ![]const Verb {
@@ -61,6 +61,10 @@ pub fn change(a: Allocator, unit: []const u8, verbs: []const Verb, diags: *diag.
 /// an enablement state from ListUnitFiles counts as enabled.
 pub fn enabledState(state: []const u8) bool {
     return std.mem.eql(u8, state, "enabled") or std.mem.eql(u8, state, "enabled-runtime");
+}
+
+pub fn maskedState(state: []const u8) bool {
+    return std.mem.eql(u8, state, "masked") or std.mem.eql(u8, state, "masked-runtime");
 }
 
 /// a state enabling or disabling doesn't change: a unit without an

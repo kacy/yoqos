@@ -12,6 +12,7 @@ const lists = @import("lists.zig");
 const generation = @import("generation.zig");
 const uki = @import("uki.zig");
 const secureboot = @import("secureboot.zig");
+const firewall = @import("firewall.zig");
 const Allocator = std.mem.Allocator;
 
 /// whether the config has repositories of its own for pacman: declared
@@ -189,7 +190,28 @@ pub fn files(a: Allocator, c: *const config.Config, f: *const facts.Facts) ![]co
     for (made) |m| {
         if (m) |d| try out.append(a, d);
     }
+    try firewallFiles(a, c, &out);
     return out.items;
+}
+
+/// ufw's config and its rules files, for `[firewall]`. rules that don't
+/// parse were reported when the config loaded. ufw keeps the files when
+/// [firewall] goes, since they're its own.
+fn firewallFiles(a: Allocator, c: *const config.Config, out: *std.ArrayList(File)) !void {
+    const backend = c.firewall.backend orelse return;
+    var rules: std.ArrayList(firewall.Rule) = .empty;
+    for (try sortedNames(a, c.firewall.allow.items.items)) |text| {
+        switch (try firewall.parse(a, text)) {
+            .rule => |r| try rules.append(a, r),
+            .bad => {},
+        }
+    }
+    const made = [_]struct { []const u8, []const u8 }{
+        .{ firewall.conf_path, firewall.conf },
+        .{ firewall.rules_path, try firewall.rulesFile(a, rules.items, .v4) },
+        .{ firewall.rules6_path, try firewall.rulesFile(a, rules.items, .v6) },
+    };
+    for (made) |m| try out.append(a, .{ .path = m[0], .content = m[1], .cause = "firewall.backend", .src = backend.src });
 }
 
 fn sysctlFile(a: Allocator, c: *const config.Config) !?File {

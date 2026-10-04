@@ -19,6 +19,7 @@ const exec = @import("exec.zig");
 const lists = @import("lists.zig");
 const secrets = @import("secrets.zig");
 const modules = @import("modules.zig");
+const firewall = @import("firewall.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Target = alpm.Target;
@@ -121,6 +122,7 @@ pub fn run(a: Allocator, io: std.Io, job: Job, diags: *diag.List) !?Result {
         if (!ok) return null;
     }
     if (rebuildsInitramfs(p.changes) and !try rebuildInitramfs(a, io, t.root, diags)) return null;
+    if (units and reloadsFirewall(p.changes) and !try reloadFirewall(a, io, diags)) return null;
     if (units and !try changeUnits(a, p, false, diags)) return null;
     return .{ .skipped = skipped.items };
 }
@@ -145,6 +147,25 @@ pub fn rebuildsInitramfs(changes: []const planner.Change) bool {
 pub fn mkinitcpioArgv(a: Allocator, root: []const u8) ![]const []const u8 {
     if (std.mem.eql(u8, root, "/")) return a.dupe([]const u8, &.{ mkinitcpio, "-P" });
     return a.dupe([]const u8, &.{ "chroot", root, mkinitcpio, "-P" });
+}
+
+/// whether `changes` write one of ufw's files. ufw loads them once
+/// they're all written, so it never runs half a set of rules.
+fn reloadsFirewall(changes: []const planner.Change) bool {
+    for (changes) |c| {
+        if (c.kind == .file and firewall.isFile(c.subject)) return true;
+    }
+    return false;
+}
+
+/// has ufw load its files again. with ufw.conf saying it's on, that
+/// starts it too.
+fn reloadFirewall(a: Allocator, io: std.Io, diags: *diag.List) !bool {
+    if (try exec.run(a, io, &.{ "ufw", "reload" })) |why| {
+        try diags.add(.apply_failed, null, "wrote ufw's rules, but ufw reload failed: {s}", .{why}, null);
+        return false;
+    }
+    return true;
 }
 
 /// rebuilds the initramfs in `root`. a root without mkinitcpio has none

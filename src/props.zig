@@ -16,6 +16,7 @@ const planner = @import("planner.zig");
 const planview = @import("planview.zig");
 const desired = @import("desired.zig");
 const catalog = @import("catalog.zig");
+const systemd = @import("systemd.zig");
 const edit = @import("edit.zig");
 const lists = @import("lists.zig");
 
@@ -98,6 +99,8 @@ fn genConfig(a: Allocator, r: Random) ![]const u8 {
         }
     }
     if (chance(r, 20)) try w.writeAll("[services.custom]\nunit = \"custom.service\"\npackage = \"custom-pkg\"\n");
+    // masking needs no package; turning it back on does.
+    if (chance(r, 20)) try w.writeAll(if (chance(r, 75)) "[services.wait]\nunit = \"wait-online.service\"\nmasked = true\n" else "[services.wait]\nunit = \"wait-online.service\"\npackage = \"custom-pkg\"\nmasked = false\n");
     for (user_pool) |u| {
         if (!chance(r, 30)) continue;
         try w.print("[users.{s}]\n", .{u});
@@ -154,10 +157,14 @@ fn genFacts(a: Allocator, r: Random, c: *const config.Config, l: *const lock.Loc
     var unit_names: std.ArrayList([]const u8) = .empty;
     for (catalog.services) |s| try unit_names.append(a, s.unit);
     try unit_names.appendSlice(a, &catalog.display_managers);
-    try unit_names.append(a, "custom.service");
+    try unit_names.appendSlice(a, &.{ "custom.service", "wait-online.service" });
     for (unit_names.items) |n| {
         if (!chance(r, 30) or lists.find(units.items, "name", n) != null) continue;
-        try units.append(a, .{ .name = n, .enabled = r.boolean(), .fixed = chance(r, 10), .active = r.boolean(), .ran = chance(r, 10) });
+        // a masked unit's file state is "masked": not enabled, and not
+        // fixed.
+        const masked = chance(r, 15);
+        const fixed = !masked and chance(r, 10);
+        try units.append(a, .{ .name = n, .enabled = !masked and r.boolean(), .fixed = fixed, .masked = masked, .active = r.boolean(), .ran = chance(r, 10) });
     }
 
     var users: std.ArrayList(facts.User) = .empty;
@@ -288,13 +295,14 @@ fn applied(a: Allocator, c: *const config.Config, f: *const facts.Facts, p: *con
                 break :blk units.items.len - 1;
             };
             const u = &units.items[i];
-            const to = ch.to.?;
-            if (std.mem.indexOf(u8, to, "disable") != null) {
-                u.enabled = false;
-            } else if (std.mem.indexOf(u8, to, "enable") != null) u.enabled = true;
-            if (std.mem.indexOf(u8, to, "stop") != null) {
-                u.active = false;
-            } else if (std.mem.indexOf(u8, to, "start") != null) u.active = true;
+            for (try systemd.parseVerbs(a, ch.to.?)) |v| switch (v) {
+                .enable => u.enabled = true,
+                .disable => u.enabled = false,
+                .mask => u.masked = true,
+                .unmask => u.masked = false,
+                .start, .restart => u.active = true,
+                .stop => u.active = false,
+            };
         },
         .user => {
             const i = lists.indexOf(users.items, "name", ch.subject) orelse blk: {

@@ -33,6 +33,29 @@ check "lsinitcpio /boot/initramfs-linux.img | grep -c etc/yos-initramfs-marker" 
 # files taken out of the config stay, so they go by hand.
 "$vm" ssh "cp /root/machine.toml.saved /etc/yos/machine.toml && rm /etc/mkinitcpio.conf.d/50-yos-test.conf /etc/yos-initramfs-marker"
 check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."
+# [firewall]: ufw lets in what the config allows, ssh here, and nothing
+# else. a rule added with ufw shows in the plan, and the next apply drops it.
+"$vm" ssh "printf '\\n[firewall]\\nbackend = \"ufw\"\\nallow = [\"22/tcp\", \"53/udp from 172.16.0.0/12 to 172.17.0.1\"]\\n' >> /etc/yos/machine.toml && /usr/local/bin/yos update --yes" | tail -n 3
+check "systemctl is-active ufw.service" active
+check "ufw status | grep -c ALLOW" 3
+check "iptables -S ufw-user-input | grep -c -- '-s 172.16.0.0/12 -d 172.17.0.1/32 -p udp'" 1
+check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."
+"$vm" ssh "ufw allow 8080/tcp >/dev/null"
+check "/usr/local/bin/yos plan | grep -c 'user.rules: rewrite'" 1
+"$vm" ssh "/usr/local/bin/yos apply --yes" | tail -n 2
+check "ufw status | grep -c 8080 || true" 0
+# without [firewall], ufw goes and its files stay, as pacman leaves them.
+"$vm" ssh "ufw disable >/dev/null && cp /root/machine.toml.saved /etc/yos/machine.toml && /usr/local/bin/yos update --yes" | tail -n 2
+check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."
+# a masked service is linked to /dev/null, and unmasked again when the
+# config says so.
+"$vm" ssh "printf '\\n[services.wait-online]\\nunit = \"systemd-networkd-wait-online.service\"\\npackage = \"systemd\"\\nmasked = true\\n' >> /etc/yos/machine.toml && /usr/local/bin/yos apply --yes" | tail -n 2
+check "systemctl is-enabled systemd-networkd-wait-online.service || true" masked
+check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."
+"$vm" ssh "sed -i 's/^masked = true/enabled = false\\nmasked = false/' /etc/yos/machine.toml && /usr/local/bin/yos apply --yes" | tail -n 2
+check "systemctl is-enabled systemd-networkd-wait-online.service | grep -c masked || true" 0
+check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."
+"$vm" ssh "cp /root/machine.toml.saved /etc/yos/machine.toml"
 # leaving the manage rung takes only yos's state; the config stays.
 check "/usr/local/bin/yos uninstall --yes >/dev/null; echo \$?" 0
 check "test -e /var/lib/yos && echo state || echo none" none

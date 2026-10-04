@@ -12,6 +12,7 @@ const catalog = @import("catalog.zig");
 const lists = @import("lists.zig");
 const desired = @import("desired.zig");
 const secrets = @import("secrets.zig");
+const firewall = @import("firewall.zig");
 const Allocator = std.mem.Allocator;
 
 pub const supported_version = 1;
@@ -125,6 +126,7 @@ pub const Gpu = enum { amd, intel, nvidia, none };
 pub const Session = enum { hyprland };
 pub const Audio = enum { pipewire };
 pub const Login = enum { greetd, sddm, tty };
+pub const FirewallBackend = enum { ufw };
 
 pub const System = struct {
     hostname: ?Str = null,
@@ -177,13 +179,22 @@ pub const Service = struct {
 
     src: Src,
     enabled: ?Val(bool) = null,
+    /// off for good: the unit is masked, so nothing can start it, not even
+    /// another unit that asks for it.
+    masked: ?Val(bool) = null,
     /// for services the catalog doesn't know.
     unit: ?Str = null,
     package: ?Str = null,
 
-    /// a service is on unless the config says otherwise.
+    /// a service is on unless the config says otherwise. a masked one is
+    /// off.
     pub fn isEnabled(s: *const Service) bool {
+        if (s.isMasked()) return false;
         return if (s.enabled) |e| e.v else true;
+    }
+
+    pub fn isMasked(s: *const Service) bool {
+        return if (s.masked) |m| m.v else false;
     }
 
     /// the unit, from the config or else the catalog. the service must be
@@ -195,6 +206,16 @@ pub const Service = struct {
     pub fn packageFor(s: *const Service, name: []const u8) []const u8 {
         return if (s.package) |p| p.v else catalog.service(name).?.package;
     }
+};
+
+/// what may come in from the network. nothing else does, and everything
+/// goes out.
+pub const Firewall = struct {
+    /// the tool that keeps the rules.
+    backend: ?Val(FirewallBackend) = null,
+    /// rules like "22/tcp" or "53/udp from 172.16.0.0/12 to 172.17.0.1";
+    /// firewall.zig has the form.
+    allow: Set = .{},
 };
 
 pub const State = struct {
@@ -251,6 +272,7 @@ pub const Config = struct {
     desktop: Desktop = .{},
     users: Named(User) = .{},
     services: Named(Service) = .{},
+    firewall: Firewall = .{},
     state: State = .{},
     files: Named(File) = .{},
     repos: Named(Repo) = .{},
@@ -463,6 +485,7 @@ pub fn validate(c: *const Config, diags: *diag.List) !void {
     }
     try validateFiles(c, diags);
     try validateSysctl(c, diags);
+    try validateFirewall(c, diags);
     try validateUsers(c, diags);
 }
 
@@ -477,6 +500,10 @@ fn validatePackages(c: *const Config, diags: *diag.List) !void {
 fn validateServices(c: *const Config, diags: *diag.List) !void {
     for (c.services.entries.items) |e| {
         if (!knownService(c, e.name)) try unknownService(diags, e.name, e.value.src);
+        if (e.value.masked) |m| {
+            const on = if (e.value.enabled) |en| en.v else false;
+            if (m.v and on) try diags.add(.bad_value, m.src, "services.{s} can't be both enabled and masked", .{e.name}, "a masked unit can't start; drop one of them");
+        }
         const u = e.value.unit orelse continue;
         if (!validUnitName(u.v)) try diags.add(.bad_value, u.src, "\"{s}\" isn't a unit name", .{u.v}, "a unit name ends in its type, like tailscaled.service, and uses letters, digits, and :-_.@\\");
     }
@@ -552,6 +579,25 @@ fn validateSysctl(c: *const Config, diags: *diag.List) !void {
     }
 }
 
+fn validateFirewall(c: *const Config, diags: *diag.List) !void {
+    const a = diags.arena.allocator();
+    for (c.firewall.allow.items.items) |r| {
+        switch (try firewall.parse(a, r.name)) {
+            .rule => {},
+            .bad => |hint| try diags.add(.bad_value, r.src, "\"{s}\" isn't a firewall rule", .{r.name}, hint),
+        }
+    }
+    const backend = c.firewall.backend orelse {
+        if (c.firewall.allow.items.items.len > 0) try diags.add(.bad_value, c.firewall.allow.items.items[0].src, "firewall.allow needs a backend", .{}, "set `backend = \"ufw\"` in [firewall] too");
+        return;
+    };
+    // two tools keeping one firewall undo each other's rules.
+    for ([_][]const u8{ "ufw", "firewalld" }) |name| {
+        const s = c.services.get(name) orelse continue;
+        if (s.isEnabled()) try diags.addHint(.bad_value, s.src, "services.{s} and [firewall] both run a firewall", .{name}, "[firewall] runs {s} itself; drop services.{s}", .{ @tagName(backend.v), name });
+    }
+}
+
 fn validateUsers(c: *const Config, diags: *diag.List) !void {
     for (c.users.entries.items) |u| {
         if (!validUserName(u.name)) {
@@ -571,7 +617,8 @@ fn validateUsers(c: *const Config, diags: *diag.List) !void {
 pub fn knownService(c: *const Config, name: []const u8) bool {
     if (catalog.service(name) != null) return true;
     const s = c.services.get(name) orelse return false;
-    return s.unit != null and s.package != null;
+    // masking a unit needs only its name: no package is installed for it.
+    return s.unit != null and (s.package != null or s.isMasked());
 }
 
 pub fn unknownService(diags: *diag.List, name: []const u8, at: ?diag.Span) !void {
@@ -924,6 +971,35 @@ test "secure boot needs unified kernel images" {
     defer neither.deinit();
     try validate(&neither.part.config, &neither.diags);
     try testing.expectEqual(0, neither.diags.items.items.len);
+}
+
+test "firewall rules parse, need a backend, and have the firewall to themselves" {
+    const f = try Fixture.init("[firewall]\nallow = [\"22/tcp\", \"from 10.1.0.0/8\"]\n[services]\nfirewalld = true\n");
+    defer f.deinit();
+    try validate(&f.part.config, &f.diags);
+    try testing.expectEqual(2, f.diags.items.items.len);
+    try f.expectDiag(0, .bad_value, 2, "\"from 10.1.0.0/8\" isn't a firewall rule");
+    try testing.expectEqualStrings("write it as 10.0.0.0/8", f.diags.items.items[0].hint.?);
+    try f.expectDiag(1, .bad_value, 2, "firewall.allow needs a backend");
+    const both = try Fixture.init("[firewall]\nbackend = \"ufw\"\n[services]\nfirewalld = true\n");
+    defer both.deinit();
+    try validate(&both.part.config, &both.diags);
+    try testing.expectEqual(1, both.diags.items.items.len);
+    try both.expectDiag(0, .bad_value, 4, "services.firewalld and [firewall] both run a firewall");
+    const files = try Fixture.init("[firewall]\nbackend = \"ufw\"\n[files.\"/etc/ufw/user.rules\"]\ntext = \"\"\n");
+    defer files.deinit();
+    try validate(&files.part.config, &files.diags);
+    try testing.expectEqual(1, files.diags.items.items.len);
+    try files.expectDiag(0, .bad_value, 3, "yos writes /etc/ufw/user.rules itself");
+}
+
+test "a masked service is off, and needs no package" {
+    const f = try Fixture.init("[services.wait]\nunit = \"NetworkManager-wait-online.service\"\nmasked = true\n[services.ssh]\nenabled = true\nmasked = true\n");
+    defer f.deinit();
+    try validate(&f.part.config, &f.diags);
+    try testing.expectEqual(1, f.diags.items.items.len);
+    try f.expectDiag(0, .bad_value, 6, "services.ssh can't be both enabled and masked");
+    try testing.expect(!f.part.config.services.get("wait").?.isEnabled());
 }
 
 test "a session's config needs a session" {
