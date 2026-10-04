@@ -1032,6 +1032,21 @@ package = "syncthing"
 `ssh = true` is short for `[services.ssh] enabled = true`. a table without
 `enabled` turns the service on, and `enabled = false` turns it off.
 
+`masked = true` turns it off for good: `yos` masks the unit, which links
+it to `/dev/null`, so nothing can start it, not even another unit that
+asks for it, and stops it if it's running. masking needs only the unit's
+name, not its package:
+
+```toml
+# boot doesn't wait for the network to come up.
+[services.wait-online]
+unit = "NetworkManager-wait-online.service"
+masked = true
+```
+
+a masked unit stays masked when the config turns it off, and is unmasked
+when the config turns it on or says `masked = false`.
+
 services the config doesn't mention are left alone, and so are users.
 
 [examples/home-server](../examples/home-server/machine.toml) turns on a
