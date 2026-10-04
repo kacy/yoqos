@@ -47,6 +47,15 @@ check "ufw status | grep -c 8080 || true" 0
 # without [firewall], ufw goes and its files stay, as pacman leaves them.
 "$vm" ssh "ufw disable >/dev/null && cp /root/machine.toml.saved /etc/yos/machine.toml && /usr/local/bin/yos update --yes" | tail -n 2
 check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."
+# a masked service is linked to /dev/null, and unmasked again when the
+# config says so.
+"$vm" ssh "printf '\\n[services.wait-online]\\nunit = \"systemd-networkd-wait-online.service\"\\npackage = \"systemd\"\\nmasked = true\\n' >> /etc/yos/machine.toml && /usr/local/bin/yos apply --yes" | tail -n 2
+check "systemctl is-enabled systemd-networkd-wait-online.service || true" masked
+check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."
+"$vm" ssh "sed -i 's/^masked = true/enabled = false\\nmasked = false/' /etc/yos/machine.toml && /usr/local/bin/yos apply --yes" | tail -n 2
+check "systemctl is-enabled systemd-networkd-wait-online.service | grep -c masked || true" 0
+check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."
+"$vm" ssh "cp /root/machine.toml.saved /etc/yos/machine.toml"
 # leaving the manage rung takes only yos's state; the config stays.
 check "/usr/local/bin/yos uninstall --yes >/dev/null; echo \$?" 0
 check "test -e /var/lib/yos && echo state || echo none" none
