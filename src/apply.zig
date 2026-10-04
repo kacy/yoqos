@@ -96,7 +96,10 @@ pub fn run(a: Allocator, io: std.Io, job: Job, diags: *diag.List) !?Result {
     for (p.changes) |c| {
         const ok = switch (c.kind) {
             .key => try importKey(a, io, t.root, c.subject, diags),
-            .pacman_conf => try includeRepos(a, io, t.root, diags),
+            // the file goes in before the line naming it: pacman stops on
+            // an Include of a missing file, and an apply that fails later
+            // would leave it like that.
+            .pacman_conf => try writeFile(a, io, job, facts.repos_conf, diags) and try includeRepos(a, io, t.root, diags),
             else => true,
         };
         if (!ok) return null;
@@ -228,7 +231,16 @@ fn importKey(a: Allocator, io: std.Io, root: []const u8, fingerprint: []const u8
 /// end, after arch's own repositories.
 fn includeRepos(a: Allocator, io: std.Io, root: []const u8, diags: *diag.List) !bool {
     const fs: rootfs.Root = .{ .a = a, .io = io, .dir = root };
-    const conf = try fs.read("etc/pacman.conf");
+    // one that's there but can't be read isn't taken as empty: it would
+    // be written back as just the line.
+    const conf = std.Io.Dir.cwd().readFileAlloc(io, try fs.path("etc/pacman.conf"), a, .limited(16 << 20)) catch |e| switch (e) {
+        error.OutOfMemory => return e,
+        error.FileNotFound => "",
+        else => {
+            try diags.add(.apply_failed, null, "can't read {s}", .{try fs.path("etc/pacman.conf")}, null);
+            return false;
+        },
+    };
     const sep: []const u8 = if (conf.len > 0 and conf[conf.len - 1] != '\n') "\n" else "";
     const mode = try fs.mode("etc/pacman.conf") orelse 0o644;
     fs.writeMode("etc/pacman.conf", try std.mem.concat(a, u8, &.{ conf, sep, "\n# the repositories in yos's config.\n", facts.repos_include, "\n" }), mode) catch {
