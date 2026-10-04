@@ -256,7 +256,7 @@ const Enabler = struct {
         // a missing one, often /srv, still needs a place to mount.
         if (!rootfs.pathExists(e.ctx.io, src) and !try e.sh(&.{ "mkdir", "-p", src })) return false;
         if (!try e.sh(&.{ "cp", "-a", "--reflink=auto", try std.fs.path.join(e.a, &.{ src, "." }), dest })) return false;
-        if (!try e.moveNested(try e.m.at(&.{ e.boot.root_subvol.?, dir }), dest)) return false;
+        if (!try e.moveNested(try e.m.at(&.{ e.boot.root_subvol.?, dir }), src, dest)) return false;
         // the subvolume's top is what's mounted, so it takes the directory's
         // owner and mode: /root stays 0700.
         if (!try e.sh(&.{ "chown", "--reference", src, dest })) return false;
@@ -265,31 +265,30 @@ const Enabler = struct {
     }
 
     /// subvolumes nested in the running root's `live` directory, like
-    /// /var/lib/machines or docker's, which the snapshot `dest` was copied
-    /// from holds only as empty directories with inode 2. each is
-    /// snapshotted into its place in `dest`, and then the ones nested in
-    /// those, so nothing in them is left behind.
-    fn moveNested(e: *Enabler, live: []const u8, dest: []const u8) !bool {
-        while (true) {
-            const found = switch (try exec.output(e.a, e.ctx.io, &.{ "find", dest, "-type", "d", "-inum", "2", "-empty", "-printf", "%P\n" })) {
-                .ok => |out| out,
-                .failed => |why| return e.failed("{s}", .{why}),
-            };
-            var any = false;
-            var lines = std.mem.tokenizeScalar(u8, found, '\n');
-            while (lines.next()) |rel| {
-                const from = try std.fs.path.join(e.a, &.{ live, rel });
-                if (!(btrfs.isSubvolume(from) catch false)) continue;
-                const to = try std.fs.path.join(e.a, &.{ dest, rel });
-                if (!try e.sh(&.{ "rmdir", to })) return false;
-                if (!try e.tried(btrfs.snapshot(from, to, false), try std.fmt.allocPrint(e.a, "snapshot {s}", .{from}))) return false;
-                // taken back before the subvolume it's in, which can't go
-                // while it holds one.
-                try e.laterDrop(to);
-                any = true;
-            }
-            if (!any) return true;
+    /// /var/lib/machines or docker's, which `scan`, its snapshot, holds
+    /// only as empty directories with inode 2, and `cp -a` copied into
+    /// `dest` as plain ones. each is snapshotted into its place in `dest`,
+    /// and then the ones nested in it, so nothing in them is left behind.
+    fn moveNested(e: *Enabler, live: []const u8, scan: []const u8, dest: []const u8) !bool {
+        const found = switch (try exec.output(e.a, e.ctx.io, &.{ "find", scan, "-type", "d", "-inum", "2", "-empty", "-printf", "%P\n" })) {
+            .ok => |out| out,
+            .failed => |why| return e.failed("{s}", .{why}),
+        };
+        var lines = std.mem.tokenizeScalar(u8, found, '\n');
+        while (lines.next()) |rel| {
+            const from = try std.fs.path.join(e.a, &.{ live, rel });
+            if (!(btrfs.isSubvolume(from) catch false)) continue;
+            const to = try std.fs.path.join(e.a, &.{ dest, rel });
+            if (!try e.sh(&.{ "rmdir", to })) return false;
+            if (!try e.tried(btrfs.snapshot(from, to, false), try std.fmt.allocPrint(e.a, "snapshot {s}", .{from}))) return false;
+            // taken back before the subvolume it's in, which can't go
+            // while it holds one.
+            try e.laterDrop(to);
+            // a snapshot holds the subvolumes nested in it as placeholders
+            // too, and those are in place already.
+            if (!try e.moveNested(from, to, to)) return false;
         }
+        return true;
     }
 
     /// the pacman database moves into generation 1's /usr, and /var keeps
