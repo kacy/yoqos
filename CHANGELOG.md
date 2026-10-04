@@ -15,15 +15,22 @@
 - on a machine yoq os set up, yos stops with E0138, since it reads none of
   yoq os's state. the way over: with the old package installed, `os
   uninstall`, then `mv /etc/yoq /etc/yos` and `mv /var/cache/yoq
-  /var/cache/yos`. `yos plan` reads the config as
-  it was, history and all, and `yos enable-rollback` turns generations on
-  again. the two packages install side by side while you switch. ci runs
-  that whole move, from a machine 0.1.5 set up.
+  /var/cache/yos`. a config with repos or aur also drops
+  /etc/pacman.d/yoq-repos.conf and its include, and E0138 waits for that
+  too. `yos plan` reads the config as it was, history and all, and the
+  first apply swaps the files yoq os generated under its own names, like
+  99-yoq.conf, for yos's. `yos update` builds aur packages again into
+  yos's repository, and `yos enable-rollback` turns generations on again.
+  the two packages install side by side while you switch, and yos's
+  pacman hook stays quiet until you have. ci runs that whole move, from a
+  machine 0.1.5 set up.
 - `yos enable-rollback` turns generations on again after an uninstall.
   the root an uninstall leaves running is in @roots, and yos took that as
   generations being on already, said so, and did nothing. a root in @roots
   without yos's records is a plain machine's now, everywhere yos looks, and
-  the first generation is numbered after it.
+  the first generation is numbered after it. gc keeps that first generation
+  whatever its number, and leaves alone the generations an uninstall kept
+  from before it.
 - man pages: `man yos` and `man yos-generations`, made from docs/usage.md
   and docs/generations.md with lowdown when the package builds, so
   they're never out of step with the docs. the release tarball and the
