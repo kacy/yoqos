@@ -373,7 +373,7 @@ pub const Builder = struct {
         // under sudo, makechrootpkg reads the caller's makepkg.conf as root,
         // and its PKGDEST, and gives the caller the package it built.
         // neither is theirs to say: the build is root's, and lands in work.
-        try argv.appendSlice(b.a, &.{ "env", "-u", "SUDO_USER", "-u", "SUDO_UID", "-u", "SUDO_GID", "HOME=/root", "USER=root", try std.fmt.allocPrint(b.a, "PKGDEST={s}", .{work}), "-C", work });
+        try argv.appendSlice(b.a, &.{ "env", "-u", "SUDO_USER", "-u", "SUDO_UID", "-u", "SUDO_GID", "-C", work, "HOME=/root", "USER=root", try std.fmt.allocPrint(b.a, "PKGDEST={s}", .{work}) });
         // -c starts from a clean copy of the chroot; -u brings it up to date.
         try argv.appendSlice(b.a, &.{ "makechrootpkg", "-c", "-u", "-U", build_user, "-r", b.dirs.chroot });
         for (with) |pkg| try argv.appendSlice(b.a, &.{ "-I", pkg });
