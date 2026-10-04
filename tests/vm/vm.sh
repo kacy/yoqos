@@ -212,7 +212,8 @@ image)
     mkdir -p "$dir"
     [ -f "$dir/$image.qcow2" ] && exit 0
     case $image in
-    cloud) curl -fsSL -o "$dir/cloud.qcow2" "$image_url" ;;
+    # a download cut off partway mustn't look like a finished image.
+    cloud) curl -fsSL -o "$dir/cloud.qcow2.part" "$image_url" && mv "$dir/cloud.qcow2.part" "$dir/cloud.qcow2" ;;
     archinstall) archinstall ;;
     ext4) archinstall -e 's|"fs_type": "btrfs"|"fs_type": "ext4"|' -e 's|"mountpoint": null|"mountpoint": "/"|' \
         -e 's|"compress=zstd"||' -e 's|"btrfs": \[{.*}\]|"btrfs": []|' ;;
