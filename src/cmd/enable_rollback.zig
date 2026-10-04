@@ -6,6 +6,7 @@ const std = @import("std");
 const lists = @import("../lists.zig");
 const rootfs = @import("../rootfs.zig");
 const cli = @import("../cli.zig");
+const applying = @import("apply.zig");
 const btrfs = @import("../btrfs.zig");
 const enable = @import("../enable.zig");
 const exec = @import("../exec.zig");
@@ -45,6 +46,9 @@ pub fn enableRollbackCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         return 1;
     }
     if (try cli.needsHost(ctx, "enable-rollback changes the running machine's disk and boot menu")) return 1;
+    // a first generation already waiting for its boot: another would undo
+    // that one's boot files.
+    if (try cli.refused(ctx, applying.bootBlocker(ctx.io))) return 1;
     if (try cli.approve(ctx, yes, "enable rollback", "enable rollback?")) |code| return code;
     try ctx.out.writeByte('\n');
     var e: Enabler = .{ .ctx = ctx, .a = a, .boot = f.boot, .time = std.Io.Timestamp.now(ctx.io, .real).toSeconds() };
@@ -122,6 +126,9 @@ const Enabler = struct {
         e.n = firstFree(e.ctx.io, try e.m.at(&.{generation.roots_dir}), try e.m.at(&.{generation.gens_dir}));
         e.new_root = try std.fmt.allocPrint(e.a, "/{s}/{d}", .{ generation.roots_dir, e.n });
 
+        // a step that fails with an error rather than false, like output
+        // to a closed pipe, takes the others back all the same.
+        errdefer e.takeBack() catch {};
         for (p.steps) |s| {
             try e.ctx.out.print("  {s}\n", .{s.what});
             try e.ctx.out.flush();
@@ -141,6 +148,14 @@ const Enabler = struct {
                 return false;
             }
         }
+        // the note that a first generation waits goes in last, once the
+        // bootloader boots it: a run cut off before then leaves the old
+        // root booting, and nothing refusing changes to it.
+        rootfs.writeAtomic(e.ctx.io, generation.pending_path, e.new_root[1..], null) catch {
+            _ = try e.failed("can't write {s}", .{generation.pending_path});
+            try e.takeBack();
+            return false;
+        };
         // into the /var the next boot mounts, while it's still reachable.
         try events.recordIn(e.a, e.ctx.io, e.var_dir, .{ .time = journal.now(e.ctx.io), .kind = .@"enable-rollback", .step = .done, .generation = e.n });
         return true;
@@ -232,17 +247,49 @@ const Enabler = struct {
     /// btrfs won't clone those, so they're copied.
     fn moveInto(e: *Enabler, dir: []const u8, subvol: []const u8) !bool {
         const dest = try e.m.at(&.{subvol});
-        if (!try e.tried(btrfs.create(dest), try std.fmt.allocPrint(e.a, "create {s}", .{subvol}))) return false;
+        btrfs.create(dest) catch |err| switch (err) {
+            error.AlreadyExists => return e.failed("{s} is in the btrfs top level already, but nothing mounts it: an enable-rollback cut off partway left it. once you've checked there's nothing of yours in it, delete it with `btrfs subvolume delete` (the top level mounts with -o subvolid=5), along with any @roots or @gens that run left, and run this again", .{subvol}),
+            else => return e.failed("can't create {s}: {s}", .{ subvol, @errorName(err) }),
+        };
         try e.laterDrop(dest);
         const src = try e.m.at(&.{ e.new_root, dir });
         // a missing one, often /srv, still needs a place to mount.
         if (!rootfs.pathExists(e.ctx.io, src) and !try e.sh(&.{ "mkdir", "-p", src })) return false;
         if (!try e.sh(&.{ "cp", "-a", "--reflink=auto", try std.fs.path.join(e.a, &.{ src, "." }), dest })) return false;
+        if (!try e.moveNested(try e.m.at(&.{ e.boot.root_subvol.?, dir }), dest)) return false;
         // the subvolume's top is what's mounted, so it takes the directory's
         // owner and mode: /root stays 0700.
         if (!try e.sh(&.{ "chown", "--reference", src, dest })) return false;
         if (!try e.sh(&.{ "chmod", "--reference", src, dest })) return false;
         return e.sh(&.{ "find", src, "-mindepth", "1", "-maxdepth", "1", "-exec", "rm", "-rf", "{}", "+" });
+    }
+
+    /// subvolumes nested in the running root's `live` directory, like
+    /// /var/lib/machines or docker's, which the snapshot `dest` was copied
+    /// from holds only as empty directories with inode 2. each is
+    /// snapshotted into its place in `dest`, and then the ones nested in
+    /// those, so nothing in them is left behind.
+    fn moveNested(e: *Enabler, live: []const u8, dest: []const u8) !bool {
+        while (true) {
+            const found = switch (try exec.output(e.a, e.ctx.io, &.{ "find", dest, "-type", "d", "-inum", "2", "-empty", "-printf", "%P\n" })) {
+                .ok => |out| out,
+                .failed => |why| return e.failed("{s}", .{why}),
+            };
+            var any = false;
+            var lines = std.mem.tokenizeScalar(u8, found, '\n');
+            while (lines.next()) |rel| {
+                const from = try std.fs.path.join(e.a, &.{ live, rel });
+                if (!(btrfs.isSubvolume(from) catch false)) continue;
+                const to = try std.fs.path.join(e.a, &.{ dest, rel });
+                if (!try e.sh(&.{ "rmdir", to })) return false;
+                if (!try e.tried(btrfs.snapshot(from, to, false), try std.fmt.allocPrint(e.a, "snapshot {s}", .{from}))) return false;
+                // taken back before the subvolume it's in, which can't go
+                // while it holds one.
+                try e.laterDrop(to);
+                any = true;
+            }
+            if (!any) return true;
+        }
     }
 
     /// the pacman database moves into generation 1's /usr, and /var keeps
@@ -335,8 +382,6 @@ const Enabler = struct {
         };
         if (try gens.writeRecord(e.a, e.ctx.io, e.var_dir, record)) |why| return e.failed("{s}", .{why});
         if (!e.moved_var) try e.later(&.{ "rm", "-f", try gens.recordPath(e.a, e.var_dir, e.n) });
-        rootfs.writeAtomic(e.ctx.io, generation.pending_path, e.new_root[1..], null) catch return e.failed("can't write {s}", .{generation.pending_path});
-        try e.later(&.{ "rm", "-f", generation.pending_path });
         return true;
     }
 
