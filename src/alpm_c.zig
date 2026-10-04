@@ -641,7 +641,12 @@ fn run(a: Allocator, h: Handle, t: api.Transaction, step: Step, log: *Log) Error
         try reportPrepare(h, data, diags);
         return false;
     }
-    if (c.alpm_trans_commit(h.h, &data) != 0) {
+    const commit = blk: {
+        const old = ignoreStops();
+        defer restoreSignals(old);
+        break :blk c.alpm_trans_commit(h.h, &data);
+    };
+    if (commit != 0) {
         if (c.alpm_errno(h.h) == c.ALPM_ERR_FILE_CONFLICTS) {
             var it = listItems(c.alpm_fileconflict_t, data);
             while (it.next()) |fc| try diags.add(.alpm_failed, null, "{s} would overwrite {s}", .{ str(fc.target), str(fc.file) }, "a file there isn't owned by the package; move it away");
@@ -651,6 +656,25 @@ fn run(a: Allocator, h: Handle, t: api.Transaction, step: Step, log: *Log) Error
     }
     log.committed();
     return true;
+}
+
+const stop_signals = [_]std.posix.SIG{ .INT, .TERM, .HUP, .QUIT };
+
+/// has ctrl-c, a dropped ssh session, or a kill wait until the commit is
+/// done. dying partway leaves a package half replaced, and stopping
+/// between packages, as libalpm can, skips the hooks for the ones already
+/// in, like the initramfs for a new kernel. ignoring them carries over to
+/// the hooks libalpm runs, which ctrl-c would reach too. returns what the
+/// signals did before.
+fn ignoreStops() [stop_signals.len]std.posix.Sigaction {
+    const act: std.posix.Sigaction = .{ .handler = .{ .handler = std.posix.SIG.IGN }, .mask = std.posix.sigemptyset(), .flags = 0 };
+    var old: [stop_signals.len]std.posix.Sigaction = undefined;
+    for (stop_signals, &old) |sig, *o| std.posix.sigaction(sig, &act, o);
+    return old;
+}
+
+fn restoreSignals(old: [stop_signals.len]std.posix.Sigaction) void {
+    for (stop_signals, old) |sig, o| std.posix.sigaction(sig, &o, null);
 }
 
 /// the sync package for a locked one, checked against the lock.

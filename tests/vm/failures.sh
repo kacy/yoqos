@@ -7,6 +7,8 @@
 #   crash     the power goes during a live apply
 #   committed the power goes after a live apply's transaction, before yos
 #             records it as done
+#   interrupt ctrl-c, a hangup, and a kill reach yos while its
+#             transaction runs
 #   download  no network during an apply and an update
 #   disk      the disk fills up while the next generation builds
 #   esp       a new generation's boot files don't fit on the esp, where
@@ -104,6 +106,21 @@ crash_apply() {
     check "$last_apply | grep -c '\"event\":\"done\"'" 1
     check "$yos plan" "$empty"
     if [ "$generations" = yes ]; then check "test \$($newest_cmd) -gt $before && echo recorded" recorded; fi
+    "$vm" ssh "$yos remove --yes sl" | tail -n 1
+    check "$yos plan" "$empty"
+}
+
+# ctrl-c, a dropped ssh session, and a plain kill, all while pacman's
+# transaction runs: a hook sends them to yos. it finishes the transaction
+# and its hooks, and the apply is done.
+interrupt() {
+    "$vm" ssh "$yos add --no-apply sl" | tail -n 1
+    "$vm" ssh "mkdir -p /etc/pacman.d/hooks && printf '#!/bin/sh\nrm -f /etc/pacman.d/hooks/00-yos-interrupt.hook\nkill -INT \$PPID; kill -HUP \$PPID; kill -TERM \$PPID\n' > /root/interrupt && chmod +x /root/interrupt && printf '[Trigger]\nOperation = Install\nType = Package\nTarget = sl\n\n[Action]\nDescription = interrupting\nWhen = PreTransaction\nExec = /root/interrupt\n' > /etc/pacman.d/hooks/00-yos-interrupt.hook"
+    check "$yos apply --yes >/tmp/out 2>&1; echo \$?" 0
+    check "pacman -Q sl >/dev/null && echo installed" installed
+    check "test -e /var/lib/pacman/db.lck && echo locked || echo clear" clear
+    check "$last_apply | grep -c '\"event\":\"done\"'" 1
+    check "$yos plan" "$empty"
     "$vm" ssh "$yos remove --yes sl" | tail -n 1
     check "$yos plan" "$empty"
 }
@@ -396,6 +413,7 @@ for what in "$@"; do
     crash) crash_apply ;;
     trial) trial_cuts ;;
     committed) crash_committed ;;
+    interrupt) interrupt ;;
     download) download ;;
     disk) disk_full ;;
     esp) esp_full ;;
