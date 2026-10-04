@@ -1,6 +1,6 @@
 -- the machine's default hyprland config, from examples/omarchy-lite: omarchy's
--- bindings, layout, and tokyo night look, with the tools arch ships in place
--- of omarchy's scripts. a hyprland.lua of your own in ~/.config/hypr wins,
+-- bindings, layout, and tokyo night look, and omarchy's own shell for the
+-- bar, panels, notifications, and lock screen. a hyprland.lua of your own in ~/.config/hypr wins,
 -- and can start from this one with
 -- dofile("/etc/xdg/hypr/hyprland.lua").
 
@@ -9,6 +9,7 @@ local browser = "chromium --ozone-platform=wayland"
 local files = "nautilus --new-window"
 local menu = "fuzzel"
 local scripts = "/etc/xdg/hypr/scripts/"
+local shell = "/etc/xdg/yos-shell/yos-shell"
 
 -- apps start under uwsm, so each gets a unit of its own and the session
 -- can stop them.
@@ -135,7 +136,7 @@ hl.window_rule({ match = { class = ".*" }, opacity = "0.985 0.96" })
 -- video, images, and the browser stay opaque.
 hl.window_rule({ match = { class = "(mpv|imv|chromium|Chromium)" }, opacity = "1 1" })
 -- tuis, viewers, and dialogs float, centered.
-for _, class in ipairs({ "TUI.float", "imv", "mpv", "org.gnome.NautilusPreviewer", "org.gnome.Evince", "xdg-desktop-portal-gtk", "hyprpolkitagent", "com.gabm.satty" }) do
+for _, class in ipairs({ "TUI.float", "imv", "mpv", "org.gnome.NautilusPreviewer", "org.gnome.Evince", "xdg-desktop-portal-gtk", "com.gabm.satty" }) do
   hl.window_rule({ match = { class = class }, float = true, center = true })
 end
 hl.window_rule({ match = { class = "TUI.float" }, size = { 875, 600 } })
@@ -144,16 +145,29 @@ hl.window_rule({ match = { class = "^$", title = "^$", xwayland = true, float = 
 
 -- the session's own programs.
 hl.on("hyprland.start", function()
-  hl.exec_cmd(app("waybar -c /etc/xdg/waybar/config.jsonc -s /etc/xdg/waybar/style.css"))
-  hl.exec_cmd(app("mako -c /etc/xdg/mako/config"))
-  hl.exec_cmd(app("hypridle -c /etc/xdg/hypr/hypridle.conf"))
-  hl.exec_cmd(app("hyprsunset -c /etc/xdg/hypr/hyprsunset.conf"))
-  hl.exec_cmd(app("swayosd-server -s /etc/xdg/swayosd/style.css"))
+  -- omarchy's shell: the bar, notifications, the on-screen display, the
+  -- idle timer and lock screen, and the polkit agent. the first login
+  -- sets it up.
+  hl.exec_cmd(app(shell))
   hl.exec_cmd(app("swaybg -c '#1a1b26'"))
   hl.exec_cmd(app("wl-paste --watch cliphist store"))
   hl.exec_cmd(app("udiskie --automount --no-notify --no-tray"))
-  hl.exec_cmd("systemctl --user start hyprpolkitagent")
 end)
+
+-- settings the shell's commands switch on, like an internal display off
+-- with its lid shut. they write these, and reload hyprland.
+local toggles = (os.getenv("XDG_STATE_HOME") or (os.getenv("HOME") .. "/.local/state")) .. "/omarchy/toggles/hypr"
+local switched = io.popen("ls " .. toggles .. "/*.lua 2>/dev/null")
+if switched then
+  for file in switched:lines() do dofile(file) end
+  switched:close()
+end
+
+-- a key that goes straight to the shell, as a global shortcut it
+-- registers, so no process starts for it.
+local function to_shell(keys, shortcut, options)
+  bind(keys, hl.dsp.global("omarchy:" .. shortcut), options)
+end
 
 -- apps.
 bind("SUPER + RETURN", app(terminal))
@@ -172,10 +186,15 @@ bind("SUPER + ESCAPE", scripts .. "menu-power")
 bind("XF86PowerOff", scripts .. "menu-power", { locked = true })
 bind("SUPER + K", scripts .. "menu-keybindings")
 
--- settings, in terminals: wi-fi, bluetooth, audio, activity.
-bind("SUPER + CTRL + W", tui("nmtui"))
-bind("SUPER + CTRL + B", tui("bluetui"))
-bind("SUPER + CTRL + A", tui("wiremix"))
+-- the shell's panels: wi-fi, bluetooth, audio, display, power, the ai
+-- agents, and the calendar. activity is btop.
+to_shell("SUPER + CTRL + W", "panel.omarchy.network")
+to_shell("SUPER + CTRL + B", "panel.omarchy.bluetooth")
+to_shell("SUPER + CTRL + A", "panel.omarchy.audio")
+to_shell("SUPER + CTRL + D", "panel.omarchy.monitor")
+to_shell("SUPER + CTRL + P", "panel.omarchy.power")
+to_shell("SUPER + CTRL + G", "panel.omarchy.agents")
+to_shell("SUPER + CTRL + ALT + D", "panel.omarchy.clock")
 bind("SUPER + CTRL + T", tui("btop"))
 
 -- windows.
@@ -231,16 +250,15 @@ bind("SUPER + ALT + TAB", hl.dsp.group.next())
 bind("SUPER + ALT + SHIFT + TAB", hl.dsp.group.prev())
 
 -- notifications.
-bind("SUPER + comma", "makoctl dismiss")
-bind("SUPER + SHIFT + comma", "makoctl dismiss --all")
-bind("SUPER + ALT + comma", "makoctl invoke")
-bind("SUPER + CTRL + comma", "makoctl mode -t do-not-disturb")
+to_shell("SUPER + comma", "ipc.notifications.dismissOne")
+to_shell("SUPER + SHIFT + comma", "ipc.notifications.dismissAll")
+to_shell("SUPER + ALT + comma", "ipc.notifications.invokeLast")
+to_shell("SUPER + SHIFT + ALT + comma", "ipc.notifications.showHistory")
 
--- the bar, the night light, and the lock.
-bind("SUPER + SHIFT + SPACE", "pkill -SIGUSR1 waybar")
-bind("SUPER + CTRL + N", "hyprctl hyprsunset temperature 4000 || true")
-bind("SUPER + CTRL + ALT + N", "hyprctl hyprsunset identity")
-bind("SUPER + CTRL + L", "loginctl lock-session")
+-- the bar, the night light, and the lock, all the shell's.
+bind("SUPER + SHIFT + SPACE", shell .. " omarchy-toggle-bar")
+bind("SUPER + CTRL + N", shell .. " omarchy-toggle-nightlight")
+bind("SUPER + CTRL + L", shell .. " omarchy-system-lock")
 
 -- screenshots go to satty, which saves or copies them; the color picker
 -- copies a color.
@@ -252,16 +270,16 @@ bind("SUPER + PRINT", "pkill hyprpicker || hyprpicker -a")
 -- the clipboard's history, through the launcher.
 bind("SUPER + CTRL + V", "cliphist list | fuzzel --dmenu --prompt 'clipboard  ' | cliphist decode | wl-copy")
 
--- volume and brightness, with an on-screen display, and media keys, also on
--- the lock screen.
+-- volume, brightness, and media, with the shell's on-screen display, on
+-- the lock screen too.
 local held = { locked = true, repeating = true }
-bind("XF86AudioRaiseVolume", "swayosd-client --output-volume raise", held)
-bind("XF86AudioLowerVolume", "swayosd-client --output-volume lower", held)
-bind("XF86AudioMute", "swayosd-client --output-volume mute-toggle", { locked = true })
-bind("XF86AudioMicMute", "swayosd-client --input-volume mute-toggle", { locked = true })
-bind("XF86MonBrightnessUp", "swayosd-client --brightness raise", held)
-bind("XF86MonBrightnessDown", "swayosd-client --brightness lower", held)
-bind("XF86AudioNext", "playerctl next", { locked = true })
-bind("XF86AudioPrev", "playerctl previous", { locked = true })
-bind("XF86AudioPlay", "playerctl play-pause", { locked = true })
-bind("XF86AudioPause", "playerctl play-pause", { locked = true })
+to_shell("XF86AudioRaiseVolume", "audio.raise", held)
+to_shell("XF86AudioLowerVolume", "audio.lower", held)
+to_shell("XF86AudioMute", "audio.mute-toggle", { locked = true })
+bind("XF86AudioMicMute", "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle", { locked = true })
+to_shell("XF86MonBrightnessUp", "brightness.raise", held)
+to_shell("XF86MonBrightnessDown", "brightness.lower", held)
+to_shell("XF86AudioPlay", "ipc.media.playPause", { locked = true })
+to_shell("XF86AudioPause", "ipc.media.playPause", { locked = true })
+to_shell("XF86AudioNext", "ipc.media.next", { locked = true })
+to_shell("XF86AudioPrev", "ipc.media.previous", { locked = true })

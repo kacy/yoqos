@@ -1,0 +1,204 @@
+#!/bin/sh
+# yos-shell: omarchy's quickshell desktop, its bar, panels, notifications,
+# lock screen, and ai agents panel, on a yos machine. nothing of omarchy's
+# is copied into this example: the first time it runs for a user, it
+# fetches omarchy's repository at the commit the manifest pins, and lays out
+# the plugins and commands the manifest names in ~/.local/share/yos-shell.
+# omarchy's code runs as it is; the few commands that tie it to omarchy are
+# yos's own, below, and the manifest says which.
+#
+#   yos-shell                  start the shell, setting it up first if needed
+#   yos-shell setup            fetch and lay it out again
+#   yos-shell <command> ...    run a command with the shell's environment,
+#                              like `yos-shell omarchy-system-lock`
+#
+# the commands this script stands in for are links to it, in the shell's
+# bin/; it acts on the name it's run by.
+set -eu
+
+conf=${YOS_SHELL_CONF:-/etc/xdg/yos-shell}
+self=$conf/yos-shell
+manifest=$conf/manifest
+commit=$(awk '$1 == "commit" { print $2 }' "$manifest")
+data=${XDG_DATA_HOME:-$HOME/.local/share}/yos-shell
+share=$data/$commit
+
+listed() { awk -v kind="$1" '$1 == kind { print $2 }' "$manifest"; }
+
+notify() { notify-send -a yos-shell "$@" 2>/dev/null || echo "yos-shell: $*" >&2; }
+
+# -- the commands yos-shell does itself --------------------------------
+
+# the bar's update icon: lit when the machine's lock is a week old or
+# more, since yos updates a whole lock at once. 0 means there's an update.
+cmd_update_available() {
+  days=$(yos status --json 2>/dev/null | jq -r '.lock_age_days // 0' 2>/dev/null || echo 0)
+  case $days in '' | *[!0-9]*) days=0 ;; esac
+  if [ "$days" -ge 7 ]; then echo "the lock is $days days old: yos update"; return 0; fi
+  echo "the lock is up to date"
+  return 1
+}
+
+# a click on it: yos update, which shows the plan and asks.
+cmd_update() { sudo yos update; }
+
+# a command in the user's terminal, waiting for enter when it ends.
+cmd_floating_terminal() {
+  exec uwsm app -- xdg-terminal-exec sh -c '"$@"; printf "\ndone. press enter to close. "; read -r _' sh "$@"
+}
+
+# the shell started again: a new launcher takes over.
+cmd_restart_shell() {
+  pkill -x -u "$(id -u)" quickshell 2>/dev/null || true
+  setsid -f "$self" >/dev/null 2>&1
+}
+
+# the coding agent the agents panel starts: with no argument, the one
+# chosen, else the first installed; with one, it's chosen. nothing is
+# installed here: an agent is a package in the machine's config.
+cmd_default_agent() {
+  file="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/defaults/agent"
+  if [ $# -eq 0 ]; then
+    if [ -s "$file" ]; then head -n 1 "$file"; return 0; fi
+    for agent in claude codex opencode grok crush pi; do
+      command -v "$agent" >/dev/null 2>&1 && { echo "$agent"; return 0; }
+    done
+    return 0
+  fi
+  [ "$1" = --install ] && shift
+  command -v "$1" >/dev/null 2>&1 || { echo "$1 isn't installed; add it to the machine's config" >&2; return 1; }
+  mkdir -p "$(dirname "$file")" && echo "$1" >"$file"
+}
+
+# the default coding agent in a terminal, with a prompt if given.
+cmd_agent() {
+  agent=$(cmd_default_agent)
+  [ -n "$agent" ] || { notify "no coding agent installed" "add one, like claude-code, to the machine's config"; return 1; }
+  exec uwsm app -- xdg-terminal-exec "$agent" "$@"
+}
+
+# a link, or the browser, in the default browser; --private for a private
+# window, which chromium and firefox each name their own way.
+cmd_launch_browser() {
+  private=
+  [ "${1:-}" = --private ] && { private=1; shift; }
+  case $(xdg-settings get default-web-browser 2>/dev/null) in
+  *firefox*) cmd=firefox flag=--private-window ;;
+  *chromium*) cmd=chromium flag=--incognito ;;
+  *google-chrome*) cmd=google-chrome-stable flag=--incognito ;;
+  *) cmd= flag= ;;
+  esac
+  [ -n "$private" ] && [ -n "$cmd" ] && exec uwsm app -- "$cmd" "$flag" "$@"
+  [ $# -gt 0 ] && exec uwsm app -- xdg-open "$1"
+  [ -n "$cmd" ] && exec uwsm app -- "$cmd"
+  exec uwsm app -- xdg-open about:blank
+}
+
+run_ours() {
+  name=$1
+  shift
+  case $name in
+  omarchy-update-available) cmd_update_available ;;
+  omarchy-update) cmd_update ;;
+  omarchy-launch-floating-terminal-with-presentation) cmd_floating_terminal "$@" ;;
+  omarchy-restart-shell) cmd_restart_shell ;;
+  omarchy-default-agent) cmd_default_agent "$@" ;;
+  omarchy-agent) cmd_agent "$@" ;;
+  omarchy-launch-browser) cmd_launch_browser "$@" ;;
+  *) echo "yos-shell: the manifest names $name as ours, but there's nothing for it here" >&2; return 1 ;;
+  esac
+}
+
+# -- setting the shell up ----------------------------------------------
+
+# fetches only what's needed, at the pinned commit, and checks that's what
+# arrived.
+fetch() {
+  rm -rf "$1" && mkdir -p "$1"
+  git -C "$1" init -q
+  git -C "$1" remote add origin https://github.com/basecamp/omarchy.git
+  git -C "$1" sparse-checkout set --no-cone /shell/ /bin/ /default/omarchy/ /default/hypr/toggles/ /themes/tokyo-night/colors.toml /LICENSE
+  git -C "$1" fetch -q --depth 1 --filter=blob:none origin "$commit"
+  git -C "$1" checkout -q FETCH_HEAD
+  [ "$(git -C "$1" rev-parse HEAD)" = "$commit" ]
+}
+
+# the shell's tree, from omarchy's at $1, into $2.
+lay_out() {
+  src=$1 dest=$2
+  mkdir -p "$dest/shell/plugins" "$dest/bin" "$dest/config/omarchy" "$dest/theme" "$dest/default/omarchy" "$dest/default/hypr"
+  cp -a "$src/shell/shell.qml" "$src/shell/Ui" "$src/shell/Commons" "$src/shell/services" "$dest/shell/"
+  for p in $(listed plugin); do
+    mkdir -p "$dest/shell/plugins/$(dirname "$p")"
+    cp -a "$src/shell/plugins/$p" "$dest/shell/plugins/$p"
+  done
+  for c in $(listed upstream); do install -m 0755 "$src/bin/$c" "$dest/bin/$c"; done
+  for c in $(listed ours) $(listed stub); do ln -s "$self" "$dest/bin/$c"; done
+  cp "$src/themes/tokyo-night/colors.toml" "$dest/theme/"
+  cp -a "$src/default/hypr/toggles" "$dest/default/hypr/"
+  cp "$src/default/omarchy/launcher.hides" "$dest/default/omarchy/"
+  cp "$conf/shortcuts" "$dest/default/omarchy/shortcuts"
+  cp "$conf/shell.json" "$dest/config/omarchy/shell.json"
+  cp "$src/LICENSE" "$dest/LICENSE.omarchy"
+}
+
+# every omarchy-* command the shell or its scripts name is in bin/, or
+# the manifest says it isn't a command. a newer commit that adds one stops
+# here, not as a panel that silently does nothing.
+check() {
+  missing=$(
+    grep -rhoE 'omarchy-[a-z0-9]+(-[a-z0-9]+)*-?' --exclude='*.md' "$1/shell" $(find "$1/bin" -type f) |
+      sort -u | while read -r n; do
+        [ -e "$1/bin/$n" ] || listed not | grep -qx -- "$n" || echo "$n"
+      done
+  )
+  [ -z "$missing" ] && return 0
+  echo "yos-shell: omarchy at $commit runs commands the manifest doesn't cover:" $missing >&2
+  return 1
+}
+
+setup() {
+  command -v git >/dev/null || { notify "yos-shell needs git to set up"; return 1; }
+  mkdir -p "$data"
+  src=$data/.omarchy-$commit
+  new=$share.new
+  if ! fetch "$src"; then
+    notify "yos-shell couldn't fetch omarchy" "is the network up? it tries again at the next login"
+    return 1
+  fi
+  rm -rf "$new"
+  lay_out "$src" "$new"
+  check "$new" || { notify "yos-shell couldn't set up" "see the journal"; return 1; }
+  rm -rf "$share" && mv "$new" "$share"
+  rm -rf "$src"
+  # what an older commit left.
+  find "$data" -mindepth 1 -maxdepth 1 ! -name "$commit" -exec rm -rf {} +
+}
+
+# -- running -----------------------------------------------------------
+
+name=$(basename "$0")
+case $name in
+omarchy-*)
+  if listed ours | grep -qx -- "$name"; then run_ours "$name" "$@"; exit $?; fi
+  exit 1 # a stub: the feature's left out
+  ;;
+esac
+
+if [ "${1:-}" = setup ]; then
+  setup
+  exit $?
+fi
+
+[ -d "$share" ] || setup
+export OMARCHY_PATH="$share"
+export PATH="$share/bin:$PATH"
+[ $# -gt 0 ] && exec "$@"
+
+# a user with no theme of their own gets omarchy's tokyo night.
+theme="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current/theme"
+[ -e "$theme/colors.toml" ] || { mkdir -p "$theme" && cp "$share/theme/colors.toml" "$theme/"; }
+
+# omarchy's own launcher keeps the shell running, with its log in the
+# journal.
+exec omarchy-launch-shell

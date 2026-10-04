@@ -4,7 +4,7 @@
 choice=$(printf '%s\n' "  lock" "󰒲  suspend" "󰍃  log out" "󰜉  restart" "󰐥  shut down" |
   fuzzel --dmenu --prompt "system  " --lines 5 --width 20) || exit 0
 case $choice in
-*lock) loginctl lock-session ;;
+*lock) /etc/xdg/yos-shell/yos-shell omarchy-system-lock ;;
 *suspend) systemctl suspend ;;
 *"log out") uwsm stop ;;
 *restart) systemctl reboot ;;
