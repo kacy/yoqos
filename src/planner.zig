@@ -401,7 +401,11 @@ fn planUsers(a: Allocator, c: *const config.Config, f: *const facts.Facts, chang
             });
         }
         const have_groups: []const []const u8 = if (found) |u| u.groups else &.{};
+        // its primary group, which a new user gets named after it, is no
+        // group it joins: listed, it's there already.
+        const primary = if (found) |u| u.primary_group orelse name else name;
         for (want_groups) |g| {
+            if (std.mem.eql(u8, g.name, primary)) continue;
             if (!lists.contains(have_groups, g.name)) try changes.append(a, .{ .op = .add, .kind = .user, .subject = name, .to = try std.fmt.allocPrint(a, "join {s}", .{g.name}), .cause = cause });
         }
         if (want_groups.len == 0) continue;
@@ -1039,6 +1043,16 @@ test "the kernel the config names needs a reboot, whatever it's called" {
     const f: facts.Facts = .{ .packages = &have };
     const p = (try plan(t.a(), &c, &l, &f, &t.diags)).?;
     try testing.expectEqualStrings("kernel", p.changes[0].reboot.?);
+}
+
+test "a user's primary group in groups is joined already" {
+    var t: T = .{};
+    defer t.deinit();
+    const c = try t.cfg("[boot]\nkernel = \"none\"\n[users.kacy]\ngroups = [\"kacy\", \"wheel\"]\n");
+    const l: lock.Lock = .{ .sync_date = "2026-09-25", .keyring = "1", .packages = &.{} };
+    var users = [_]facts.User{.{ .name = "kacy", .uid = 1000, .primary_group = "kacy", .groups = &.{"wheel"} }};
+    const f: facts.Facts = .{ .users = &users };
+    try testing.expect((try plan(t.a(), &c, &l, &f, &t.diags)).?.empty());
 }
 
 test "a unit that can't be enabled only starts and stops" {
