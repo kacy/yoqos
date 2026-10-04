@@ -6,6 +6,7 @@
 //! what went wrong.
 
 const std = @import("std");
+const btrfs = @import("btrfs.zig");
 const exec = @import("exec.zig");
 const lists = @import("lists.zig");
 const rootfs = @import("rootfs.zig");
@@ -347,7 +348,13 @@ pub const Builder = struct {
         const conf = try std.fs.path.join(b.a, &.{ b.dirs.chroot, "pacman.conf" });
         if (try b.createDir(b.dirs.chroot)) |w| return w;
         if (try b.write(conf, b.pacman_conf)) |w| return w;
-        if (!rootfs.pathExists(b.io, chroot_root)) {
+        // mkarchroot marks a chroot it finished; one cut off partway, by
+        // the network or ctrl-c, goes and is made again.
+        if (!rootfs.pathExists(b.io, try std.fs.path.join(b.a, &.{ chroot_root, ".arch-chroot" }))) {
+            if (rootfs.pathExists(b.io, chroot_root)) {
+                const gone = if (btrfs.isSubvolume(chroot_root) catch false) try b.run(&.{ "btrfs", "subvolume", "delete", chroot_root }) else try b.run(&.{ "rm", "-rf", chroot_root });
+                if (gone) |w| return w;
+            }
             if (try b.run(&.{ "mkarchroot", "-C", conf, chroot_root, "base-devel" })) |w| return w;
         }
         if (try b.write(try std.fs.path.join(b.a, &.{ chroot_root, "etc/pacman.conf" }), b.pacman_conf)) |w| return w;
