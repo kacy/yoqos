@@ -230,7 +230,7 @@ pub fn run(ctx: *Context, yes: bool, in: pipeline.Inputs, opts: RunOptions) !Out
     // a change that needs a reboot, on a machine with generations, goes
     // into the next root instead of the running one.
     if (on_generations and needs_reboot) {
-        const root = try stage.build(ctx, result.facts.boot, in) orelse return .{ .code = 1, .matches = false };
+        const root = try stage.build(ctx, result.facts.boot, in, p.changes) orelse return .{ .code = 1, .matches = false };
         return .{ .code = 0, .matches = true, .changed_generation = true, .needs_reboot = true, .staged_root = root };
     }
 

@@ -159,7 +159,7 @@ pub const Machine = struct {
         btrfs.snapshot(try m.at(&.{source}), try m.at(&.{root}), false) catch |e| return try std.fmt.allocPrint(m.a, "can't copy {s}: {s}", .{ source, @errorName(e) });
         const before = try m.note();
         // the esp's boot files change last, once the new root is recorded.
-        const why = try m.carry(root) orelse try m.add(records, n, root, stamp, false) orelse try m.startBoot(root, before, later) orelse {
+        const why = try m.carry(root, false) orelse try m.add(records, n, root, stamp, false) orelse try m.startBoot(root, before, later) orelse {
             made.* = n;
             return null;
         };
@@ -409,17 +409,20 @@ pub const Machine = struct {
         const path = try m.at(&.{copy});
         if (try m.drop(path)) |w| return w;
         btrfs.snapshot(try m.numbered(generation.gens_dir, n), path, false) catch |e| return try std.fmt.allocPrint(m.a, "can't copy generation {d}: {s}", .{ n, @errorName(e) });
-        return m.carry(copy);
+        return m.carry(copy, false);
     }
 
     /// carries the running machine's own state into the root at `subvol`:
     /// its identity, host keys, clock, id ranges, keyring, passwords, and
     /// the system accounts it lacks. a generation holds the system, not
-    /// these.
-    pub fn carry(m: *const Machine, subvol: []const u8) !?[]const u8 {
+    /// these. a `staged` root was built from this one and keeps what its
+    /// build added to the keyring and id ranges.
+    pub fn carry(m: *const Machine, subvol: []const u8, staged: bool) !?[]const u8 {
         const root = try m.at(&.{subvol});
         var paths: std.ArrayList([]const u8) = .empty;
-        try paths.appendSlice(m.a, &carried);
+        for (carried) |rel| {
+            if (!staged or !lists.contains(&built, rel)) try paths.append(m.a, rel);
+        }
         var ssh = std.Io.Dir.cwd().openDir(m.io, "/etc/ssh", .{ .iterate = true }) catch null;
         if (ssh) |*d| {
             defer d.close(m.io);
@@ -489,6 +492,12 @@ pub fn writeNotice(a: Allocator, io: std.Io, text: []const u8) !?[]const u8 {
 /// machine state every root gets from the running system. ssh host keys
 /// are added by name, and passwords are merged into /etc/shadow.
 const carried = [_][]const u8{ "etc/machine-id", "etc/adjtime", "etc/subuid", "etc/subgid", "etc/pacman.d/gnupg" };
+
+/// carried state a staged build changes itself: repository keys it
+/// imports, archlinux-keyring's populate, and id ranges for users it
+/// makes. carrying the running root's older copies over them would undo
+/// those.
+const built = [_][]const u8{ "etc/subuid", "etc/subgid", "etc/pacman.d/gnupg" };
 
 /// every generation's record under `var_dir`, by number.
 pub fn readRecords(a: Allocator, io: std.Io, var_dir: []const u8) ![]const generation.Record {

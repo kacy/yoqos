@@ -21,6 +21,10 @@ grub) last=grub-install ;;
 limine | systemd-boot) last=sha256sum ;;
 refind) last=install ;;
 esac
+# subvolumes nested in /var, like /var/lib/machines or docker's, one in
+# another: the snapshot generation 1 comes from holds them only as empty
+# directories, so they're moved over apart.
+"$vm" ssh "btrfs subvolume create /var/lib/yos-nested >/dev/null && echo kept > /var/lib/yos-nested/f && btrfs subvolume create /var/lib/yos-nested/inner >/dev/null && echo deeper > /var/lib/yos-nested/inner/f"
 esp=$("$vm" ssh "find $VM_ESP -type f -exec sha256sum {} + | sort | sha256sum")
 default=$("$vm" ssh "btrfs subvolume get-default / | cut -d' ' -f2")
 "$vm" ssh "mkdir -p /tmp/fail && printf '#!/bin/sh\\necho not today >&2\\nexit 1\\n' > /tmp/fail/$last && chmod +x /tmp/fail/$last"
@@ -41,6 +45,8 @@ root_mode=$("$vm" ssh "stat -c %a /root")
 if [ "$VM_LOADER" = grub ]; then check "btrfs subvolume get-default / | cut -d' ' -f2" 5; fi
 # until the reboot, changes would land on the root being left.
 check "/usr/local/bin/yos apply --yes 2>&1 | grep -c 'waiting for the next boot'" 1
+# and so would a second enable-rollback.
+check "/usr/local/bin/yos enable-rollback --yes 2>&1 | grep -c 'waiting for the next boot'" 1
 "$vm" reboot
 
 check "findmnt -no FSROOT /" /@roots/1
@@ -49,6 +55,8 @@ check "findmnt -no FSROOT /root" /@root
 # the subvolume keeps the directory's mode: arch's /root is 0750.
 check "stat -c %a /root" "$root_mode"
 check "readlink /var/lib/pacman" /usr/lib/sysimage/pacman
+check "cat /var/lib/yos-nested/f /var/lib/yos-nested/inner/f | tr '\\n' ' '" "kept deeper "
+check "btrfs subvolume show /var/lib/yos-nested/inner >/dev/null && echo subvolume" subvolume
 check "findmnt -no FSTYPE $VM_ESP" vfat
 check "findmnt -no FSROOT /etc/yos" /@var/lib/yos/config
 check "git -C /etc/yos log --format=%s -1" "init: yos-test as found on $today"

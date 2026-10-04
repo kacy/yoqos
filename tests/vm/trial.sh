@@ -7,6 +7,9 @@ set -eu
 
 # a healthy trial: microcode needs a reboot, so it's built into the next
 # root, and the running system doesn't change until then.
+# a user made in the same change gets a home on /home's subvolume, not in
+# the directory under the new root it hides.
+"$vm" ssh "printf '\\n[users.stagehome]\\nshell = \"bash\"\\n' >> /etc/yos/machine.toml"
 "$vm" ssh "/usr/local/bin/yos add --yes amd-ucode" | tail -n 3
 check "pacman -Q amd-ucode >/dev/null 2>&1 || echo not yet" "not yet"
 # a change to the running system now stays behind, and status says so.
@@ -25,6 +28,7 @@ check "/usr/local/bin/yos events | grep '\"kind\":\"trial\"' | tail -n 1 | grep 
 on_trial no
 check "test -e /run/systemd/sleep.conf.d/yos.conf && echo blocked || echo free" free
 check "pacman -Q amd-ucode >/dev/null && echo installed" installed
+check "stat -c %U /home/stagehome" stagehome
 check "test -e /etc/yos-after-staging && echo came along || echo left behind" "left behind"
 # a good boot puts its boot files where /boot is, the esp included.
 check "test -e /boot/amd-ucode.img && echo there" there
