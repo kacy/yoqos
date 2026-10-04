@@ -5,7 +5,7 @@
 version = 1
 packages = [
   "base", "linux-firmware", "grub", "efibootmgr", "btrfs-progs", "sudo",
-  "devtools", "neovim", "git",
+  "devtools", "neovim", "git", "zsh",
 ]
 aur = ["visual-studio-code-bin", "yay-bin"]
 

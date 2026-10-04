@@ -50,8 +50,9 @@ files/motd                a file base.toml puts in /etc
 ```
 
 each host includes the base, then its profile, then says what's its own.
-package lists add up across files, and every other value takes the last
-one set, so a host always has the final word. atlas drops a package the
+lists that are sets, like packages and a user's groups, add up across
+files, and every other value takes the last one set, so a host has the
+final word. atlas drops a package the
 base wants with `[remove]`, and forge clears a sysctl the base sets with
 `unset`. with a repository like this one at `/etc/yos`, each machine
 reads `hosts/<its hostname>/machine.toml` on its own, and `yos install

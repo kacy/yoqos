@@ -7,7 +7,7 @@ packages = [
   "base", "linux-firmware", "grub", "efibootmgr", "btrfs-progs", "sudo",
   "kitty", "wofi", "waybar", "mako", "grim", "slurp", "wl-clipboard",
   "noto-fonts", "noto-fonts-emoji", "ttf-jetbrains-mono-nerd",
-  "firefox", "neovim", "git",
+  "firefox", "neovim", "git", "zsh",
 ]
 
 [providers]

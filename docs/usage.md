@@ -978,7 +978,7 @@ bluetooth = false
 | `[providers]` | which package provides a virtual one, like `initramfs` |
 | `[system]` | `hostname` (a plain name or a dotted one like `atlas.lan`), `timezone`, `locale`, and `keymap` |
 | `[boot]` | `kernel`: `linux` unless you say otherwise. `none` for a machine without its own kernel, like a container. `modules`: kernel modules to load at every boot, like `i2c-dev`. `encrypt`: `true` when the root is on luks, so the initramfs unlocks it. `uki`: `true` to boot generations from unified kernel images. `secure_boot`: `true` to sign those images with sbctl's keys. |
-| `[hardware]` | `cpu`: `amd` or `intel`. `gpu`: `amd`, `intel`, `nvidia`, or `none`. these bring in microcode and drivers. `nvidia` also loads its modules early, with a drop-in in `/etc/mkinitcpio.conf.d`, unless mkinitcpio.conf does already. |
+| `[hardware]` | `cpu`: `amd` or `intel`. `gpu`: `amd`, `intel`, `nvidia`, or `none`. these bring in microcode and drivers. `nvidia` also loads its modules early, with a drop-in in `/etc/mkinitcpio.conf.d`, unless mkinitcpio.conf does already. with a kernel other than `linux`, nvidia's modules come from `nvidia-open-dkms`, built against the kernel's headers. |
 | `[desktop]` | `session`: `hyprland`. `audio`: `pipewire`. `login`: `greetd`, `sddm`, or `tty`. these bring in their packages; see [the desktop](#the-desktop). |
 | `[users.<name>]` | `shell`, and `groups`: the full list of groups beyond the user's own |
 | `[services]` | `<name> = true` or `false`, for the services listed below |
@@ -1499,8 +1499,12 @@ at the top otherwise.
 
 includes merge in order, and the including file always wins.
 
-- package lists merge: every file's packages count.
-- other values replace: the last one set wins.
+- lists that are sets merge, every file's items counting: `packages`,
+  `aur`, a user's `groups`, `[boot] modules`, and `[state] carry`. to
+  replace one, unset it first, `unset = ["users.jo.groups"]`, then give
+  the host's own.
+- other values replace: the last one set wins. a file's `source`, `text`,
+  or `secret` replaces whichever of them an include set.
 - `[remove] packages = ["nano"]` takes a package out of what the includes
   asked for, and `[remove] aur` does the same for aur packages.
 - `unset = ["desktop.audio"]` clears a key an include set. names with dots
