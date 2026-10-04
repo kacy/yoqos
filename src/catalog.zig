@@ -61,13 +61,30 @@ pub fn cpuPackages(cpu: anytype) []const []const u8 {
     };
 }
 
-pub fn gpuPackages(gpu: anytype) []const []const u8 {
+/// a gpu's driver packages, for a machine booting `kernel`. nvidia's open
+/// modules come built for arch's `linux` alone; another kernel has them
+/// built by dkms, against its headers.
+pub fn gpuPackages(a: std.mem.Allocator, gpu: anytype, kernel: []const u8) ![]const []const u8 {
     return switch (gpu) {
         .amd => &.{ "mesa", "vulkan-radeon" },
         .intel => &.{ "mesa", "vulkan-intel" },
-        .nvidia => &.{ "nvidia-open", "nvidia-utils" },
+        .nvidia => if (std.mem.eql(u8, kernel, default_kernel) or std.mem.eql(u8, kernel, no_kernel))
+            &.{ "nvidia-open", "nvidia-utils" }
+        else
+            try a.dupe([]const u8, &.{ "nvidia-open-dkms", "nvidia-utils", try std.fmt.allocPrint(a, "{s}-headers", .{kernel}) }),
         .none => &.{},
     };
+}
+
+test "nvidia's modules for a kernel other than linux come from dkms" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Gpu = enum { amd, intel, nvidia, none };
+    try std.testing.expectEqualStrings("nvidia-open", (try gpuPackages(a, Gpu.nvidia, "linux"))[0]);
+    const zen = try gpuPackages(a, Gpu.nvidia, "linux-zen");
+    try std.testing.expectEqualStrings("nvidia-open-dkms", zen[0]);
+    try std.testing.expectEqualStrings("linux-zen-headers", zen[2]);
 }
 
 pub fn sessionPackages(session: anytype) []const []const u8 {

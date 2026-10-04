@@ -115,7 +115,7 @@ const tty_session =
 ;
 
 /// the modules nvidia's driver wants early.
-const nvidia_modules = [_][]const u8{ "nvidia", "nvidia_modeset", "nvidia_uvm", "nvidia_drm" };
+pub const nvidia_modules = [_][]const u8{ "nvidia", "nvidia_modeset", "nvidia_uvm", "nvidia_drm" };
 
 const nvidia_initramfs_content = blk: {
     var s: []const u8 = "# written by yos for [hardware] gpu = \"nvidia\".\nMODULES+=(" ++ nvidia_modules[0];
@@ -273,7 +273,7 @@ fn sessionFile(a: Allocator, c: *const config.Config) !?File {
 
 /// nvidia's driver wants its modules in the initramfs. amd and intel come
 /// with mkinitcpio's kms hook already.
-fn nvidiaFile(c: *const config.Config, f: *const facts.Facts) ?File {
+pub fn nvidiaFile(c: *const config.Config, f: *const facts.Facts) ?File {
     const gpu = c.hardware.gpu orelse return null;
     if (gpu.v != .nvidia) return null;
     if (c.providers.get("initramfs")) |p| {
