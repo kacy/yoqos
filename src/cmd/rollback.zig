@@ -127,7 +127,12 @@ fn rollbackGeneration(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, wan
         generation.bootCopyOf(boot.root_subvol.?) orelse
             return cli.fail(ctx, "this is the newest generation already. --to-booted keeps an older one you booted from the menu.", .{})
     else
-        wanted orelse newest.n -| 1;
+        wanted orelse previous: {
+            // the record before the newest, whatever its number: gc and
+            // cut-off builds leave gaps.
+            if (records.len < 2) return cli.fail(ctx, "there's nothing before this generation to go back to.", .{});
+            break :previous records[records.len - 2].n;
+        };
     const target = generation.find(records, n) orelse return cli.noGeneration(ctx, n);
     if (!to_booted and n == newest.n) return cli.fail(ctx, "generation {d} is the newest; it's what boots already.", .{n});
 
@@ -223,7 +228,8 @@ pub fn carryCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         _ = try applying.skipBroken(ctx, store.?, t.?.n, t.?.fallback);
     }
     const waiting = next orelse return 0;
-    if (try m.carry(waiting)) |problem| return cli.fail(ctx, "couldn't carry this machine's state into {s}: {s}", .{ waiting, problem });
+    // a staged root is newer than this one, and keeps what its build did.
+    if (try m.carry(waiting, m.unsettled(waiting))) |problem| return cli.fail(ctx, "couldn't carry this machine's state into {s}: {s}", .{ waiting, problem });
     try ctx.out.print("carried this machine's state into {s}, which the next boot runs.\n", .{waiting});
     return 0;
 }
