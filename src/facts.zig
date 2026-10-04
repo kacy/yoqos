@@ -186,11 +186,12 @@ pub const encrypt_dropin = "90-yos-encrypt.conf";
 /// after the luks one, which sets HOOKS whole.
 pub const trial_dropin = "95-yos-trial.conf";
 
-/// whether a mkinitcpio drop-in, by name, is one yos makes. facts leave
-/// these out of the hooks and modules they list, since the planner
-/// decides from those whether yos's are needed.
+/// whether a mkinitcpio drop-in, by name, is one yos makes, or yoq os
+/// made before the rename. facts leave these out of the hooks and modules
+/// they list, since the planner decides from those whether yos's are
+/// needed.
 pub fn osDropIn(name: []const u8) bool {
-    return std.mem.startsWith(u8, name, "10-yos-") or std.mem.eql(u8, name, encrypt_dropin) or std.mem.eql(u8, name, trial_dropin);
+    return std.mem.startsWith(u8, name, "10-yos-") or std.mem.startsWith(u8, name, "10-yoq-") or std.mem.eql(u8, name, "90-yoq-encrypt.conf") or std.mem.eql(u8, name, encrypt_dropin) or std.mem.eql(u8, name, trial_dropin);
 }
 
 pub const BootFile = struct { name: []const u8, size: u64 };

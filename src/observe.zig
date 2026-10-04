@@ -22,6 +22,7 @@ const lists = @import("lists.zig");
 const secrets = @import("secrets.zig");
 const uki = @import("uki.zig");
 const secureboot = @import("secureboot.zig");
+const desired = @import("desired.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Options = struct {
@@ -536,7 +537,8 @@ fn files(a: Allocator, io: std.Io, root: []const u8, wanted: facts.Wanted, key: 
             .path = p,
             .sha256 = try a.dupe(u8, &hex),
             .mode = mode,
-            .ours = std.mem.startsWith(u8, content, "# written by yos"),
+            .ours = std.mem.startsWith(u8, content, "# written by yos") or
+                (lists.contains(&desired.legacy_paths, p) and std.mem.startsWith(u8, content, "# written by os")),
         });
     }
     return out.items;
