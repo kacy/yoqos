@@ -36,6 +36,153 @@
   they're never out of step with the docs. the release tarball and the
   live iso have them too, and ci lints them with mandoc.
 
+### fixes
+
+a review of the whole code base turned these up.
+
+- a keyed custom repository lost its package signature checks after the
+  first apply: yos read its own `SigLevel = Required DatabaseOptional`
+  back as unsigned. only the package half of SigLevel counts now.
+- a service systemd skips for a condition, like bluetooth.service on a
+  machine without an adapter, counts as running. it was planned "start"
+  forever, every apply ended "still differ", and on the rollback rung
+  every trial boot failed its health check and fell back.
+- `yos init` on a machine with aur packages, like yay, put them in
+  `packages`, where they can't resolve, so there was no lock and no hint.
+  they go under `aur` in imported.toml now, and `yos update --no-apply`
+  builds them and writes the lock.
+- `yos apply` commits the config, so hand edits it makes real are in the
+  history, and a generation names a commit that has them. a rollback
+  commits edits it's about to write over first.
+- ctrl-c, a dropped ssh session, or a kill during the package transaction
+  waits for it to finish, hooks and all, rather than leaving a package
+  half replaced and the initramfs unbuilt.
+- a lock applied on a machine without that day's databases, like `yos
+  install` without `--update`, failed on any package arch updated earlier
+  that day. those come from the arch linux archive's copy of every
+  package now, checked against the lock's sha256 and their signatures.
+- a change that needs a reboot is built into the next root, and those
+  builds couldn't turn a unit off: switching display manager failed to
+  build, and a service turned off in the same update stayed on. they
+  also put a new user's home, and files under /root, /srv, and
+  /usr/local, in the directories the data subvolumes hide at boot.
+- the carry at shutdown put the running root's pacman keyring and
+  subuid/subgid over a staged root's, undoing keys the build imported,
+  archlinux-keyring's populate, and new users' id ranges.
+- `yos rollback` with no number goes to the generation before the
+  newest, whatever its number. after `yos gc --keep 1` it said "there's no
+  generation 5".
+- enable-rollback moves subvolumes nested in /var and the data
+  directories, like /var/lib/machines and docker's, which came over as
+  empty directories. it refuses a second run while the first generation
+  waits for its boot, takes its steps back when one fails with an error,
+  and a run cut off partway leaves nothing refusing changes to the old
+  root, and says what to delete before running again.
+- resolving never finished when a package in the set provides and
+  conflicts with a real one something else depends on by name, like a
+  -git build.
+- installs and removals go in one transaction, so an update that bumps a
+  library a package on its way out still needs no longer fails, saying
+  no database provides it.
+- a repository on this machine's disk (`Server = file://...`, like
+  aurutils keeps) is read where it is. the download client had no
+  file://, so init and update failed on it.
+- /etc/pacman.d/yos-repos.conf is written before pacman.conf includes it,
+  so an apply that fails after can't leave pacman reading an include of
+  a missing file. once the last repository or aur package goes, it's no
+  longer written again on every apply.
+- the running kernel's modules kept through an upgrade move aside when a
+  rollback before the reboot puts that kernel back, rather than stopping
+  it as a file conflict.
+- the kernel `[boot] kernel` names needs a reboot whatever it's called,
+  like linux-cachyos, and linux-rt and linux-rt-lts are on the list. they
+  were upgraded live, with no trial boot. the pacman hook rewrites the
+  menu for any installed kernel package.
+- a `[files]` entry for /etc/mkinitcpio.conf, a preset, or modprobe
+  options rebuilds the initramfs and waits for a reboot, like a drop-in,
+  and /etc/fstab and /etc/crypttab wait for one too.
+- aur builds under sudo read the caller's makepkg.conf as root, could put
+  the package in the caller's PKGDEST, and left it owned by the caller in
+  yos's repository, where it went into later builds. builds get root's
+  setup now, and their packages are root's.
+- enable-rollback refuses a yos binary that anyone but root can change,
+  like one in a build directory: every generation's boot and shutdown
+  units run it as root. once a root has the yos package, its units run
+  the packaged yos, not the copy `yos install` leaves in /usr/local/bin,
+  which upgrades passed by. `yos doctor` warns while that copy is there.
+- `yos doctor` counts a tpm pin as protection: it called a pin-protected
+  key "sealed to nothing" and told you to enroll it again without the pin.
+- `yos install` gives /root mode 0750, as arch does; it was 0755, open to
+  every user. the names of secrets the live system lacks no longer come
+  out as garbage. `--host` takes dotted names, and checks the host's
+  config sets that hostname, since the new machine finds its config
+  under hosts/ by it, and a machine reads hosts/<its hostname> first even
+  when the repository has its own machine.toml. after `--yes`, it prints
+  the commands that set a password, since the new root isn't mounted
+  once it's done. the live iso has the profiles a config can include.
+- `yos add` on a list wrapped with several items a line copied the line's
+  other items into the new one, or wrote broken toml.
+- an including file's `source`, `text`, or `secret` for a file replaces
+  whichever the include set; both stayed, and the config wouldn't load.
+- `gpu = "nvidia"` with a kernel other than `linux` brings nvidia-open-dkms
+  and the kernel's headers: nvidia-open's modules are built for `linux`
+  alone, so the initramfs build failed and the machine had no driver.
+- `yos init` on an nvidia machine that doesn't load nvidia's modules early
+  leaves `gpu` out and imports the driver packages, so the first plan is
+  empty rather than a new drop-in and a reboot.
+- the examples that give a user zsh install it, and the docs say which
+  lists add up across includes, and how to replace one.
+- arguments typed at the boot menu for one boot, like
+  `systemd.unit=multi-user.target`, `single`, or `init=/bin/sh`, stayed in
+  every entry yos wrote after, fallbacks included.
+- with sbctl's keys made again but not enrolled, a rollback, a fallback,
+  gc, or the pacman hook signed every image and grub again with them, and
+  the firmware refused all of it. they leave the signed files as they are.
+- `yos doctor` showed only the config's errors when it didn't load, and
+  none of its checks. without generations, it no longer fails a root on
+  lvm, luks it can't judge, or a small esp, which only generations need.
+- an aur chroot that mkarchroot didn't finish, after a network failure or
+  ctrl-c, is made again instead of failing every build.
+- gc deleted a generation's subvolumes when its record wouldn't read; it
+  sweeps nothing while one doesn't. a missing esp mount is an error, not
+  a crash.
+- a service that failed to restart after an apply left the exit code at 0
+  and the rest unrestarted. all are tried, and a failure fails the apply.
+- listing a user's primary group in `groups` planned "join" forever, and
+  nvidia-settings and the like counted as a driver needing a reboot.
+- every git yos runs ignores GIT_DIR and its kin, as config commits did,
+  so a hook or `git rebase --exec` can't point it at another repository.
+- `yos install` copies a local config directory as root's, takes a
+  /dev/disk/by-id link for the disk it names, and doesn't call the disk
+  unbootable when it stopped before touching it. `init --new` quotes its
+  answers as toml.
+- `--root` naming / another way, like `//`, is the running machine, with
+  its lock and boot checks. `--json` output stays valid json with DEL or
+  c1 characters in it.
+- the pacman hook says when another yos keeps it from writing the menu,
+  `status --json` has the fallback notice the text shows, builds say the
+  units they turn on for their first boot, and the clean build report
+  says when it couldn't list the files.
+- `zig build test` always runs, so a change to test fixtures alone is
+  tested.
+- limine.conf with yos's begin line but no end line lost every entry
+  after it, the machine's own included, at the next menu write. the
+  entries stay now.
+- a staged generation whose menu couldn't be written left a trial note
+  for it, which misdirected the next fallback. the note goes back as it
+  was. a trial that couldn't be set to boot next says so.
+- a database download that's an error page or cut short was kept for the
+  whole day. it has to look like a database, or the next server is tried.
+- a system account back at the id it first had was reported as changed.
+  `yos config show` keeps a `[remove]` that lets a core package go.
+  `yos install --update` refuses an aur list before building it on the
+  live system.
+- ctrl-c or a dropped ssh session during `yos install` or enable-rollback
+  stops it after the step it's in: install cleans up, rather than leaving
+  the disk held by daemons in a namespace that outlived it, and
+  enable-rollback takes back every step, rather than leaving subvolumes
+  that stopped every run after.
+
 ## 0.1.5
 
 the important one first. machines installed with `os install --tpm` on
