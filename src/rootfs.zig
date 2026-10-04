@@ -280,6 +280,31 @@ pub fn pathExists(io: std.Io, path: []const u8) bool {
     return true;
 }
 
+/// the sha256 of an open file, as hex, read in pieces, so a large one
+/// never sits in memory whole. null if it can't be read.
+pub fn sha256Of(io: std.Io, file: std.Io.File) ?[64]u8 {
+    var h: std.crypto.hash.sha2.Sha256 = .init(.{});
+    var buf: [64 << 10]u8 = undefined;
+    var at: u64 = 0;
+    while (true) {
+        const got = file.readPositionalAll(io, &buf, at) catch return null;
+        if (got == 0) break;
+        h.update(buf[0..got]);
+        at += got;
+    }
+    return std.fmt.bytesToHex(h.finalResult(), .lower);
+}
+
+test "a file's sha256, read in pieces" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "f", .data = "abc" });
+    const file = try tmp.dir.openFile(io, "f", .{});
+    defer file.close(io);
+    try std.testing.expectEqualStrings("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", &sha256Of(io, file).?);
+}
+
 /// replaces the file at `path` in one step, making its directory if
 /// needed, so a crash leaves the old or the new content, never half of
 /// each. the new file has mode `bits`, or 0644, whatever the umask, from

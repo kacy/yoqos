@@ -17,6 +17,7 @@ const destination = "org.freedesktop.systemd1";
 const object = "/org/freedesktop/systemd1";
 const manager_iface = "org.freedesktop.systemd1.Manager";
 const service_iface = "org.freedesktop.systemd1.Service";
+const unit_iface = "org.freedesktop.systemd1.Unit";
 
 /// units by name, as they're found.
 const Found = std.StringArrayHashMapUnmanaged(facts.Unit);
@@ -244,6 +245,7 @@ fn loadedUnits(a: Allocator, bus: *c.sd_bus, found: *Found, diags: *diag.List) !
         const u = try entry(a, found, name);
         u.active = std.mem.eql(u8, active, "active");
         u.failed = std.mem.eql(u8, active, "failed");
+        if (!u.active and !u.failed) u.skipped = conditionFailed(bus, s[6]);
         if (std.mem.endsWith(u8, name, ".service")) {
             if (u.active) u.main_pid = mainPid(bus, s[6]) else u.ran = oneshotRan(bus, s[6]);
         }
@@ -254,6 +256,20 @@ fn loadedUnits(a: Allocator, bus: *c.sd_bus, found: *Found, diags: *diag.List) !
 /// whether an inactive service is a oneshot whose last run succeeded.
 fn oneshotRan(bus: *c.sd_bus, path: [*c]const u8) bool {
     return serviceProperty(bus, path, "Type", "oneshot") and serviceProperty(bus, path, "Result", "success");
+}
+
+/// whether systemd last left the unit stopped because a Condition*= of
+/// its didn't hold, like bluetooth.service on a machine with no adapter.
+/// ConditionResult is false too for a unit never started, so its
+/// timestamp has to be set.
+fn conditionFailed(bus: *c.sd_bus, path: [*c]const u8) bool {
+    var err: c.sd_bus_error = std.mem.zeroes(c.sd_bus_error);
+    defer c.sd_bus_error_free(&err);
+    var checked: u64 = 0;
+    if (c.sd_bus_get_property_trivial(bus, destination, path, unit_iface, "ConditionTimestampMonotonic", &err, 't', &checked) < 0 or checked == 0) return false;
+    var result: c_int = 1;
+    if (c.sd_bus_get_property_trivial(bus, destination, path, unit_iface, "ConditionResult", &err, 'b', &result) < 0) return false;
+    return result == 0;
 }
 
 fn serviceProperty(bus: *c.sd_bus, path: [*c]const u8, name: [*:0]const u8, want: []const u8) bool {

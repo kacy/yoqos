@@ -377,7 +377,11 @@ fn finishRestoreOf(ctx: *Context, a: std.mem.Allocator, newest: generation.Recor
 }
 
 /// writes the config directory back as it was at `c.rev`, and commits it.
+/// edits made since the last commit are committed first, so the history
+/// keeps them.
 fn restoreConfig(ctx: *Context, a: std.mem.Allocator, c: generation.Config, message: []const u8) !bool {
+    const top = try std.fs.path.join(a, &.{ c.dir, "machine.toml" });
+    try cli.record(ctx, a, top, "local edits before rollback");
     var why: []const u8 = "";
     const files = try ctx.history.files(a, c.dir, c.rev, &why) orelse {
         try ctx.err.print("yos: the new generation is ready, but {s} couldn't go back with it: {s}\n", .{ c.dir, why });
@@ -386,7 +390,7 @@ fn restoreConfig(ctx: *Context, a: std.mem.Allocator, c: generation.Config, mess
     for (files) |f| {
         if (!try cli.writeFile(ctx, try std.fs.path.join(a, &.{ c.dir, f.path }), f.bytes)) return false;
     }
-    try cli.record(ctx, a, try std.fs.path.join(a, &.{ c.dir, "machine.toml" }), message);
+    try cli.record(ctx, a, top, message);
     return true;
 }
 

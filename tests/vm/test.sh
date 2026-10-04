@@ -75,7 +75,7 @@ ext4)
     tests/vm/build.sh
     # the manage rung's failures: power lost during an apply or right
     # after its transaction, and no network.
-    tests/vm/failures.sh crash committed download
+    tests/vm/failures.sh crash committed interrupt download
     tests/vm/secrets.sh
     # a new kernel, applied live, and the old one's modules kept for it.
     tests/vm/kernel-live.sh

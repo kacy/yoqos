@@ -14,6 +14,7 @@ const generate = @import("../generate.zig");
 const sync = @import("../sync.zig");
 const locking = @import("lock.zig");
 const output = @import("../output.zig");
+const lists = @import("../lists.zig");
 const Context = cli.Context;
 
 pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
@@ -31,11 +32,11 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     // nothing is written unless the config would load.
     try config.validate(&c, &w.diags);
     if (w.failed()) return w.fail();
-    const imported = try generate.importedPackages(a, &c, &f);
+    const explicit = try generate.importedPackages(a, &c, &f);
     const dir = std.fs.path.dirnamePosix(top) orelse ".";
     const imported_path = try std.fs.path.join(a, &.{ dir, "imported.toml" });
     const machine = try generate.machineToml(a, &c, date);
-    for ([_][2][]const u8{ .{ imported_path, try generate.importedToml(a, imported, date, null) }, .{ top, machine } }) |file| {
+    for ([_][2][]const u8{ .{ imported_path, try generate.importedToml(a, explicit, &.{}, date, null) }, .{ top, machine } }) |file| {
         if (!try cli.writeFile(ctx, file[0], file[1])) return 1;
     }
 
@@ -48,14 +49,31 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.out.print("read this machine: {d} explicit packages, {d} enabled units, {d} users", .{ explicitCount(&f), enabled, people(&f) });
         if (f.cpu) |cpu| try ctx.out.print(", {s} cpu", .{cpu});
         if (c.hardware.gpu) |g| try ctx.out.print(", {s} gpu", .{@tagName(g.v)});
-        try ctx.out.print(".\n\nwrote {s}\nwrote {s}  ({d} packages)\n", .{ top, imported_path, imported.len });
+        try ctx.out.print(".\n\nwrote {s}\nwrote {s}  ({d} packages)\n", .{ top, imported_path, explicit.len });
     }
 
-    const locked = try lockNew(ctx, &w, loaded, date, f.packages);
+    // today's databases, to resolve the lock against, and to tell
+    // packages from the repositories from ones built elsewhere, like the
+    // aur's. those go in `aur`: in `packages`, nothing would resolve.
+    const dbs = try todaysDbs(ctx, &w, &loaded.config, date);
+    const split = if (dbs) |d| try locking.unsatisfied(ctx, &w, d, explicit) else null;
+    if (dbs != null and split == null) _ = try reportLater(ctx, &w);
+    const foreign = split orelse &.{};
+    var imported: std.ArrayList([]const u8) = .empty;
+    for (explicit) |name| {
+        if (!lists.contains(foreign, name)) try imported.append(a, name);
+    }
+    if (foreign.len > 0) {
+        if (!try cli.writeFile(ctx, imported_path, try generate.importedToml(a, imported.items, foreign, date, null))) return 1;
+        if (!ctx.json) try ctx.out.print("{d} of them come from outside the repositories, so imported.toml lists them under aur: {s}\n", .{ foreign.len, try std.mem.join(a, ", ", foreign) });
+    }
+    // aur packages are built before they're locked, so with any, the lock
+    // waits for `yos update`.
+    const locked = if (split == null or foreign.len > 0) null else try lockNew(ctx, &w, loaded, dbs.?, date, f.packages);
     // with a lock, the imported packages can be grouped by repository.
     if (locked != null) {
         if (try locking.readLock(ctx, a, top)) |l| {
-            if (!try cli.writeFile(ctx, imported_path, try generate.importedToml(a, imported, date, &l))) return 1;
+            if (!try cli.writeFile(ctx, imported_path, try generate.importedToml(a, imported.items, foreign, date, &l))) return 1;
         }
     }
     try cli.record(ctx, a, top, try std.fmt.allocPrint(a, "init: {s} as found on {s}", .{ f.hostname orelse "this machine", date }));
@@ -63,12 +81,17 @@ pub fn initCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try output.writeDoc(ctx.out, "yos.init/1", .{
             .config = top,
             .imported = imported_path,
-            .imported_packages = imported.len,
+            .imported_packages = imported.items.len,
+            .imported_aur = foreign.len,
             .lock = locked,
         });
         return 0;
     }
     if (locked) |path| try ctx.out.print("wrote {s}\n", .{path});
+    if (foreign.len > 0) {
+        try ctx.out.writeAll("\nnothing on this machine changed. next: `sudo yos update --no-apply` builds the aur packages and writes machine.lock, then yos plan\n");
+        return 0;
+    }
     try ctx.out.writeAll("\nnothing on this machine changed. next: yos plan\n");
     return 0;
 }
@@ -84,16 +107,25 @@ fn exists(ctx: *Context, a: std.mem.Allocator, top: []const u8) !bool {
     return true;
 }
 
-/// resolves a first lock against today's databases when this build can.
-/// returns the lock's path, or null after saying why there isn't one.
-fn lockNew(ctx: *Context, w: *cli.Work, loaded: *const compose.Loaded, date: []const u8, installed: []const facts.Package) !?[]const u8 {
+/// today's databases for the repositories `c` uses, when this build can
+/// read them. null after saying why not.
+fn todaysDbs(ctx: *Context, w: *cli.Work, c: *const config.Config, date: []const u8) !?[]const alpm.SyncDb {
     const a = w.allocator();
     if (!alpm.available) {
         if (!ctx.json) try ctx.out.writeAll("this build can't resolve packages, so there's no machine.lock yet.\n");
         return null;
     }
+    return try sync.databases(a, ctx.io, ctx.fetcher, try locking.repos(ctx, a, c), try locking.cacheDir(ctx, a), date, &w.diags) orelse {
+        _ = try reportLater(ctx, w);
+        return null;
+    };
+}
+
+/// resolves a first lock against `dbs`, today's databases. returns the
+/// lock's path, or null after saying why there isn't one.
+fn lockNew(ctx: *Context, w: *cli.Work, loaded: *const compose.Loaded, dbs: []const alpm.SyncDb, date: []const u8, installed: []const facts.Package) !?[]const u8 {
+    const a = w.allocator();
     const top = loaded.files.items[0];
-    const dbs = try sync.databases(a, ctx.io, ctx.fetcher, try locking.repos(ctx, a, &loaded.config), try locking.cacheDir(ctx, a), date, &w.diags) orelse return reportLater(ctx, w);
     const l = try locking.resolveLock(ctx, w, &loaded.config, top, dbs, date, installed) orelse return reportLater(ctx, w);
     return locking.writeLock(ctx, a, top, &l);
 }
@@ -268,4 +300,31 @@ test "init locks against today's databases" {
     try std.testing.expectEqualStrings("", t.err.buffered());
     try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "wrote /etc/yos/machine.lock\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, t.fs.get("/etc/yos/machine.lock").?, "[packages.perl-error]") != null);
+}
+
+test "init lists packages none of the repositories has under aur, and leaves the lock to yos update" {
+    if (!alpm.available) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrintSentinel(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}, 0);
+
+    var mirror: cli.FixtureMirror = .{};
+    var t: TestRun = .{ .fetcher = mirror.fetcher() };
+    defer t.deinit();
+    try t.fs.put(try std.fs.path.join(a, &.{ root, "etc/pacman.conf" }), "[core]\nServer = https://m.example/$repo\n[extra]\nServer = https://m.example/$repo\n");
+    try t.fs.put("f.json",
+        \\{"schema":"yos.facts/1","hostname":"atlas",
+        \\ "packages":[{"name":"linux","version":"6.16.8.arch1-1"},{"name":"git","version":"2.51.0-1"},{"name":"yay-bin","version":"12.5.0-1"}]}
+    );
+    try t.exec(&.{ "--root", root, "--facts", "f.json", "init" });
+    try std.testing.expectEqualStrings("", t.err.buffered());
+    try std.testing.expectEqual(0, t.code);
+    const imported = t.fs.get("/etc/yos/imported.toml").?;
+    try std.testing.expect(std.mem.indexOf(u8, imported, "aur = [\n  \"yay-bin\",\n]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, imported, "packages = [\n  \"git\",\n]") != null);
+    try std.testing.expect(t.fs.get("/etc/yos/machine.lock") == null);
+    try std.testing.expect(std.mem.indexOf(u8, t.out.buffered(), "yos update --no-apply") != null);
 }

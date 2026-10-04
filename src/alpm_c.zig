@@ -2,6 +2,7 @@
 //! (`-Dalpm`).
 
 const std = @import("std");
+const rootfs = @import("rootfs.zig");
 const facts = @import("facts.zig");
 const lock = @import("lock.zig");
 const diag = @import("diag.zig");
@@ -406,8 +407,8 @@ pub fn transact(a: Allocator, io: std.Io, t: api.Transaction, diags: *diag.List)
     // install first: removing can take away what downloading needs, like
     // the tls certificates. an install replaces a conflicting package the
     // plan removes anyway, as pacman -S does.
-    if (t.install.len > 0 and !try run(a, h, t, .install, &log)) return false;
-    if (t.remove.len > 0 and !try run(a, h, t, .remove, &log)) return false;
+    if (t.install.len > 0 and !try run(a, io, h, t, .install, &log)) return false;
+    if (t.remove.len > 0 and !try run(a, io, h, t, .remove, &log)) return false;
 
     for ([_]struct { []const []const u8, c.alpm_pkgreason_t }{
         .{ t.explicit, c.ALPM_PKG_REASON_EXPLICIT },
@@ -603,6 +604,8 @@ fn configure(a: Allocator, io: std.Io, h: Handle, t: api.Transaction, diags: *di
         if (c.alpm_option_set_gpgdir(h.h, try dirZ(a, &.{g})) != 0) return fail(diags, "can't use the keyring at {s}: {s}", .{ g, h.lastError() });
         level = c.ALPM_SIG_PACKAGE | c.ALPM_SIG_DATABASE | c.ALPM_SIG_DATABASE_OPTIONAL;
     }
+    // packages fetched as files, from the archive, are checked the same.
+    if (c.alpm_option_set_remote_file_siglevel(h.h, level) != 0) return fail(diags, "can't set up libalpm: {s}", .{h.lastError()});
     for (t.target.dbs) |db| {
         const d = c.alpm_register_syncdb(h.h, (try a.dupeZ(u8, db.name)).ptr, if (db.signed or level == 0) level else trust_all) orelse return fail(diags, "can't load the {s} database: {s}", .{ db.name, h.lastError() });
         for (db.servers) |server| {
@@ -615,7 +618,7 @@ fn configure(a: Allocator, io: std.Io, h: Handle, t: api.Transaction, diags: *di
 const Step = enum { remove, install };
 
 /// one transaction: all the removals, or all the installs.
-fn run(a: Allocator, h: Handle, t: api.Transaction, step: Step, log: *Log) Error!bool {
+fn run(a: Allocator, io: std.Io, h: Handle, t: api.Transaction, step: Step, log: *Log) Error!bool {
     const diags = log.diags;
     log.begin();
     if (c.alpm_trans_init(h.h, 0) != 0) return fail(diags, "can't start the transaction: {s}", .{h.lastError()});
@@ -632,7 +635,7 @@ fn run(a: Allocator, h: Handle, t: api.Transaction, step: Step, log: *Log) Error
             if (!any) return true;
         },
         .install => for (t.install) |want| {
-            const p = try syncPackage(a, h, want, diags) orelse return false;
+            const p = try syncPackage(a, io, h, want, diags) orelse return false;
             if (c.alpm_add_pkg(h.h, p) != 0) return fail(diags, "can't add {s}: {s}", .{ want.name, h.lastError() });
         },
     }
@@ -641,7 +644,12 @@ fn run(a: Allocator, h: Handle, t: api.Transaction, step: Step, log: *Log) Error
         try reportPrepare(h, data, diags);
         return false;
     }
-    if (c.alpm_trans_commit(h.h, &data) != 0) {
+    const commit = blk: {
+        const old = ignoreStops();
+        defer restoreSignals(old);
+        break :blk c.alpm_trans_commit(h.h, &data);
+    };
+    if (commit != 0) {
         if (c.alpm_errno(h.h) == c.ALPM_ERR_FILE_CONFLICTS) {
             var it = listItems(c.alpm_fileconflict_t, data);
             while (it.next()) |fc| try diags.add(.alpm_failed, null, "{s} would overwrite {s}", .{ str(fc.target), str(fc.file) }, "a file there isn't owned by the package; move it away");
@@ -653,20 +661,90 @@ fn run(a: Allocator, h: Handle, t: api.Transaction, step: Step, log: *Log) Error
     return true;
 }
 
-/// the sync package for a locked one, checked against the lock.
-fn syncPackage(a: Allocator, h: Handle, want: lock.Package, diags: *diag.List) Error!?*c.alpm_pkg_t {
+const stop_signals = [_]std.posix.SIG{ .INT, .TERM, .HUP, .QUIT };
+
+/// has ctrl-c, a dropped ssh session, or a kill wait until the commit is
+/// done. dying partway leaves a package half replaced, and stopping
+/// between packages, as libalpm can, skips the hooks for the ones already
+/// in, like the initramfs for a new kernel. ignoring them carries over to
+/// the hooks libalpm runs, which ctrl-c would reach too. returns what the
+/// signals did before.
+fn ignoreStops() [stop_signals.len]std.posix.Sigaction {
+    const act: std.posix.Sigaction = .{ .handler = .{ .handler = std.posix.SIG.IGN }, .mask = std.posix.sigemptyset(), .flags = 0 };
+    var old: [stop_signals.len]std.posix.Sigaction = undefined;
+    for (stop_signals, &old) |sig, *o| std.posix.sigaction(sig, &act, o);
+    return old;
+}
+
+fn restoreSignals(old: [stop_signals.len]std.posix.Sigaction) void {
+    for (stop_signals, old) |sig, o| std.posix.sigaction(sig, &o, null);
+}
+
+/// the sync package for a locked one, checked against the lock. when the
+/// database has moved past the lock, or comes from before it, one of
+/// arch's own packages comes from the archive as a file instead.
+fn syncPackage(a: Allocator, io: std.Io, h: Handle, want: lock.Package, diags: *diag.List) Error!?*c.alpm_pkg_t {
     var dbs = listItems(c.alpm_db_t, c.alpm_get_syncdbs(h.h));
     while (dbs.next()) |db| {
         if (!std.mem.eql(u8, str(c.alpm_db_get_name(db)), want.repo)) continue;
-        const p = c.alpm_db_get_pkg(db, (try a.dupeZ(u8, want.name)).ptr) orelse break;
-        const version = pkgVersion(p);
-        const sha = str(c.alpm_pkg_get_sha256sum(p));
-        if (!std.mem.eql(u8, version, want.version) or !std.mem.eql(u8, sha, want.sha256)) {
-            _ = try fail(diags, "the {s} database has {s} {s}, but the lock says {s}", .{ want.repo, want.name, version, want.version });
+        const p = c.alpm_db_get_pkg(db, (try a.dupeZ(u8, want.name)).ptr);
+        if (p) |found| {
+            if (std.mem.eql(u8, pkgVersion(found), want.version) and std.mem.eql(u8, str(c.alpm_pkg_get_sha256sum(found)), want.sha256)) return found;
+        }
+        if (sync.archivedRepo(want.repo)) {
+            if (try archivedPackage(a, io, h, db, want, if (p) |found| str(c.alpm_pkg_get_arch(found)) else null, diags)) |loaded| return loaded;
+        }
+        if (p) |found| {
+            _ = try fail(diags, "the {s} database has {s} {s}, but the lock says {s}", .{ want.repo, want.name, pkgVersion(found), want.version });
+        } else {
+            _ = try fail(diags, "{s} isn't in the {s} database the lock came from", .{ want.name, want.repo });
+        }
+        return null;
+    }
+    _ = try fail(diags, "{s} isn't in the {s} database the lock came from", .{ want.name, want.repo });
+    return null;
+}
+
+/// the locked package's file from the arch linux archive, with its
+/// signature checked as `db`'s packages are, and its sha256 the lock's.
+/// `package_arch` is the architecture the database's version has, when
+/// it has one; without, the machine's, then "any". null when the archive
+/// doesn't have it.
+fn archivedPackage(a: Allocator, io: std.Io, h: Handle, db: *c.alpm_db_t, want: lock.Package, package_arch: ?[]const u8, diags: *diag.List) Error!?*c.alpm_pkg_t {
+    const archs: []const []const u8 = if (package_arch) |pa| &.{pa} else &.{ sync.arch, "any" };
+    for (archs) |pa| {
+        // a miss is no error of the apply's: libalpm's complaint goes.
+        const before = diags.items.items.len;
+        const url = try sync.archivedPackage(a, want.name, want.version, pa);
+        const urls = c.alpm_list_add(null, @ptrCast(@constCast(url.ptr)));
+        defer c.alpm_list_free(urls);
+        var fetched: ?*c.alpm_list_t = null;
+        if (c.alpm_fetch_pkgurl(h.h, urls, &fetched) != 0 or fetched == null) {
+            diags.items.shrinkRetainingCapacity(before);
+            continue;
+        }
+        defer c.alpm_list_free(fetched);
+        defer c.alpm_list_free_inner(fetched, std.c.free);
+        const path: [*:0]const u8 = @ptrCast(fetched.?.data.?);
+        const file = std.Io.Dir.cwd().openFile(io, std.mem.span(path), .{}) catch {
+            _ = try fail(diags, "can't read {s}", .{path});
+            return null;
+        };
+        defer file.close(io);
+        const sum = rootfs.sha256Of(io, file) orelse {
+            _ = try fail(diags, "can't read {s}", .{path});
+            return null;
+        };
+        if (!std.mem.eql(u8, &sum, want.sha256)) {
+            _ = try fail(diags, "{s} {s} from the archive isn't the package the lock names: its sha256 differs", .{ want.name, want.version });
+            return null;
+        }
+        var p: ?*c.alpm_pkg_t = null;
+        if (c.alpm_pkg_load(h.h, path, 1, c.alpm_db_get_siglevel(db), &p) != 0) {
+            _ = try fail(diags, "can't load {s} {s} from the archive: {s}", .{ want.name, want.version, h.lastError() });
             return null;
         }
         return p;
     }
-    _ = try fail(diags, "{s} isn't in the {s} database the lock came from", .{ want.name, want.repo });
     return null;
 }

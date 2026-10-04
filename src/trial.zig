@@ -597,18 +597,7 @@ fn fileProblem(a: Allocator, io: std.Io, path: []const u8, kernel: bool) !?[]con
     const n = file.readPositionalAll(io, &head, 0) catch return "it can't be read";
     var sum: ?[]const u8 = null;
     if (!kernel and bootcheck.hashedName(path) != null) {
-        var h: std.crypto.hash.sha2.Sha256 = .init(.{});
-        var buf: [64 << 10]u8 = undefined;
-        var at: u64 = 0;
-        while (true) {
-            const got = file.readPositionalAll(io, &buf, at) catch return "it can't be read";
-            if (got == 0) break;
-            h.update(buf[0..got]);
-            at += got;
-        }
-        var digest: [32]u8 = undefined;
-        h.final(&digest);
-        sum = try a.dupe(u8, &std.fmt.bytesToHex(digest, .lower));
+        sum = try a.dupe(u8, &(rootfs.sha256Of(io, file) orelse return "it can't be read"));
     }
     return bootcheck.problem(kernel, path, head[0..n], size, sum);
 }
