@@ -101,9 +101,22 @@ const ConfReader = struct {
             } else if (isRepo(r.section) and std.mem.eql(u8, key, "Server")) {
                 try r.servers.append(r.a, value);
             } else if (isRepo(r.section) and std.mem.eql(u8, key, "SigLevel")) {
-                r.signed = std.mem.indexOf(u8, value, "Optional") == null and std.mem.indexOf(u8, value, "Never") == null;
+                r.signed = packagesSigned(value);
             }
         }
+    }
+
+    /// whether a SigLevel value makes packages need a signature. only the
+    /// package half counts: yos's own keyed repositories say `Required
+    /// DatabaseOptional`.
+    fn packagesSigned(value: []const u8) bool {
+        var words = std.mem.tokenizeAny(u8, value, " \t");
+        while (words.next()) |w| {
+            for ([_][]const u8{ "Never", "Optional", "PackageNever", "PackageOptional" }) |off| {
+                if (std.mem.eql(u8, w, off)) return false;
+            }
+        }
+        return true;
     }
 
     /// ends the section being read, keeping it if it's a repository.
@@ -381,13 +394,16 @@ test "repositories and servers from pacman.conf" {
 
     // an included file with sections of its own adds repositories, the
     // way yos's /etc/pacman.d/yos-repos.conf does.
-    try fs.put("/inc/etc/pacman.d/yos-repos.conf", "[chaotic-aur]\nServer = https://cdn.example/$repo/$arch\n");
+    try fs.put("/inc/etc/pacman.d/yos-repos.conf", "[chaotic-aur]\nSigLevel = Required DatabaseOptional\nServer = https://cdn.example/$repo/$arch\n");
     try fs.put("/inc/etc/pacman.conf", "[options]\n[core]\nServer = https://a.example/$repo\nInclude = /etc/pacman.d/yos-repos.conf\n");
     const inc = (try pacmanConf(a, fs.files(), "/inc")).repos;
     try testing.expectEqual(2, inc.len);
     try testing.expectEqual(1, inc[0].servers.len);
     try testing.expectEqualStrings("chaotic-aur", inc[1].name);
     try testing.expectEqualStrings("https://cdn.example/$repo/$arch", inc[1].servers[0]);
+    // a keyed repository's packages still need its signature.
+    try testing.expect(inc[1].signed);
+    try testing.expect(!ConfReader.packagesSigned("PackageOptional DatabaseRequired"));
 
     // no pacman.conf: core and extra, from the fallback server.
     const bare = (try pacmanConf(a, fs.files(), "/elsewhere")).repos;
