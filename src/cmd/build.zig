@@ -12,6 +12,8 @@ const output = @import("../output.zig");
 const pipeline = @import("../pipeline.zig");
 const facts = @import("../facts.zig");
 const applying = @import("apply.zig");
+const generation = @import("../generation.zig");
+const planner = @import("../planner.zig");
 const Context = cli.Context;
 const Allocator = std.mem.Allocator;
 
@@ -129,6 +131,11 @@ pub const Builder = struct {
     /// what the build plans from, when not the command's own: an update's
     /// pending lock, say.
     inputs: ?pipeline.Inputs = null,
+    /// for a staged build, the unit changes of the plan made on the
+    /// running root. the build's own plan can't see which units are
+    /// enabled in it, since no systemd runs it, so it would only ever
+    /// enable.
+    units: ?[]const planner.Change = null,
 
     fn in(b: *Builder, rel: []const u8) ![]const u8 {
         return std.fs.path.join(b.a, &.{ b.dir, rel });
@@ -142,7 +149,7 @@ pub const Builder = struct {
     /// hooks expect, mounted as pacstrap mounts them. yos's caches are this
     /// machine's, so packages it has already come from there.
     pub fn prepare(b: *Builder) !?[]const u8 {
-        if (b.staged) return b.mountAll(&(api_mounts ++ .{.{ "var", &.{ "--rbind", "--make-rslave", "/var" } }}));
+        if (b.staged) return b.mountAll(&(api_mounts ++ live_mounts));
         for ([_][]const u8{ "var/lib/pacman", "var/cache/yos", "proc", "sys", "dev", "run", "tmp", "etc/pacman.d" }) |d| {
             if (try b.run(&.{ "mkdir", "-p", try b.in(d) })) |w| return w;
         }
@@ -188,6 +195,17 @@ pub const Builder = struct {
         .{ "run", &.{ "-t", "tmpfs", "-o", "mode=0755,nosuid,nodev", "run" } },
     };
 
+    /// for a staged build, the running /var and data directories, as a
+    /// live apply sees them: what the build writes there, like a new
+    /// user's home, is where the next boot finds it, not in the
+    /// directories under the snapshot those subvolumes hide.
+    const live_mounts = blk: {
+        var out: [1 + generation.data_dirs.len]Mount = undefined;
+        out[0] = .{ "var", &.{ "--rbind", "--make-rslave", "/var" } };
+        for (generation.data_dirs, out[1..]) |d, *m| m.* = .{ d.dir, &.{ "--rbind", "--make-rslave", "/" ++ d.dir } };
+        break :blk out;
+    };
+
     /// mounts each of `mounts` at its place under the new root.
     fn mountAll(b: *Builder, mounts: []const Mount) !?[]const u8 {
         for (mounts) |m| {
@@ -221,12 +239,19 @@ pub const Builder = struct {
         if (done.code != 0) return done.code;
         var w: cli.Work = .init(ctx);
         defer w.deinit();
-        const result = try w.plan(from) orelse return w.fail();
-        for (result.plan.changes) |c| {
-            if (c.kind != .unit) continue;
-            const verb = if (c.op == .remove) "disable" else "enable";
-            if (try b.run(&.{ "systemctl", try std.fmt.allocPrint(b.a, "--root={s}", .{b.dir}), verb, "--", c.subject })) |why| {
-                return cli.fail(ctx, "couldn't {s} {s} in the build: {s}", .{ verb, c.subject, why });
+        const changes = b.units orelse (try w.plan(from) orelse return w.fail()).plan.changes;
+        // disables first: a display manager that goes takes its
+        // display-manager.service alias with it, which the one replacing
+        // it needs.
+        for ([_]bool{ true, false }) |removing| {
+            const verb = if (removing) "disable" else "enable";
+            for (changes) |c| {
+                // starts and stops are for a running system; the boot does
+                // those.
+                if (c.kind != .unit or (c.op == .remove) != removing or std.mem.indexOf(u8, c.to orelse "", verb) == null) continue;
+                if (try b.run(&.{ "systemctl", try std.fmt.allocPrint(b.a, "--root={s}", .{b.dir}), verb, "--", c.subject })) |why| {
+                    return cli.fail(ctx, "couldn't {s} {s} in the build: {s}", .{ verb, c.subject, why });
+                }
             }
         }
         return 0;

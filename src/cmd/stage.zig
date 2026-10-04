@@ -14,6 +14,7 @@ const generation = @import("../generation.zig");
 const gens = @import("../gens.zig");
 const pipeline = @import("../pipeline.zig");
 const building = @import("build.zig");
+const planner = @import("../planner.zig");
 const Context = cli.Context;
 
 /// where the next root is mounted while it's built: a mount of its own
@@ -21,9 +22,10 @@ const Context = cli.Context;
 const mount_point = "/run/yos/next";
 
 /// builds the next root from `in`, as the next generation will have it,
-/// and returns its subvolume, like "/@roots/7". null after saying why, with
+/// turning `units`, the running root's plan's unit changes, on or off
+/// there, and returns its subvolume, like "/@roots/7". null after saying why, with
 /// the running system as it was.
-pub fn build(ctx: *Context, boot: facts.Boot, in: pipeline.Inputs) anyerror!?[]const u8 {
+pub fn build(ctx: *Context, boot: facts.Boot, in: pipeline.Inputs, units: []const planner.Change) anyerror!?[]const u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
@@ -35,7 +37,7 @@ pub fn build(ctx: *Context, boot: facts.Boot, in: pipeline.Inputs) anyerror!?[]c
     if (!ctx.json) try ctx.out.print("building generation {d} beside the running system, which doesn't change.\n", .{n});
     btrfs.snapshot(try m.at(&.{boot.root_subvol.?}), try m.at(&.{root}), false) catch |e|
         return fail(ctx, try withRoom(a, &m, try std.fmt.allocPrint(a, "can't snapshot the running root: {s}", .{@errorName(e)})));
-    const code = buildIn(ctx, a, boot, root, in) catch |e| {
+    const code = buildIn(ctx, a, boot, root, in, units) catch |e| {
         _ = m.drop(try m.at(&.{root})) catch {};
         return e;
     };
@@ -49,13 +51,13 @@ pub fn build(ctx: *Context, boot: facts.Boot, in: pipeline.Inputs) anyerror!?[]c
 
 /// mounts the root at `root` and applies `in` to it, then unmounts it
 /// however that went.
-fn buildIn(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, root: []const u8, in: pipeline.Inputs) anyerror!u8 {
+fn buildIn(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, root: []const u8, in: pipeline.Inputs, units: []const planner.Change) anyerror!u8 {
     if (try exec.runAll(a, ctx.io, &.{
         &.{ "mkdir", "-p", mount_point },
         &.{ "mount", "-o", try std.fmt.allocPrint(a, "subvol={s}", .{root}), boot.root_device.?, mount_point },
     })) |why| return cli.fail(ctx, "{s}", .{why});
     defer _ = exec.run(a, ctx.io, &.{ "umount", "-R", "-l", mount_point }) catch {};
-    var b: building.Builder = .{ .ctx = ctx, .a = a, .dir = mount_point, .staged = true, .inputs = in };
+    var b: building.Builder = .{ .ctx = ctx, .a = a, .dir = mount_point, .staged = true, .inputs = in, .units = units };
     defer b.unmount();
     if (try b.prepare()) |why| return cli.fail(ctx, "{s}", .{why});
     return b.install();
