@@ -72,7 +72,8 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (source == null or disk == null) return cli.usageError(ctx, usage_text);
     if (passphrase_file != null and !encrypt) return cli.usageError(ctx, usage_text);
     if (host) |h| {
-        if (std.mem.indexOfAny(u8, h, "/.") != null or h.len == 0) return cli.usageError(ctx, usage_text);
+        // a name under hosts/, dotted or not, like atlas.lan.
+        if (h.len == 0 or std.mem.indexOfScalar(u8, h, '/') != null or cli.eql(h, ".") or cli.eql(h, "..")) return cli.usageError(ctx, usage_text);
     }
     if (try cli.needsHost(ctx, "install erases a disk and builds a machine on it")) return 1;
     if (try cli.refused(ctx, applying.blocker(ctx))) return 1;
@@ -117,7 +118,7 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         try ctx.out.flush();
         if (try s.run(&in)) |why| return fail(ctx, why);
     }
-    if (!yes and ctx.interactive) try in.passwords() else try ctx.out.writeAll("\naccounts have no passwords yet. set them with `passwd -R " ++ install.target ++ " <user>` before rebooting, or from a console later.\n");
+    if (!yes and ctx.interactive) try in.passwords() else try in.noPasswords();
     if (try in.recordFirst()) |why| return fail(ctx, why);
     // on the new machine's own /var, beside the build's apply events.
     try events.record(a, ctx.io, install.target, .{ .time = journal.now(ctx.io), .kind = .install, .generation = 1, .message = found.host });
@@ -165,7 +166,8 @@ fn unsetSecrets(a: Allocator, store: ?secrets.Store, names: []const []const u8) 
         const found = if (store) |s| try s.get(a, name) else .unknown;
         switch (found) {
             .value => |v| secrets.wipe(v),
-            else => try out.append(a, name),
+            // the names are the config's, which goes before they're read.
+            else => try out.append(a, try a.dupe(u8, name)),
         }
     }
     return out.items;
@@ -212,6 +214,17 @@ const Installer = struct {
     luks_device: []const u8 = "",
     /// the config's url, shown in the plan, or null for a local directory.
     source: ?[]const u8 = null,
+
+    /// how to give the accounts passwords after an install that didn't ask:
+    /// the new root is mounted only inside this run, and goes with it.
+    fn noPasswords(in: *Installer) !void {
+        const out = in.ctx.out;
+        try out.writeAll("\naccounts have no passwords yet, so no one can log in on the console. an ssh key in the config's [files] gets you in; or, before rebooting:\n");
+        const root = if (in.encrypt) "/dev/mapper/newroot" else in.root;
+        if (in.encrypt) try out.print("  cryptsetup open {s} newroot\n", .{in.luks_device});
+        try out.print("  mount -o subvol=/" ++ generation.roots_dir ++ "/1 {s} /mnt\n  passwd -R /mnt <user>\n  umount /mnt\n", .{root});
+        if (in.encrypt) try out.writeAll("  cryptsetup close newroot\n");
+    }
 
     fn run(in: *Installer, argv: []const []const u8) !?[]const u8 {
         return exec.run(in.a, in.ctx.io, argv);
@@ -300,6 +313,8 @@ const Installer = struct {
             .mounted = mounts.len > 0,
             .uefi = rootfs.pathExists(ctx.io, "/sys/firmware/efi"),
             .host = host orelse if (c.system.hostname) |h| try in.a.dupe(u8, h.v) else "this machine",
+            .host_flag = host != null,
+            .hostname = if (c.system.hostname) |h| try in.a.dupe(u8, h.v) else null,
             .packages = l.packages.len,
             .users = users.items,
             .services = c.services.entries.items.len,
@@ -440,6 +455,12 @@ const Installer = struct {
             else
                 btrfs.create(path);
             made catch |e| return try std.fmt.allocPrint(in.a, "can't make {s}: {s}", .{ sv, @errorName(e) });
+        }
+        // pacman leaves a directory that's there already as it is, so the
+        // data subvolumes' tops get the filesystem package's modes now:
+        // /root isn't for everyone to read.
+        for (generation.data_dirs) |d| {
+            if (try in.run(&.{ "chmod", d.mode, try std.fs.path.join(in.a, &.{ top, d.subvol }) })) |w| return w;
         }
         return null;
     }

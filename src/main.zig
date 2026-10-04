@@ -103,14 +103,17 @@ fn restoreAndDie(sig: std.posix.SIG) callconv(.c) void {
     std.posix.raise(sig) catch {};
 }
 
-/// the config this machine reads unless --config says otherwise:
-/// /etc/yos/machine.toml, or in a repository for several machines, the one
-/// under hosts/ named for this machine's hostname.
+/// the config this machine reads unless --config says otherwise: in a
+/// repository for several machines, the one under hosts/ named for this
+/// machine's hostname, and otherwise /etc/yos/machine.toml. a repository
+/// can have both, its own machine.toml for one machine and hosts/ for
+/// the rest.
 fn hostConfig(a: std.mem.Allocator, io: std.Io) ![]const u8 {
     const cwd = std.Io.Dir.cwd();
-    if (cwd.access(io, cli.default_config, .{})) |_| return cli.default_config else |_| {}
     const name = cwd.readFileAlloc(io, "/etc/hostname", a, .limited(256)) catch return cli.default_config;
-    const path = try cli.hostConfigPath(a, std.mem.trim(u8, name, " \n"));
+    const trimmed = std.mem.trim(u8, name, " \n");
+    if (trimmed.len == 0) return cli.default_config;
+    const path = try cli.hostConfigPath(a, trimmed);
     cwd.access(io, path, .{}) catch return cli.default_config;
     return path;
 }

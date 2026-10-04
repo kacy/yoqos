@@ -19,6 +19,8 @@ cp "$(dirname "$0")/motd" "$profile/airootfs/etc/motd"
 # yos itself, runnable by everyone.
 install -Dm755 "$yos" "$profile/airootfs/usr/local/bin/yos"
 sed -i 's|^file_permissions=(|file_permissions=(\n  ["/usr/local/bin/yos"]="0:0:755"|' "$profile/profiledef.sh"
+# the profiles a config includes by path, as the package has them.
+install -Dm644 -t "$profile/airootfs/usr/share/yos/profiles" "$(dirname "$0")/../profiles/"*.toml
 # and its man pages, for `man yos` before there's anything to install.
 # /usr/local/share/man is a link to ../man there, which the filesystem
 # package owns.

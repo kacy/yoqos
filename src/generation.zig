@@ -16,13 +16,14 @@ pub const roots_dir = "@roots";
 pub const gens_dir = "@gens";
 pub const var_subvol = "@var";
 
-/// data directories besides /var that no generation holds, and the
-/// subvolume each gets when it's inside the root.
-pub const DataDir = struct { dir: []const u8, subvol: []const u8 };
+/// data directories besides /var that no generation holds, the subvolume
+/// each gets when it's inside the root, and the mode arch's filesystem
+/// package gives it, which a new subvolume's top doesn't have.
+pub const DataDir = struct { dir: []const u8, subvol: []const u8, mode: []const u8 = "0755" };
 
 pub const data_dirs = [_]DataDir{
     .{ .dir = "home", .subvol = "@home" },
-    .{ .dir = "root", .subvol = "@root" },
+    .{ .dir = "root", .subvol = "@root", .mode = "0750" },
     .{ .dir = "srv", .subvol = "@srv" },
     .{ .dir = "usr/local", .subvol = "@usrlocal" },
 };

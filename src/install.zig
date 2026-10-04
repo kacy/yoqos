@@ -42,6 +42,10 @@ pub const Found = struct {
     source: ?[]const u8 = null,
     /// the host the config is for, and what it asks for.
     host: []const u8,
+    /// with --host, the hostname that host's config sets, which has to be
+    /// the host: the new machine finds its config under hosts/ by it.
+    host_flag: bool = false,
+    hostname: ?[]const u8 = null,
     packages: usize,
     users: []const []const u8,
     services: usize,
@@ -148,6 +152,12 @@ pub fn plan(a: Allocator, f: Found) !Plan {
         .ok = f.whole and !f.mounted and f.size >= min_bytes,
         .found = try std.fmt.allocPrint(a, "{s}, {d} GiB{s}{s}", .{ f.disk, f.size >> 30, if (f.whole) "" else ", a partition", if (f.mounted) ", in use" else "" }),
         .fix = "name a whole disk of 16 GiB or more that nothing has mounted, like /dev/nvme0n1. everything on it is erased.",
+    });
+    if (f.host_flag) try checks.append(a, .{
+        .what = "hostname",
+        .ok = f.hostname != null and std.mem.eql(u8, f.hostname.?, f.host),
+        .found = if (f.hostname) |h| try std.fmt.allocPrint(a, "{s}'s config says {s}", .{ f.host, h }) else try std.fmt.allocPrint(a, "{s}'s config sets none", .{f.host}),
+        .fix = try std.fmt.allocPrint(a, "the new machine finds its config under hosts/ by its hostname, so set `hostname = \"{s}\"` under [system] in hosts/{s}/machine.toml.", .{ f.host, f.host }),
     });
     try checks.append(a, .{
         .what = "kernel and bootloader",
