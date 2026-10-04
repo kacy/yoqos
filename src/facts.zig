@@ -26,6 +26,8 @@ pub const Unit = struct {
     /// its unit file has no [install] section at all, so only another
     /// unit starts it at boot.
     static: bool = false,
+    /// linked to /dev/null, so nothing starts it.
+    masked: bool = false,
     active: bool = false,
     /// the unit tried to run and failed.
     failed: bool = false,

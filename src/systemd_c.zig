@@ -57,7 +57,7 @@ pub fn units(a: Allocator, diags: *diag.List) api.Error!?[]facts.Unit {
 
     var out: std.ArrayList(facts.Unit) = .empty;
     for (found.values()) |u| {
-        if (u.enabled or u.active or u.failed) try out.append(a, u);
+        if (u.enabled or u.active or u.failed or u.masked) try out.append(a, u);
     }
     return out.items;
 }
@@ -123,6 +123,8 @@ pub fn change(a: Allocator, unit: []const u8, verbs: []const api.Verb, diags: *d
         const ok = switch (v) {
             .enable => try do(bus, "EnableUnitFiles", "asbb", .{ one, name.ptr, no, no }, diags) and try do(bus, "Reload", null, .{}, diags),
             .disable => try do(bus, "DisableUnitFiles", "asb", .{ one, name.ptr, no }, diags) and try do(bus, "Reload", null, .{}, diags),
+            .mask => try do(bus, "MaskUnitFiles", "asbb", .{ one, name.ptr, no, no }, diags) and try do(bus, "Reload", null, .{}, diags),
+            .unmask => try do(bus, "UnmaskUnitFiles", "asb", .{ one, name.ptr, no }, diags) and try do(bus, "Reload", null, .{}, diags),
             .start, .stop, .restart => try runJob(a, bus, &jobs, name, v, diags),
         };
         if (!ok) return false;
@@ -136,7 +138,7 @@ fn runJob(a: Allocator, bus: *c.sd_bus, jobs: *Jobs, unit: [:0]const u8, v: api.
         .start => "StartUnit",
         .stop => "StopUnit",
         .restart => "RestartUnit",
-        .enable, .disable => unreachable,
+        .enable, .disable, .mask, .unmask => unreachable,
     };
     const m = try call(bus, method.ptr, "ss", .{ unit.ptr, "replace" }, diags) orelse return false;
     defer _ = c.sd_bus_message_unref(m);
@@ -222,6 +224,7 @@ fn unitFiles(a: Allocator, bus: *c.sd_bus, found: *Found, diags: *diag.List) !bo
         u.enabled = api.enabledState(std.mem.span(state));
         u.fixed = api.fixedState(std.mem.span(state));
         u.static = std.mem.eql(u8, std.mem.span(state), "static");
+        u.masked = api.maskedState(std.mem.span(state));
     }
     return true;
 }
