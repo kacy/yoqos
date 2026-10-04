@@ -6,6 +6,7 @@
 //! --encrypt, the btrfs filesystem goes inside luks2.
 
 const std = @import("std");
+const catalog = @import("../catalog.zig");
 const rootfs = @import("../rootfs.zig");
 const cli = @import("../cli.zig");
 const btrfs = @import("../btrfs.zig");
@@ -35,8 +36,6 @@ const usage_text = "yos install <config repository or directory> --disk <device>
 /// the directory only root can go into, since git writes a url's password
 /// or token into the clone's .git/config before yos takes it out again.
 const staging = rootfs.private_dir ++ "/install/config";
-/// the kernels arch ships, one of which the lock has to name.
-const kernels = [_][]const u8{ "linux", "linux-lts", "linux-zen", "linux-hardened", "linux-rt", "linux-rt-lts" };
 
 pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var source: ?[]const u8 = null;
@@ -270,8 +269,9 @@ const Installer = struct {
         };
         var users: std.ArrayList([]const u8) = .empty;
         for (c.users.entries.items) |u| try users.append(in.a, try in.a.dupe(u8, u.name));
-        var has_kernel = false;
-        for (kernels) |k| has_kernel = has_kernel or l.package(k) != null;
+        // one of the kernels arch ships, or the one the config names.
+        var has_kernel = if (c.boot.kernel) |k| l.package(k.v) != null else false;
+        for (catalog.kernels) |k| has_kernel = has_kernel or l.package(k) != null;
         const name = std.fs.path.basename(in.disk);
         const size = switch (try exec.output(in.a, ctx.io, &.{ "blockdev", "--getsize64", in.disk })) {
             .ok => |t| std.fmt.parseInt(u64, std.mem.trim(u8, t, " \n"), 10) catch 0,

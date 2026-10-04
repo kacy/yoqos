@@ -9,6 +9,8 @@ const cli = @import("../cli.zig");
 const drift = @import("../drift.zig");
 const journal = @import("../journal.zig");
 const catalog = @import("../catalog.zig");
+const lists = @import("../lists.zig");
+const modules = @import("../modules.zig");
 const gens = @import("../gens.zig");
 const applying = @import("apply.zig");
 const rollback = @import("rollback.zig");
@@ -27,16 +29,17 @@ pub fn recordPacmanCmd(ctx: *Context, _: []const [:0]const u8) !u8 {
         if (name.len > 0) try names.append(a, try a.dupe(u8, name));
     }
     try drift.record(a, ctx.io, ctx.root, journal.now(ctx.io), names.items);
-    if (touchesBoot(names.items)) refreshMenu(ctx, &w) catch {};
+    if (touchesBoot(names.items, try modules.kernelPackages(a, ctx.io, ctx.root))) refreshMenu(ctx, &w) catch {};
     return 0;
 }
 
 /// whether a transaction that touched `packages` can change the running
 /// root's kernel, initramfs, microcode, or the stub its images start
-/// with: a package whose change otherwise needs a reboot.
-pub fn touchesBoot(packages: []const []const u8) bool {
+/// with: a package whose change otherwise needs a reboot, or one of
+/// `kernels`, the kernel packages installed, whatever they're called.
+pub fn touchesBoot(packages: []const []const u8, kernels: []const []const u8) bool {
     for (packages) |p| {
-        if (catalog.rebootReason(p) != null) return true;
+        if (catalog.rebootReason(p) != null or lists.contains(kernels, p)) return true;
     }
     return false;
 }
@@ -105,10 +108,11 @@ test "yos's own transactions aren't drift" {
 }
 
 test "a kernel, microcode, or initramfs tool from pacman touches the boot files" {
-    try std.testing.expect(touchesBoot(&.{ "htop", "linux" }));
-    try std.testing.expect(touchesBoot(&.{"amd-ucode"}));
-    try std.testing.expect(touchesBoot(&.{"mkinitcpio"}));
-    try std.testing.expect(touchesBoot(&.{"systemd"}));
-    try std.testing.expect(!touchesBoot(&.{ "htop", "btop" }));
-    try std.testing.expect(!touchesBoot(&.{}));
+    try std.testing.expect(touchesBoot(&.{ "htop", "linux" }, &.{}));
+    try std.testing.expect(touchesBoot(&.{"amd-ucode"}, &.{}));
+    try std.testing.expect(touchesBoot(&.{"mkinitcpio"}, &.{}));
+    try std.testing.expect(touchesBoot(&.{"systemd"}, &.{}));
+    try std.testing.expect(touchesBoot(&.{"linux-cachyos"}, &.{"linux-cachyos"}));
+    try std.testing.expect(!touchesBoot(&.{ "htop", "btop" }, &.{"linux"}));
+    try std.testing.expect(!touchesBoot(&.{}, &.{}));
 }
