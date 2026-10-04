@@ -21,6 +21,12 @@ pub fn writeToml(w: *Writer, c: *const Config, sources: bool) !void {
         const T = @FieldType(Config, name);
         if (comptime !isLeaf(T)) try t.section(T, name, &@field(c, name));
     }
+    // what a `[remove]` named keeps its leave to remove a core package.
+    // with no includes left, it takes nothing else away.
+    if (c.removed.items.items.len > 0) {
+        try t.header("remove", null);
+        try t.set("packages", &c.removed);
+    }
 }
 
 /// a value written as `key = ...` rather than as its own table.
@@ -277,6 +283,20 @@ test "canonical toml, with and without sources" {
     defer round.deinit();
     try writeToml(&round.writer, &again.config, false);
     try testing.expectEqualStrings(plain.written(), round.written());
+}
+
+test "a [remove] that lets a core package go stays in the output" {
+    var fs: compose.MemFiles = .{};
+    defer fs.deinit();
+    try fs.put("machine.toml", "packages = [\"git\"]\n[remove]\npackages = [\"nano\"]\n");
+    var diags: @import("diag.zig").List = .init(testing.allocator);
+    defer diags.deinit();
+    var loaded = try compose.load(testing.allocator, fs.files(), "machine.toml", &diags);
+    defer loaded.deinit();
+    var out: Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try writeToml(&out.writer, &loaded.config, false);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "[remove]\npackages = [\n  \"nano\",\n]") != null);
 }
 
 test "json carries values and sources" {
