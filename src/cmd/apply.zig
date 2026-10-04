@@ -744,6 +744,7 @@ test "a full disk fails the apply with a message, not a crash" {
 }
 
 test "an apply commits the hand edits it made real, once" {
+    if (!alpm.available) return error.SkipZigTest;
     var t: TestRun = .{};
     defer t.deinit();
     try t.fs.put("/etc/yos/machine.toml", "[boot]\nkernel = \"none\"\n");
