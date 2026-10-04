@@ -285,7 +285,9 @@ fn addWants(a: Allocator, h: Handle, wants: []const []const u8, questions: *cons
 }
 
 /// adds to `targets` each package a dependency names that the transaction
-/// leaves out.
+/// leaves out. one that's a target already stays out for a reason:
+/// libalpm took it out for a package in the set that provides and
+/// conflicts with it, like a -git build, and asking again would loop.
 fn namedDepends(a: Allocator, h: Handle, targets: *std.ArrayList([]const u8)) Error!void {
     const adds = c.alpm_trans_get_add(h.h);
     var it = listItems(c.alpm_pkg_t, adds);
@@ -293,6 +295,7 @@ fn namedDepends(a: Allocator, h: Handle, targets: *std.ArrayList([]const u8)) Er
         var di = listItems(c.alpm_depend_t, c.alpm_pkg_get_depends(p));
         while (di.next()) |d| {
             if (d.mod != c.ALPM_DEP_MOD_ANY or c.alpm_pkg_find(adds, d.name) != null) continue;
+            if (lists.contains(targets.items, str(d.name))) continue;
             var dbs = listItems(c.alpm_db_t, c.alpm_get_syncdbs(h.h));
             while (dbs.next()) |db| {
                 if (c.alpm_db_get_pkg(db, d.name) == null) continue;
@@ -348,7 +351,9 @@ fn reportPrepare(h: Handle, data: ?*c.alpm_list_t, diags: *diag.List) !void {
             while (it.next()) |m| {
                 const s = c.alpm_dep_compute_string(m.depend);
                 defer std.c.free(s);
-                try diags.add(.unresolvable, null, "{s} needs {s}, which no sync database provides", .{ str(m.target), str(s) }, null);
+                if (m.causingpkg != null) {
+                    try diags.add(.unresolvable, null, "{s} needs {s}, which the change to {s} takes away", .{ str(m.target), str(s), str(m.causingpkg) }, null);
+                } else try diags.add(.unresolvable, null, "{s} needs {s}, which no sync database provides", .{ str(m.target), str(s) }, null);
             }
         },
         c.ALPM_ERR_CONFLICTING_DEPS => {
@@ -404,11 +409,14 @@ pub fn transact(a: Allocator, io: std.Io, t: api.Transaction, diags: *diag.List)
     // a transaction that fails partway leaves its line open.
     defer if (t.target.progress) |p| p.feed(.end);
 
-    // install first: removing can take away what downloading needs, like
-    // the tls certificates. an install replaces a conflicting package the
-    // plan removes anyway, as pacman -S does.
-    if (t.install.len > 0 and !try run(a, io, h, t, .install, &log)) return false;
-    if (t.remove.len > 0 and !try run(a, io, h, t, .remove, &log)) return false;
+    // one transaction for installs and removals, when there are installs:
+    // libalpm downloads before it removes anything, so removing can't take
+    // away what downloading needs, like the tls certificates. an install
+    // replaces a conflicting package the plan removes anyway, as pacman -S
+    // does.
+    if (t.install.len > 0) {
+        if (!try run(a, io, h, t, .install, &log)) return false;
+    } else if (t.remove.len > 0 and !try run(a, io, h, t, .remove, &log)) return false;
 
     for ([_]struct { []const []const u8, c.alpm_pkgreason_t }{
         .{ t.explicit, c.ALPM_PKG_REASON_EXPLICIT },
@@ -617,7 +625,23 @@ fn configure(a: Allocator, io: std.Io, h: Handle, t: api.Transaction, diags: *di
 
 const Step = enum { remove, install };
 
-/// one transaction: all the removals, or all the installs.
+/// adds the plan's removals still installed to the transaction. returns
+/// how many, or null after saying why one couldn't be.
+fn addRemovals(a: Allocator, h: Handle, t: api.Transaction, diags: *diag.List) Error!?usize {
+    var n: usize = 0;
+    for (t.remove) |name| {
+        const p = try localPkg(a, h, name) orelse continue;
+        if (c.alpm_remove_pkg(h.h, p) != 0) {
+            _ = try fail(diags, "can't remove {s}: {s}", .{ name, h.lastError() });
+            return null;
+        }
+        n += 1;
+    }
+    return n;
+}
+
+/// one transaction: the installs, with the removals, or the removals
+/// alone.
 fn run(a: Allocator, io: std.Io, h: Handle, t: api.Transaction, step: Step, log: *Log) Error!bool {
     const diags = log.diags;
     log.begin();
@@ -625,18 +649,19 @@ fn run(a: Allocator, io: std.Io, h: Handle, t: api.Transaction, step: Step, log:
     defer _ = c.alpm_trans_release(h.h);
     switch (step) {
         .remove => {
-            var any = false;
-            for (t.remove) |name| {
-                const p = try localPkg(a, h, name) orelse continue;
-                if (c.alpm_remove_pkg(h.h, p) != 0) return fail(diags, "can't remove {s}: {s}", .{ name, h.lastError() });
-                any = true;
-            }
-            // the install may have replaced them all already.
-            if (!any) return true;
+            const n = try addRemovals(a, h, t, diags) orelse return false;
+            if (n == 0) return true;
         },
-        .install => for (t.install) |want| {
-            const p = try syncPackage(a, io, h, want, diags) orelse return false;
-            if (c.alpm_add_pkg(h.h, p) != 0) return fail(diags, "can't add {s}: {s}", .{ want.name, h.lastError() });
+        .install => {
+            for (t.install) |want| {
+                const p = try syncPackage(a, io, h, want, diags) orelse return false;
+                if (c.alpm_add_pkg(h.h, p) != 0) return fail(diags, "can't add {s}: {s}", .{ want.name, h.lastError() });
+            }
+            // the removals come along, so the dependency check sees the
+            // whole change: a package the plan removes may need what an
+            // upgrade takes away. libalpm downloads everything before it
+            // removes anything, so the tls certificates are still there.
+            _ = try addRemovals(a, h, t, diags) orelse return false;
         },
     }
     var data: ?*c.alpm_list_t = null;
