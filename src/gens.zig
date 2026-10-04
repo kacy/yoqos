@@ -89,7 +89,7 @@ pub const Machine = struct {
             .boot = boot,
             .loader = menu.Loader.of(boot) orelse return fail(why, "no bootloader yos can write a menu for"),
             .root_uuid = try blkid(a, io, boot.root_device.?, "UUID", why) orelse return null,
-            .esp_uuid = try blkid(a, io, boot.esp_device.?, "UUID", why) orelse return null,
+            .esp_uuid = try blkid(a, io, boot.esp_device orelse return fail(why, "the esp isn't mounted. mount it, as fstab says, and run this again"), "UUID", why) orelse return null,
         };
         if (std.mem.startsWith(u8, m.top, rootfs.private_dir ++ "/") and !rootfs.makePrivateDir()) return fail(why, "can't make " ++ rootfs.private_dir ++ ", a directory only root can go into");
         if (try m.run(&.{ "mkdir", "-p", m.top })) |w| return fail(why, w);
@@ -342,6 +342,9 @@ pub const Machine = struct {
     /// (see generation.strays), as far as it can. returns whether any
     /// went, since a menu written before one went may still name it.
     fn dropStrays(m: *const Machine, records: []const generation.Record, running: []const u8) !bool {
+        // a record that's there but won't read still names its generation:
+        // with one, what looks like a stray may be its.
+        if (recordFiles(m.io, "/var") != records.len) return false;
         var names: [2][]const []const u8 = undefined;
         for ([_][]const u8{ generation.roots_dir, generation.gens_dir }, &names) |dir, *out| {
             var list: std.ArrayList([]const u8) = .empty;
@@ -532,6 +535,18 @@ pub fn readRecords(a: Allocator, io: std.Io, var_dir: []const u8) ![]const gener
         }
     }.lt);
     return out.items;
+}
+
+/// how many record files are under `var_dir`, read or not.
+fn recordFiles(io: std.Io, var_dir: []const u8) usize {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = std.fmt.bufPrint(&buf, "{s}/{s}", .{ var_dir, generation.records_dir }) catch return 0;
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return 0;
+    defer dir.close(io);
+    var n: usize = 0;
+    var it = dir.iterate();
+    while (it.next(io) catch null) |f| n += @intFromBool(std.mem.endsWith(u8, f.name, ".json"));
+    return n;
 }
 
 pub fn writeRecord(a: Allocator, io: std.Io, var_dir: []const u8, r: generation.Record) !?[]const u8 {
