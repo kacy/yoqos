@@ -105,15 +105,15 @@ pub fn statusCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     defer w.deinit();
     const result = try w.plan(cli.inputs(ctx)) orelse return w.fail();
 
-    const s = try status.summarize(result.allocator(), result.state.config(), &result.state.lock, &result.facts, &result.plan);
+    var s = try status.summarize(result.allocator(), result.state.config(), &result.state.lock, &result.facts, &result.plan);
+    const fs: rootfs.Root = .{ .a = result.allocator(), .io = ctx.io, .dir = ctx.root };
+    const notice = try fs.read(gens.notice_path[1..]);
+    if (notice.len > 0) s.notice = notice;
     if (ctx.json) {
         try status.writeJson(ctx.out, &s);
     } else {
         try status.writeText(ctx.out, &s);
-        // something yos did on its own, like falling back from a generation.
-        const fs: rootfs.Root = .{ .a = result.allocator(), .io = ctx.io, .dir = ctx.root };
-        const notice = try fs.read(gens.notice_path[1..]);
-        if (notice.len > 0) try ctx.out.print("\nnote: {s}", .{notice});
+        if (s.notice) |n| try ctx.out.print("\nnote: {s}", .{n});
     }
     return if (s.failed()) 1 else 0;
 }

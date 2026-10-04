@@ -31,6 +31,10 @@ pub const Plain = struct {
     /// a 0xc2 at the end of the last write: a c1 control or not, which
     /// the next byte says.
     held: bool = false,
+    /// what goes through is json, whose strings take \u escapes and no
+    /// others: c0 controls come escaped already, so only del and the c1
+    /// controls are left.
+    json: bool = false,
     interface: std.Io.Writer,
 
     pub fn init(out: *std.Io.Writer, buffer: []u8) Plain {
@@ -67,7 +71,7 @@ pub const Plain = struct {
             if (p.held) {
                 p.held = false;
                 if (ch >= 0x80 and ch <= 0x9f) {
-                    try p.out.print("\\xc2\\x{x:0>2}", .{ch});
+                    if (p.json) try p.out.print("\\u00{x:0>2}", .{ch}) else try p.out.print("\\xc2\\x{x:0>2}", .{ch});
                     continue;
                 }
                 try p.out.writeByte(0xc2);
@@ -75,7 +79,7 @@ pub const Plain = struct {
             if (ch == 0xc2) {
                 p.held = true;
             } else if ((ch < 0x20 and ch != '\n' and ch != '\t') or ch == 0x7f) {
-                try p.out.print("\\x{x:0>2}", .{ch});
+                if (p.json) try p.out.print("\\u00{x:0>2}", .{ch}) else try p.out.print("\\x{x:0>2}", .{ch});
             } else try p.out.writeByte(ch);
         }
     }
@@ -93,6 +97,17 @@ test "control characters reach the terminal as escapes" {
     try w.writeAll("\x9b2J \xc2\xa2\r\x07\tend\n");
     try w.flush();
     try std.testing.expectEqualStrings("  + git 2.51\\x1b[1A\\x1b[2K\nabc\\xc2\\x9b2J \xc2\xa2\\x0d\\x07\tend\n", out.buffered());
+}
+
+test "json keeps its escapes json's own" {
+    var buf: [256]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&buf);
+    var small: [64]u8 = undefined;
+    var plain: Plain = .init(&out, &small);
+    plain.json = true;
+    try writeDoc(&plain.interface, "yos.test/1", .{ .name = "a\x7fb\xc2\x9bc\x1b" });
+    try plain.interface.flush();
+    try std.testing.expect(std.mem.indexOf(u8, out.buffered(), "\"a\\u007fb\\u009bc\\u001b\"") != null);
 }
 
 test "schema comes first" {

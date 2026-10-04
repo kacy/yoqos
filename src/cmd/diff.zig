@@ -4,6 +4,7 @@
 //! config between their commits.
 
 const std = @import("std");
+const history = @import("../history.zig");
 const cli = @import("../cli.zig");
 const exec = @import("../exec.zig");
 const generation = @import("../generation.zig");
@@ -122,7 +123,7 @@ fn configDiff(ctx: *Context, a: Allocator, from: generation.Record, to: generati
     const dir = to.config_dir orelse return null;
     const old = from.config_rev orelse return null;
     const new = to.config_rev orelse return null;
-    return switch (try exec.output(a, ctx.io, &.{ "git", "-C", dir, "diff", "--no-color", old, new, "--", "." })) {
+    return switch (try exec.output(a, ctx.io, try history.gitArgv(a, &.{ "-C", dir, "diff", "--no-color", old, new, "--", "." }))) {
         .ok => |t| t,
         .failed => |w| try std.fmt.allocPrint(a, "  (git couldn't compare them: {s})\n", .{w}),
     };

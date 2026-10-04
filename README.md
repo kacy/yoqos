@@ -88,7 +88,7 @@ from there you can stay as far in as you like:
 
 | step | what you get | what changes on the machine |
 | --- | --- | --- |
-| try | a config and a lock for the machine you have; `yos plan`, `yos why`, `yos status` | nothing outside `/etc/yos` |
+| try | a config and a lock for the machine you have; `yos plan`, `yos why`, `yos status` | nothing but yos's own files, in `/etc/yos` and `/var` |
 | manage | packages, services, users, files, and secrets from the config; config history; package rollback | a pacman hook that notices when you use pacman directly |
 | rollback | whole-system generations in the boot menu, trial boots with automatic fallback | a one-time layout change on btrfs, `yos enable-rollback`, shown as a plan first |
 | install | a new machine straight from your config repository, encrypted if you like | the whole disk |

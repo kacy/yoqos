@@ -66,6 +66,9 @@ pub const Status = struct {
     /// secrets the config names that this machine doesn't have, or can't
     /// decrypt. never their values.
     secrets: []const Secret = &.{},
+    /// something yos did on its own, like falling back from a generation
+    /// that didn't start.
+    notice: ?[]const u8 = null,
 
     pub const Secret = struct { name: []const u8, state: facts.Secret.State };
 

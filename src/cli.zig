@@ -51,6 +51,8 @@ pub const Context = struct {
     io: std.Io,
     out: *std.Io.Writer,
     err: *std.Io.Writer,
+    /// the escaping writer behind `out`, told when `--json` is given.
+    out_plain: ?*output.Plain = null,
     /// set by `--json`. commands print one json document instead of text.
     json: bool = false,
     /// set by `--config <path>`.
@@ -198,7 +200,13 @@ pub fn run(ctx: *Context, raw: []const [:0]const u8) !u8 {
     };
     defer ctx.gpa.free(args);
 
-    if (ctx.json) ctx.interactive = false;
+    if (ctx.json) {
+        ctx.interactive = false;
+        if (ctx.out_plain) |p| p.json = true;
+    }
+    // / under another name, like //, /., or a link to it, is the running
+    // machine, with its lock, staging, and boot checks.
+    if (!eql(ctx.root, "/") and rootfs.sameDir(ctx.root, "/")) ctx.root = "/";
     if (args.len == 0) return help(ctx, args);
 
     const name = args[0];

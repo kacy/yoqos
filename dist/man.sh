@@ -19,8 +19,9 @@ page() {
         printf '## NAME\n\n%s - %s\n\n## DESCRIPTION\n' "$1" "$3"
         # the doc without its own title; its ## sections become the page's.
         # links point at other files and anchors, which mean nothing in a
-        # man page, so they're just their text.
-        sed -e 1d -e 's/\[\([^]]*\)\]([^)]*)/\1/g' "$here/$4"
+        # man page, so they're just their text. read whole, since a link's
+        # text can wrap onto the next line.
+        sed 1d "$here/$4" | sed -z 's/\[\([^]]*\)\]([^)]*)/\1/g'
         printf '\n## SEE ALSO\n\n%s\n' "$5"
     } | lowdown -s -Tman \
         -M title="$1" -M section="$2" -M date="$date" \

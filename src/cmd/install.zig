@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const catalog = @import("../catalog.zig");
+const history = @import("../history.zig");
 const rootfs = @import("../rootfs.zig");
 const cli = @import("../cli.zig");
 const btrfs = @import("../btrfs.zig");
@@ -81,7 +82,9 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     var w: cli.Work = .init(ctx);
     defer w.deinit();
     const a = w.allocator();
-    var in: Installer = .{ .ctx = ctx, .a = a, .disk = disk.?, .encrypt = encrypt, .tpm = tpm };
+    // a /dev/disk/by-id link is the disk it points at.
+    const device = std.Io.Dir.cwd().realPathFileAlloc(ctx.io, disk.?, a) catch disk.?;
+    var in: Installer = .{ .ctx = ctx, .a = a, .disk = device, .encrypt = encrypt, .tpm = tpm };
     // read once, into this buffer only, and wiped when the install ends.
     var secret_buf: [install.max_passphrase + 1]u8 = undefined;
     defer std.crypto.secureZero(u8, &secret_buf);
@@ -94,7 +97,8 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
             .problem => |why| return cli.fail(ctx, "{s} {s}", .{ path, why }),
         };
     }
-    if (try in.fetch(source.?, host)) |why| return fail(ctx, why);
+    // nothing's on the disk yet, so it's as it was.
+    if (try in.fetch(source.?, host)) |why| return cli.fail(ctx, "{s}", .{why});
     if (update) {
         try ctx.out.writeAll("resolving the config against today's packages...\n");
         const code = try updating.updateCmd(ctx, &.{"--no-apply"});
@@ -109,7 +113,7 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
         return 1;
     }
     if (try cli.approve(ctx, yes, "install", "install?")) |code| return code;
-    if (rootfs.privateMounts(ctx.io)) |why| return fail(ctx, why);
+    if (rootfs.privateMounts(ctx.io)) |why| return cli.fail(ctx, "{s}", .{why});
     try ctx.out.writeByte('\n');
     defer in.unmountAll();
     for (steps) |s| {
@@ -252,10 +256,16 @@ const Installer = struct {
         }
         // the same goes for a redirect from an https url to one of them.
         const why = if (git)
-            try in.run(&.{ "git", "-c", "protocol.http.allow=never", "-c", "protocol.git.allow=never", "-c", "protocol.ftp.allow=never", "clone", "-q", "--", source, staging }) orelse
-                if (shown.len != source.len) try in.run(&.{ "git", "-C", staging, "remote", "set-url", "origin", shown }) else null
+            try in.run(try history.gitArgv(in.a, &.{ "-c", "protocol.http.allow=never", "-c", "protocol.git.allow=never", "-c", "protocol.ftp.allow=never", "clone", "-q", "--", source, staging })) orelse
+                if (shown.len != source.len) try in.run(try history.gitArgv(in.a, &.{ "-C", staging, "remote", "set-url", "origin", shown })) else null
         else
-            try exec.runAll(in.a, in.ctx.io, &.{ &.{ "mkdir", "-p", staging }, &.{ "cp", "-a", try std.fmt.allocPrint(in.a, "{s}/.", .{source}), staging } });
+            // the copy is root's, as a clone is: the source's owner, a
+            // user, would own the new machine's /etc/yos.
+            try exec.runAll(in.a, in.ctx.io, &.{
+                &.{ "mkdir", "-p", staging },
+                &.{ "cp", "-a", "--no-preserve=ownership", try std.fmt.allocPrint(in.a, "{s}/.", .{source}), staging },
+                &.{ "chmod", "0755", staging },
+            });
         if (why) |w| return try std.fmt.allocPrint(in.a, "can't fetch the config from {s}: {s}", .{ shown, try std.mem.replaceOwned(u8, in.a, w, source, shown) });
         if (!local) in.source = shown;
         if (host) |h| in.config_rel = try std.fmt.allocPrint(in.a, "hosts/{s}/machine.toml", .{h});
@@ -564,7 +574,7 @@ const Installer = struct {
         if (try m.keepBoot(boot.root_subvol.?)) |w| return w;
         btrfs.snapshot(try m.at(&.{boot.root_subvol.?}), try m.at(&.{ generation.gens_dir, "1" }), true) catch |e|
             return try std.fmt.allocPrint(in.a, "can't record generation 1: {s}", .{@errorName(e)});
-        const rev = switch (try exec.output(in.a, in.ctx.io, &.{ "git", "-C", staging, "rev-parse", "HEAD" })) {
+        const rev = switch (try exec.output(in.a, in.ctx.io, try history.gitArgv(in.a, &.{ "-C", staging, "rev-parse", "HEAD" }))) {
             .ok => |t| std.mem.trim(u8, t, " \n"),
             .failed => null,
         };

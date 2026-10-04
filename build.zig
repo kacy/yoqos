@@ -55,6 +55,9 @@ pub fn build(b: *std.Build) void {
     });
     const run_tests = b.addRunArtifact(tests);
     run_tests.setCwd(b.path("."));
+    // the tests read fixtures under tests/ the binary doesn't hold, so a
+    // change to those alone has to run them too.
+    run_tests.has_side_effects = true;
     b.step("test", "run unit and golden tests").dependOn(&run_tests.step);
 
     const fmt = b.addFmt(.{ .paths = &.{ "build.zig", "build.zig.zon", "src" }, .check = true });

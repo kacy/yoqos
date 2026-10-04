@@ -170,12 +170,15 @@ pub fn rebootReason(pkg: []const u8) ?[]const u8 {
     for (exact) |e| {
         if (std.mem.eql(u8, e[0], pkg)) return e[1];
     }
-    if (std.mem.startsWith(u8, pkg, "nvidia")) return "gpu driver";
+    // the driver and its libraries, not the tools beside them, which
+    // change nothing the running kernel or session holds.
+    if (std.mem.startsWith(u8, pkg, "nvidia") and !lists.startsWithAny(pkg, &.{ "nvidia-settings", "nvidia-prime", "nvidia-container" })) return "gpu driver";
     return null;
 }
 
 test "reboot reasons" {
     try std.testing.expectEqualStrings("kernel", rebootReason("linux").?);
     try std.testing.expectEqualStrings("gpu driver", rebootReason("nvidia-utils").?);
+    try std.testing.expectEqual(null, rebootReason("nvidia-settings"));
     try std.testing.expectEqual(null, rebootReason("neovim"));
 }

@@ -5,6 +5,7 @@
 //! sudo. this part is pure; cmd/init.zig asks and writes.
 
 const std = @import("std");
+const toml = @import("toml.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Answers = struct {
@@ -45,14 +46,15 @@ pub fn machineToml(a: Allocator, x: Answers) ![]const u8 {
     );
     if (x.tpm) try out.appendSlice(a, "  \"tpm2-tss\",\n");
     try out.appendSlice(a, "]\n");
-    try out.print(a, "\n[system]\nhostname = \"{s}\"\ntimezone = \"{s}\"\n", .{ x.hostname, x.timezone });
+    // the answers go in quoted as toml quotes them, whatever they hold.
+    try out.print(a, "\n[system]\nhostname = {s}\ntimezone = {s}\n", .{ try tomlText(a, x.hostname, toml.writeString), try tomlText(a, x.timezone, toml.writeString) });
     if (x.encrypt or x.tpm) try out.appendSlice(a, "\n[boot]\nencrypt = true\n");
     if (x.cpu != null or x.gpu != null) {
         try out.appendSlice(a, "\n[hardware]\n");
         if (x.cpu) |c| try out.print(a, "cpu = \"{s}\"\n", .{c});
         if (x.gpu) |g| try out.print(a, "gpu = \"{s}\"\n", .{g});
     }
-    try out.print(a, "\n[users.{s}]\ngroups = [\"wheel\"]\n", .{x.user});
+    try out.print(a, "\n[users.{s}]\ngroups = [\"wheel\"]\n", .{try tomlText(a, x.user, toml.writeKey)});
     try out.appendSlice(a, "\n[services]\nnetworkmanager = true\n");
     if (x.ssh) try out.appendSlice(a, "ssh = true\n");
     try out.appendSlice(a,
@@ -69,6 +71,13 @@ pub fn machineToml(a: Allocator, x: Answers) ![]const u8 {
         \\
     );
     return out.items;
+}
+
+/// `value` as `write` puts it in toml.
+fn tomlText(a: Allocator, value: []const u8, write: fn (*std.Io.Writer, []const u8) anyerror!void) ![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(a);
+    write(&out.writer, value) catch return error.OutOfMemory;
+    return out.written();
 }
 
 /// the config's gpu value for what the machine has: nvidia if there's one,

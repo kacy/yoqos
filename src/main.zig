@@ -41,6 +41,7 @@ pub fn main(init: std.process.Init) !void {
         .gpa = init.gpa,
         .io = init.io,
         .out = &plain_out.interface,
+        .out_plain = &plain_out,
         .err = &plain_err.interface,
         .term = &err.interface,
         .config_path = try hostConfig(init.arena.allocator(), init.io),
