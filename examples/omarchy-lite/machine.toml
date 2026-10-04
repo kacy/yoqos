@@ -34,7 +34,7 @@ packages = [
   # the terminal and what runs in it, as omarchy has it.
   "foot", "neovim", "lazygit", "btop", "fastfetch", "starship",
   "zoxide", "eza", "fzf", "ripgrep", "fd", "bat", "tldr", "plocate",
-  "mise", "gum", "jq", "bluetui", "wiremix", "lazydocker",
+  "mise", "gum", "tmux", "bluetui", "wiremix", "lazydocker",
   # apps.
   "chromium", "nautilus", "sushi", "gvfs-mtp", "gvfs-smb", "imv", "mpv",
   "evince", "xournalpp",
@@ -114,6 +114,16 @@ Host *
   ServerAliveInterval 15
   ServerAliveCountMax 3
   ConnectTimeout 10
+"""
+
+# mise's tools come before the system's, in the session and in login
+# shells: its shims stand in for each tool it manages.
+[files."/etc/profile.d/mise.sh"]
+text = """
+case ":$PATH:" in
+*":$HOME/.local/share/mise/shims:"*) ;;
+*) PATH="$HOME/.local/share/mise/shims:$PATH" ;;
+esac
 """
 
 # the session's own config, beside hyprland's.
