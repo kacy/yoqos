@@ -105,7 +105,7 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     const p = try install.plan(a, found);
     try install.writeText(ctx.out, &p);
     if (!p.ready()) {
-        try ctx.out.writeAll("\nos can't install until the checks above pass.\n");
+        try ctx.out.writeAll("\nyos can't install until the checks above pass.\n");
         return 1;
     }
     if (try cli.approve(ctx, yes, "install", "install?")) |code| return code;
@@ -173,7 +173,7 @@ fn unsetSecrets(a: Allocator, store: ?secrets.Store, names: []const []const u8) 
 }
 
 fn fail(ctx: *Context, why: []const u8) !u8 {
-    return cli.fail(ctx, "{s}\nos: the install stopped there. the disk isn't bootable yet; run it again to start over.", .{why});
+    return cli.fail(ctx, "{s}\nyos: the install stopped there. the disk isn't bootable yet; run it again to start over.", .{why});
 }
 
 const Step = struct {

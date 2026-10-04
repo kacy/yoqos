@@ -221,7 +221,7 @@ pub const System = struct {
         const path = try s.credPath(a, name);
         if (!try s.makeDirs(a, std.fs.path.dirnamePosix(path).?)) return try std.fmt.allocPrint(a, "can't make {s}", .{s.dir});
         if (try key(ptr, a) == null and !try makeKey(ptr, a)) return try std.fmt.allocPrint(a, "can't write {s}", .{try s.keyPath(a)});
-        const tmp = try std.fmt.allocPrintSentinel(a, "{s}.os-tmp", .{path}, 0);
+        const tmp = try std.fmt.allocPrintSentinel(a, "{s}.yos-tmp", .{path}, 0);
         // one left by a crash goes first, and one left by a failure here
         // goes after. once renamed, there's nothing left to remove.
         _ = linux.unlink(tmp);
@@ -395,15 +395,15 @@ test "a new credential goes in place synced, readable by root alone" {
     const io = std.testing.io;
     var a_buf: [256]u8 = undefined;
     var b_buf: [256]u8 = undefined;
-    const from = try std.fmt.bufPrintZ(&a_buf, ".zig-cache/tmp/{s}/home.cred.os-tmp", .{tmp.sub_path});
+    const from = try std.fmt.bufPrintZ(&a_buf, ".zig-cache/tmp/{s}/home.cred.yos-tmp", .{tmp.sub_path});
     const to = try std.fmt.bufPrintZ(&b_buf, ".zig-cache/tmp/{s}/home.cred", .{tmp.sub_path});
-    try tmp.dir.writeFile(io, .{ .sub_path = "home.cred.os-tmp", .data = "sealed" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "home.cred.yos-tmp", .data = "sealed" });
     try tmp.dir.writeFile(io, .{ .sub_path = "home.cred", .data = "older" });
     try std.testing.expect(System.commit(from, to));
     var buf: [16]u8 = undefined;
     try std.testing.expectEqualStrings("sealed", try tmp.dir.readFile(io, "home.cred", &buf));
     try std.testing.expectEqual(0o600, @intFromEnum((try tmp.dir.statFile(io, "home.cred", .{})).permissions) & 0o777);
-    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "home.cred.os-tmp", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "home.cred.yos-tmp", .{}));
     // nothing there to put in place leaves the old value.
     try std.testing.expect(!System.commit(from, to));
     try std.testing.expectEqualStrings("sealed", try tmp.dir.readFile(io, "home.cred", &buf));
@@ -460,8 +460,8 @@ test "systemd-creds runs bound to no pcrs, with its default keys" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const enc = try System.encryptArgv(a, "wifi/home", "/s/wifi/home.cred.os-tmp");
-    const want_enc = [_][]const u8{ "systemd-creds", "encrypt", "--name=wifi@home", "--tpm2-pcrs=", "-", "/s/wifi/home.cred.os-tmp" };
+    const enc = try System.encryptArgv(a, "wifi/home", "/s/wifi/home.cred.yos-tmp");
+    const want_enc = [_][]const u8{ "systemd-creds", "encrypt", "--name=wifi@home", "--tpm2-pcrs=", "-", "/s/wifi/home.cred.yos-tmp" };
     try testing.expectEqual(want_enc.len, enc.len);
     for (want_enc, enc) |w, g| try testing.expectEqualStrings(w, g);
     for (enc) |arg| try testing.expect(!std.mem.startsWith(u8, arg, "--with-key"));

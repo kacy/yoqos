@@ -51,7 +51,7 @@ const Settings = struct {
             return false;
         }
         const link = try s.fs.path("etc/localtime");
-        const tmp = try std.fmt.allocPrint(s.fs.a, "{s}.os-tmp", .{link});
+        const tmp = try std.fmt.allocPrint(s.fs.a, "{s}.yos-tmp", .{link});
         cwd.deleteFile(s.fs.io, tmp) catch {};
         cwd.symLink(s.fs.io, target, tmp, .{}) catch return s.failed("link", tmp);
         cwd.rename(tmp, cwd, link, s.fs.io) catch return s.failed("replace", link);
