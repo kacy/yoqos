@@ -59,7 +59,11 @@ fn refreshMenu(ctx: *Context, w: *cli.Work) !void {
     // a copy of an older generation, or one waiting for the next boot:
     // the newest entry isn't this root.
     if (applying.bootBlocker(ctx.io) != null) return;
-    if (cli.lockForEdit(ctx) != null) return;
+    // waiting for the lock would hold pacman up; saying so will do.
+    if (cli.lockForEdit(ctx) != null) {
+        try ctx.err.writeAll("yos: the boot menu still boots the kernel from before this transaction: another yos is changing this machine. `yos gc` writes it again once that's done.\n");
+        return;
+    }
     const running = boot.root_subvol.?;
     var left: std.ArrayList([]const u8) = .empty;
     const m = try rollback.openWayBack(ctx, a, boot, &left) orelse return;

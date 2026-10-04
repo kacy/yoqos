@@ -138,7 +138,9 @@ fn rollbackGeneration(ctx: *Context, a: std.mem.Allocator, boot: facts.Boot, wan
 
     const source = if (to_booted) boot.root_subvol.? else try std.fmt.allocPrint(a, "/{s}/{d}", .{ generation.gens_dir, n });
     const reason = try std.fmt.allocPrint(a, "{s} {d}: {s}", .{ if (to_booted) "keep" else "rollback to", n, target.reason });
-    try ctx.out.print("generation {d} ({s} · {s}) becomes generation {d}, and the next boot runs it.\n/var and /home stay as they are.\n", .{ n, try generation.dateOf(a, target.time), target.reason, generation.next(records) });
+    // its new number comes once it's made: one a cut-off run left a root
+    // under is skipped.
+    try ctx.out.print("generation {d} ({s} · {s}) becomes a new generation, and the next boot runs it.\n/var and /home stay as they are.\n", .{ n, try generation.dateOf(a, target.time), target.reason });
     var left: std.ArrayList([]const u8) = .empty;
     const m = try openWayBack(ctx, a, boot, &left) orelse return 1;
     defer m.close();
