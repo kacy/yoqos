@@ -11,7 +11,7 @@ should make, fails the build.
 | [minimal](minimal/machine.toml) | the least a machine needs: six packages, and yos's defaults for the rest |
 | [laptop](laptop/machine.toml) | luks, signed unified kernel images for secure boot, battery services, and wi-fi whose password never goes in the config |
 | [hyprland](hyprland/machine.toml) | a hyprland desktop with greetd and pipewire, and a [hyprland.conf](hyprland/hyprland.conf) that becomes the machine's default |
-| [omarchy-lite](omarchy-lite/machine.toml) | omarchy's desktop rebuilt from arch's own packages: its keybindings and tokyo night look in [hyprland.lua](omarchy-lite/hypr/hyprland.lua), a bar, a launcher, a lock screen, and its services, installable from the live iso |
+| [omarchy-lite](omarchy-lite/machine.toml) | omarchy's desktop on yos: its keybindings and look in [hyprland.lua](omarchy-lite/hypr/hyprland.lua), and its own quickshell ui, fetched at a pinned commit the first time you log in, installable from the live iso |
 | [nvidia](nvidia/machine.toml) | kde on an nvidia card, a provider chosen up front, and a sysctl for games |
 | [home-server](home-server/machine.toml) | the lts kernel, docker, tailscale, services yos doesn't know by name, a keys-only ssh drop-in, and a secret |
 | [container](container/machine.toml) | a machine with no kernel of its own, for systemd-nspawn or a build box |
@@ -61,37 +61,50 @@ reads `hosts/<its hostname>/machine.toml` on its own, and `yos install
 
 ## omarchy-lite
 
-omarchy is a hyprland desktop on
-arch with a lot of opinions, most of them good. it gets there with
-hundreds of its own scripts, a quickshell ui, and packages from a
-repository of its own. `omarchy-lite` gets as close as config files can,
-using only programs from arch's own repositories, so `yos install` can
-build it from the live iso:
+omarchy is a hyprland desktop on arch with a lot of opinions, most of them
+good. `omarchy-lite` keeps the parts that make it feel like omarchy, its
+keybindings, its look, and its own quickshell ui, and leaves out its apps,
+its menu, and the packages only its own repository has. every package comes
+from arch's own repositories, so `yos install` builds it from the live iso:
 
 ```
 yos install https://example.com/you/machines.git --disk /dev/nvme0n1 --encrypt --update
 ```
 
-after the passphrase at boot, sddm logs straight in, as omarchy does. the
-pieces, and what stands in for omarchy's:
+after the passphrase at boot, sddm logs straight in, as omarchy does.
+
+the ui isn't a package, and nothing of omarchy's is copied here.
+[shell/yos-shell](omarchy-lite/shell/yos-shell) runs at the first login:
+it fetches omarchy's repository at the commit
+[shell/manifest](omarchy-lite/shell/manifest) pins, only the parts it
+needs, and lays out omarchy's bar, panels, notifications, lock screen, and
+ai agents panel in `~/.local/share/yos-shell`, with their scripts as
+omarchy wrote them. the manifest names every command the ui can run, and
+where it comes from:
+
+- most are omarchy's own, unchanged.
+- a few are the script's own: the update icon and its click go through
+  `yos status` and `yos update`, and the agents panel starts whichever
+  coding agent the machine has, rather than installing one.
+- the rest, for features left out like dictation and screen recording, do
+  nothing.
+
+if a newer commit runs a command the manifest doesn't name, setting up
+stops and says which, rather than leave a panel that quietly does nothing.
+to update, change the commit, check what's new, and log in again.
 
 | omarchy | here |
 | --- | --- |
 | its hyprland lua, keybindings, and look | [hyprland.lua](omarchy-lite/hypr/hyprland.lua), one file, the same bindings for windows, workspaces, groups, and the scratchpad |
-| the quickshell bar and panels | waybar, whose tiles open bluetui, nmtui, wiremix, and btop |
+| the quickshell ui | the same, at a pinned commit, with the display, audio, network, bluetooth, power, and ai agents panels |
 | the menus and app launcher | fuzzel, with a power menu and a keybinding list on it |
-| notifications, lock, idle | mako, hyprlock, hypridle |
-| the volume and brightness display | swayosd |
 | screenshots and the clipboard manager | grim, slurp, and satty; cliphist through fuzzel |
-| the tokyo night theme | the same colors, written into each program's config |
 | limine and snapper snapshots | yos's own generations and rollback |
 | ufw | firewalld, which yos knows by name |
 
-every file beside `machine.toml` goes into `/etc/xdg`, so it's the
-machine's default, and a user's own in `~/.config` wins. what's left out:
-theme switching, web apps, omarchy's own apps like omacalc, walker and
-localsend (both only in the aur), and the dozens of small scripts behind
-omarchy's menus.
+what's left out: omarchy's menu, theme switching, web apps, its own apps
+like omacalc, and the dns switch in the network panel, since on yos that's
+the machine's config.
 
 ## more
 
