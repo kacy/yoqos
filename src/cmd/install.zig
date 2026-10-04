@@ -122,11 +122,18 @@ pub fn installCmd(ctx: *Context, args: []const [:0]const u8) !u8 {
     if (rootfs.privateMounts(ctx.io)) |why| return cli.fail(ctx, "{s}", .{why});
     try ctx.out.writeByte('\n');
     defer in.unmountAll();
+    // ctrl-c, or a dropped ssh session, stops the install after the step
+    // it's in, rather than killing yos with the disk mounted in a private
+    // namespace, where the daemons the build started would keep it busy
+    // for every run after.
+    const stops = exec.Stops.note();
+    defer stops.restore();
     for (steps) |s| {
         if (s.encrypted and !in.encrypt) continue;
         try ctx.out.print("  {s}\n", .{s.what});
         try ctx.out.flush();
         if (try s.run(&in)) |why| return fail(ctx, why);
+        if (exec.Stops.asked()) return fail(ctx, "stopped, as asked");
     }
     if (!yes and ctx.interactive) try in.passwords() else try in.noPasswords();
     if (try in.recordFirst()) |why| return fail(ctx, why);
