@@ -275,6 +275,24 @@ test "yos makes directories others can't write to, whatever its umask" {
     try std.testing.expectEqual(0o755, @intFromEnum((try tmp.dir.statFile(io, "var/lib/yos", .{})).permissions) & 0o7777);
 }
 
+/// whether `x` and `y` name the same directory.
+pub fn sameDir(x: []const u8, y: []const u8) bool {
+    const linux = std.os.linux;
+    var st: [2]linux.Statx = undefined;
+    for ([_][]const u8{ x, y }, &st) |path, *out| {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const z = std.fmt.bufPrintZ(&buf, "{s}", .{path}) catch return false;
+        if (linux.errno(linux.statx(linux.AT.FDCWD, z, 0, .{ .INO = true }, out)) != .SUCCESS) return false;
+    }
+    return st[0].ino == st[1].ino and st[0].dev_major == st[1].dev_major and st[0].dev_minor == st[1].dev_minor;
+}
+
+test "the same directory by two names" {
+    try std.testing.expect(sameDir("//", "/"));
+    try std.testing.expect(sameDir("/./usr/..", "/"));
+    try std.testing.expect(!sameDir("/usr", "/"));
+}
+
 pub fn pathExists(io: std.Io, path: []const u8) bool {
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
