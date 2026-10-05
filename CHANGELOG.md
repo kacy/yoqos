@@ -1,5 +1,17 @@
 # changelog
 
+## unreleased
+
+### fixes
+
+- an enabled service that nothing has asked for yet this boot counts as
+  it should be. bluetooth.service on a machine with no adapter is the
+  usual one: bluetooth.target never starts, so neither does it, and yos
+  planned "start" for it after every boot, and on the rollback rung
+  every trial failed its health check and fell back. yos now reads what
+  would start the unit (its WantedBy= and RequiredBy=), and leaves it be
+  while none of those is running.
+
 ## 0.2.0
 
 yoq os is now yos. the command is `yos`, the package is `yos`, and what it

@@ -22,6 +22,9 @@ const unit_iface = "org.freedesktop.systemd1.Unit";
 /// units by name, as they're found.
 const Found = std.StringArrayHashMapUnmanaged(facts.Unit);
 
+/// the names of active units of every kind, targets included.
+const Active = std.StringHashMapUnmanaged(void);
+
 pub fn running() bool {
     return c.sd_booted() > 0;
 }
@@ -52,8 +55,10 @@ pub fn units(a: Allocator, diags: *diag.List) api.Error!?[]facts.Unit {
     defer _ = c.sd_bus_flush_close_unref(bus);
 
     var found: Found = .empty;
+    var active: Active = .empty;
     if (!try unitFiles(a, bus, &found, diags)) return null;
-    if (!try loadedUnits(a, bus, &found, diags)) return null;
+    if (!try loadedUnits(a, bus, &found, &active, diags)) return null;
+    try waitingUnits(a, bus, &found, &active);
 
     var out: std.ArrayList(facts.Unit) = .empty;
     for (found.values()) |u| {
@@ -231,7 +236,7 @@ fn unitFiles(a: Allocator, bus: *c.sd_bus, found: *Found, diags: *diag.List) !bo
 
 /// run state from ListUnits: a(ssssssouso), of which the first and fourth,
 /// the name and active state, matter here.
-fn loadedUnits(a: Allocator, bus: *c.sd_bus, found: *Found, diags: *diag.List) !bool {
+fn loadedUnits(a: Allocator, bus: *c.sd_bus, found: *Found, active_units: *Active, diags: *diag.List) !bool {
     const m = try call(bus, "ListUnits", null, .{}, diags) orelse return false;
     defer _ = c.sd_bus_message_unref(m);
     if (c.sd_bus_message_enter_container(m, 'a', "(ssssssouso)") < 0) return badReply(diags, "ListUnits");
@@ -243,8 +248,9 @@ fn loadedUnits(a: Allocator, bus: *c.sd_bus, found: *Found, diags: *diag.List) !
         if (r < 0) return badReply(diags, "ListUnits");
         if (r == 0) break;
         const name = std.mem.span(s[0]);
-        if (!api.managedKind(name)) continue;
         const active = std.mem.span(s[3]);
+        if (std.mem.eql(u8, active, "active")) try active_units.put(a, try a.dupe(u8, name), {});
+        if (!api.managedKind(name)) continue;
         const u = try entry(a, found, name);
         u.active = std.mem.eql(u8, active, "active");
         u.failed = std.mem.eql(u8, active, "failed");
@@ -252,6 +258,57 @@ fn loadedUnits(a: Allocator, bus: *c.sd_bus, found: *Found, diags: *diag.List) !
         if (std.mem.endsWith(u8, name, ".service")) {
             if (u.active) u.main_pid = mainPid(bus, s[6]) else u.ran = oneshotRan(bus, s[6]);
         }
+    }
+    return true;
+}
+
+/// enabled services that aren't running because nothing has asked for them
+/// yet. LoadUnit loads a unit's description without starting it, so its
+/// WantedBy= and RequiredBy=, read from the enablement links, show what
+/// would start it. a unit systemd won't load is left as it is.
+fn waitingUnits(a: Allocator, bus: *c.sd_bus, found: *Found, active: *const Active) !void {
+    for (found.values()) |*u| {
+        if (!u.enabled or u.active or u.failed or u.skipped or u.ran or u.masked) continue;
+        if (!std.mem.endsWith(u8, u.name, ".service")) continue;
+        const path = try loadUnit(a, bus, u.name) orelse continue;
+        var started: u64 = 0;
+        var err: c.sd_bus_error = std.mem.zeroes(c.sd_bus_error);
+        defer c.sd_bus_error_free(&err);
+        if (c.sd_bus_get_property_trivial(bus, destination, path.ptr, unit_iface, "InactiveExitTimestampMonotonic", &err, 't', &started) < 0) continue;
+        var wanted_by: std.ArrayList([]const u8) = .empty;
+        for ([_][*:0]const u8{ "WantedBy", "RequiredBy" }) |property| {
+            if (!try unitStrings(a, bus, path, property, &wanted_by)) break;
+        } else u.waiting = api.waiting(wanted_by.items, active, started != 0);
+    }
+}
+
+/// the object path of a unit, loaded if it wasn't, or null if systemd
+/// won't load it.
+fn loadUnit(a: Allocator, bus: *c.sd_bus, name: []const u8) !?[:0]const u8 {
+    var err: c.sd_bus_error = std.mem.zeroes(c.sd_bus_error);
+    defer c.sd_bus_error_free(&err);
+    var reply: ?*c.sd_bus_message = null;
+    if (c.sd_bus_call_method(bus, destination, object, manager_iface, "LoadUnit", &err, &reply, "s", (try a.dupeZ(u8, name)).ptr) < 0) return null;
+    defer _ = c.sd_bus_message_unref(reply);
+    var path: [*c]const u8 = null;
+    if (c.sd_bus_message_read(reply, "o", &path) < 0) return null;
+    return try a.dupeZ(u8, std.mem.span(path));
+}
+
+/// appends a unit's string-list property to `out`. false if systemd
+/// didn't answer.
+fn unitStrings(a: Allocator, bus: *c.sd_bus, path: [:0]const u8, property: [*:0]const u8, out: *std.ArrayList([]const u8)) !bool {
+    var err: c.sd_bus_error = std.mem.zeroes(c.sd_bus_error);
+    defer c.sd_bus_error_free(&err);
+    var list: [*c][*c]u8 = null;
+    if (c.sd_bus_get_property_strv(bus, destination, path.ptr, unit_iface, property, &err, &list) < 0) return false;
+    // an empty list comes back as no list at all.
+    if (list == null) return true;
+    defer std.c.free(@ptrCast(list));
+    var i: usize = 0;
+    while (list[i] != null) : (i += 1) {
+        defer std.c.free(list[i]);
+        try out.append(a, try a.dupe(u8, std.mem.span(list[i])));
     }
     return true;
 }

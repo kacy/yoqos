@@ -390,8 +390,9 @@ fn unitStep(on: bool, have: ?*const facts.Unit) ?UnitStep {
     const u = have orelse return if (on) .{ .op = .add, .to = "enable, start" } else null;
     if (on) {
         // a oneshot that ran and finished well counts as running, and so
-        // does a unit systemd skipped for a condition that didn't hold.
-        const running = u.active or u.ran or u.skipped;
+        // does a unit systemd skipped for a condition that didn't hold,
+        // and one nothing has asked for yet this boot.
+        const running = u.active or u.ran or u.skipped or u.waiting;
         if (!u.enabled and !u.fixed) return .{ .op = .add, .to = if (running) "enable" else "enable, start" };
         if (!running) return .{ .op = .change, .to = "start" };
         return null;
@@ -1192,6 +1193,10 @@ test "a service systemd skipped for a condition is as it should be" {
     try testing.expect((try plan(t.a(), &c, &l, &f, &t.diags)).?.empty());
     units[0].skipped = false;
     try testing.expectEqualStrings("start", (try plan(t.a(), &c, &l, &f, &t.diags)).?.changes[0].to.?);
+    // after a reboot without an adapter, bluetooth.target never starts, so
+    // nothing asks for bluetooth.service: it waits.
+    units[0].waiting = true;
+    try testing.expect((try plan(t.a(), &c, &l, &f, &t.diags)).?.empty());
 }
 
 test "a repository from the config: its file, pacman.conf's include, and its key" {
