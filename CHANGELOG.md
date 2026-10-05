@@ -1,18 +1,20 @@
 # changelog
 
-## unreleased
+## 0.2.0
+
+yoq os is now yos. the command is `yos`, the package is `yos`, and what it
+keeps on a machine moved with the name, so a machine 0.1.x set up moves
+over by hand once: with the old package still installed, run `os
+uninstall`, then `mv /etc/yoq /etc/yos` and `mv /var/cache/yoq
+/var/cache/yos`, and install yos. until then, yos stops with E0138 and
+says the same. the first two items below have the details.
+
+also new: a firewall with ufw, masked services, man pages, and
+`examples/omarchy-lite`, omarchy's desktop on yos. the fixes came from a
+review of the whole code base.
 
 ### new
 
-- `[firewall]` with `backend = "ufw"` and `allow` rules like `"22/tcp"`
-  or `"53/udp from 172.16.0.0/12 to 172.17.0.1"`. yos installs ufw,
-  writes its config and rules files the way `ufw allow` does, turns the
-  service on, and runs `ufw reload` when the rules change. nothing comes in
-  but what's allowed, and a rule added by hand shows up as a change.
-- `masked = true` on a service masks its unit, so nothing starts it, and
-  stops it. it needs only the unit's name, like
-  `NetworkManager-wait-online.service`, so boot doesn't wait for the
-  network. turning the service on, or `masked = false`, unmasks it.
 - yoq os is now yos, and its command is `yos`, not `os`. the package is
   `yos` (and `yos-git`), the config lives in `/etc/yos`, state in
   `/var/lib/yos`, and everything yos writes says yos: units like
@@ -33,6 +35,19 @@
   the two packages install side by side while you switch, and yos's
   pacman hook stays quiet until you have. ci runs that whole move, from a
   machine 0.1.5 set up.
+- `[firewall]` with `backend = "ufw"` and `allow` rules like `"22/tcp"`
+  or `"53/udp from 172.16.0.0/12 to 172.17.0.1"`. yos installs ufw,
+  writes its config and rules files the way `ufw allow` does, turns the
+  service on, and runs `ufw reload` when the rules change. nothing comes in
+  but what's allowed, and a rule added by hand shows up as a change.
+- `masked = true` on a service masks its unit, so nothing starts it, and
+  stops it. it needs only the unit's name, like
+  `NetworkManager-wait-online.service`, so boot doesn't wait for the
+  network. turning the service on, or `masked = false`, unmasks it.
+- man pages: `man yos` and `man yos-generations`, made from docs/usage.md
+  and docs/generations.md with lowdown when the package builds, so
+  they're never out of step with the docs. the release tarball and the
+  live iso have them too, and ci lints them with mandoc.
 - `yos enable-rollback` turns generations on again after an uninstall.
   the root an uninstall leaves running is in @roots, and yos took that as
   generations being on already, said so, and did nothing. a root in @roots
@@ -40,10 +55,13 @@
   the first generation is numbered after it. gc keeps that first generation
   whatever its number, and leaves alone the generations an uninstall kept
   from before it.
-- man pages: `man yos` and `man yos-generations`, made from docs/usage.md
-  and docs/generations.md with lowdown when the package builds, so
-  they're never out of step with the docs. the release tarball and the
-  live iso have them too, and ci lints them with mandoc.
+- `examples/omarchy-lite`: omarchy's hyprland desktop as a yos config, from
+  arch's own packages, so `yos install` builds it from the live iso. it has
+  omarchy's keybindings and look, and omarchy's own quickshell ui, from the
+  bar and launcher to the panels, notifications, lock screen, and
+  wallpaper, fetched at a pinned commit the first time someone logs in.
+  nothing of omarchy's is copied into the repository, and a manifest names
+  where every command the ui runs comes from.
 
 ### fixes
 
