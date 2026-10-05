@@ -88,11 +88,30 @@ wait_boot() {
 diagnose() {
     [ -S "$dir/serial.sock" ] || return 0
     from=$(($(wc -c < "$dir/console.log") + 1))
-    for line in "" "export SYSTEMD_COLORS=0 SYSTEMD_PAGER=; echo yos-diag-start; ip -br addr; ip route; systemctl is-active sshd NetworkManager systemd-networkd; systemctl --failed --no-legend; ss -tln; journalctl -b --no-pager -o short-monotonic -u NetworkManager -u systemd-networkd -u sshd | tail -n 40; echo yos-diag-end"; do
+    # one line at a time, each short enough for the terminal to take. the
+    # markers are printed with printf, so the shell's echo of the command
+    # line doesn't match them. which root and command line booted, then
+    # the addresses: networkmanager adds a link's ipv6 link-local address
+    # itself when it activates a connection there, so an up link with no
+    # address at all most likely had no connection activated, rather than
+    # a dhcp request nobody answered. then what networkmanager knows:
+    # its devices, its connections and where they're stored, its config,
+    # and its state in /var, which every generation shares while
+    # /etc/NetworkManager rolls back. machine-id seeds dhcp's client ids.
+    for line in "" \
+        "export SYSTEMD_COLORS=0 SYSTEMD_PAGER=; printf 'yos-diag-%s\\n' start; findmnt -no FSROOT /; cat /proc/cmdline; cat /etc/machine-id; ip -br addr; ip -4 addr; ip route; systemctl is-active sshd NetworkManager systemd-networkd; systemctl --failed --no-legend; ss -tln" \
+        "timeout 10 nmcli -t general; timeout 10 nmcli -t dev; timeout 10 nmcli -t -f NAME,UUID,DEVICE,AUTOCONNECT,ACTIVE,FILENAME con; NetworkManager --print-config 2>&1 | grep -v -e '^#' -e '^\$'" \
+        "ls -la /etc/NetworkManager/conf.d /etc/NetworkManager/system-connections /var/lib/NetworkManager; head -n 30 /var/lib/NetworkManager/NetworkManager.state /var/lib/NetworkManager/no-auto-default.state /var/lib/NetworkManager/*.lease; timeout 10 networkctl --no-pager" \
+        "journalctl -b --no-pager -o short-monotonic -u NetworkManager | tail -n 50; journalctl -b --no-pager -o short-monotonic -u systemd-networkd -u sshd | tail -n 20; printf 'yos-diag-%s\\n' end"; do
         printf '%s\r' "$line" | socat - UNIX-CONNECT:"$dir/serial.sock" || return 0
         sleep 3
     done
-    sleep 10
+    # nmcli waits on a networkmanager that hangs, so the end can take a
+    # while.
+    for _ in $(seq 60); do
+        tail -c +"$from" "$dir/console.log" | grep -a -q 'yos-diag-end' && break
+        sleep 1
+    done
     echo "--- what the vm says, from its serial console" >&2
     # the shell marks its prompts and commands with escape sequences of its
     # own (osc 3008), which come off with the colors.

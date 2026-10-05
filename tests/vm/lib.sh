@@ -102,6 +102,8 @@ crash() {
         sleep 5
     done
     echo "$name: no boot after the power loss"
+    # from the serial console, for a boot that came up without a network.
+    "$vm" diagnose || true
     exit 1
 }
 
@@ -150,6 +152,8 @@ wait_root() {
     echo "$name: no boot into $1 after 10 minutes; the machine shows:"
     "$vm" ssh "findmnt -no FSROOT /; cat /proc/cmdline; systemctl is-active yos-watchdog.timer multi-user.target; journalctl -b -u yos-health -u yos-watchdog.timer -u yos-watchdog.service --no-pager -o cat | tail -n 10" || true
     if [ -n "${on_failure:-}" ]; then "$vm" ssh "$on_failure" || true; fi
+    # the same from the serial console, which doesn't need the network.
+    "$vm" diagnose || true
     exit 1
 }
 
