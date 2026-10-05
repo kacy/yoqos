@@ -8,6 +8,7 @@
 const std = @import("std");
 const catalog = @import("../catalog.zig");
 const history = @import("../history.zig");
+const lists = @import("../lists.zig");
 const rootfs = @import("../rootfs.zig");
 const cli = @import("../cli.zig");
 const btrfs = @import("../btrfs.zig");
@@ -334,6 +335,7 @@ const Installer = struct {
             .whole = rootfs.pathExists(ctx.io, try std.fmt.allocPrint(in.a, "/sys/class/block/{s}", .{name})) and
                 !rootfs.pathExists(ctx.io, try std.fmt.allocPrint(in.a, "/sys/class/block/{s}/partition", .{name})),
             .mounted = mounts.len > 0,
+            .holders = try holders(in.a, ctx.io, "/sys/class/block", name),
             .uefi = rootfs.pathExists(ctx.io, "/sys/firmware/efi"),
             .host = host orelse if (c.system.hostname) |h| try in.a.dupe(u8, h.v) else "this machine",
             .host_flag = host != null,
@@ -670,6 +672,63 @@ const Installer = struct {
 /// `url` without a user and password before its host, like
 /// "https://user:token@host/repo" as "https://host/repo". an ssh url's
 /// user is only a name, and ssh needs it.
+/// the devices that hold the disk `name` or one of its partitions, from
+/// sysfs at `block`: lvm's volumes and open luks devices (dm-*), and md
+/// arrays. the live iso starts lvm and md on the disks it finds without
+/// mounting anything, and wipefs can't erase a disk they hold.
+fn holders(a: Allocator, io: std.Io, block: []const u8, name: []const u8) ![]const []const u8 {
+    var found: std.ArrayList([]const u8) = .empty;
+    const disk = try std.fs.path.join(a, &.{ block, name });
+    try holdersOf(a, io, disk, &found);
+    var dir = std.Io.Dir.cwd().openDir(io, disk, .{ .iterate = true }) catch return found.items;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |e| {
+        if (!std.mem.startsWith(u8, e.name, name)) continue;
+        const part = try std.fs.path.join(a, &.{ disk, e.name });
+        if (!rootfs.pathExists(io, try std.fs.path.join(a, &.{ part, "partition" }))) continue;
+        try holdersOf(a, io, part, &found);
+    }
+    lists.sortStrings(found.items);
+    return found.items;
+}
+
+fn holdersOf(a: Allocator, io: std.Io, dev: []const u8, found: *std.ArrayList([]const u8)) !void {
+    var dir = std.Io.Dir.cwd().openDir(io, try std.fs.path.join(a, &.{ dev, "holders" }), .{ .iterate = true }) catch return;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |e| {
+        if (!lists.contains(found.items, e.name)) try found.append(a, try a.dupe(u8, e.name));
+    }
+}
+
+test "a disk held by lvm, md, or luks without a mount is found" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const block = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "vdb/holders");
+    try std.testing.expectEqual(0, (try holders(a, io, block, "vdb")).len);
+    // lvm on the second partition, and md on the whole disk.
+    try tmp.dir.createDirPath(io, "vdb/vdb1/holders");
+    try tmp.dir.writeFile(io, .{ .sub_path = "vdb/vdb1/partition", .data = "1\n" });
+    try tmp.dir.createDirPath(io, "vdb/vdb2/holders/dm-1");
+    try tmp.dir.createDirPath(io, "vdb/vdb2/holders/dm-0");
+    try tmp.dir.writeFile(io, .{ .sub_path = "vdb/vdb2/partition", .data = "2\n" });
+    try tmp.dir.createDirPath(io, "vdb/holders/md127");
+    // a directory that isn't a partition doesn't count.
+    try tmp.dir.createDirPath(io, "vdb/vdbx/holders/dm-9");
+    const got = try holders(a, io, block, "vdb");
+    try std.testing.expectEqual(3, got.len);
+    try std.testing.expectEqualStrings("dm-0", got[0]);
+    try std.testing.expectEqualStrings("dm-1", got[1]);
+    try std.testing.expectEqualStrings("md127", got[2]);
+    try std.testing.expectEqual(0, (try holders(a, io, block, "missing")).len);
+}
+
 fn withoutCredentials(a: std.mem.Allocator, url: []const u8) ![]const u8 {
     if (!std.mem.startsWith(u8, url, "https://") and !std.mem.startsWith(u8, url, "http://")) return url;
     const scheme = std.mem.indexOf(u8, url, "://").?;
