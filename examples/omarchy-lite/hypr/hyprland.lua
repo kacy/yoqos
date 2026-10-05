@@ -133,6 +133,8 @@ hl.animation({ leaf = "workspaces", enabled = false })
 -- windows.
 hl.window_rule({ match = { class = ".*" }, suppress_event = "maximize" })
 hl.window_rule({ match = { class = ".*" }, opacity = "0.985 0.96" })
+-- terminals carry a tag, so universal copy and paste can tell them apart.
+hl.window_rule({ match = { class = "(foot|org\\.codeberg\\.dnkl\\.foot|TUI\\..*)" }, tag = "+terminal" })
 -- video, images, and the browser stay opaque.
 hl.window_rule({ match = { class = "(mpv|imv|chromium|Chromium)" }, opacity = "1 1" })
 -- tuis, viewers, and dialogs float, centered.
@@ -162,11 +164,26 @@ if switched then
   for file in switched:lines() do dofile(file) end
   switched:close()
 end
+-- a touchpad or touchscreen switched off stays off. its name is kept as
+-- data, never run as code.
+for _, kind in ipairs({ "touchpad", "touchscreen" }) do
+  local saved = io.open(toggles .. "/" .. kind .. "-disabled-name", "r")
+  if saved then
+    local name = saved:read("*l")
+    saved:close()
+    if name and name ~= "" then hl.device({ name = name, enabled = false }) end
+  end
+end
 
 -- a key that goes straight to the shell, as a global shortcut it
 -- registers, so no process starts for it.
 local function to_shell(keys, shortcut, options)
   bind(keys, hl.dsp.global("omarchy:" .. shortcut), options)
+end
+
+-- one of omarchy's own commands, which the shell sets up.
+local function omarchy(command)
+  return shell .. " " .. command
 end
 
 -- apps.
@@ -178,6 +195,8 @@ bind("SUPER + SHIFT + F", app(files))
 bind("SUPER + SHIFT + N", app(terminal .. " -e nvim"))
 bind("SUPER + SHIFT + D", tui("lazydocker"))
 bind("SUPER + SHIFT + G", app(terminal .. " -e lazygit"))
+bind("SUPER + ALT + RETURN", omarchy("omarchy-launch-terminal-tmux"))
+bind("SUPER + ALT + SHIFT + F", omarchy("omarchy-launch-nautilus-cwd"))
 
 -- menus.
 bind("SUPER + SPACE", app(menu))
@@ -205,6 +224,15 @@ bind("SUPER + P", hl.dsp.window.pseudo())
 bind("SUPER + T", hl.dsp.window.float({ action = "toggle" }))
 bind("SUPER + F", hl.dsp.window.fullscreen({ mode = "fullscreen" }))
 bind("SUPER + ALT + F", hl.dsp.window.fullscreen({ mode = "maximized" }))
+bind("SUPER + CTRL + F", omarchy("omarchy-hyprland-window-tiled-fullscreen-toggle"))
+bind("SUPER + O", omarchy("omarchy-hyprland-window-pop"))
+bind("SUPER + ALT + Home", omarchy("omarchy-hyprland-window-width save"))
+bind("SUPER + Home", omarchy("omarchy-hyprland-window-width restore"))
+bind("SUPER + L", omarchy("omarchy-hyprland-workspace-layout-toggle"))
+bind("SUPER + BACKSPACE", omarchy("omarchy-hyprland-window-transparency-toggle"))
+bind("SUPER + SHIFT + BACKSPACE", omarchy("omarchy-hyprland-window-gaps-toggle"))
+bind("SUPER + CTRL + BACKSPACE", omarchy("omarchy-hyprland-window-single-square-aspect-toggle"))
+bind("CTRL + ALT + DELETE", omarchy("omarchy-hyprland-window-close-all"))
 
 for _, d in ipairs({ { "LEFT", "l" }, { "RIGHT", "r" }, { "UP", "u" }, { "DOWN", "d" } }) do
   bind("SUPER + " .. d[1], hl.dsp.focus({ direction = d[2] }))
@@ -228,6 +256,14 @@ bind("SUPER + mouse_up", hl.dsp.focus({ workspace = "e-1" }))
 
 bind("SUPER + S", hl.dsp.workspace.toggle_special("scratchpad"))
 bind("SUPER + ALT + S", hl.dsp.window.move({ workspace = "special:scratchpad", follow = false }))
+
+-- monitors: focus, scaling, and the laptop's own display.
+bind("CTRL + ALT + TAB", hl.dsp.focus({ monitor = "+1" }))
+bind("CTRL + ALT + SHIFT + TAB", hl.dsp.focus({ monitor = "-1" }))
+bind("SUPER + SLASH", omarchy("omarchy-hyprland-monitor-scaling up"))
+bind("SUPER + ALT + SLASH", omarchy("omarchy-hyprland-monitor-scaling down"))
+bind("SUPER + CTRL + Delete", omarchy("omarchy-hyprland-monitor-internal toggle"))
+bind("SUPER + CTRL + ALT + Delete", omarchy("omarchy-hyprland-monitor-internal-mirror toggle"))
 
 bind("ALT + TAB", hl.dsp.window.cycle_next())
 bind("ALT + SHIFT + TAB", hl.dsp.window.cycle_next({ next = false }))
@@ -267,6 +303,37 @@ bind("PRINT", "mkdir -p ~/Pictures && grim -g \"$(slurp)\" - | " .. satty)
 bind("SHIFT + PRINT", "mkdir -p ~/Pictures && grim - | " .. satty)
 bind("SUPER + PRINT", "pkill hyprpicker || hyprpicker -a")
 
+-- copy, paste, cut, and select all with super, in any app. a terminal
+-- gets ctrl+shift for copy and paste. the key goes down, then up a moment
+-- later, which keeps it from sticking.
+local function send(mods, key)
+  return function()
+    hl.dispatch(hl.dsp.send_key_state({ mods = mods, key = key, state = "down" }))
+    hl.timer(function()
+      hl.dispatch(hl.dsp.send_key_state({ mods = mods, key = key, state = "up" }))
+    end, { timeout = 50, type = "oneshot" })
+  end
+end
+
+local function in_terminal()
+  local window = hl.get_active_window()
+  for _, tag in ipairs(window and window.tags or {}) do
+    if tag:gsub("%*$", "") == "terminal" then return true end
+  end
+  return false
+end
+
+local function clipboard(key)
+  return function()
+    send(in_terminal() and "CTRL SHIFT" or "CTRL", key)()
+  end
+end
+
+bind("SUPER + A", send("CTRL", "A"))
+bind("SUPER + C", clipboard("C"))
+bind("SUPER + V", clipboard("V"))
+bind("SUPER + X", send("CTRL", "X"))
+
 -- the clipboard's history, through the launcher.
 bind("SUPER + CTRL + V", "cliphist list | fuzzel --dmenu --prompt 'clipboard  ' | cliphist decode | wl-copy")
 
@@ -283,3 +350,22 @@ to_shell("XF86AudioPlay", "ipc.media.playPause", { locked = true })
 to_shell("XF86AudioPause", "ipc.media.playPause", { locked = true })
 to_shell("XF86AudioNext", "ipc.media.next", { locked = true })
 to_shell("XF86AudioPrev", "ipc.media.previous", { locked = true })
+
+-- finer steps with alt, the ends with shift, and the rest of a laptop's
+-- keys.
+bind("ALT + XF86AudioRaiseVolume", omarchy("omarchy-audio-output-volume +1"), held)
+bind("ALT + XF86AudioLowerVolume", omarchy("omarchy-audio-output-volume -1"), held)
+bind("ALT + XF86MonBrightnessUp", omarchy("omarchy-brightness-display +1%"), held)
+bind("ALT + XF86MonBrightnessDown", omarchy("omarchy-brightness-display 1%-"), held)
+bind("SHIFT + XF86MonBrightnessUp", omarchy("omarchy-brightness-display 100%"), held)
+bind("SHIFT + XF86MonBrightnessDown", omarchy("omarchy-brightness-display 1%"), held)
+bind("SHIFT + XF86AudioMute", omarchy("omarchy-audio-output-switch"), { locked = true })
+bind("SHIFT + XF86AudioPlay", omarchy("omarchy-audio-source-switch"), { locked = true })
+bind("SHIFT + XF86AudioPause", omarchy("omarchy-audio-source-switch"), { locked = true })
+bind("XF86KbdBrightnessUp", omarchy("omarchy-brightness-keyboard up"), held)
+bind("XF86KbdBrightnessDown", omarchy("omarchy-brightness-keyboard down"), held)
+bind("XF86KbdLightOnOff", omarchy("omarchy-brightness-keyboard cycle"), { locked = true })
+bind("XF86TouchpadToggle", omarchy("omarchy-toggle-touchpad"), { locked = true })
+bind("XF86TouchpadOn", omarchy("omarchy-toggle-touchpad on"), { locked = true })
+bind("XF86TouchpadOff", omarchy("omarchy-toggle-touchpad off"), { locked = true })
+bind("XF86Eject", "eject", { locked = true })
