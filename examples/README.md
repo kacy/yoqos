@@ -78,10 +78,17 @@ the ui isn't a package, and nothing of omarchy's is copied here.
 [shell/yos-shell](omarchy-lite/shell/yos-shell) runs at the first login:
 it fetches omarchy's repository at the commit
 [shell/manifest](omarchy-lite/shell/manifest) pins, only the parts it
-needs, and lays out omarchy's bar, panels, app launcher, notifications,
-lock screen, and ai agents panel in `~/.local/share/yos-shell`, with their
-scripts as omarchy wrote them. the manifest names every command the ui can run, and
-where it comes from:
+needs, and lays out omarchy's bar, panels, app launcher, wallpaper,
+notifications, lock screen, and ai agents panel in
+`~/.local/share/yos-shell`, with their scripts as omarchy wrote them. that
+takes the network: if the first login has none, as on a fresh install with
+only wi-fi, a terminal opens with `nmtui` to connect, and setting up tries
+again once it closes. to skip that, keep the wi-fi connection as a secret
+in the config (see secrets in [usage.md](../docs/usage.md)) and set it with
+`yos secret set` on the live iso before installing: the install writes it,
+and the network is up before anyone logs in.
+
+the manifest names every command the ui can run, and where it comes from:
 
 - most are omarchy's own, unchanged.
 - a few are the script's own: the update icon and its click go through

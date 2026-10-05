@@ -23,6 +23,7 @@ plugin panels/power
 plugin agents
 plugin menu
 plugin panels/tailscale
+plugin background
 
 upstream omarchy-shell
 upstream omarchy-launch-shell
@@ -91,6 +92,8 @@ stub omarchy-default-editor
 stub omarchy-default-terminal
 stub omarchy-font-current
 stub omarchy-font-list
+stub omarchy-theme-bg-set
+stub omarchy-theme-bg-switcher
 upstream omarchy-bluetooth-power
 upstream omarchy-bluetooth-device
 upstream omarchy-battery-status
@@ -160,3 +163,4 @@ not omarchy-kitty-
 not omarchy-pkg-present
 not omarchy-pkg-missing
 not omarchy-taildrop
+not omarchy-background

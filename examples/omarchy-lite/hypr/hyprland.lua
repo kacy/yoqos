@@ -154,11 +154,10 @@ hl.window_rule({ match = { class = "^$", title = "^$", xwayland = true, float = 
 
 -- the session's own programs.
 hl.on("hyprland.start", function()
-  -- omarchy's shell: the bar, notifications, the on-screen display, the
-  -- idle timer and lock screen, and the polkit agent. the first login
-  -- sets it up.
+  -- omarchy's shell: the bar, the wallpaper, notifications, the
+  -- on-screen display, the idle timer and lock screen, and the polkit
+  -- agent. the first login sets it up.
   hl.exec_cmd(app(shell))
-  hl.exec_cmd(app("swaybg -c '#1a1b26'"))
   hl.exec_cmd(app("wl-paste --watch cliphist store"))
   hl.exec_cmd(app("udiskie --automount --no-notify --no-tray"))
 end)
