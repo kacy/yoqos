@@ -783,7 +783,8 @@ commands it prints, which mount the new root and run `passwd -R` there
 before you reboot.
 
 it checks first that the firmware is uefi and that the disk is a whole
-disk of 16 gib or more that nothing has mounted. it also checks that the
+disk of 16 gib or more that nothing has mounted, and that lvm, md, or an
+open luks device doesn't hold it either. it also checks that the
 tools it runs are there, that the lock has a kernel, grub, and
 btrfs-progs, that the config has no aur packages and no `secure_boot`,
 and that every secret it names is set on the live system. with
