@@ -105,6 +105,54 @@ test "the first generation's number comes after roots an uninstall left" {
     try std.testing.expectEqual(5, firstFree(io, roots, gens_dir));
 }
 
+/// puts `backup` back at `dir`. the copy goes beside `dir` first, on the
+/// same filesystem, and two renames swap it in, so a cut-off undo leaves
+/// the old one or the restored one on disk, never neither: the backup
+/// is in /run, which a power cut takes with it.
+fn restoreArgv(a: Allocator, backup: []const u8, dir: []const u8) ![]const []const u8 {
+    return a.dupe([]const u8, &.{ "sh", "-c", restore_script, "sh", backup, dir });
+}
+
+const restore_script =
+    \\set -e
+    \\rm -rf "$2.yos-restore" "$2.yos-old"
+    \\cp -a "$1" "$2.yos-restore"
+    \\sync
+    \\if [ -e "$2" ] || [ -L "$2" ]; then mv "$2" "$2.yos-old"; fi
+    \\mv "$2.yos-restore" "$2"
+    \\sync
+    \\rm -rf "$2.yos-old"
+;
+
+test "taking back a kept directory swaps the backup in" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "backup/BOOT");
+    try tmp.dir.writeFile(io, .{ .sub_path = "backup/BOOT/BOOTX64.EFI", .data = "old" });
+    try tmp.dir.createDirPath(io, "EFI/yos");
+    try tmp.dir.writeFile(io, .{ .sub_path = "EFI/yos/grubx64.efi", .data = "new" });
+    const backup = try std.fmt.allocPrint(a, "{s}/backup", .{base});
+    const dir = try std.fmt.allocPrint(a, "{s}/EFI", .{base});
+    try std.testing.expectEqual(null, try exec.run(a, io, try restoreArgv(a, backup, dir)));
+    try std.testing.expectEqualStrings("old", try tmp.dir.readFileAlloc(io, "EFI/BOOT/BOOTX64.EFI", a, .limited(64)));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "EFI/yos", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "EFI.yos-old", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "EFI.yos-restore", .{}));
+    // a file, like limine.conf, and one that's gone already.
+    try tmp.dir.writeFile(io, .{ .sub_path = "limine.bak", .data = "old conf" });
+    const conf = try std.fmt.allocPrint(a, "{s}/limine.conf", .{base});
+    try std.testing.expectEqual(null, try exec.run(a, io, try restoreArgv(a, try std.fmt.allocPrint(a, "{s}/limine.bak", .{base}), conf)));
+    try std.testing.expectEqualStrings("old conf", try tmp.dir.readFileAlloc(io, "limine.conf", a, .limited(64)));
+    try tmp.dir.writeFile(io, .{ .sub_path = "limine.conf", .data = "new conf" });
+    try std.testing.expectEqual(null, try exec.run(a, io, try restoreArgv(a, try std.fmt.allocPrint(a, "{s}/limine.bak", .{base}), conf)));
+    try std.testing.expectEqualStrings("old conf", try tmp.dir.readFileAlloc(io, "limine.conf", a, .limited(64)));
+}
+
 const Enabler = struct {
     ctx: *Context,
     a: Allocator,
@@ -462,13 +510,14 @@ const Enabler = struct {
     }
 
     /// copies `dir` to `backup`, if it's there, so taking back the steps
-    /// puts it back as it was; if it isn't, taking back removes it.
+    /// puts it back as it was (see restoreArgv); if it isn't, taking back
+    /// removes it.
     fn keep(e: *Enabler, dir: []const u8, backup: []const u8) !bool {
         if (rootfs.pathExists(e.ctx.io, dir)) {
             if (!try e.sh(&.{ "rm", "-rf", backup })) return false;
             if (!try e.sh(&.{ "cp", "-a", dir, backup })) return false;
-            // taken back newest first: the new one goes, then the copy returns.
-            try e.later(&.{ "cp", "-a", backup, dir });
+            try e.later(try restoreArgv(e.a, backup, dir));
+            return true;
         }
         try e.later(&.{ "rm", "-rf", dir });
         return true;
