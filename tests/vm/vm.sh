@@ -121,6 +121,15 @@ running() {
     [ -f "$dir/qemu.pid" ] && kill -0 "$(cat "$dir/qemu.pid")" 2>/dev/null
 }
 
+# powers the vm off, if it's running, and waits for qemu to go, so the
+# next one can have its port and disks.
+halt() {
+    if running; then kill "$(cat "$dir/qemu.pid")" 2>/dev/null || true; fi
+    for _ in $(seq 60); do running || return 0; sleep 1; done
+    echo "vm: qemu didn't stop" >&2
+    exit 1
+}
+
 # starts swtpm for the next qemu, on the tpm state in $dir/tpm. it stops
 # when qemu lets go of it.
 start_tpm() {
@@ -200,9 +209,7 @@ archinstall() {
     run pacman -Syu --noconfirm --noprogressbar --needed archinstall >/dev/null
     run archinstall --config /root/config.json --creds /root/creds.json --silent --skip-version-check
     run "umount -R /mnt/archinstall 2>/dev/null; sync"
-    kill "$(cat "$dir/qemu.pid")"
-    for _ in $(seq 60); do running || break; sleep 1; done
-    if running; then echo "vm: qemu didn't stop" >&2; exit 1; fi
+    halt
     mv "$dir/$image.part" "$dir/$image.qcow2"
     mv "$dir/vars.fd" "$dir/$image.vars"
     rm -f "$dir/qemu.pid" "$dir/overlay.qcow2"
@@ -215,9 +222,20 @@ case ${1:-} in
 image)
     mkdir -p "$dir"
     [ -f "$dir/$image.qcow2" ] && exit 0
+    # a mirror that stalls can fail a build that would pass a minute later.
+    # with more than one, pacman goes on to the next, which makes that
+    # rare, not impossible, so a failed build runs once more, from the
+    # start.
+    "$0" make-image && exit 0
+    echo "vm: making the $image image failed; trying once more" >&2
+    "$0" stop
+    "$0" make-image
+    ;;
+make-image)
     case $image in
-    # a download cut off partway mustn't look like a finished image.
-    cloud) curl -fsSL -o "$dir/cloud.qcow2.part" "$image_url" && mv "$dir/cloud.qcow2.part" "$dir/cloud.qcow2" ;;
+    # a download cut off partway mustn't look like a finished image, and
+    # one that stalls for a minute fails, so the build can run again.
+    cloud) curl -fsSL --speed-limit 1 --speed-time 60 -o "$dir/cloud.qcow2.part" "$image_url" && mv "$dir/cloud.qcow2.part" "$dir/cloud.qcow2" ;;
     archinstall) archinstall ;;
     ext4) archinstall -e 's|"fs_type": "btrfs"|"fs_type": "ext4"|' -e 's|"mountpoint": null|"mountpoint": "/"|' \
         -e 's|"compress=zstd"||' -e 's|"btrfs": \[{.*}\]|"btrfs": []|' ;;
@@ -252,8 +270,7 @@ start-iso)
     boot "$dir/disk2.qcow2" "$dir/vars.fd" -drive media=cdrom,readonly=on,file="$2"
     ;;
 start-installed)
-    if running; then kill "$(cat "$dir/qemu.pid")"; fi
-    for _ in $(seq 60); do running || break; sleep 1; done
+    halt
     cp "$ovmf/OVMF_VARS.4m.fd" "$dir/vars.fd"
     boot "$dir/${2:-disk2}.qcow2" "$dir/vars.fd"
     ;;
@@ -299,7 +316,7 @@ diagnose)
     printf 'exit\r' | socat - UNIX-CONNECT:"$dir/serial.sock"
     ;;
 stop)
-    if [ -f "$dir/qemu.pid" ]; then kill "$(cat "$dir/qemu.pid")" 2>/dev/null || true; fi
+    halt
     stop_tpm
     rm -rf "$dir/qemu.pid" "$dir/overlay.qcow2" "$dir/vars.fd" "$dir/disk2.qcow2" "$dir/disk3.qcow2" "$dir/tpm"
     ;;
