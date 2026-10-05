@@ -1,6 +1,6 @@
 .{
     .name = .yos,
-    .version = "0.1.5",
+    .version = "0.2.0",
     .fingerprint = 0x8f08dd238c683c15,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
