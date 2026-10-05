@@ -117,7 +117,7 @@ fetch() {
   rm -rf "$1" && mkdir -p "$1"
   git -C "$1" init -q
   git -C "$1" remote add origin https://github.com/basecamp/omarchy.git
-  git -C "$1" sparse-checkout set --no-cone /shell/ /bin/ /default/omarchy/ /default/hypr/toggles/ /themes/tokyo-night/colors.toml /LICENSE
+  git -C "$1" sparse-checkout set --no-cone /shell/ /bin/ /default/omarchy/ /default/hypr/toggles/ /config/hypr/monitors.lua /themes/tokyo-night/colors.toml /LICENSE
   git -C "$1" fetch -q --depth 1 --filter=blob:none origin "$commit"
   git -C "$1" checkout -q FETCH_HEAD
   [ "$(git -C "$1" rev-parse HEAD)" = "$commit" ]
@@ -135,6 +135,7 @@ lay_out() {
   for c in $(listed upstream); do install -m 0755 "$src/bin/$c" "$dest/bin/$c"; done
   for c in $(listed ours) $(listed stub); do ln -s "$self" "$dest/bin/$c"; done
   cp "$src/themes/tokyo-night/colors.toml" "$dest/theme/"
+  mkdir -p "$dest/config/hypr" && cp "$src/config/hypr/monitors.lua" "$dest/config/hypr/"
   cp -a "$src/default/hypr/toggles" "$dest/default/hypr/"
   cp "$src/default/omarchy/launcher.hides" "$dest/default/omarchy/"
   cp "$conf/shortcuts" "$dest/default/omarchy/shortcuts"
@@ -199,6 +200,10 @@ export PATH="$share/bin:$PATH"
 # a user with no theme of their own gets omarchy's tokyo night.
 theme="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current/theme"
 [ -e "$theme/colors.toml" ] || { mkdir -p "$theme" && cp "$share/theme/colors.toml" "$theme/"; }
+# and omarchy's monitors.lua, which the display panel saves a new scale in.
+# hyprland.lua loads it.
+monitors="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/monitors.lua"
+[ -e "$monitors" ] || { mkdir -p "$(dirname "$monitors")" && cp "$share/config/hypr/monitors.lua" "$monitors"; }
 
 # omarchy's own launcher keeps the shell running, with its log in the
 # journal.

@@ -31,6 +31,14 @@ end
 -- monitors: each at its best mode, placed in order, scaled as hyprland sees
 -- fit. `hyprctl monitors all` lists what's there.
 hl.monitor({ output = "", mode = "preferred", position = "auto", scale = "auto" })
+-- the display panel saves a new scale in ~/.config/hypr/monitors.lua,
+-- omarchy's file, which the shell puts there the first time it runs.
+local monitors = (os.getenv("XDG_CONFIG_HOME") or (os.getenv("HOME") .. "/.config")) .. "/hypr/monitors.lua"
+local saved = io.open(monitors, "r")
+if saved then
+  saved:close()
+  dofile(monitors)
+end
 
 -- wayland everywhere it can be.
 hl.env("XCURSOR_SIZE", "24")
