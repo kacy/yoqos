@@ -289,3 +289,12 @@ older() {
     "$vm" copy tests/vm/older.sh /root/older.sh
     "$vm" ssh "sh /root/older.sh $1"
 }
+
+# installs the newest linux older than the one installed, from the
+# archive, with pacman -U. the archive is one server, with no mirror to go
+# on to when it stalls, so the download gets a second try.
+older_linux() {
+    url=$(older linux)
+    [ -n "$url" ] || { echo "$name: no older linux in the archive"; exit 1; }
+    "$vm" ssh "pacman -U --noconfirm --noprogressbar $url >/dev/null || { echo 'pacman -U failed; once more' >&2; sleep 10; pacman -U --noconfirm --noprogressbar $url >/dev/null; }"
+}

@@ -34,9 +34,7 @@ check "efibootmgr 2>/dev/null | grep -c 'yos trial' || true" 0
 # back with an upgrade, and each reboot goes into the same root, through
 # the bootloader as yos left it, with the kernel pacman installed and its
 # modules. pacman keeps working.
-url=$(older linux)
-[ -n "$url" ] || { echo "$name: no older linux in the archive"; exit 1; }
-"$vm" ssh "pacman -U --noconfirm --noprogressbar $url >/dev/null"
+older_linux
 "$vm" reboot
 check "findmnt -no FSROOT /" "$running"
 kernel_matches

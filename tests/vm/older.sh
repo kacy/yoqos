@@ -12,6 +12,14 @@ set -eu
 
 archive=https://archive.archlinux.org
 
+# fetches from the archive, which is one server, with no mirror to go on
+# to. a request that stalls for half a minute fails, and one that fails
+# that way, or with an error the server may not give next time, gets
+# three more tries.
+get() {
+    curl -fsL --retry 3 --speed-limit 1 --speed-time 30 "$@"
+}
+
 # the version of package $1 in the repository database $2.
 version() {
     bsdtar -xOf "$2" --include "$1-[0-9]*/desc" 2>/dev/null | awk '/^%VERSION%$/ { getline; print; exit }'
@@ -34,7 +42,7 @@ date)
     found=
     for back in $(seq 7 60); do
         day=$(date -u -d "$back days ago" +%Y/%m/%d)
-        curl -fsL -o "$db" "$archive/repos/$day/core/os/x86_64/core.db" || continue
+        get -o "$db" "$archive/repos/$day/core/os/x86_64/core.db" || continue
         [ "$(version linux "$db")" != "$linux" ] || continue
         [ "$(upstream "$(version glibc "$db")")" = "$glibc" ] || continue
         [ "$(upstream "$(version pacman "$db")")" = "$pacman" ] || continue
@@ -50,7 +58,7 @@ date)
     ;;
 linux)
     now=$(pacman -Q linux | cut -d' ' -f2)
-    curl -fsL "$archive/packages/l/linux/" |
+    get "$archive/packages/l/linux/" |
         grep -o 'linux-[0-9][^"<>]*-x86_64\.pkg\.tar\.zst' | sort -urV |
         while read -r file; do
             v=${file#linux-}
