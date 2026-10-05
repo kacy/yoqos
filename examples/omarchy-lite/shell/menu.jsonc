@@ -1,0 +1,18 @@
+{
+  // the menu omarchy's shell shows on super + space, in omarchy's format
+  // (default/omarchy/omarchy-menu.jsonc there): a dotted id sits under its
+  // parent, a row with an action runs it, and provider "apps" lists the
+  // installed apps. yos-shell lays it out in place of omarchy's own menu,
+  // whose rows are for omarchy's tools.
+
+  "apps": {"icon":"󰀻","label":"Apps","aliases":["app","applications"],"provider":"apps"},
+  "system": {"icon":"","label":"System","aliases":["power-menu"]},
+  "update": {"icon":"","label":"Update","action":"omarchy-launch-floating-terminal-with-presentation omarchy-update"},
+  "keybindings": {"icon":"","label":"Keybindings","action":"/etc/xdg/hypr/scripts/menu-keybindings"},
+
+  "system.lock": {"icon":"","label":"Lock","action":"omarchy-system-lock"},
+  "system.suspend": {"icon":"󰒲","label":"Suspend","action":"systemctl suspend"},
+  "system.logout": {"icon":"󰍃","label":"Logout","action":"uwsm stop"},
+  "system.reboot": {"icon":"󰜉","label":"Reboot","action":"systemctl reboot"},
+  "system.shutdown": {"icon":"󰐥","label":"Shutdown","action":"systemctl poweroff"},
+}

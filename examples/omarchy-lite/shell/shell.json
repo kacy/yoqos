@@ -10,6 +10,7 @@
     "centerAnchor": "omarchy.clock",
     "layout": {
       "left": [
+        { "id": "omarchy.menu" },
         { "id": "omarchy.workspaces" }
       ],
       "center": [
@@ -20,11 +21,13 @@
           "formatAlt": "d MMMM 'W'ww yyyy",
           "verticalFormat": "HH\n—\nmm"
         },
+        { "id": "omarchy.keyboard-layout" },
         { "id": "omarchy.system-update" }
       ],
       "right": [
         { "id": "omarchy.tray" },
         { "id": "omarchy.agents" },
+        { "id": "omarchy.tailscale" },
         { "id": "omarchy.bluetooth" },
         { "id": "omarchy.network" },
         { "id": "omarchy.audio" },

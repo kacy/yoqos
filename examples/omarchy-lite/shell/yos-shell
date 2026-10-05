@@ -117,7 +117,7 @@ fetch() {
   rm -rf "$1" && mkdir -p "$1"
   git -C "$1" init -q
   git -C "$1" remote add origin https://github.com/basecamp/omarchy.git
-  git -C "$1" sparse-checkout set --no-cone /shell/ /bin/ /default/omarchy/ /default/hypr/toggles/ /themes/tokyo-night/colors.toml /LICENSE
+  git -C "$1" sparse-checkout set --no-cone /shell/ /bin/ /default/omarchy/ /default/hypr/toggles/ /config/hypr/monitors.lua /themes/tokyo-night/colors.toml /themes/tokyo-night/backgrounds/0-winding-road.webp /LICENSE
   git -C "$1" fetch -q --depth 1 --filter=blob:none origin "$commit"
   git -C "$1" checkout -q FETCH_HEAD
   [ "$(git -C "$1" rev-parse HEAD)" = "$commit" ]
@@ -135,9 +135,12 @@ lay_out() {
   for c in $(listed upstream); do install -m 0755 "$src/bin/$c" "$dest/bin/$c"; done
   for c in $(listed ours) $(listed stub); do ln -s "$self" "$dest/bin/$c"; done
   cp "$src/themes/tokyo-night/colors.toml" "$dest/theme/"
+  cp "$src/themes/tokyo-night/backgrounds/0-winding-road.webp" "$dest/theme/background.webp"
+  mkdir -p "$dest/config/hypr" && cp "$src/config/hypr/monitors.lua" "$dest/config/hypr/"
   cp -a "$src/default/hypr/toggles" "$dest/default/hypr/"
   cp "$src/default/omarchy/launcher.hides" "$dest/default/omarchy/"
   cp "$conf/shortcuts" "$dest/default/omarchy/shortcuts"
+  cp "$conf/menu.jsonc" "$dest/default/omarchy/omarchy-menu.jsonc"
   cp "$conf/shell.json" "$dest/config/omarchy/shell.json"
   cp "$src/LICENSE" "$dest/LICENSE.omarchy"
 }
@@ -164,7 +167,7 @@ setup() {
   new=$share.new
   if ! fetch "$src"; then
     notify "yos-shell couldn't fetch omarchy" "is the network up? it tries again at the next login"
-    return 1
+    return 2
   fi
   rm -rf "$new"
   lay_out "$src" "$new"
@@ -190,7 +193,20 @@ if [ "${1:-}" = setup ]; then
   exit $?
 fi
 
-[ -d "$share" ] || setup
+# the first login sets the shell up, which takes the network. without one
+# there's no bar or wi-fi panel yet, and nothing to show a notification, so
+# a terminal offers nmtui, and setting up tries again once it closes.
+if [ ! -d "$share" ]; then
+  rc=0
+  setup || rc=$?
+  if [ "$rc" = 2 ] && [ -n "${WAYLAND_DISPLAY:-}" ] && [ $# -eq 0 ]; then
+    xdg-terminal-exec sh -c 'printf "%s\n\n" "$1"; nmtui connect' sh \
+      "omarchy's shell sets itself up the first time you log in, and that needs the network. connect here, then quit nmtui." || true
+    rc=0
+    setup || rc=$?
+  fi
+  [ "$rc" = 0 ] || exit 1
+fi
 export OMARCHY_PATH="$share"
 export PATH="$share/bin:$PATH"
 [ $# -gt 0 ] && exec "$@"
@@ -198,6 +214,19 @@ export PATH="$share/bin:$PATH"
 # a user with no theme of their own gets omarchy's tokyo night.
 theme="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current/theme"
 [ -e "$theme/colors.toml" ] || { mkdir -p "$theme" && cp "$share/theme/colors.toml" "$theme/"; }
+# and its wallpaper, which the shell draws. a link left by an older commit
+# points at nothing, and is pointed again.
+background="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current/background"
+[ -e "$background" ] || ln -sfn "$share/theme/background.webp" "$background"
+# and omarchy's monitors.lua, which the display panel saves a new scale in.
+# hyprland.lua loads it. gtk draws x11 apps at 1x, not omarchy's 2x, until
+# a scale is picked in the panel: 2x makes them twice the size on a
+# display that doesn't need it.
+monitors="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/monitors.lua"
+if [ ! -e "$monitors" ]; then
+  mkdir -p "$(dirname "$monitors")"
+  sed 's/^local omarchy_gdk_scale = .*/local omarchy_gdk_scale = 1/' "$share/config/hypr/monitors.lua" >"$monitors"
+fi
 
 # omarchy's own launcher keeps the shell running, with its log in the
 # journal.
