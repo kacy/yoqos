@@ -189,10 +189,14 @@ archinstall() {
     qemu-img create -q -f qcow2 "$dir/$image.part" 16G
     boot "$dir/overlay.qcow2" "$dir/vars.fd" -drive if=virtio,file="$dir/$image.part"
     here=$(dirname "$0")
-    sed -e "s|KEY|$(cat "$dir/key.pub")|" "$@" "$here/archinstall.json" > "$dir/archinstall.json"
+    # archinstall gets the test vms' mirrors: it writes them to the
+    # mirrorlist its pacstrap downloads from, and to the image's.
+    servers=$(sed -n 's/^Server = \(.*\)/{ "url": "\1" }/p' "$here/mirrorlist" | paste -sd, -)
+    sed -e "s|KEY|$(cat "$dir/key.pub")|" -e "s|\"custom_servers\": \[.*\]|\"custom_servers\": [$servers]|" "$@" "$here/archinstall.json" > "$dir/archinstall.json"
     printf '{"root_enc_password": "%s"}\n' "$root_hash" > "$dir/creds.json"
     scp -q $ssh_opts -P "$port" "$dir/archinstall.json" root@127.0.0.1:/root/config.json
     scp -q $ssh_opts -P "$port" "$dir/creds.json" root@127.0.0.1:/root/creds.json
+    scp -q $ssh_opts -P "$port" "$here/mirrorlist" root@127.0.0.1:/etc/pacman.d/mirrorlist
     run pacman -Syu --noconfirm --noprogressbar --needed archinstall >/dev/null
     run archinstall --config /root/config.json --creds /root/creds.json --silent --skip-version-check
     run "umount -R /mnt/archinstall 2>/dev/null; sync"

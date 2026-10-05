@@ -1,0 +1,9 @@
+# the mirrors every test vm downloads from, and archinstall's when it
+# makes an image. pacman tries them in order, and a download that stalls
+# on one goes on to the next. ci.yml's MIRRORLIST names the same ones for
+# the arch containers.
+Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
+Server = https://fastly.mirror.pkgbuild.com/$repo/os/$arch
+Server = https://mirrors.edge.kernel.org/archlinux/$repo/os/$arch
+Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
+Server = https://mirrors.mit.edu/archlinux/$repo/os/$arch
