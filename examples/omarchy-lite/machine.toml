@@ -1,7 +1,7 @@
 # omarchy's desktop on yos: hyprland with omarchy's keybindings and look,
-# and omarchy's own quickshell ui, its bar, panels, notifications, lock
-# screen, and ai agents panel. its apps, its menu, and the packages only its
-# repository has are left out. every package here comes from arch's own
+# and omarchy's own quickshell ui, its bar, panels, app launcher,
+# notifications, lock screen, and ai agents panel. its apps, its own menu,
+# and the packages only its repository has are left out. every package here comes from arch's own
 # repositories, so `yos install` builds this from the live iso:
 #
 #   yos install https://example.com/you/machines.git --disk /dev/nvme0n1 --encrypt --update
@@ -17,7 +17,8 @@ packages = [
   # the machine itself.
   "base", "linux-firmware", "grub", "efibootmgr", "btrfs-progs", "sudo",
   "man-db", "bash-completion", "wireless-regdb", "kernel-modules-hook",
-  # the desktop: hyprland's own tools, a launcher, and the background.
+  # the desktop: hyprland's own tools, fuzzel for the keybinding list and
+  # the clipboard's history, and the background.
   "hyprsunset", "hyprpicker", "fuzzel", "swaybg", "uwsm",
   "xdg-desktop-portal-gtk", "qt6-wayland", "gnome-themes-extra",
   "gnome-keyring", "libsecret", "xdg-terminal-exec",
@@ -164,6 +165,9 @@ source = "shell/shell.json"
 [files."/etc/xdg/yos-shell/shortcuts"]
 source = "shell/shortcuts"
 
+[files."/etc/xdg/yos-shell/menu.jsonc"]
+source = "shell/menu.jsonc"
+
 # the shell's lock screen checks a password through this pam service, as
 # omarchy's setup writes it.
 [files."/etc/pam.d/omarchy-lock-password"]
@@ -179,11 +183,7 @@ auth       required                    pam_faillock.so authsucc
 account    include                     system-local-login
 """
 
-# the power menu and the keybinding list, which hyprland's binds call.
-[files."/etc/xdg/hypr/scripts/menu-power"]
-source = "hypr/scripts/menu-power"
-mode = "0755"
-
+# the keybinding list, which super + k and the menu open.
 [files."/etc/xdg/hypr/scripts/menu-keybindings"]
 source = "hypr/scripts/menu-keybindings"
 mode = "0755"

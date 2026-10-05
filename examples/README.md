@@ -63,8 +63,9 @@ reads `hosts/<its hostname>/machine.toml` on its own, and `yos install
 
 omarchy is a hyprland desktop on arch with a lot of opinions, most of them
 good. `omarchy-lite` keeps the parts that make it feel like omarchy, its
-keybindings, its look, and its own quickshell ui, and leaves out its apps,
-its menu, and the packages only its own repository has. every package comes
+keybindings, its look, and its own quickshell ui, launcher included, and
+leaves out its apps, its own menu, and the packages only its own repository
+has. every package comes
 from arch's own repositories, so `yos install` builds it from the live iso:
 
 ```
@@ -77,9 +78,9 @@ the ui isn't a package, and nothing of omarchy's is copied here.
 [shell/yos-shell](omarchy-lite/shell/yos-shell) runs at the first login:
 it fetches omarchy's repository at the commit
 [shell/manifest](omarchy-lite/shell/manifest) pins, only the parts it
-needs, and lays out omarchy's bar, panels, notifications, lock screen, and
-ai agents panel in `~/.local/share/yos-shell`, with their scripts as
-omarchy wrote them. the manifest names every command the ui can run, and
+needs, and lays out omarchy's bar, panels, app launcher, notifications,
+lock screen, and ai agents panel in `~/.local/share/yos-shell`, with their
+scripts as omarchy wrote them. the manifest names every command the ui can run, and
 where it comes from:
 
 - most are omarchy's own, unchanged.
@@ -97,12 +98,12 @@ to update, change the commit, check what's new, and log in again.
 | --- | --- |
 | its hyprland lua, keybindings, and look | [hyprland.lua](omarchy-lite/hypr/hyprland.lua), one file, the same bindings for windows, workspaces, groups, and the scratchpad |
 | the quickshell ui | the same, at a pinned commit, with the display, audio, network, bluetooth, power, and ai agents panels |
-| the menus and app launcher | fuzzel, with a power menu and a keybinding list on it |
+| the menus and app launcher | omarchy's own launcher, under a short menu of the example's own (`shell/menu.jsonc`): apps, system, update, and the keybinding list |
 | screenshots and the clipboard manager | grim, slurp, and satty; cliphist through fuzzel |
 | limine and snapper snapshots | yos's own generations and rollback |
 | ufw | ufw, through `[firewall]`, with omarchy's rules for docker's dns. ufw-docker, which keeps docker's published ports behind ufw, isn't in arch's repositories |
 
-what's left out: omarchy's menu, theme switching, web apps, its own apps
+what's left out: the rest of omarchy's menu, theme switching, web apps, its own apps
 like omacalc, and the dns switch in the network panel, since on yos that's
 the machine's config.
 

@@ -21,6 +21,7 @@ plugin panels/network
 plugin panels/bluetooth
 plugin panels/power
 plugin agents
+plugin menu
 
 upstream omarchy-shell
 upstream omarchy-launch-shell
@@ -83,6 +84,12 @@ stub omarchy-1password-lock
 upstream omarchy-network-status
 upstream omarchy-network-band
 stub omarchy-dns
+stub omarchy-channel-current
+stub omarchy-default-browser
+stub omarchy-default-editor
+stub omarchy-default-terminal
+stub omarchy-font-current
+stub omarchy-font-list
 upstream omarchy-bluetooth-power
 upstream omarchy-bluetooth-device
 upstream omarchy-battery-status
@@ -146,3 +153,5 @@ not omarchy-agent-usage
 not omarchy-mise-install
 not omarchy-hw-
 not omarchy-kitty-
+not omarchy-pkg-present
+not omarchy-pkg-missing

@@ -138,6 +138,7 @@ lay_out() {
   cp -a "$src/default/hypr/toggles" "$dest/default/hypr/"
   cp "$src/default/omarchy/launcher.hides" "$dest/default/omarchy/"
   cp "$conf/shortcuts" "$dest/default/omarchy/shortcuts"
+  cp "$conf/menu.jsonc" "$dest/default/omarchy/omarchy-menu.jsonc"
   cp "$conf/shell.json" "$dest/config/omarchy/shell.json"
   cp "$src/LICENSE" "$dest/LICENSE.omarchy"
 }

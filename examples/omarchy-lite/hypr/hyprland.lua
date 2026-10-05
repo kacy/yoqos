@@ -7,7 +7,6 @@
 local terminal = "foot"
 local browser = "chromium --ozone-platform=wayland"
 local files = "nautilus --new-window"
-local menu = "fuzzel"
 local scripts = "/etc/xdg/hypr/scripts/"
 local shell = "/etc/xdg/yos-shell/yos-shell"
 
@@ -198,11 +197,11 @@ bind("SUPER + SHIFT + G", app(terminal .. " -e lazygit"))
 bind("SUPER + ALT + RETURN", omarchy("omarchy-launch-terminal-tmux"))
 bind("SUPER + ALT + SHIFT + F", omarchy("omarchy-launch-nautilus-cwd"))
 
--- menus.
-bind("SUPER + SPACE", app(menu))
-bind("SUPER + ALT + SPACE", app(menu))
-bind("SUPER + ESCAPE", scripts .. "menu-power")
-bind("XF86PowerOff", scripts .. "menu-power", { locked = true })
+-- the shell's menu, its app launcher, and its system menu.
+to_shell("SUPER + SPACE", "menu.root")
+to_shell("SUPER + ALT + SPACE", "menu.apps")
+to_shell("SUPER + ESCAPE", "menu.system")
+to_shell("XF86PowerOff", "menu.system")
 bind("SUPER + K", scripts .. "menu-keybindings")
 
 -- the shell's panels: wi-fi, bluetooth, audio, display, power, the ai

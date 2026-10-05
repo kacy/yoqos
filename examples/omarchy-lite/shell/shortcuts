@@ -1,6 +1,9 @@
 # the hyprland global shortcuts yos-shell registers, in omarchy's format: a
 # binding to omarchy:panel.omarchy.audio, say, toggles that panel with no
 # process started. only what the plugins here have.
+menu root
+menu apps
+menu system
 panel omarchy.agents
 panel omarchy.audio
 panel omarchy.bluetooth
