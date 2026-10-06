@@ -4,12 +4,14 @@ set -o pipefail
 vm=tests/vm/vm.sh
 name=$(basename "$0" .sh)
 
-# runs a command in the vm and compares what it prints.
+# runs a command in the vm and compares what it prints. it has to exit 0
+# as well: a command that fails on purpose says so, with `|| true` or
+# `echo $?`.
 check() {
     rc=0
     got=$("$vm" ssh "$1") || rc=$?
-    if [ "$got" != "$2" ]; then
-        echo "$name: $1 gave '$got' (exit $rc), not '$2'"
+    if [ "$got" != "$2" ] || [ "$rc" != 0 ]; then
+        echo "$name: $1 gave '$got' (exit $rc), not '$2' (exit 0)"
         # a script can name a command whose output explains a failure.
         if [ -n "${on_failure:-}" ]; then "$vm" ssh "$on_failure" || true; fi
         exit 1
@@ -25,8 +27,15 @@ serial_console() {
 }
 
 # check, with the btrfs top level mounted at /run/yos-top for the command.
+# the command's exit status counts, not umount's.
 check_top() {
-    check "mkdir -p /run/yos-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yos-top && { $1; }; umount /run/yos-top" "$2"
+    check "mkdir -p /run/yos-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yos-top && { $1; }; top_rc=\$?; umount /run/yos-top; exit \$top_rc" "$2"
+}
+
+# a command that counts the files in the initramfs at $1 that match $2.
+# lsinitcpio has to read it, or a broken image would count 0 as well.
+initramfs_count() {
+    echo "lsinitcpio $1 >/tmp/initramfs.list && { grep -c '$2' /tmp/initramfs.list || true; }"
 }
 
 # a command that prints one of the firmware's secure boot variables,

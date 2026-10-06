@@ -26,10 +26,10 @@ check "/usr/local/bin/yos apply --yes 2>&1 | grep -c 'is changing this machine'"
 # is in place: here it pulls in a marker file yos writes too.
 "$vm" copy tests/vm/initramfs.toml /root/initramfs.toml
 "$vm" ssh "cp /etc/yos/machine.toml /root/machine.toml.saved && cat /root/initramfs.toml >> /etc/yos/machine.toml && /usr/local/bin/yos apply --yes" | tail -n 2
-check "lsinitcpio /boot/initramfs-linux.img | grep -c etc/yos-initramfs-marker" 1
+check "$(initramfs_count /boot/initramfs-linux.img etc/yos-initramfs-marker)" 1
 # the drop-in changing again rebuilds it again, without the marker now.
 "$vm" ssh "sed -i 's|^text = \"FILES+=.*|text = \"# nothing\\\\n\"|' /etc/yos/machine.toml && /usr/local/bin/yos apply --yes" | tail -n 2
-check "lsinitcpio /boot/initramfs-linux.img | grep -c etc/yos-initramfs-marker" 0
+check "$(initramfs_count /boot/initramfs-linux.img etc/yos-initramfs-marker)" 0
 # files taken out of the config stay, so they go by hand.
 "$vm" ssh "cp /root/machine.toml.saved /etc/yos/machine.toml && rm /etc/mkinitcpio.conf.d/50-yos-test.conf /etc/yos-initramfs-marker"
 check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."

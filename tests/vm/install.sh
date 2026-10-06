@@ -67,7 +67,7 @@ check "stat -c %a /root /home" "750
 755"
 check "readlink /var/lib/pacman" /usr/lib/sysimage/pacman
 check "ls /var/lib/yos/generations" 1.json
-check "lsinitcpio /boot/initramfs-linux.img | grep -c etc/yos-initramfs-marker" 1
+check "$(initramfs_count /boot/initramfs-linux.img etc/yos-initramfs-marker)" 1
 check "git -C /etc/yos log --format=%s | grep -c 'a way in for tests'" 1
 check "/usr/local/bin/yos events | grep -c '\"kind\":\"install\",\"generation\":1,'" 1
 settled
@@ -88,7 +88,7 @@ check "grep -o 'rd.luks.options=tpm2-device=auto' /proc/cmdline" rd.luks.options
 check "ls /var/lib/yos/generations" 1.json
 # sd-encrypt comes from yos's drop-in, and nothing in crypttab opens the root.
 check "test -e /etc/mkinitcpio.conf.d/90-yos-encrypt.conf && echo there" there
-check "lsinitcpio /boot/initramfs-linux.img | grep -c 'usr/lib/systemd/systemd-cryptsetup\$'" 1
+check "$(initramfs_count /boot/initramfs-linux.img 'usr/lib/systemd/systemd-cryptsetup$')" 1
 check "cat /etc/crypttab 2>/dev/null | grep -c '^[^#[:space:]]' || true" 0
 # the passphrase is nowhere on the new machine.
 check "grep -rlsF 'correct horse battery' /etc /var/lib/yos /var/log /root /boot | wc -l" 0
@@ -113,7 +113,7 @@ check "mkinitcpio -P >/tmp/yos-mkinitcpio.log 2>&1 && echo built || tail -n 20 /
 "$vm" ssh "/usr/local/bin/yos add --yes intel-ucode" | tail -n 25
 check "ls /var/lib/yos/generations | tr '\\n' ' '" "1.json 2.json "
 on_failure=
-check "grep -c -- '--set=root' /boot/grub/grub.cfg" 0
+check "grep -c -- '--set=root' /boot/grub/grub.cfg || true" 0
 "$vm" reboot
 settled
 "$vm" ssh "findmnt -no FSROOT /; cat /proc/cmdline; journalctl -b -u yos-health --no-pager -o cat | tail -n 8" || true

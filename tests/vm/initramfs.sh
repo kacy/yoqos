@@ -8,7 +8,7 @@ set -eu
 # the root the machine runs keeps the initramfs it booted in its own
 # /boot, even where the esp is mounted over it.
 booted_marker() {
-    check_top "lsinitcpio /run/yos-top\$(findmnt -no FSROOT /)/boot/initramfs-linux.img | grep -c etc/yos-initramfs-marker" "$1"
+    check_top "$(initramfs_count "/run/yos-top\$(findmnt -no FSROOT /)/boot/initramfs-linux.img" etc/yos-initramfs-marker)" "$1"
 }
 
 "$vm" copy tests/vm/initramfs.toml /root/initramfs.toml
