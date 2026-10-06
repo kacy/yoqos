@@ -11,6 +11,35 @@
   every trial failed its health check and fell back. yos now reads what
   would start the unit from its enablement links, and leaves it be while
   none of those is running.
+- signing grub for secure boot wrote grub-install's output, then sbctl's,
+  straight over the grub the firmware boots, so a power cut or a failed
+  signature could leave it broken or unsigned. grub is built in a
+  directory of its own on the esp now, signed apart, and renamed into
+  place. a signature that fails keeps the old grub.
+- on a machine without a tpm 2.0, a menu write could rebuild grub for
+  secure boot, and that grub stops at its rescue prompt (E0136). yos
+  leaves grub as it is there now.
+- taking back a failed `yos enable-rollback` deleted the esp's EFI
+  directory, grub directory, or loader config before copying the backup
+  back from /run, so a power cut then left neither. the backup is copied
+  beside it now and renamed into place.
+- with refind and no esp mounted, writing the menu crashed. it says the
+  esp isn't mounted now.
+- `yos --root <dir> apply` on a root without a pacman keyring installed
+  packages without checking their signatures, and didn't say so. it uses
+  the machine's own keyring then, as `pacman -r` and pacstrap do, and
+  stops when there's none.
+- `yos install` took a disk that lvm, md, or an open luks device holds,
+  with nothing mounted, as free, and wipefs then failed. it says what
+  holds the disk and how to free it.
+- a repository's key counted once it was in pacman's keyring, even if it
+  was never signed locally, so pacman refused the repository's
+  packages and no plan tried again. the key counts once it's signed
+  locally now.
+- a new aur build deleted the one it replaced, so a rollback to a lock
+  from before it couldn't install the old build. the old package moves to
+  `kept` in the yos-aur repository, and an older lock installs it from
+  there.
 
 ## 0.2.0
 

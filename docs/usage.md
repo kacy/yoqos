@@ -1509,7 +1509,7 @@ and the lock pins each package by hash and by the recipe commit it was
 built from. a recipe that hasn't changed isn't built again. a new build
 moves the package it replaces into `yos-aur`'s `kept` directory, so a
 rollback to a lock from before it installs the old build from there.
-nothing removes them.
+yos never removes kept builds.
 
 aur recipes run as code when they build, so `yos update` shows a recipe
 before building it: the first time, every file in it in full (binary
