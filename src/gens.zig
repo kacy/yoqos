@@ -436,8 +436,8 @@ pub const Machine = struct {
     }
 
     /// carries the running machine's own state into the root at `subvol`:
-    /// its identity, host keys, clock, id ranges, keyring, passwords, and
-    /// the system accounts it lacks. a generation holds the system, not
+    /// its identity, host keys, clock, id ranges, keyring, passwords, saved
+    /// network connections, and the system accounts it lacks. a generation holds the system, not
     /// these. a `staged` root was built from this one and keeps what its
     /// build added to the keyring and id ranges.
     pub fn carry(m: *const Machine, subvol: []const u8, staged: bool) !?[]const u8 {
@@ -516,8 +516,12 @@ pub fn writeNotice(a: Allocator, io: std.Io, text: []const u8) !?[]const u8 {
 pub const packaged_yos = "/usr/bin/yos";
 
 /// machine state every root gets from the running system. ssh host keys
-/// are added by name, and passwords are merged into /etc/shadow.
-const carried = [_][]const u8{ "etc/machine-id", "etc/adjtime", "etc/subuid", "etc/subgid", "etc/pacman.d/gnupg" };
+/// are added by name, and passwords are merged into /etc/shadow. saved
+/// network connections, wi-fi passwords included, are networkmanager's,
+/// in /etc: rolled back with the rest, a wi-fi network joined since would
+/// be forgotten, and networkmanager's state in /var, which every root
+/// shares, would no longer match them.
+const carried = [_][]const u8{ "etc/machine-id", "etc/adjtime", "etc/subuid", "etc/subgid", "etc/pacman.d/gnupg", "etc/NetworkManager/system-connections" };
 
 /// carried state a staged build changes itself: repository keys it
 /// imports, archlinux-keyring's populate, and id ranges for users it

@@ -145,7 +145,7 @@ pub fn adoptProblem(a: Allocator, c: *const config.Config, path: []const u8) !?[
     if (!std.mem.startsWith(u8, path, "/etc/")) return "yos adopts files under /etc; the rest belong to packages";
     // the config is meant to be safe to publish, and these are the
     // machine's own, carried into every root anyway.
-    if (observe.carriedEtc(path["/etc/".len..])) return "it's machine state, like accounts, passwords, or host keys, and stays out of the config";
+    if (observe.carriedEtc(path["/etc/".len..])) return "it's machine state, like accounts, passwords, host keys, or saved network connections, and stays out of the config";
     if ((try why.explainFile(a, c, path)).cause) |cause| return try std.fmt.allocPrint(a, "yos writes it already, for {s}", .{cause.key});
     return null;
 }
