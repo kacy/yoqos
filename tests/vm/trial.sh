@@ -14,7 +14,7 @@ set -eu
 check "pacman -Q amd-ucode >/dev/null 2>&1 || echo not yet" "not yet"
 # a change to the running system now stays behind, and status says so.
 "$vm" ssh "echo made after staging > /etc/yos-after-staging"
-check "/usr/local/bin/yos status | grep -c 'changed since the next generation was built'" 1
+check "$(status_report); grep -c 'changed since the next generation was built' /tmp/report" 1
 show_env
 # until that reboot, the machine can't hibernate: resuming would start the
 # new kernel with the old one's memory.
@@ -47,7 +47,7 @@ show_env
 # on as the newest generation with its config.
 falls_back "$before"
 on_trial no
-check "/usr/local/bin/yos status | grep -c '^note: generation'" 1
+check "$(status_report); grep -c '^note: generation' /tmp/report" 1
 check "/usr/local/bin/yos events | grep '\"kind\":\"trial\"' | tail -n 1 | grep -c '\"step\":\"failed\"'" 1
 check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."
 

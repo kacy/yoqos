@@ -38,7 +38,7 @@ check "findmnt -no FSROOT /" /@roots/1
 "$vm" ssh "os add --yes intel-ucode" | tail -n 2
 "$vm" reboot
 old_settled
-check "grub-editenv $VM_ESP/yoq/grubenv list | grep -c -e ^yoq_trial -e ^yoq_default || true" 0
+check "grub-editenv $VM_ESP/yoq/grubenv list | { grep -c -e ^yoq_trial -e ^yoq_default || true; }" 0
 
 # yos, installed beside it, won't touch the machine yoq os set up.
 "$vm" copy "$new" /usr/bin/yos
@@ -58,7 +58,8 @@ check "test -e /var/lib/yoq && echo state || echo none" none
 "$vm" ssh "mv /etc/yoq /etc/yos && mv /var/cache/yoq /var/cache/yos"
 # yoq os's repository file, from a config with repos or aur, has to go too.
 "$vm" ssh "touch /etc/pacman.d/yoq-repos.conf"
-check "yos plan 2>&1 | grep -c 'E0138.*/etc/pacman.d/yoq-repos.conf is still here'" 1
+check "yos plan >/tmp/out 2>&1; echo \$?" 1
+check "grep -c 'E0138.*/etc/pacman.d/yoq-repos.conf is still here' /tmp/out" 1
 "$vm" ssh "rm /etc/pacman.d/yoq-repos.conf"
 # the file yoq os generated goes, and yos writes its own.
 check "yos plan | grep -c -e 99-yoq.conf -e 99-yos.conf" 2
@@ -85,6 +86,6 @@ settled
 check "journalctl -b -u yos-health --no-pager -o cat | grep -c 'the default now'" 1
 on_trial no
 check "yos plan" "nothing to do. this machine matches its config."
-check "yos doctor | grep -c '^  ok  boot menu'" 1
+check "$(doctor_report yos); grep -c '^  ok  boot menu' /tmp/report" 1
 check "pacman -Q tree intel-ucode amd-ucode >/dev/null && echo kept" kept
 echo "switch ok"

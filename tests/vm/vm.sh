@@ -23,7 +23,7 @@
 #                            power off and boot the second disk alone, or
 #                            the third, with blank firmware variables, like
 #                            a new machine
-#   vm.sh ssh <command>      run a command in the vm as root
+#   vm.sh ssh <command>      run a command in the vm as root, with pipefail
 #   vm.sh copy <file> <dest> copy a file into the vm
 #   vm.sh reboot             reboot and wait for ssh
 #   vm.sh reboot-answer <prompt> <text>
@@ -63,9 +63,12 @@ image=${VM_IMAGE:-cloud}
 
 ssh_opts="-i $dir/key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
 
+# runs a command in the vm as root, where a failing command in a pipe
+# fails it, as it does here. root's shell there is bash, or zsh on a live
+# iso; both have pipefail.
 run() {
     # shellcheck disable=SC2086
-    ssh $ssh_opts -p "$port" root@127.0.0.1 "$@"
+    ssh $ssh_opts -p "$port" root@127.0.0.1 "set -o pipefail;" "$@"
 }
 
 # waits until the vm answers over ssh with a boot id other than $1.

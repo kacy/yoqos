@@ -14,8 +14,9 @@ check "cmp /etc/hostname /var/tmp/clean/etc/hostname && echo same" same
 check "cmp /etc/locale.conf /var/tmp/clean/etc/locale.conf && echo same" same
 # nothing stays mounted in it, and a second build won't start over it.
 "$vm" ssh "findmnt -rn -o TARGET,SOURCE,FSTYPE | grep /var/tmp/clean || true; sleep 5"
-check "findmnt -rn -o TARGET | grep -c /var/tmp/clean || true" 0
-check "/usr/local/bin/yos build --clean /var/tmp/clean 2>&1 | grep -c 'can.t make /var/tmp/clean'" 1
+check "findmnt -rn -o TARGET | { grep -c /var/tmp/clean || true; }" 0
+check "/usr/local/bin/yos build --clean /var/tmp/clean >/tmp/out 2>&1; echo \$?" 1
+check "grep -c 'can.t make /var/tmp/clean' /tmp/out" 1
 "$vm" ssh "rm -rf /var/tmp/clean"
 
 # a lock from an earlier day, resolved against the arch linux archive as it

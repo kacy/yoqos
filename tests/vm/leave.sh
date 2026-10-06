@@ -28,8 +28,8 @@ check "/usr/local/bin/yos uninstall --yes >/dev/null 2>&1; echo \$?" 0
 
 # nothing of yos's is left in the firmware: no default or one-shot naming
 # an entry of yos's, and no boot entry for refind's trials.
-check "for v in LoaderEntryDefault LoaderEntryOneShot; do f=\$(ls /sys/firmware/efi/efivars/\$v-* 2>/dev/null) && tail -c +5 \$f | tr -d '\\000'; echo; done | grep -c '^yos' || true" 0
-check "efibootmgr 2>/dev/null | grep -c 'yos trial' || true" 0
+check "for v in LoaderEntryDefault LoaderEntryOneShot; do f=\$(ls /sys/firmware/efi/efivars/\$v-* 2>/dev/null) && tail -c +5 \$f | tr -d '\\000'; echo; done | { grep -c '^yos' || true; }" 0
+check "efibootmgr 2>/dev/null | { grep -c 'yos trial' || true; }" 0
 
 # plain arch from here. the kernel changes twice, older with pacman -U and
 # back with an upgrade, and each reboot goes into the same root, through

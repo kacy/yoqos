@@ -27,7 +27,7 @@ yos=/usr/local/bin/yos
 empty="nothing to do. this machine matches its config."
 "$vm" ssh "$yos init >/dev/null 2>&1 || true"
 generations=$("$vm" ssh "test -d /var/lib/yos/generations && echo yes || echo no")
-newest_cmd="ls /var/lib/yos/generations 2>/dev/null | sort -n | tail -n 1 | cut -d. -f1"
+newest_cmd="{ ls /var/lib/yos/generations 2>/dev/null || true; } | sort -n | tail -n 1 | cut -d. -f1"
 # the journal's last apply line. yos's other events, like commits and
 # generations, go in the journal too, with a kind instead of an event.
 last_apply="grep '\"event\":' /var/lib/yos/journal | tail -n 1"
@@ -212,7 +212,7 @@ disk_full() {
     check "$menu_cmd" "$menu"
     on_trial no
     check "pacman -Q $pkg >/dev/null 2>&1 || echo not installed" "not installed"
-    check "findmnt -rn -o TARGET | grep -c /run/yos/next || true" 0
+    check "findmnt -rn -o TARGET | { grep -c /run/yos/next || true; }" 0
     "$vm" ssh "rm -f /var/yos-filler-*; sync"
     same_roots "$was"
     "$vm" ssh "$yos remove --no-apply $pkg" | tail -n 1
@@ -246,7 +246,7 @@ esp_full() {
     check "$newest_cmd" "$before"
     check "$menu_cmd" "$menu"
     on_trial no
-    check "ls $VM_ESP/yos/boot | grep -c yos-new || true" 0
+    check "ls $VM_ESP/yos/boot | { grep -c yos-new || true; }" 0
     check "pacman -Q $pkg >/dev/null 2>&1 || echo not installed" "not installed"
     "$vm" ssh "rm -f $VM_ESP/yos-filler; sync"
     same_roots "$was"
@@ -272,7 +272,7 @@ esp_restore() {
     check "grep -c 'boot files don.t fit on the esp, so nothing was copied there' /tmp/out" 1
     check "grep -c 'the esp at $VM_ESP has .* MiB free, and the new boot files need' /tmp/out" 1
     check "grep -c 'removing generations won.t help' /tmp/out" 1
-    check "ls $VM_ESP | grep -c yos-new || true" 0
+    check "ls $VM_ESP | { grep -c yos-new || true; }" 0
     root=$(newest_root)
     check "cat /var/lib/yos/unsettled" "/$root"
     "$vm" ssh "rm -f $VM_ESP/yos-filler; sync"

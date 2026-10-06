@@ -1,5 +1,10 @@
 # helpers the vm tests share. failures are named after the script that
-# sources this. a failing command in a pipe fails the test.
+# sources this. a failing command in a pipe fails the test, here and in
+# the vm, where vm.sh runs commands with pipefail too. that means
+# `x | grep -c ... || true` also hides x failing, so a check that counts
+# nothing saves x's output first, or writes `x | { grep -c ... || true; }`.
+# and no pipe ends in `grep -q`: it stops reading at the first match,
+# which can kill x with sigpipe.
 set -o pipefail
 vm=tests/vm/vm.sh
 name=$(basename "$0" .sh)
@@ -38,6 +43,27 @@ initramfs_count() {
     echo "lsinitcpio $1 >/tmp/initramfs.list && { grep -c '$2' /tmp/initramfs.list || true; }"
 }
 
+# a command that runs yos's report $1, like `/usr/local/bin/yos doctor`,
+# with what it prints in /tmp/report for a check to grep. status and
+# doctor exit 1 when they find something to fix, which a test may not care
+# about here. any other exit, or a report without the line $2 (a grep
+# pattern) that every whole one has, is yos failing.
+report() {
+    echo "$1 >/tmp/report; rc=\$?; [ \$rc -le 1 ] && grep -q -e '$2' /tmp/report || { echo \"$1 exited \$rc:\"; cat /tmp/report; exit 1; }"
+}
+
+# status's report, from yos at $1 if given. it always says what's failing,
+# if only "none".
+status_report() {
+    report "${1:-/usr/local/bin/yos} status" '^failing '
+}
+
+# doctor's report, from yos at $1 if given. it ends saying what to do about
+# its checks, if anything.
+doctor_report() {
+    report "${1:-/usr/local/bin/yos} doctor" '^nothing to fix\|^the lines under each'
+}
+
 # a command that prints one of the firmware's secure boot variables,
 # 1 or 0: its value comes after 4 bytes of attributes.
 efivar() {
@@ -50,12 +76,13 @@ settled() {
     "$vm" ssh "for i in \$(seq 150); do [ \"\$(systemctl show -p ExecMainExitTimestampMonotonic --value yos-health)\" != 0 ] && exit 0; sleep 2; done; echo 'no yos-health run after 5 minutes'; exit 1"
 }
 
-# what the bootloader will boot next, on one line.
+# what the bootloader will boot next, on one line. it's only for the log,
+# so it never fails the test.
 show_env() {
     case $VM_LOADER in
-    grub) "$vm" ssh "grub-editenv $VM_ESP/yos/grubenv list | grep ^yos_ | sort | tr '\\n' ' '" ;;
-    limine | systemd-boot) "$vm" ssh "cat /var/lib/yos/trial 2>/dev/null; ls /sys/firmware/efi/efivars | grep ^LoaderEntry | tr '\\n' ' '" ;;
-    refind) "$vm" ssh "cat /var/lib/yos/trial 2>/dev/null; efibootmgr | head -n 3 | tr '\\n' ' '" ;;
+    grub) "$vm" ssh "grub-editenv $VM_ESP/yos/grubenv list | grep ^yos_ | sort | tr '\\n' ' '" || true ;;
+    limine | systemd-boot) "$vm" ssh "cat /var/lib/yos/trial 2>/dev/null; ls /sys/firmware/efi/efivars | grep ^LoaderEntry | tr '\\n' ' '" || true ;;
+    refind) "$vm" ssh "cat /var/lib/yos/trial 2>/dev/null; efibootmgr | sed -n 1,3p | tr '\\n' ' '" || true ;;
     *) ;;
     esac
 }
@@ -63,7 +90,7 @@ show_env() {
 # "yes" while a generation is on trial, or "no".
 on_trial() {
     case $VM_LOADER in
-    grub) check "grub-editenv $VM_ESP/yos/grubenv list | grep -q -e ^yos_trial -e ^yos_default && echo yes || echo no" "$1" ;;
+    grub) check "grub-editenv $VM_ESP/yos/grubenv list >/tmp/grubenv && { grep -q -e ^yos_trial -e ^yos_default /tmp/grubenv && echo yes || echo no; }" "$1" ;;
     *) check "test -e /var/lib/yos/trial && echo yes || echo no" "$1" ;;
     esac
 }
@@ -72,8 +99,9 @@ on_trial() {
 menu_file() {
     case $VM_LOADER in
     grub) echo "$VM_ESP/grub/grub.cfg" ;;
-    limine) "$vm" ssh "ls $VM_ESP/EFI/*/limine.conf $VM_ESP/limine.conf 2>/dev/null | head -n 1" ;;
-    refind) "$vm" ssh "ls $VM_ESP/EFI/*/yos.conf | head -n 1" ;;
+    # only one of the places limine reads is there.
+    limine) "$vm" ssh "{ ls $VM_ESP/EFI/*/limine.conf $VM_ESP/limine.conf 2>/dev/null || true; } | sed -n 1p" ;;
+    refind) "$vm" ssh "ls $VM_ESP/EFI/*/yos.conf | sed -n 1p" ;;
     systemd-boot) echo "$VM_ESP/loader/entries" ;;
     esac
 }
@@ -288,7 +316,7 @@ newest_root() {
 
 # the number of the generation before the newest.
 second_newest() {
-    "$vm" ssh "ls /var/lib/yos/generations | sort -n | tail -n 2 | head -n 1 | cut -d. -f1"
+    "$vm" ssh "ls /var/lib/yos/generations | sort -n | tail -n 2 | sed -n 1p | cut -d. -f1"
 }
 
 # the running kernel is the root's own linux, and its modules are there.

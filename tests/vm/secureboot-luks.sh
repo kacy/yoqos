@@ -14,10 +14,10 @@ part=$("$vm" ssh "cryptsetup status root | sed -n 's/^ *device: *//p'")
 on_failure="cat /proc/cmdline; grub-editenv /boot/yos/grubenv list; /usr/local/bin/yos doctor; journalctl -b -u yos-health --no-pager -o cat | tail -n 8"
 
 check "$(efivar SetupMode)" 1
-check "/usr/local/bin/yos doctor | grep -c '^  ok  tpm key: opens the root\$'" 1
+check "$(doctor_report); grep -c '^  ok  tpm key: opens the root\$' /tmp/report" 1
 # yos install seals the key to pcr 7, which systemd no longer does by
 # itself.
-check "/usr/local/bin/yos doctor | grep -c 'tpm seal' || true" 0
+check "$(doctor_report); grep -c 'tpm seal' /tmp/report || true" 0
 
 # keys, both settings under the [boot] the install's config has, and
 # everything on the esp signed, then enrolled.
@@ -26,7 +26,7 @@ check "/usr/local/bin/yos doctor | grep -c 'tpm seal' || true" 0
 "$vm" ssh "/usr/local/bin/yos update --yes" | tail -n 3
 on_trial yes
 "$vm" ssh "find /boot/EFI -iname '*.efi' -type f -exec sbctl sign -s {} \\; >/dev/null"
-check "/usr/local/bin/yos doctor | grep -c '^  ok  esp signatures: every efi file is signed\$'" 1
+check "$(doctor_report); grep -c '^  ok  esp signatures: every efi file is signed\$' /tmp/report" 1
 "$vm" ssh "sbctl enroll-keys --microsoft --yes-this-might-brick-my-machine >/dev/null"
 check "$(efivar SetupMode)" 0
 
@@ -34,27 +34,28 @@ check "$(efivar SetupMode)" 0
 VM_ANSWER_DELAY=330 "$vm" reboot-answer "passphrase for" "correct horse battery"
 settled
 check "$(efivar SecureBoot)" 1
-check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in use."
+check "cryptsetup status root | sed -n 1p" "/dev/mapper/root is active and is in use."
 check "grep -c 'rootflags=[^ ]*x-systemd.device-timeout=infinity' /proc/cmdline" 1
 check "ls /sys/firmware/efi/efivars | grep -c '^StubInfo-'" 1
 check "journalctl -b -u yos-health --no-pager -o cat | grep -c 'the default now'" 1
 on_trial no
-check "/usr/local/bin/yos history | tail -n 1 | grep -c 'fell back' || true" 0
+check "/usr/local/bin/yos history | tail -n 1 | { grep -c 'fell back' || true; }" 0
 check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."
-check "/usr/local/bin/yos doctor | grep -c '^  ok  firmware keys: sbctl.s db key is enrolled\$'" 1
-check "/usr/local/bin/yos doctor | grep -c '^warn  tpm key: doesn.t open the root now\$'" 1
+check "$(doctor_report); grep -c '^  ok  firmware keys: sbctl.s db key is enrolled\$' /tmp/report" 1
+check "$(doctor_report); grep -c '^warn  tpm key: doesn.t open the root now\$' /tmp/report" 1
 
 # new keys the firmware doesn't have: yos won't sign with them.
 "$vm" ssh "mv /var/lib/sbctl /root/sbctl.enrolled && sbctl create-keys >/dev/null"
-check "/usr/local/bin/yos plan 2>&1 | grep -c 'error\\[E0137\\]'" 1
-check "/usr/local/bin/yos doctor | grep -c '^  no  firmware keys: sbctl.s db key isn.t enrolled\$'" 1
+check "/usr/local/bin/yos plan >/tmp/out 2>&1; echo \$?" 1
+check "grep -c 'error\\[E0137\\]' /tmp/out" 1
+check "$(doctor_report); grep -c '^  no  firmware keys: sbctl.s db key isn.t enrolled\$' /tmp/report" 1
 "$vm" ssh "rm -rf /var/lib/sbctl && mv /root/sbctl.enrolled /var/lib/sbctl"
 
 # the tpm's key made again, as the docs say: the next boot is unattended.
 "$vm" ssh "printf 'correct horse battery' > /root/luks-key && chmod 600 /root/luks-key && systemd-cryptenroll --unlock-key-file=/root/luks-key --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 $part >/dev/null; rm -f /root/luks-key"
-check "/usr/local/bin/yos doctor | grep -c '^  ok  tpm key: opens the root\$'" 1
+check "$(doctor_report); grep -c '^  ok  tpm key: opens the root\$' /tmp/report" 1
 "$vm" reboot
-check "cryptsetup status root | head -n 1" "/dev/mapper/root is active and is in use."
+check "cryptsetup status root | sed -n 1p" "/dev/mapper/root is active and is in use."
 check "$(efivar SecureBoot)" 1
 settled
 

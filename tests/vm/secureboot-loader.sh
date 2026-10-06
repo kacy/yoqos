@@ -32,12 +32,12 @@ on_trial yes
 
 # yos signed what it put on the esp: its images, grub, refind's driver.
 [ "$VM_LOADER" = grub ] && check "test -s /var/lib/yos/grub-signed && echo yes" yes
-check "/usr/local/bin/yos doctor | grep '^  no  esp signatures:' | grep -c -i -e /yos/boot/ -e grub -e btrfs_x64 || true" 0
+check "$(doctor_report); grep '^  no  esp signatures:' /tmp/report | grep -c -i -e /yos/boot/ -e grub -e btrfs_x64 || true" 0
 
 # anything else on the esp signed, then the keys enrolled with
 # microsoft's, as the docs say.
 "$vm" ssh "find $VM_ESP/EFI -iname '*.efi' -type f -exec sbctl sign -s {} \\; >/dev/null"
-check "/usr/local/bin/yos doctor | grep -c '^  ok  esp signatures: every efi file is signed\$'" 1
+check "$(doctor_report); grep -c '^  ok  esp signatures: every efi file is signed\$' /tmp/report" 1
 "$vm" ssh "sbctl enroll-keys --microsoft --yes-this-might-brick-my-machine >/dev/null"
 check "$(efivar SetupMode)" 0
 
@@ -51,7 +51,7 @@ check "ls /sys/firmware/efi/efivars | grep -c '^StubInfo-'" 1
 check "journalctl -b -u yos-health --no-pager -o cat | grep -c 'the default now'" 1
 on_trial no
 check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."
-check "/usr/local/bin/yos doctor | grep -c '^  ok  firmware keys: sbctl.s db key is enrolled\$'" 1
+check "$(doctor_report); grep -c '^  ok  firmware keys: sbctl.s db key is enrolled\$' /tmp/report" 1
 
 case $VM_LOADER in
 grub)
@@ -65,7 +65,7 @@ grub)
     "$vm" ssh "/usr/local/bin/yos add --yes intel-ucode" | tail -n 1
     on_trial yes
     before=$(second_newest)
-    twin=$("$vm" ssh "sed -n '/--id head/,/^}/ s|^    chainloader (\${yos_esp})||p' $conf | head -n 1")
+    twin=$("$vm" ssh "sed -n '/--id head/,/^}/ s|^    chainloader (\${yos_esp})||p' $conf | sed -n 1p")
     "$vm" ssh "cp $VM_ESP/vmlinuz-linux $VM_ESP$twin"
     show_env
     falls_back "$before" "console:Falling back to"
@@ -109,10 +109,15 @@ esac
 # be signed. limine loads it itself.
 case $VM_LOADER in
 grub | refind)
-    check "{ /usr/local/bin/yos uninstall --yes </dev/null 2>&1 || true; } | grep -c '^  no  secure boot: enforced, and vmlinuz-linux has no signature\$'" 1
+    check "/usr/local/bin/yos uninstall --yes </dev/null >/tmp/out 2>&1; echo \$?" 1
+    check "grep -c '^  no  secure boot: enforced, and vmlinuz-linux has no signature\$' /tmp/out" 1
     "$vm" ssh "sbctl sign -s /boot/vmlinuz-linux >/dev/null"
-    check "/usr/local/bin/yos uninstall --json </dev/null | grep -c '\"found\": \"enforced, and the kernels in /boot are signed\"'" 1
+    check "/usr/local/bin/yos uninstall --json </dev/null >/tmp/out; echo \$?" 0
+    check "grep -c '\"found\": \"enforced, and the kernels in /boot are signed\"' /tmp/out" 1
     ;;
 esac
-[ "$VM_LOADER" = grub ] && check "/usr/local/bin/yos uninstall --json </dev/null | grep -c '\"found\": \"enforced, and sbctl has keys to sign grub\"'" 1
+if [ "$VM_LOADER" = grub ]; then
+    check "/usr/local/bin/yos uninstall --json </dev/null >/tmp/out; echo \$?" 0
+    check "grep -c '\"found\": \"enforced, and sbctl has keys to sign grub\"' /tmp/out" 1
+fi
 echo "secure boot on $VM_LOADER ok"

@@ -20,7 +20,7 @@ older_linux
 old=$("$vm" ssh "uname -r")
 kernel_matches
 # a module this kernel hasn't loaded yet.
-check "lsmod | grep -c '^dummy ' || true" 0
+check "lsmod | { grep -c '^dummy ' || true; }" 0
 
 # yos puts today's linux back, live. the running kernel's modules stay.
 "$vm" ssh "$yos apply --yes" | tail -n 2
