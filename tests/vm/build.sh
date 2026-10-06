@@ -6,6 +6,8 @@ set -eu
 . tests/vm/lib.sh
 
 "$vm" ssh "/usr/local/bin/yos init >/dev/null 2>&1 || true"
+# files the smoke test's own config had yos write, which this one doesn't
+# ask for, go with one apply.
 "$vm" ssh "/usr/local/bin/yos apply --yes" | tail -n 1
 "$vm" ssh "/usr/local/bin/yos build --clean /var/tmp/clean >/tmp/build.out 2>&1; echo \$? >/tmp/build.rc; tail -n 40 /tmp/build.out"
 check "cat /tmp/build.rc" 0
@@ -25,5 +27,9 @@ then=$(date -u -d '3 days ago' +%F)
 "$vm" ssh "/usr/local/bin/yos update --no-apply --date $then" | tail -n 2
 check "grep -c '^sync_date = \"$then\"' /etc/yos/machine.lock" 1
 check "test -e /var/cache/yos/sync/$then/core.db && echo archived" archived
-"$vm" ssh "/usr/local/bin/yos update --no-apply" | tail -n 1
+# today's lock again, and the machine with it, in case the mirrors moved
+# since the apply above. the scripts after start from a machine that
+# matches its config.
+"$vm" ssh "/usr/local/bin/yos update --yes" | tail -n 1
+check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."
 echo "build ok"

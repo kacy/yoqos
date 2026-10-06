@@ -40,8 +40,7 @@ if [ "$generations" = yes ]; then
 else
     menu_cmd="echo none"
 fi
-# the scripts before can leave the lock ahead of the machine.
-"$vm" ssh "$yos apply --yes" | tail -n 1
+# the scripts before leave the machine matching its config.
 check "$yos plan" "$empty"
 # when a check fails, what yos printed last and what the journal says.
 on_failure="echo '--- /tmp/out'; cat /tmp/out 2>/dev/null; echo '--- journal'; tail -n 5 /var/lib/yos/journal 2>/dev/null"
