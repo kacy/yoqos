@@ -71,9 +71,18 @@ efivar() {
 }
 
 # yos-health runs once per boot, after the rest; wait until it has run
-# this boot, but not forever.
+# this boot, but not forever, and fail unless it exited $1, 0 by default.
+# a boot that falls back from a trial, or ends one only grub's env file
+# names, exits 1 there on purpose.
 settled() {
-    "$vm" ssh "for i in \$(seq 150); do [ \"\$(systemctl show -p ExecMainExitTimestampMonotonic --value yos-health)\" != 0 ] && exit 0; sleep 2; done; echo 'no yos-health run after 5 minutes'; exit 1"
+    want=${1:-0}
+    got=$("$vm" ssh "for i in \$(seq 150); do [ \"\$(systemctl show -p ExecMainExitTimestampMonotonic --value yos-health)\" != 0 ] && exec echo \$(systemctl show -p Result --value yos-health) \$(systemctl show -p ExecMainStatus --value yos-health); sleep 2; done; echo 'no yos-health run after 5 minutes'; exit 1") || { echo "$name: $got"; exit 1; }
+    case $want in 0) expected="success 0" ;; *) expected="exit-code $want" ;; esac
+    if [ "$got" != "$expected" ]; then
+        echo "$name: yos-health ended '$got' this boot, not '$expected'"
+        "$vm" ssh "journalctl -b -u yos-health --no-pager -o cat | tail -n 20" || true
+        exit 1
+    fi
 }
 
 # what the bootloader will boot next, on one line. it's only for the log,
@@ -215,7 +224,8 @@ falls_back() {
     mark=$(wc -c < "$console" 2>/dev/null || echo 0)
     "$vm" reboot || true
     wait_root "/@roots/boot-$1"
-    settled
+    # the fallback ends the trial and says so with exit 1.
+    settled 1
     check "/usr/local/bin/yos history | tail -n 1 | grep -c 'fell back from'" 1
     case $proof in
     console:*)

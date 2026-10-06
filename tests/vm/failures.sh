@@ -321,11 +321,11 @@ EOF
 # waits for the boot after power_cut_on's stand-in for $1 cut the power:
 # the stand-in is gone, the machine runs the root $2, and yos-health has
 # finished. the boot the power went out on had the health check running
-# when it did.
+# when it did. yos-health has to have exited $3, 0 by default.
 wait_cut() {
     for _ in $(seq 60); do
         got=$(timeout 20 "$vm" ssh "test ! -e /usr/local/bin/$1 && test \"\$(systemctl show -p ExecMainExitTimestampMonotonic --value yos-health)\" != 0 && findmnt -no FSROOT /" 2>/dev/null || true)
-        [ "$got" = "$2" ] && return 0
+        if [ "$got" = "$2" ]; then settled "${3:-0}"; return 0; fi
         sleep 10
     done
     echo "$name: no boot into $2 with the health check done after the power cut"
@@ -398,7 +398,7 @@ trial_cuts() {
     break_trial_boot
     power_cut_on "$end_tool" "$end_cut"
     "$vm" reboot || true
-    wait_cut "$end_tool" "/@roots/boot-$before"
+    wait_cut "$end_tool" "/@roots/boot-$before" 1
     newer_than "$n" 1
     check "/usr/local/bin/yos history | tail -n 1 | grep -c 'fell back from $n to $before'" 1
     on_trial no

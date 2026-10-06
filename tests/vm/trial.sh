@@ -102,7 +102,8 @@ if [ "$VM_LOADER" = grub ]; then
     "$vm" ssh "$on_failure"
     "$vm" reboot || true
     wait_root "/@roots/boot-$before"
-    settled
+    # health ends a trial yos never armed, and says so with exit 1.
+    settled 1
     check "journalctl -b -u yos-health --no-pager -o cat | grep -c 'yos never armed one'" 1
     check "ls /var/lib/yos/generations | sort -n | tail -n 1 | cut -d. -f1" "$last"
     on_trial no
