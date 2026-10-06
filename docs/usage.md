@@ -1506,7 +1506,10 @@ devtools' `makechrootpkg` in a clean chroot of its own, under
 `/var/cache/yos/aur`, as an unprivileged `yos-build` user. what it builds
 goes into a local repository, `yos-aur`, that `yos` reads like any other,
 and the lock pins each package by hash and by the recipe commit it was
-built from. a recipe that hasn't changed isn't built again.
+built from. a recipe that hasn't changed isn't built again. a new build
+moves the package it replaces into `yos-aur`'s `kept` directory, so a
+rollback to a lock from before it installs the old build from there.
+nothing removes them.
 
 aur recipes run as code when they build, so `yos update` shows a recipe
 before building it: the first time, every file in it in full (binary

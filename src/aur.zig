@@ -394,11 +394,27 @@ pub const Builder = struct {
         const file = ownPackage(try b.packagesIn(work), name) orelse
             return try std.fmt.allocPrint(b.a, "building {s} made no package called {s}", .{ name, name });
         const dest = try std.fs.path.join(b.a, &.{ b.dirs.repo, std.fs.path.basename(file) });
+        if (try b.keepOld(name)) |w| return w;
         // root's alone: a package someone else can change would go into
         // later builds' chroots, and onto this machine.
         if (try b.run(&.{ "install", "-o", "root", "-g", "root", "-m", "0644", file, dest })) |w| return w;
-        if (try b.run(&.{ "repo-add", "-q", "-R", db, dest })) |w| return w;
+        if (try b.run(&.{ "repo-add", "-q", db, dest })) |w| return w;
         return b.write(marker, commit);
+    }
+
+    /// moves the repository's files of `name` aside, into sync.kept_dir,
+    /// where the database doesn't name them but a lock from before this
+    /// build still finds its own (see sync.keptPackage). they stay, like
+    /// the packages in /var/cache/yos/pkg: they're the only copy of an
+    /// aur build.
+    fn keepOld(b: Builder, name: []const u8) !?[]const u8 {
+        const kept = try std.fs.path.join(b.a, &.{ b.dirs.repo, sync.kept_dir });
+        for (try b.packagesIn(b.dirs.repo)) |f| {
+            if (!std.mem.eql(u8, packageName(std.fs.path.basename(f)) orelse continue, name)) continue;
+            if (try b.createDir(kept)) |w| return w;
+            if (try b.run(&.{ "mv", "-f", f, kept })) |w| return w;
+        }
+        return null;
     }
 
     /// the package files in the local repository that `names` are in, for
@@ -714,4 +730,26 @@ test "a package file a recipe commits isn't taken for what it builds" {
     try testing.expectEqual(null, try b.dropPackages(work));
     try testing.expectEqual(null, ownPackage(try b.packagesIn(work), "foo"));
     try tmp.dir.access(io, "PKGBUILD", .{});
+}
+
+test "a build keeps the package it replaces, out of the repository's way" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    const b: Builder = .{ .a = a, .io = io, .dirs = try Dirs.under(a, root), .pacman_conf = "" };
+    const repo = "var/cache/yos/aur/repo";
+    try tmp.dir.createDirPath(io, repo);
+    try tmp.dir.writeFile(io, .{ .sub_path = repo ++ "/foo-1.0-1-x86_64.pkg.tar.zst", .data = "one" });
+    try tmp.dir.writeFile(io, .{ .sub_path = repo ++ "/foo-bin-3.0-1-x86_64.pkg.tar.zst", .data = "bin" });
+    try testing.expectEqual(null, try b.keepOld("foo"));
+    // the next build's chroot gets no old foo, and foo-bin stays.
+    try testing.expectEqual(null, ownPackage(try b.packagesIn(b.dirs.repo), "foo"));
+    try testing.expect(ownPackage(try b.packagesIn(b.dirs.repo), "foo-bin") != null);
+    try testing.expectEqualStrings("one", try tmp.dir.readFileAlloc(io, repo ++ "/" ++ sync.kept_dir ++ "/foo-1.0-1-x86_64.pkg.tar.zst", a, .limited(64)));
+    // and a lock from before the build still finds it.
+    try testing.expect(try sync.keptPackage(a, io, b.dirs.repo, "foo", "1.0-1", &@import("facts.zig").sha256Hex("one")) != null);
 }

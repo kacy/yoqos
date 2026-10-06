@@ -704,6 +704,7 @@ fn syncPackage(a: Allocator, io: std.Io, h: Handle, want: lock.Package, diags: *
         if (sync.archivedRepo(want.repo)) {
             if (try archivedPackage(a, io, h, db, want, if (p) |found| str(c.alpm_pkg_get_arch(found)) else null, diags)) |loaded| return loaded;
         }
+        if (try keptPackage(a, io, h, db, want, diags)) |loaded| return loaded;
         if (p) |found| {
             _ = try fail(diags, "the {s} database has {s} {s}, but the lock says {s}", .{ want.repo, want.name, pkgVersion(found), want.version });
         } else {
@@ -713,6 +714,22 @@ fn syncPackage(a: Allocator, io: std.Io, h: Handle, want: lock.Package, diags: *
     }
     _ = try fail(diags, "{s} isn't in the {s} database the lock came from", .{ want.name, want.repo });
     return null;
+}
+
+/// the locked package's file from a repository on this machine's own
+/// disk that has moved past it, like yos's aur builds (see
+/// sync.keptPackage). null when `db` isn't one, or doesn't keep it.
+fn keptPackage(a: Allocator, io: std.Io, h: Handle, db: *c.alpm_db_t, want: lock.Package, diags: *diag.List) Error!?*c.alpm_pkg_t {
+    var servers = listItems(u8, c.alpm_db_get_servers(db));
+    const server = str(servers.next() orelse return null);
+    if (!std.mem.startsWith(u8, server, "file://")) return null;
+    const path = try sync.keptPackage(a, io, std.mem.trimEnd(u8, server["file://".len..], "/"), want.name, want.version, want.sha256) orelse return null;
+    var p: ?*c.alpm_pkg_t = null;
+    if (c.alpm_pkg_load(h.h, path.ptr, 1, c.alpm_db_get_siglevel(db), &p) != 0) {
+        _ = try fail(diags, "can't load {s} {s} from {s}: {s}", .{ want.name, want.version, path, h.lastError() });
+        return null;
+    }
+    return p;
 }
 
 /// the locked package's file from the arch linux archive, with its

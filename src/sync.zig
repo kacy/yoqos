@@ -344,6 +344,57 @@ fn localDb(a: Allocator, r: Repo) !?[]const u8 {
     return try std.fmt.allocPrint(a, "{s}/{s}.db", .{ dir["file://".len..], r.name });
 }
 
+/// where a repository on this machine's own disk keeps packages its
+/// database has moved past: yos's aur builds keep the one each build
+/// replaces there, in the repository's directory.
+pub const kept_dir = "kept";
+
+/// the file of `name` at `version` whose sha256 is `sha256`, in `dir`, a
+/// repository on this machine's own disk, or in its `kept_dir`. a lock
+/// from before the repository moved on, like one a rollback goes back
+/// to, finds its package there.
+pub fn keptPackage(a: Allocator, io: std.Io, dir: []const u8, name: []const u8, version: []const u8, sha256: []const u8) !?[:0]const u8 {
+    const prefix = try std.fmt.allocPrint(a, "{s}-{s}-", .{ name, version });
+    for ([_][]const u8{ dir, try std.fs.path.join(a, &.{ dir, kept_dir }) }) |d| {
+        var it_dir = std.Io.Dir.cwd().openDir(io, d, .{ .iterate = true }) catch continue;
+        defer it_dir.close(io);
+        var it = it_dir.iterate();
+        while (it.next(io) catch null) |e| {
+            if (e.kind != .file or !std.mem.startsWith(u8, e.name, prefix) or std.mem.endsWith(u8, e.name, ".sig")) continue;
+            // the arch, then .pkg.tar and its compression.
+            const rest = e.name[prefix.len..];
+            if (std.mem.indexOfScalar(u8, rest, '-') != null or std.mem.indexOf(u8, rest, ".pkg.tar") == null) continue;
+            const file = it_dir.openFile(io, e.name, .{}) catch continue;
+            defer file.close(io);
+            const sum = rootfs.sha256Of(io, file) orelse continue;
+            if (std.mem.eql(u8, &sum, sha256)) return try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ d, e.name }, 0);
+        }
+    }
+    return null;
+}
+
+test "a package the repository moved past is found by its version and hash" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+    const dir = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, kept_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "foo-2.0-1-x86_64.pkg.tar.zst", .data = "two" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "kept/foo-1.0-1-x86_64.pkg.tar.zst", .data = "one" });
+    // another package whose name starts the same.
+    try tmp.dir.writeFile(io, .{ .sub_path = "kept/foo-1.0-1-bin-1.0-1-x86_64.pkg.tar.zst", .data = "one" });
+    const one = facts.sha256Hex("one");
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}/kept/foo-1.0-1-x86_64.pkg.tar.zst", .{dir}), (try keptPackage(a, io, dir, "foo", "1.0-1", &one)).?);
+    const two = facts.sha256Hex("two");
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}/foo-2.0-1-x86_64.pkg.tar.zst", .{dir}), (try keptPackage(a, io, dir, "foo", "2.0-1", &two)).?);
+    // the right version with another hash isn't the locked one.
+    try testing.expectEqual(null, try keptPackage(a, io, dir, "foo", "1.0-1", &two));
+    try testing.expectEqual(null, try keptPackage(a, io, dir, "bar", "1.0-1", &one));
+}
+
 /// the repository's servers, or the fallback if pacman.conf names none.
 pub fn serversOf(r: Repo) []const []const u8 {
     return if (r.servers.len > 0) r.servers else &.{fallback_server};
@@ -377,6 +428,7 @@ fn isDatabase(bytes: []const u8) bool {
 // -- tests --
 
 const testing = std.testing;
+const facts = @import("facts.zig");
 
 test "repositories and servers from pacman.conf" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
