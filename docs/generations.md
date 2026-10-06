@@ -344,7 +344,8 @@ copy of that generation, so looking around can't change its record. data
 directories stay as they are either way, and so does the machine's own
 state: every new root, and every copy the menu boots, gets the running
 system's passwords, ssh host keys, machine id, clock setting, id ranges,
-and pacman keyring. users and everything else in `/etc` belong to the
+pacman keyring, and networkmanager's saved connections, so a wi-fi network
+joined since stays joined. users and everything else in `/etc` belong to the
 generation, with one exception: system accounts that packages make, like
 `postgres` or `chrony`, come along into every root yos makes, as they are.
 an older generation then has accounts for packages it doesn't have, but an

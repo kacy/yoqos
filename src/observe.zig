@@ -779,7 +779,7 @@ pub fn carriedEtc(path: []const u8) bool {
     for ([_][]const u8{ "shadow", "gshadow", "passwd", "group", "machine-id", "adjtime", "subuid", "subgid", "ld.so.cache" }) |f| {
         if (std.mem.eql(u8, path, f) or (std.mem.startsWith(u8, path, f) and path.len == f.len + 1 and path[f.len] == '-')) return true;
     }
-    return lists.startsWithAny(path, &.{ "ssh/ssh_host_", "pacman.d/gnupg/", "yos/" });
+    return lists.startsWithAny(path, &.{ "ssh/ssh_host_", "pacman.d/gnupg/", "NetworkManager/system-connections/", "yos/" });
 }
 
 /// users from /etc/passwd with their groups from /etc/group.
@@ -973,6 +973,7 @@ test "files in /etc a new root gets anyway" {
     try testing.expect(carriedEtc("shadow-"));
     try testing.expect(carriedEtc("ssh/ssh_host_ed25519_key"));
     try testing.expect(carriedEtc("yos/machine.toml"));
+    try testing.expect(carriedEtc("NetworkManager/system-connections/home.nmconnection"));
     try testing.expect(!carriedEtc("hosts"));
     try testing.expect(!carriedEtc("shadowsocks.json"));
 }

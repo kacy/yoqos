@@ -40,6 +40,10 @@
   from before it couldn't install the old build. the old package moves to
   `kept` in the yos-aur repository, and an older lock installs it from
   there.
+- networkmanager's saved connections, wi-fi passwords included, rolled
+  back with a generation, so a network joined since was forgotten, and
+  networkmanager's state in /var no longer matched what /etc had. they're
+  carried into every root now, like passwords and host keys.
 
 ## 0.2.0
 
