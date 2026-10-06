@@ -263,54 +263,55 @@ fn loadedUnits(a: Allocator, bus: *c.sd_bus, found: *Found, active_units: *Activ
 }
 
 /// enabled services that aren't running because nothing has asked for them
-/// yet. LoadUnit loads a unit's description without starting it, so its
-/// WantedBy= and RequiredBy=, read from the enablement links, show what
-/// would start it. a unit systemd won't load is left as it is.
+/// yet. what would start one is in its enablement links, read from its
+/// unit file's links rather than its loaded dependencies: systemd only
+/// knows those while the unit that wants it is loaded, and a target that
+/// never started, like bluetooth.target, isn't. a unit systemd unloaded,
+/// or never loaded, hasn't run this boot.
 fn waitingUnits(a: Allocator, bus: *c.sd_bus, found: *Found, active: *const Active) !void {
     for (found.values()) |*u| {
         if (!u.enabled or u.active or u.failed or u.skipped or u.ran or u.masked) continue;
         if (!std.mem.endsWith(u8, u.name, ".service")) continue;
-        const path = try loadUnit(a, bus, u.name) orelse continue;
-        var started: u64 = 0;
-        var err: c.sd_bus_error = std.mem.zeroes(c.sd_bus_error);
-        defer c.sd_bus_error_free(&err);
-        if (c.sd_bus_get_property_trivial(bus, destination, path.ptr, unit_iface, "InactiveExitTimestampMonotonic", &err, 't', &started) < 0) continue;
-        var wanted_by: std.ArrayList([]const u8) = .empty;
-        for ([_][*:0]const u8{ "WantedBy", "RequiredBy" }) |property| {
-            if (!try unitStrings(a, bus, path, property, &wanted_by)) break;
-        } else u.waiting = api.waiting(wanted_by.items, active, started != 0);
+        const name = try a.dupeZ(u8, u.name);
+        var links: std.ArrayList([]const u8) = .empty;
+        if (!try unitFileLinks(a, bus, name, &links)) continue;
+        u.waiting = api.waiting(try api.wantedBy(a, links.items), active, startedThisBoot(bus, name));
     }
 }
 
-/// the object path of a unit, loaded if it wasn't, or null if systemd
-/// won't load it.
-fn loadUnit(a: Allocator, bus: *c.sd_bus, name: []const u8) !?[:0]const u8 {
+/// the links enabling the unit file `name` made, from GetUnitFileLinks.
+/// false if systemd didn't answer.
+fn unitFileLinks(a: Allocator, bus: *c.sd_bus, name: [:0]const u8, out: *std.ArrayList([]const u8)) !bool {
     var err: c.sd_bus_error = std.mem.zeroes(c.sd_bus_error);
     defer c.sd_bus_error_free(&err);
     var reply: ?*c.sd_bus_message = null;
-    if (c.sd_bus_call_method(bus, destination, object, manager_iface, "LoadUnit", &err, &reply, "s", (try a.dupeZ(u8, name)).ptr) < 0) return null;
+    const no: c_int = 0;
+    if (c.sd_bus_call_method(bus, destination, object, manager_iface, "GetUnitFileLinks", &err, &reply, "sb", name.ptr, no) < 0) return false;
     defer _ = c.sd_bus_message_unref(reply);
-    var path: [*c]const u8 = null;
-    if (c.sd_bus_message_read(reply, "o", &path) < 0) return null;
-    return try a.dupeZ(u8, std.mem.span(path));
-}
-
-/// appends a unit's string-list property to `out`. false if systemd
-/// didn't answer.
-fn unitStrings(a: Allocator, bus: *c.sd_bus, path: [:0]const u8, property: [*:0]const u8, out: *std.ArrayList([]const u8)) !bool {
-    var err: c.sd_bus_error = std.mem.zeroes(c.sd_bus_error);
-    defer c.sd_bus_error_free(&err);
-    var list: [*c][*c]u8 = null;
-    if (c.sd_bus_get_property_strv(bus, destination, path.ptr, unit_iface, property, &err, &list) < 0) return false;
-    // an empty list comes back as no list at all.
-    if (list == null) return true;
-    defer std.c.free(@ptrCast(list));
-    var i: usize = 0;
-    while (list[i] != null) : (i += 1) {
-        defer std.c.free(list[i]);
-        try out.append(a, try a.dupe(u8, std.mem.span(list[i])));
+    if (c.sd_bus_message_enter_container(reply, 'a', "s") < 0) return false;
+    while (true) {
+        var link: [*c]const u8 = null;
+        const r = c.sd_bus_message_read(reply, "s", &link);
+        if (r < 0) return false;
+        if (r == 0) break;
+        try out.append(a, try a.dupe(u8, std.mem.span(link)));
     }
     return true;
+}
+
+/// whether the loaded unit `name` has left the inactive state since boot.
+/// GetUnit loads nothing, so a unit that isn't loaded hasn't.
+fn startedThisBoot(bus: *c.sd_bus, name: [:0]const u8) bool {
+    var err: c.sd_bus_error = std.mem.zeroes(c.sd_bus_error);
+    defer c.sd_bus_error_free(&err);
+    var reply: ?*c.sd_bus_message = null;
+    if (c.sd_bus_call_method(bus, destination, object, manager_iface, "GetUnit", &err, &reply, "s", name.ptr) < 0) return false;
+    defer _ = c.sd_bus_message_unref(reply);
+    var path: [*c]const u8 = null;
+    if (c.sd_bus_message_read(reply, "o", &path) < 0) return false;
+    var started: u64 = 0;
+    if (c.sd_bus_get_property_trivial(bus, destination, path, unit_iface, "InactiveExitTimestampMonotonic", &err, 't', &started) < 0) return false;
+    return started != 0;
 }
 
 /// whether an inactive service is a oneshot whose last run succeeded.

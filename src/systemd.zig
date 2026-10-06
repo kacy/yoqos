@@ -58,6 +58,21 @@ pub fn change(a: Allocator, unit: []const u8, verbs: []const Verb, diags: *diag.
     return if (comptime available) impl.change(a, unit, verbs, diags) else error.SystemdUnavailable;
 }
 
+/// the units an enabled unit's links make it wanted or required by, from
+/// the links themselves, like
+/// /etc/systemd/system/bluetooth.target.wants/bluetooth.service for
+/// bluetooth.target. an alias link names no unit.
+pub fn wantedBy(a: std.mem.Allocator, links: []const []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    for (links) |link| {
+        const dir = std.fs.path.basename(std.fs.path.dirname(link) orelse continue);
+        for ([_][]const u8{ ".wants", ".requires" }) |suffix| {
+            if (std.mem.endsWith(u8, dir, suffix) and dir.len > suffix.len) try out.append(a, dir[0 .. dir.len - suffix.len]);
+        }
+    }
+    return out.items;
+}
+
 /// whether an enabled unit that isn't running is only waiting for the
 /// boot to ask for it: nothing started it this boot, and none of the
 /// units its enablement links it to (its WantedBy= and RequiredBy=) is
@@ -91,6 +106,20 @@ test "verbs from a plan" {
     defer arena.deinit();
     try std.testing.expectEqualSlices(Verb, &.{ .disable, .stop }, try parseVerbs(arena.allocator(), "disable, stop"));
     try std.testing.expectEqualSlices(Verb, &.{.start}, try parseVerbs(arena.allocator(), "start"));
+}
+
+test "what a unit's links make it wanted by" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const got = try wantedBy(arena.allocator(), &.{
+        "/etc/systemd/system/bluetooth.target.wants/bluetooth.service",
+        "/etc/systemd/system/dbus-org.bluez.service",
+        "/etc/systemd/system/multi-user.target.requires/x.service",
+        "/etc/systemd/system/.wants/y.service",
+    });
+    try std.testing.expectEqual(2, got.len);
+    try std.testing.expectEqualStrings("bluetooth.target", got[0]);
+    try std.testing.expectEqualStrings("multi-user.target", got[1]);
 }
 
 test "a unit waits until something that wants it starts" {

@@ -9,8 +9,8 @@
   usual one: bluetooth.target never starts, so neither does it, and yos
   planned "start" for it after every boot, and on the rollback rung
   every trial failed its health check and fell back. yos now reads what
-  would start the unit (its WantedBy= and RequiredBy=), and leaves it be
-  while none of those is running.
+  would start the unit from its enablement links, and leaves it be while
+  none of those is running.
 
 ## 0.2.0
 
