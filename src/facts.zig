@@ -38,6 +38,10 @@ pub const Unit = struct {
     /// like bluetooth.service without an adapter: stopped, and as it
     /// should be.
     skipped: bool = false,
+    /// enabled, but nothing that wants it has started this boot, so
+    /// nothing has asked for it yet: bluetooth.service before an adapter
+    /// brings up bluetooth.target. stopped, and as it should be.
+    waiting: bool = false,
     /// a running service's main process, 0 if there isn't one.
     main_pid: u32 = 0,
     /// that process runs files an upgrade has since replaced, so it needs

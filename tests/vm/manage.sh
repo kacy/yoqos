@@ -56,6 +56,14 @@ check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config.
 check "systemctl is-enabled systemd-networkd-wait-online.service | grep -c masked || true" 0
 check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."
 "$vm" ssh "cp /root/machine.toml.saved /etc/yos/machine.toml"
+# bluetooth on a machine with no adapter: the start is skipped for its
+# condition, and after a reboot nothing asks for it, since
+# bluetooth.target never starts. either way the plan has nothing to do.
+"$vm" ssh "printf '\\n[services.bluetooth]\\nenabled = true\\n' >> /etc/yos/machine.toml && /usr/local/bin/yos update --yes" | tail -n 2
+check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."
+"$vm" reboot
+check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."
+"$vm" ssh "cp /root/machine.toml.saved /etc/yos/machine.toml && /usr/local/bin/yos update --yes" | tail -n 2
 # leaving the manage rung takes only yos's state; the config stays.
 check "/usr/local/bin/yos uninstall --yes >/dev/null; echo \$?" 0
 check "test -e /var/lib/yos && echo state || echo none" none
