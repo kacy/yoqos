@@ -4,11 +4,14 @@ on:
   push:
 
 # arch containers start with one mirror, and pacman gives up when it drops
-# connections. these give it others to fall back to.
+# connections. these give it others to fall back to. tests/vm/mirrorlist
+# has the same ones for the test vms; it can't be read here, since this
+# runs before the checkout.
 env:
   MIRRORLIST: |
     Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
-    Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch
+    Server = https://fastly.mirror.pkgbuild.com/$repo/os/$arch
+    Server = https://mirrors.edge.kernel.org/archlinux/$repo/os/$arch
     Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
     Server = https://mirrors.mit.edu/archlinux/$repo/os/$arch
 
@@ -114,7 +117,7 @@ jobs:
             ~/.cache/yos-vm/${{ matrix.image }}.vars
             ~/.cache/yos-vm/key
             ~/.cache/yos-vm/key.pub
-          key: vm2-${{ matrix.image }}-${{ steps.week.outputs.week }}-${{ hashFiles('tests/vm/vm.sh', 'tests/vm/archinstall.json') }}
+          key: vm2-${{ matrix.image }}-${{ steps.week.outputs.week }}-${{ hashFiles('tests/vm/vm.sh', 'tests/vm/archinstall.json', 'tests/vm/mirrorlist') }}
       - run: tests/vm/vm.sh image
       - if: steps.image.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -124,7 +127,7 @@ jobs:
             ~/.cache/yos-vm/${{ matrix.image }}.vars
             ~/.cache/yos-vm/key
             ~/.cache/yos-vm/key.pub
-          key: vm2-${{ matrix.image }}-${{ steps.week.outputs.week }}-${{ hashFiles('tests/vm/vm.sh', 'tests/vm/archinstall.json') }}
+          key: vm2-${{ matrix.image }}-${{ steps.week.outputs.week }}-${{ hashFiles('tests/vm/vm.sh', 'tests/vm/archinstall.json', 'tests/vm/mirrorlist') }}
       - run: tests/vm/test.sh ./zig-out/bin/yos
       - if: failure()
         run: sed 's/\x1b\[[0-9;?=!]*[a-zA-Z]//g' ~/.cache/yos-vm/console.log | tail -n 800 || true

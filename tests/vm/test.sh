@@ -33,6 +33,10 @@ case ${VM_IMAGE:-cloud} in sdboot | archinstall | limine | refind | ext4) export
 "$vm" start
 trap '"$vm" stop' EXIT
 
+# more than one mirror, so a download that stalls on one goes on to the
+# next. it's in /etc, so roots made from this one have it, and so do the
+# machines yos install and yos build --clean make from this one.
+"$vm" copy tests/vm/mirrorlist /etc/pacman.d/mirrorlist
 # the binary is built against today's arch; bring the image up to date.
 # git is what a yos package would depend on, for the config's history.
 # a new kernel needs a reboot before its modules load.

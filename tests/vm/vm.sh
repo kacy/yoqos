@@ -88,11 +88,30 @@ wait_boot() {
 diagnose() {
     [ -S "$dir/serial.sock" ] || return 0
     from=$(($(wc -c < "$dir/console.log") + 1))
-    for line in "" "export SYSTEMD_COLORS=0 SYSTEMD_PAGER=; echo yos-diag-start; ip -br addr; ip route; systemctl is-active sshd NetworkManager systemd-networkd; systemctl --failed --no-legend; ss -tln; journalctl -b --no-pager -o short-monotonic -u NetworkManager -u systemd-networkd -u sshd | tail -n 40; echo yos-diag-end"; do
+    # one line at a time, each short enough for the terminal to take. the
+    # markers are printed with printf, so the shell's echo of the command
+    # line doesn't match them. which root and command line booted, then
+    # the addresses: networkmanager adds a link's ipv6 link-local address
+    # itself when it activates a connection there, so an up link with no
+    # address at all most likely had no connection activated, rather than
+    # a dhcp request nobody answered. then what networkmanager knows:
+    # its devices, its connections and where they're stored, its config,
+    # and its state in /var, which every generation shares while
+    # /etc/NetworkManager rolls back. machine-id seeds dhcp's client ids.
+    for line in "" \
+        "export SYSTEMD_COLORS=0 SYSTEMD_PAGER=; printf 'yos-diag-%s\\n' start; findmnt -no FSROOT /; cat /proc/cmdline; cat /etc/machine-id; ip -br addr; ip -4 addr; ip route; systemctl is-active sshd NetworkManager systemd-networkd; systemctl --failed --no-legend; ss -tln" \
+        "timeout 10 nmcli -t general; timeout 10 nmcli -t dev; timeout 10 nmcli -t -f NAME,UUID,DEVICE,AUTOCONNECT,ACTIVE,FILENAME con; NetworkManager --print-config 2>&1 | grep -v -e '^#' -e '^\$'" \
+        "ls -la /etc/NetworkManager/conf.d /etc/NetworkManager/system-connections /var/lib/NetworkManager; head -n 30 /var/lib/NetworkManager/NetworkManager.state /var/lib/NetworkManager/no-auto-default.state /var/lib/NetworkManager/*.lease; timeout 10 networkctl --no-pager" \
+        "journalctl -b --no-pager -o short-monotonic -u NetworkManager | tail -n 50; journalctl -b --no-pager -o short-monotonic -u systemd-networkd -u sshd | tail -n 20; printf 'yos-diag-%s\\n' end"; do
         printf '%s\r' "$line" | socat - UNIX-CONNECT:"$dir/serial.sock" || return 0
         sleep 3
     done
-    sleep 10
+    # nmcli waits on a networkmanager that hangs, so the end can take a
+    # while.
+    for _ in $(seq 60); do
+        tail -c +"$from" "$dir/console.log" | grep -a -q 'yos-diag-end' && break
+        sleep 1
+    done
     echo "--- what the vm says, from its serial console" >&2
     # the shell marks its prompts and commands with escape sequences of its
     # own (osc 3008), which come off with the colors.
@@ -119,6 +138,15 @@ EOF
 # whether qemu is still running. it removes its pid file when it stops.
 running() {
     [ -f "$dir/qemu.pid" ] && kill -0 "$(cat "$dir/qemu.pid")" 2>/dev/null
+}
+
+# powers the vm off, if it's running, and waits for qemu to go, so the
+# next one can have its port and disks.
+halt() {
+    if running; then kill "$(cat "$dir/qemu.pid")" 2>/dev/null || true; fi
+    for _ in $(seq 60); do running || return 0; sleep 1; done
+    echo "vm: qemu didn't stop" >&2
+    exit 1
 }
 
 # starts swtpm for the next qemu, on the tpm state in $dir/tpm. it stops
@@ -189,16 +217,18 @@ archinstall() {
     qemu-img create -q -f qcow2 "$dir/$image.part" 16G
     boot "$dir/overlay.qcow2" "$dir/vars.fd" -drive if=virtio,file="$dir/$image.part"
     here=$(dirname "$0")
-    sed -e "s|KEY|$(cat "$dir/key.pub")|" "$@" "$here/archinstall.json" > "$dir/archinstall.json"
+    # archinstall gets the test vms' mirrors: it writes them to the
+    # mirrorlist its pacstrap downloads from, and to the image's.
+    servers=$(sed -n 's/^Server = \(.*\)/{ "url": "\1" }/p' "$here/mirrorlist" | paste -sd, -)
+    sed -e "s|KEY|$(cat "$dir/key.pub")|" -e "s|\"custom_servers\": \[.*\]|\"custom_servers\": [$servers]|" "$@" "$here/archinstall.json" > "$dir/archinstall.json"
     printf '{"root_enc_password": "%s"}\n' "$root_hash" > "$dir/creds.json"
     scp -q $ssh_opts -P "$port" "$dir/archinstall.json" root@127.0.0.1:/root/config.json
     scp -q $ssh_opts -P "$port" "$dir/creds.json" root@127.0.0.1:/root/creds.json
+    scp -q $ssh_opts -P "$port" "$here/mirrorlist" root@127.0.0.1:/etc/pacman.d/mirrorlist
     run pacman -Syu --noconfirm --noprogressbar --needed archinstall >/dev/null
     run archinstall --config /root/config.json --creds /root/creds.json --silent --skip-version-check
     run "umount -R /mnt/archinstall 2>/dev/null; sync"
-    kill "$(cat "$dir/qemu.pid")"
-    for _ in $(seq 60); do running || break; sleep 1; done
-    if running; then echo "vm: qemu didn't stop" >&2; exit 1; fi
+    halt
     mv "$dir/$image.part" "$dir/$image.qcow2"
     mv "$dir/vars.fd" "$dir/$image.vars"
     rm -f "$dir/qemu.pid" "$dir/overlay.qcow2"
@@ -211,9 +241,20 @@ case ${1:-} in
 image)
     mkdir -p "$dir"
     [ -f "$dir/$image.qcow2" ] && exit 0
+    # a mirror that stalls can fail a build that would pass a minute later.
+    # with more than one, pacman goes on to the next, which makes that
+    # rare, not impossible, so a failed build runs once more, from the
+    # start.
+    "$0" make-image && exit 0
+    echo "vm: making the $image image failed; trying once more" >&2
+    "$0" stop
+    "$0" make-image
+    ;;
+make-image)
     case $image in
-    # a download cut off partway mustn't look like a finished image.
-    cloud) curl -fsSL -o "$dir/cloud.qcow2.part" "$image_url" && mv "$dir/cloud.qcow2.part" "$dir/cloud.qcow2" ;;
+    # a download cut off partway mustn't look like a finished image, and
+    # one that stalls for a minute fails, so the build can run again.
+    cloud) curl -fsSL --speed-limit 1 --speed-time 60 -o "$dir/cloud.qcow2.part" "$image_url" && mv "$dir/cloud.qcow2.part" "$dir/cloud.qcow2" ;;
     archinstall) archinstall ;;
     ext4) archinstall -e 's|"fs_type": "btrfs"|"fs_type": "ext4"|' -e 's|"mountpoint": null|"mountpoint": "/"|' \
         -e 's|"compress=zstd"||' -e 's|"btrfs": \[{.*}\]|"btrfs": []|' ;;
@@ -248,8 +289,7 @@ start-iso)
     boot "$dir/disk2.qcow2" "$dir/vars.fd" -drive media=cdrom,readonly=on,file="$2"
     ;;
 start-installed)
-    if running; then kill "$(cat "$dir/qemu.pid")"; fi
-    for _ in $(seq 60); do running || break; sleep 1; done
+    halt
     cp "$ovmf/OVMF_VARS.4m.fd" "$dir/vars.fd"
     boot "$dir/${2:-disk2}.qcow2" "$dir/vars.fd"
     ;;
@@ -295,7 +335,7 @@ diagnose)
     printf 'exit\r' | socat - UNIX-CONNECT:"$dir/serial.sock"
     ;;
 stop)
-    if [ -f "$dir/qemu.pid" ]; then kill "$(cat "$dir/qemu.pid")" 2>/dev/null || true; fi
+    halt
     stop_tpm
     rm -rf "$dir/qemu.pid" "$dir/overlay.qcow2" "$dir/vars.fd" "$dir/disk2.qcow2" "$dir/disk3.qcow2" "$dir/tpm"
     ;;

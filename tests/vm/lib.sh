@@ -102,6 +102,8 @@ crash() {
         sleep 5
     done
     echo "$name: no boot after the power loss"
+    # from the serial console, for a boot that came up without a network.
+    "$vm" diagnose || true
     exit 1
 }
 
@@ -150,6 +152,8 @@ wait_root() {
     echo "$name: no boot into $1 after 10 minutes; the machine shows:"
     "$vm" ssh "findmnt -no FSROOT /; cat /proc/cmdline; systemctl is-active yos-watchdog.timer multi-user.target; journalctl -b -u yos-health -u yos-watchdog.timer -u yos-watchdog.service --no-pager -o cat | tail -n 10" || true
     if [ -n "${on_failure:-}" ]; then "$vm" ssh "$on_failure" || true; fi
+    # the same from the serial console, which doesn't need the network.
+    "$vm" diagnose || true
     exit 1
 }
 
@@ -288,4 +292,13 @@ kernel_matches() {
 older() {
     "$vm" copy tests/vm/older.sh /root/older.sh
     "$vm" ssh "sh /root/older.sh $1"
+}
+
+# installs the newest linux older than the one installed, from the
+# archive, with pacman -U. the archive is one server, with no mirror to go
+# on to when it stalls, so the download gets a second try.
+older_linux() {
+    url=$(older linux)
+    [ -n "$url" ] || { echo "$name: no older linux in the archive"; exit 1; }
+    "$vm" ssh "pacman -U --noconfirm --noprogressbar $url >/dev/null || { echo 'pacman -U failed; once more' >&2; sleep 10; pacman -U --noconfirm --noprogressbar $url >/dev/null; }"
 }

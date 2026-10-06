@@ -15,9 +15,7 @@ empty="nothing to do. this machine matches its config."
 "$vm" ssh "$yos apply --yes" | tail -n 1
 check "$yos plan" "$empty"
 # an older kernel from the archive, running. the lock still has today's.
-url=$(older linux)
-[ -n "$url" ] || { echo "$name: no older linux in the archive"; exit 1; }
-"$vm" ssh "pacman -U --noconfirm --noprogressbar $url >/dev/null"
+older_linux
 "$vm" reboot
 old=$("$vm" ssh "uname -r")
 kernel_matches
