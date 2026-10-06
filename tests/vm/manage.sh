@@ -5,7 +5,7 @@
 set -eu
 . tests/vm/lib.sh
 
-"$vm" ssh "/usr/local/bin/yos init >/dev/null 2>&1 || true"
+"$vm" ssh "$(init_once)"
 check "/usr/local/bin/yos enable-rollback --yes >/tmp/out 2>&1; echo \$?" 1
 check "grep -c '$1' /tmp/out" 1
 check "test -e /var/lib/yos/generations && echo generations || echo none" none

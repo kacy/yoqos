@@ -5,7 +5,7 @@
 set -eu
 . tests/vm/lib.sh
 
-"$vm" ssh "/usr/local/bin/yos init >/dev/null 2>&1 || true"
+"$vm" ssh "$(init_once)"
 # files the smoke test's own config had yos write, which this one doesn't
 # ask for, go with one apply.
 "$vm" ssh "/usr/local/bin/yos apply --yes" | tail -n 1

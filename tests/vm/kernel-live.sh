@@ -10,7 +10,7 @@ set -eu
 yos=/usr/local/bin/yos
 empty="nothing to do. this machine matches its config."
 
-"$vm" ssh "$yos init >/dev/null 2>&1 || true"
+"$vm" ssh "$(init_once)"
 # the scripts before leave the machine matching its config.
 check "$yos plan" "$empty"
 # an older kernel from the archive, running. the lock still has today's.

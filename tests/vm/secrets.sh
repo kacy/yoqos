@@ -6,7 +6,7 @@ set -eu
 . tests/vm/lib.sh
 
 yos=/usr/local/bin/yos
-"$vm" ssh "$yos init >/dev/null 2>&1 || true"
+"$vm" ssh "$(init_once)"
 "$vm" ssh "cp /etc/yos/machine.toml /root/machine.toml.secrets"
 check "printf hunter2 | $yos secret set test/value >/dev/null; echo \$?" 0
 check "stat -c %a /var/lib/yos/secrets /var/lib/yos/secrets/.key | tr '\\n' ' '" "700 600 "

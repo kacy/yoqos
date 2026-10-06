@@ -25,7 +25,7 @@ set -eu
 
 yos=/usr/local/bin/yos
 empty="nothing to do. this machine matches its config."
-"$vm" ssh "$yos init >/dev/null 2>&1 || true"
+"$vm" ssh "$(init_once)"
 generations=$("$vm" ssh "test -d /var/lib/yos/generations && echo yes || echo no")
 newest_cmd="{ ls /var/lib/yos/generations 2>/dev/null || true; } | sort -n | tail -n 1 | cut -d. -f1"
 # the journal's last apply line. yos's other events, like commits and

@@ -6,7 +6,7 @@ set -eu
 . tests/vm/lib.sh
 
 "$vm" ssh "pacman -S --noconfirm --needed --noprogressbar devtools >/dev/null"
-"$vm" ssh "/usr/local/bin/yos init >/dev/null 2>&1 || true"
+"$vm" ssh "$(init_once)"
 
 # a recipe in a git repository, where YOS_AUR points: version $1, and a
 # dependency $2 if given.

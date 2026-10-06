@@ -9,7 +9,7 @@ set -eu
 
 key=$(cat "${VM_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/yos-vm}/key.pub")
 "$vm" ssh "pacman -S --noconfirm --needed --noprogressbar dosfstools btrfs-progs grub >/dev/null"
-"$vm" ssh "/usr/local/bin/yos init >/dev/null 2>&1 || true"
+"$vm" ssh "$(init_once)"
 
 # the config repository the new machine comes from: this machine's, less
 # its aur packages, plus btrfs-progs, which this ext4 machine lacks and a

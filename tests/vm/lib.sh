@@ -37,6 +37,13 @@ check_top() {
     check "mkdir -p /run/yos-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yos-top && { $1; }; top_rc=\$?; umount /run/yos-top; exit \$top_rc" "$2"
 }
 
+# a command that makes the config with yos init, unless a script before
+# this one in the same vm did. init won't write over a config, and that's
+# the only reason it may fail here.
+init_once() {
+    echo "test -e /etc/yos/machine.toml || /usr/local/bin/yos init >/dev/null"
+}
+
 # a command that counts the files in the initramfs at $1 that match $2.
 # lsinitcpio has to read it, or a broken image would count 0 as well.
 initramfs_count() {
