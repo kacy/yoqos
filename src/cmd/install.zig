@@ -693,11 +693,16 @@ fn holders(a: Allocator, io: std.Io, block: []const u8, name: []const u8) ![]con
     return found.items;
 }
 
+/// the holders of `dev`, less install's own luks volume, which an
+/// --encrypt run cut off leaves open, and install closes before it starts.
 fn holdersOf(a: Allocator, io: std.Io, dev: []const u8, found: *std.ArrayList([]const u8)) !void {
     var dir = std.Io.Dir.cwd().openDir(io, try std.fs.path.join(a, &.{ dev, "holders" }), .{ .iterate = true }) catch return;
     defer dir.close(io);
     var it = dir.iterate();
     while (it.next(io) catch null) |e| {
+        var buf: [64]u8 = undefined;
+        const mapped = dir.readFile(io, try std.fs.path.join(a, &.{ e.name, "dm", "name" }), &buf) catch "";
+        if (std.mem.eql(u8, std.mem.trimEnd(u8, mapped, "\n"), install.luks_install_name)) continue;
         if (!lists.contains(found.items, e.name)) try found.append(a, try a.dupe(u8, e.name));
     }
 }
@@ -721,6 +726,9 @@ test "a disk held by lvm, md, or luks without a mount is found" {
     try tmp.dir.createDirPath(io, "vdb/holders/md127");
     // a directory that isn't a partition doesn't count.
     try tmp.dir.createDirPath(io, "vdb/vdbx/holders/dm-9");
+    // nor does install's own luks volume, left open by a run cut off.
+    try tmp.dir.createDirPath(io, "vdb/vdb1/holders/dm-5/dm");
+    try tmp.dir.writeFile(io, .{ .sub_path = "vdb/vdb1/holders/dm-5/dm/name", .data = install.luks_install_name ++ "\n" });
     const got = try holders(a, io, block, "vdb");
     try std.testing.expectEqual(3, got.len);
     try std.testing.expectEqualStrings("dm-0", got[0]);
