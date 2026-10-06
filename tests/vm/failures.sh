@@ -25,9 +25,9 @@ set -eu
 
 yos=/usr/local/bin/yos
 empty="nothing to do. this machine matches its config."
-"$vm" ssh "$yos init >/dev/null 2>&1 || true"
+"$vm" ssh "$(init_once)"
 generations=$("$vm" ssh "test -d /var/lib/yos/generations && echo yes || echo no")
-newest_cmd="ls /var/lib/yos/generations 2>/dev/null | sort -n | tail -n 1 | cut -d. -f1"
+newest_cmd="{ ls /var/lib/yos/generations 2>/dev/null || true; } | sort -n | tail -n 1 | cut -d. -f1"
 # the journal's last apply line. yos's other events, like commits and
 # generations, go in the journal too, with a kind instead of an event.
 last_apply="grep '\"event\":' /var/lib/yos/journal | tail -n 1"
@@ -40,8 +40,7 @@ if [ "$generations" = yes ]; then
 else
     menu_cmd="echo none"
 fi
-# the scripts before can leave the lock ahead of the machine.
-"$vm" ssh "$yos apply --yes" | tail -n 1
+# the scripts before leave the machine matching its config.
 check "$yos plan" "$empty"
 # when a check fails, what yos printed last and what the journal says.
 on_failure="echo '--- /tmp/out'; cat /tmp/out 2>/dev/null; echo '--- journal'; tail -n 5 /var/lib/yos/journal 2>/dev/null"
@@ -212,7 +211,7 @@ disk_full() {
     check "$menu_cmd" "$menu"
     on_trial no
     check "pacman -Q $pkg >/dev/null 2>&1 || echo not installed" "not installed"
-    check "findmnt -rn -o TARGET | grep -c /run/yos/next || true" 0
+    check "findmnt -rn -o TARGET | { grep -c /run/yos/next || true; }" 0
     "$vm" ssh "rm -f /var/yos-filler-*; sync"
     same_roots "$was"
     "$vm" ssh "$yos remove --no-apply $pkg" | tail -n 1
@@ -246,7 +245,7 @@ esp_full() {
     check "$newest_cmd" "$before"
     check "$menu_cmd" "$menu"
     on_trial no
-    check "ls $VM_ESP/yos/boot | grep -c yos-new || true" 0
+    check "ls $VM_ESP/yos/boot | { grep -c yos-new || true; }" 0
     check "pacman -Q $pkg >/dev/null 2>&1 || echo not installed" "not installed"
     "$vm" ssh "rm -f $VM_ESP/yos-filler; sync"
     same_roots "$was"
@@ -272,7 +271,7 @@ esp_restore() {
     check "grep -c 'boot files don.t fit on the esp, so nothing was copied there' /tmp/out" 1
     check "grep -c 'the esp at $VM_ESP has .* MiB free, and the new boot files need' /tmp/out" 1
     check "grep -c 'removing generations won.t help' /tmp/out" 1
-    check "ls $VM_ESP | grep -c yos-new || true" 0
+    check "ls $VM_ESP | { grep -c yos-new || true; }" 0
     root=$(newest_root)
     check "cat /var/lib/yos/unsettled" "/$root"
     "$vm" ssh "rm -f $VM_ESP/yos-filler; sync"
@@ -321,11 +320,11 @@ EOF
 # waits for the boot after power_cut_on's stand-in for $1 cut the power:
 # the stand-in is gone, the machine runs the root $2, and yos-health has
 # finished. the boot the power went out on had the health check running
-# when it did.
+# when it did. yos-health has to have exited $3, 0 by default.
 wait_cut() {
     for _ in $(seq 60); do
         got=$(timeout 20 "$vm" ssh "test ! -e /usr/local/bin/$1 && test \"\$(systemctl show -p ExecMainExitTimestampMonotonic --value yos-health)\" != 0 && findmnt -no FSROOT /" 2>/dev/null || true)
-        [ "$got" = "$2" ] && return 0
+        if [ "$got" = "$2" ]; then settled "${3:-0}"; return 0; fi
         sleep 10
     done
     echo "$name: no boot into $2 with the health check done after the power cut"
@@ -398,7 +397,7 @@ trial_cuts() {
     break_trial_boot
     power_cut_on "$end_tool" "$end_cut"
     "$vm" reboot || true
-    wait_cut "$end_tool" "/@roots/boot-$before"
+    wait_cut "$end_tool" "/@roots/boot-$before" 1
     newer_than "$n" 1
     check "/usr/local/bin/yos history | tail -n 1 | grep -c 'fell back from $n to $before'" 1
     on_trial no

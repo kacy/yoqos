@@ -170,12 +170,15 @@ if status_says "touched with pacman"; then echo "drift survived an apply"; exit 
 # events: the pacman run, the apply with its plan's hash, and the config
 # commits, one json document a line.
 "$yos" events > "$dir/events"
-grep '"kind":"pacman"' "$dir/events" | grep -q '"htop"' || { echo "smoke: no pacman event for htop"; cat "$dir/events"; exit 1; }
-grep '"kind":"apply"' "$dir/events" | tail -n 1 | grep -q "\"step\":\"done\",\"plan\":\"$hash\"" || { echo "smoke: the last apply event isn't plan $hash"; cat "$dir/events"; exit 1; }
+grep '"kind":"pacman"' "$dir/events" | grep -c '"htop"' >/dev/null || { echo "smoke: no pacman event for htop"; cat "$dir/events"; exit 1; }
+grep '"kind":"apply"' "$dir/events" | tail -n 1 | grep -c "\"step\":\"done\",\"plan\":\"$hash\"" >/dev/null || { echo "smoke: the last apply event isn't plan $hash"; cat "$dir/events"; exit 1; }
 grep -q '"kind":"commit"' "$dir/events" || { echo "smoke: no commit events"; exit 1; }
 if grep -v '^{"schema":"yos.event/1",' "$dir/events"; then echo "smoke: a line of yos events isn't an event"; exit 1; fi
-[ "$("$yos" events --since 2000-01-01T00:00Z | wc -l)" = "$(wc -l < "$dir/events")" ] || { echo "smoke: --since 2000 left events out"; exit 1; }
-[ "$("$yos" events --since 99999999999999 | wc -l)" = 0 ] || { echo "smoke: --since the far future printed events"; exit 1; }
+# saved first: yos failing inside $(...) wouldn't stop the test.
+"$yos" events --since 2000-01-01T00:00Z > "$dir/since"
+[ "$(wc -l < "$dir/since")" = "$(wc -l < "$dir/events")" ] || { echo "smoke: --since 2000 left events out"; exit 1; }
+"$yos" events --since 99999999999999 > "$dir/since"
+[ "$(wc -l < "$dir/since")" = 0 ] || { echo "smoke: --since the far future printed events"; exit 1; }
 rm /usr/share/libalpm/hooks/yos-drift.hook
 
 # a config that leaves out base doesn't get to remove it.

@@ -28,5 +28,5 @@ check "test \$(id -u dnsmasq) != $uid && echo apart" apart
 "$vm" ssh "/usr/local/bin/yos add --yes chrony" | tail -n 1
 check "id -u chrony" "$uid"
 check "stat -c %U /var/lib/yos-ids-test" chrony
-check "/usr/local/bin/yos status | grep -c 'system ids changed' || true" 0
+check "$(status_report); grep -c 'system ids changed' /tmp/report || true" 0
 echo "ids ok"

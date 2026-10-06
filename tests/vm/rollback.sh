@@ -31,7 +31,7 @@ default=$("$vm" ssh "btrfs subvolume get-default / | cut -d' ' -f2")
 # it has to get that far, or there's nothing to take back.
 check "PATH=/tmp/fail:\$PATH /usr/local/bin/yos enable-rollback --yes >/tmp/enable.out 2>&1; echo \$?; grep -c 'not today' /tmp/enable.out" "1
 1"
-check_top "ls -d /run/yos-top/@roots /run/yos-top/@gens /run/yos-top/@var 2>/dev/null | wc -l" 0
+check_top "{ ls -d /run/yos-top/@roots /run/yos-top/@gens /run/yos-top/@var 2>/dev/null || true; } | wc -l" 0
 check "find $VM_ESP -type f -exec sha256sum {} + | sort | sha256sum" "$esp"
 check "btrfs subvolume get-default / | cut -d' ' -f2" "$default"
 check "test -d /etc/yos/.git && echo config here" "config here"
@@ -44,9 +44,11 @@ root_mode=$("$vm" ssh "stat -c %a /root")
 # default subvolume now, whatever snapper's rollback made it.
 if [ "$VM_LOADER" = grub ]; then check "btrfs subvolume get-default / | cut -d' ' -f2" 5; fi
 # until the reboot, changes would land on the root being left.
-check "/usr/local/bin/yos apply --yes 2>&1 | grep -c 'waiting for the next boot'" 1
+check "/usr/local/bin/yos apply --yes >/tmp/out 2>&1; echo \$?" 1
+check "grep -c 'waiting for the next boot' /tmp/out" 1
 # and so would a second enable-rollback.
-check "/usr/local/bin/yos enable-rollback --yes 2>&1 | grep -c 'waiting for the next boot'" 1
+check "/usr/local/bin/yos enable-rollback --yes >/tmp/out 2>&1; echo \$?" 1
+check "grep -c 'waiting for the next boot' /tmp/out" 1
 "$vm" reboot
 
 check "findmnt -no FSROOT /" /@roots/1
@@ -76,13 +78,13 @@ menu_generations 2
 check "/usr/local/bin/yos events | grep -c '\"kind\":\"generation\",\"generation\":2,'" 1
 # what changed between them, and a doctor that finds the menu in place.
 check "/usr/local/bin/yos diff 1 2 | grep -c '^  + tree '" 1
-check "/usr/local/bin/yos doctor | grep -c '^  ok  boot menu'" 1
+check "$(doctor_report); grep -c '^  ok  boot menu' /tmp/report" 1
 # a menu another tool rewrote: status says so, and gc puts it back.
 drop_menu
-check "/usr/local/bin/yos status | grep -c 'boot menu without'" 1
+check "$(status_report); grep -c 'boot menu without' /tmp/report" 1
 check "/usr/local/bin/yos gc | grep -c 'wrote the boot menu'" 1
 menu_generations 2
-check "/usr/local/bin/yos status | grep -c 'boot menu without' || true" 0
+check "$(status_report); grep -c 'boot menu without' /tmp/report || true" 0
 # copies on the esp that went by hand come back at gc, with nothing to
 # remove.
 case $VM_LOADER in

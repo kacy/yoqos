@@ -27,7 +27,7 @@ esac
 head_image() {
     case $VM_LOADER in
     systemd-boot) "$vm" ssh "sed -n 's|^efi .*/||p' $entries/yos-head.conf" ;;
-    limine) "$vm" ssh "$section | sed -n 's|^    path: boot():.*/||p' | head -n 1" ;;
+    limine) "$vm" ssh "$section | sed -n 's|^    path: boot():.*/||p' | sed -n 1p" ;;
     esac
 }
 
@@ -54,7 +54,7 @@ limine)
     check "$section | grep -c '^    path: boot():/yos/boot/[0-9a-f]*-yos.efi\$'" 2
     check "$section | grep -c '^    protocol: efi\$'" 2
     check "$trial_entry | grep -c -e '^    protocol: efi\$' -e '^    cmdline: root=.* yos\\.trial\$'" 2
-    check "$trial_entry | grep -c '^    module_path:' || true" 0
+    check "$trial_entry | { grep -c '^    module_path:' || true; }" 0
     check "$section | grep -c '^    protocol: linux\$' | grep -c -v '^0\$'" 1
     ;;
 esac

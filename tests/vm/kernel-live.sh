@@ -10,9 +10,8 @@ set -eu
 yos=/usr/local/bin/yos
 empty="nothing to do. this machine matches its config."
 
-"$vm" ssh "$yos init >/dev/null 2>&1 || true"
-# the scripts before can leave the lock ahead of the machine.
-"$vm" ssh "$yos apply --yes" | tail -n 1
+"$vm" ssh "$(init_once)"
+# the scripts before leave the machine matching its config.
 check "$yos plan" "$empty"
 # an older kernel from the archive, running. the lock still has today's.
 older_linux
@@ -20,7 +19,7 @@ older_linux
 old=$("$vm" ssh "uname -r")
 kernel_matches
 # a module this kernel hasn't loaded yet.
-check "lsmod | grep -c '^dummy ' || true" 0
+check "lsmod | { grep -c '^dummy ' || true; }" 0
 
 # yos puts today's linux back, live. the running kernel's modules stay.
 "$vm" ssh "$yos apply --yes" | tail -n 2

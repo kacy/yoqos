@@ -10,7 +10,7 @@ set -eu
 # tell a root that wasn't installed as a snapshot is "classic", so it's
 # told.
 "$vm" ssh "pacman -S --noconfirm --noprogressbar --needed snapper >/dev/null"
-"$vm" ssh "btrfs subvolume set-default / && { snapper list-configs | grep -q '^root ' || snapper -c root create-config /; }"
+"$vm" ssh "btrfs subvolume set-default / && { snapper list-configs | grep -c '^root ' >/dev/null || snapper -c root create-config /; }"
 "$vm" ssh "snapper -c root create -d base && snapper -c root --ambit classic rollback 1" | tail -n 1
 new=$("$vm" ssh "btrfs subvolume get-default / | sed 's/.* path //'")
 "$vm" ssh "sed -i 's| rootflags=subvol=[^ ]*||' /boot/grub/grub.cfg"

@@ -1,15 +1,22 @@
 # helpers the vm tests share. failures are named after the script that
-# sources this. a failing command in a pipe fails the test.
+# sources this. a failing command in a pipe fails the test, here and in
+# the vm, where vm.sh runs commands with pipefail too. that means
+# `x | grep -c ... || true` also hides x failing, so a check that counts
+# nothing saves x's output first, or writes `x | { grep -c ... || true; }`.
+# and no pipe ends in `grep -q`: it stops reading at the first match,
+# which can kill x with sigpipe.
 set -o pipefail
 vm=tests/vm/vm.sh
 name=$(basename "$0" .sh)
 
-# runs a command in the vm and compares what it prints.
+# runs a command in the vm and compares what it prints. it has to exit 0
+# as well: a command that fails on purpose says so, with `|| true` or
+# `echo $?`.
 check() {
     rc=0
     got=$("$vm" ssh "$1") || rc=$?
-    if [ "$got" != "$2" ]; then
-        echo "$name: $1 gave '$got' (exit $rc), not '$2'"
+    if [ "$got" != "$2" ] || [ "$rc" != 0 ]; then
+        echo "$name: $1 gave '$got' (exit $rc), not '$2' (exit 0)"
         # a script can name a command whose output explains a failure.
         if [ -n "${on_failure:-}" ]; then "$vm" ssh "$on_failure" || true; fi
         exit 1
@@ -25,8 +32,43 @@ serial_console() {
 }
 
 # check, with the btrfs top level mounted at /run/yos-top for the command.
+# the command's exit status counts, not umount's.
 check_top() {
-    check "mkdir -p /run/yos-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yos-top && { $1; }; umount /run/yos-top" "$2"
+    check "mkdir -p /run/yos-top && mount -o subvolid=5 \$(findmnt -no SOURCE / | sed 's/\\[.*//') /run/yos-top && { $1; }; top_rc=\$?; umount /run/yos-top; exit \$top_rc" "$2"
+}
+
+# a command that makes the config with yos init, unless a script before
+# this one in the same vm did. init won't write over a config, and that's
+# the only reason it may fail here.
+init_once() {
+    echo "test -e /etc/yos/machine.toml || /usr/local/bin/yos init >/dev/null"
+}
+
+# a command that counts the files in the initramfs at $1 that match $2.
+# lsinitcpio has to read it, or a broken image would count 0 as well.
+initramfs_count() {
+    echo "lsinitcpio $1 >/tmp/initramfs.list && { grep -c '$2' /tmp/initramfs.list || true; }"
+}
+
+# a command that runs yos's report $1, like `/usr/local/bin/yos doctor`,
+# with what it prints in /tmp/report for a check to grep. status and
+# doctor exit 1 when they find something to fix, which a test may not care
+# about here. any other exit, or a report without the line $2 (a grep
+# pattern) that every whole one has, is yos failing.
+report() {
+    echo "$1 >/tmp/report; rc=\$?; [ \$rc -le 1 ] && grep -q -e '$2' /tmp/report || { echo \"$1 exited \$rc:\"; cat /tmp/report; exit 1; }"
+}
+
+# status's report, from yos at $1 if given. it always says what's failing,
+# if only "none".
+status_report() {
+    report "${1:-/usr/local/bin/yos} status" '^failing '
+}
+
+# doctor's report, from yos at $1 if given. it ends saying what to do about
+# its checks, if anything.
+doctor_report() {
+    report "${1:-/usr/local/bin/yos} doctor" '^nothing to fix\|^the lines under each'
 }
 
 # a command that prints one of the firmware's secure boot variables,
@@ -36,17 +78,27 @@ efivar() {
 }
 
 # yos-health runs once per boot, after the rest; wait until it has run
-# this boot, but not forever.
+# this boot, but not forever, and fail unless it exited $1, 0 by default.
+# a boot that falls back from a trial, or ends one only grub's env file
+# names, exits 1 there on purpose.
 settled() {
-    "$vm" ssh "for i in \$(seq 150); do [ \"\$(systemctl show -p ExecMainExitTimestampMonotonic --value yos-health)\" != 0 ] && exit 0; sleep 2; done; echo 'no yos-health run after 5 minutes'; exit 1"
+    want=${1:-0}
+    got=$("$vm" ssh "for i in \$(seq 150); do [ \"\$(systemctl show -p ExecMainExitTimestampMonotonic --value yos-health)\" != 0 ] && exec echo \$(systemctl show -p Result --value yos-health) \$(systemctl show -p ExecMainStatus --value yos-health); sleep 2; done; echo 'no yos-health run after 5 minutes'; exit 1") || { echo "$name: $got"; exit 1; }
+    case $want in 0) expected="success 0" ;; *) expected="exit-code $want" ;; esac
+    if [ "$got" != "$expected" ]; then
+        echo "$name: yos-health ended '$got' this boot, not '$expected'"
+        "$vm" ssh "journalctl -b -u yos-health --no-pager -o cat | tail -n 20" || true
+        exit 1
+    fi
 }
 
-# what the bootloader will boot next, on one line.
+# what the bootloader will boot next, on one line. it's only for the log,
+# so it never fails the test.
 show_env() {
     case $VM_LOADER in
-    grub) "$vm" ssh "grub-editenv $VM_ESP/yos/grubenv list | grep ^yos_ | sort | tr '\\n' ' '" ;;
-    limine | systemd-boot) "$vm" ssh "cat /var/lib/yos/trial 2>/dev/null; ls /sys/firmware/efi/efivars | grep ^LoaderEntry | tr '\\n' ' '" ;;
-    refind) "$vm" ssh "cat /var/lib/yos/trial 2>/dev/null; efibootmgr | head -n 3 | tr '\\n' ' '" ;;
+    grub) "$vm" ssh "grub-editenv $VM_ESP/yos/grubenv list | grep ^yos_ | sort | tr '\\n' ' '" || true ;;
+    limine | systemd-boot) "$vm" ssh "cat /var/lib/yos/trial 2>/dev/null; ls /sys/firmware/efi/efivars | grep ^LoaderEntry | tr '\\n' ' '" || true ;;
+    refind) "$vm" ssh "cat /var/lib/yos/trial 2>/dev/null; efibootmgr | sed -n 1,3p | tr '\\n' ' '" || true ;;
     *) ;;
     esac
 }
@@ -54,7 +106,7 @@ show_env() {
 # "yes" while a generation is on trial, or "no".
 on_trial() {
     case $VM_LOADER in
-    grub) check "grub-editenv $VM_ESP/yos/grubenv list | grep -q -e ^yos_trial -e ^yos_default && echo yes || echo no" "$1" ;;
+    grub) check "grub-editenv $VM_ESP/yos/grubenv list >/tmp/grubenv && { grep -q -e ^yos_trial -e ^yos_default /tmp/grubenv && echo yes || echo no; }" "$1" ;;
     *) check "test -e /var/lib/yos/trial && echo yes || echo no" "$1" ;;
     esac
 }
@@ -63,8 +115,9 @@ on_trial() {
 menu_file() {
     case $VM_LOADER in
     grub) echo "$VM_ESP/grub/grub.cfg" ;;
-    limine) "$vm" ssh "ls $VM_ESP/EFI/*/limine.conf $VM_ESP/limine.conf 2>/dev/null | head -n 1" ;;
-    refind) "$vm" ssh "ls $VM_ESP/EFI/*/yos.conf | head -n 1" ;;
+    # only one of the places limine reads is there.
+    limine) "$vm" ssh "{ ls $VM_ESP/EFI/*/limine.conf $VM_ESP/limine.conf 2>/dev/null || true; } | sed -n 1p" ;;
+    refind) "$vm" ssh "ls $VM_ESP/EFI/*/yos.conf | sed -n 1p" ;;
     systemd-boot) echo "$VM_ESP/loader/entries" ;;
     esac
 }
@@ -178,7 +231,8 @@ falls_back() {
     mark=$(wc -c < "$console" 2>/dev/null || echo 0)
     "$vm" reboot || true
     wait_root "/@roots/boot-$1"
-    settled
+    # the fallback ends the trial and says so with exit 1.
+    settled 1
     check "/usr/local/bin/yos history | tail -n 1 | grep -c 'fell back from'" 1
     case $proof in
     console:*)
@@ -279,7 +333,7 @@ newest_root() {
 
 # the number of the generation before the newest.
 second_newest() {
-    "$vm" ssh "ls /var/lib/yos/generations | sort -n | tail -n 2 | head -n 1 | cut -d. -f1"
+    "$vm" ssh "ls /var/lib/yos/generations | sort -n | tail -n 2 | sed -n 1p | cut -d. -f1"
 }
 
 # the running kernel is the root's own linux, and its modules are there.

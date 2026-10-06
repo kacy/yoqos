@@ -22,7 +22,8 @@ check "$(efivar SecureBoot)" 0
 # both keys under [boot]; uki.sh's rollback took uki out again.
 "$vm" ssh "sed -i -e '/^uki = /d' -e '/^secure_boot = /d' /etc/yos/machine.toml && if grep -q '^\\[boot\\]' /etc/yos/machine.toml; then sed -i -e '/^\\[boot\\]/a secure_boot = true' -e '/^\\[boot\\]/a uki = true' /etc/yos/machine.toml; else printf '\\n[boot]\\nuki = true\\nsecure_boot = true\\n' >> /etc/yos/machine.toml; fi"
 # no keys yet: nothing is built.
-check "/usr/local/bin/yos update --yes 2>&1 | grep -c 'error\\[E0134\\]' || true" 1
+check "/usr/local/bin/yos update --yes >/tmp/out 2>&1; echo \$?" 1
+check "grep -c 'error\\[E0134\\]' /tmp/out" 1
 on_trial no
 
 # the one-time step yos leaves to the person: sbctl's keys.
@@ -35,14 +36,14 @@ check "grep -c '^efi /yos/boot/[0-9a-f]*-yos.efi\$' $entries/yos-trial*.conf" 1
 image=$("$vm" ssh "sed -n 's|^efi ||p' $entries/yos-trial*.conf")
 # every image yos put on the esp is signed; systemd-boot's own files aren't
 # yet, and doctor names them.
-check "/usr/local/bin/yos doctor | grep '^  no  esp signatures:' | grep -c -e '$image' -e '/yos/boot/' || true" 0
-check "/usr/local/bin/yos doctor | grep -c '^  no  esp signatures: unsigned: .*systemd' || true" 1
+check "$(doctor_report); grep '^  no  esp signatures:' /tmp/report | grep -c -e '$image' -e '/yos/boot/' || true" 0
+check "$(doctor_report); grep -c '^  no  esp signatures: unsigned: .*systemd' /tmp/report" 1
 
 # the bootloader signed, then the keys enrolled with microsoft's, as the
 # docs say. the vm's option roms aren't signed by anyone, so sbctl's
 # check for them is skipped.
 "$vm" ssh "find $VM_ESP/EFI -iname '*.efi' -type f -exec sbctl sign -s {} \\; >/dev/null"
-check "/usr/local/bin/yos doctor | grep -c '^  ok  esp signatures: every efi file is signed\$'" 1
+check "$(doctor_report); grep -c '^  ok  esp signatures: every efi file is signed\$' /tmp/report" 1
 "$vm" ssh "sbctl enroll-keys --microsoft --yes-this-might-brick-my-machine >/dev/null"
 check "$(efivar SetupMode)" 0
 
@@ -55,12 +56,12 @@ check "bootctl status --no-pager 2>/dev/null | grep -c 'Secure Boot: enabled (us
 check "$stub_image" "$image"
 check "journalctl -b -u yos-health --no-pager -o cat | grep -c 'the default now'" 1
 on_trial no
-check "/usr/local/bin/yos doctor | grep -c '^  ok  firmware secure boot: on\$'" 1
+check "$(doctor_report); grep -c '^  ok  firmware secure boot: on\$' /tmp/report" 1
 check "/usr/local/bin/yos plan" "nothing to do. this machine matches its config."
 
 # each image has its entry's command line in it, so the entries pass
 # none, and the trial starts a twin with the trial's.
-check "cat $entries/yos-head.conf $entries/yos-trial*.conf | grep -c '^options' || true" 0
+check "cat $entries/yos-head.conf $entries/yos-trial*.conf | { grep -c '^options' || true; }" 0
 check "test \"\$(sed -n 's|^efi ||p' $entries/yos-head.conf)\" != '$image' && echo differs" differs
 check "grep -c 'root=UUID=[^ ]* rootflags=[^ ]*subvol=/@roots/[0-9]*' /proc/cmdline" 1
 # with secure boot on, the stub ignores a command line from the entry: one
@@ -110,13 +111,15 @@ check "$(efivar SecureBoot)" 1
 # uninstall would leave systemd-boot starting arch's unsigned kernel,
 # which the firmware refuses now, so it won't go ahead.
 on_failure="$on_failure; /usr/local/bin/yos uninstall --json </dev/null 2>&1"
-check "{ /usr/local/bin/yos uninstall --yes </dev/null 2>&1 || true; } | grep -c '^  no  secure boot: enforced, and vmlinuz-linux has no signature\$'" 1
+check "/usr/local/bin/yos uninstall --yes </dev/null >/tmp/out 2>&1; echo \$?" 1
+check "grep -c '^  no  secure boot: enforced, and vmlinuz-linux has no signature\$' /tmp/out" 1
 check "test -e /var/lib/yos && echo state || echo none" state
 # signed, as sbctl's mkinitcpio hook does whenever sbctl has keys, the
 # kernel boots without yos, so uninstall would go ahead. only its plan is
 # looked at, then the unsigned kernel goes back.
 "$vm" ssh "cp -a /boot/vmlinuz-linux /root/vmlinuz-linux.unsigned && sbctl sign /boot/vmlinuz-linux >/dev/null"
-check "/usr/local/bin/yos uninstall --json </dev/null | grep -c '\"found\": \"enforced, and the kernels in /boot are signed\"'" 1
+check "/usr/local/bin/yos uninstall --json </dev/null >/tmp/out; echo \$?" 0
+check "grep -c '\"found\": \"enforced, and the kernels in /boot are signed\"' /tmp/out" 1
 "$vm" ssh "cp -a /root/vmlinuz-linux.unsigned /boot/vmlinuz-linux"
 
 # the platform key out again: setup mode, and no secure boot from the
