@@ -459,6 +459,9 @@ pub const Machine = struct {
             if (!rootfs.pathExists(m.io, src)) continue;
             const dest = try std.fs.path.join(m.a, &.{ root, rel });
             if (try m.run(&.{ "rm", "-rf", dest })) |w| return w;
+            // a root may lack the directory, like one without
+            // networkmanager installed.
+            if (try m.run(&.{ "mkdir", "-p", std.fs.path.dirname(dest).? })) |w| return w;
             if (try m.run(&.{ "cp", "-a", src, dest })) |w| return w;
         }
         const fs: rootfs.Root = .{ .a = m.a, .io = m.io, .dir = root };
