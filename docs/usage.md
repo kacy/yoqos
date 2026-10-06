@@ -783,7 +783,8 @@ commands it prints, which mount the new root and run `passwd -R` there
 before you reboot.
 
 it checks first that the firmware is uefi and that the disk is a whole
-disk of 16 gib or more that nothing has mounted. it also checks that the
+disk of 16 gib or more that nothing has mounted, and that lvm, md, or an
+open luks device doesn't hold it either. it also checks that the
 tools it runs are there, that the lock has a kernel, grub, and
 btrfs-progs, that the config has no aur packages and no `secure_boot`,
 and that every secret it names is set on the live system. with
@@ -1505,7 +1506,10 @@ devtools' `makechrootpkg` in a clean chroot of its own, under
 `/var/cache/yos/aur`, as an unprivileged `yos-build` user. what it builds
 goes into a local repository, `yos-aur`, that `yos` reads like any other,
 and the lock pins each package by hash and by the recipe commit it was
-built from. a recipe that hasn't changed isn't built again.
+built from. a recipe that hasn't changed isn't built again. a new build
+moves the package it replaces into `yos-aur`'s `kept` directory, so a
+rollback to a lock from before it installs the old build from there.
+yos never removes kept builds.
 
 aur recipes run as code when they build, so `yos update` shows a recipe
 before building it: the first time, every file in it in full (binary

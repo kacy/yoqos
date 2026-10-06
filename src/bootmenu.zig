@@ -154,7 +154,7 @@ fn writeRefind(m: *const Machine, entries: []menu.Entry, held: ?usize) anyerror!
         if (e.esp_dir == null) break try gens.blkid(m.a, m.io, m.boot.root_device.?, "PARTUUID", &why) orelse return why;
     } else "";
     const text = try menu.refind(m.a, .{
-        .esp_part = try gens.blkid(m.a, m.io, m.boot.esp_device.?, "PARTUUID", &why) orelse return why,
+        .esp_part = try gens.blkid(m.a, m.io, m.boot.esp_device orelse return gens.esp_unmounted, "PARTUUID", &why) orelse return why,
         .root_part = root_part,
         .entries = entries,
     });
@@ -351,6 +351,22 @@ test "a generation going on trial leaves the default on the one before, for each
     try std.testing.expectEqualStrings("yos 2", (try heldTitle(a, &entries, null, 2)).?);
     try std.testing.expectEqual(null, try heldTitle(a, &entries, null, 0));
     try std.testing.expectEqual(null, try heldTitle(a, &entries, null, 7));
+}
+
+test "refind's menu with no esp mounted says so" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDirPath(io, "esp/EFI/refind/drivers_x64");
+    try tmp.dir.writeFile(io, .{ .sub_path = "esp/EFI/refind/refind.conf", .data = "timeout 5\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "esp/EFI/refind/" ++ images.refind_driver, .data = "driver" });
+    const m = try heldMachine(a, base, .refind, try std.fmt.allocPrint(a, "{s}/esp/EFI/refind/refind.conf", .{base}), "");
+    var entries = held_entries;
+    try std.testing.expectEqualStrings(gens.esp_unmounted, (try writeRefind(&m, &entries, null)).?);
 }
 
 test "which menus boot copies of the running root's boot files" {

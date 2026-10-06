@@ -89,7 +89,7 @@ pub const Machine = struct {
             .boot = boot,
             .loader = menu.Loader.of(boot) orelse return fail(why, "no bootloader yos can write a menu for"),
             .root_uuid = try blkid(a, io, boot.root_device.?, "UUID", why) orelse return null,
-            .esp_uuid = try blkid(a, io, boot.esp_device orelse return fail(why, "the esp isn't mounted. mount it, as fstab says, and run this again"), "UUID", why) orelse return null,
+            .esp_uuid = try blkid(a, io, boot.esp_device orelse return fail(why, esp_unmounted), "UUID", why) orelse return null,
         };
         if (std.mem.startsWith(u8, m.top, rootfs.private_dir ++ "/") and !rootfs.makePrivateDir()) return fail(why, "can't make " ++ rootfs.private_dir ++ ", a directory only root can go into");
         if (try m.run(&.{ "mkdir", "-p", m.top })) |w| return fail(why, w);
@@ -644,6 +644,9 @@ pub fn blkid(a: Allocator, io: std.Io, device: []const u8, tag: []const u8, why:
         },
     };
 }
+
+/// what a command that writes the boot menu says with no esp mounted.
+pub const esp_unmounted = "the esp isn't mounted. mount it, as fstab says, and run this again";
 
 fn fail(why: *[]const u8, message: []const u8) ?Machine {
     why.* = message;

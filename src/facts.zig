@@ -223,7 +223,8 @@ pub const repos_include = "Include = " ++ repos_conf;
 pub const Pacman = struct {
     /// pacman.conf includes the file yos writes them to.
     includes_repos: bool = false,
-    /// the signing keys the config names that pacman's keyring has.
+    /// the signing keys the config names that pacman's keyring has and
+    /// trusts: signed locally, as `pacman-key --lsign-key` does.
     keys: []const []const u8 = &.{},
     /// the repositories pacman.conf declares itself, not through yos's file.
     repos: []const []const u8 = &.{},

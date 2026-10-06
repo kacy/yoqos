@@ -95,6 +95,9 @@ pub const Context = struct {
     /// turns echo on the terminal off and on again, while a secret's
     /// value is typed.
     set_echo: ?*const fn (on: bool) void = null,
+    /// installs packages without checking their signatures. only tests
+    /// set it: their roots have unsigned packages and no keyring.
+    unchecked_signatures: bool = false,
 };
 
 const Handler = *const fn (ctx: *Context, args: []const [:0]const u8) anyerror!u8;
@@ -782,6 +785,7 @@ pub const TestRun = struct {
             .history = t.recorder.history(),
             .in_own_transaction = t.in_own_transaction,
             .secrets = if (t.secrets) |m| m.store() else null,
+            .unchecked_signatures = true,
         };
         t.recorder.fs = &t.fs;
         if (t.input) |text| {

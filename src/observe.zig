@@ -597,10 +597,53 @@ fn pacmanSetup(a: Allocator, io: std.Io, r: Reader, keys: []const []const u8) !f
     var have: std.ArrayList([]const u8) = .empty;
     const gpgdir = try r.path("etc/pacman.d/gnupg");
     for (keys) |k| {
-        if (try exec.run(a, io, &.{ "pacman-key", "--gpgdir", gpgdir, "--list-keys", k }) == null) try have.append(a, k);
+        // gpg straight, for its colon listing, and without the trustdb
+        // check it would write otherwise.
+        const sigs = switch (try exec.output(a, io, &.{ "gpg", "--homedir", gpgdir, "--no-permission-warning", "--no-auto-check-trustdb", "--batch", "--with-colons", "--list-sigs", k })) {
+            .ok => |text| text,
+            .failed => continue,
+        };
+        if (locallySigned(sigs)) try have.append(a, k);
     }
     out.keys = have.items;
     return out;
+}
+
+/// whether gpg's colon listing of a key's signatures has a local one, as
+/// `pacman-key --lsign-key` makes. a key that's only in the keyring
+/// isn't trusted, and pacman refuses what it signs. local signatures
+/// never come with an imported key, so only the keyring's own master
+/// key can have made one.
+fn locallySigned(listing: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, listing, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "sig:")) continue;
+        var fields = std.mem.splitScalar(u8, line, ':');
+        var i: usize = 0;
+        // the eleventh field is the class: 10l to 13l for a local
+        // certification.
+        while (fields.next()) |f| : (i += 1) {
+            if (i == 10 and f.len == 3 and f[0] == '1' and f[1] >= '0' and f[1] <= '3' and f[2] == 'l') return true;
+        }
+    }
+    return false;
+}
+
+test "a repository's key counts only once it's signed locally" {
+    const listing =
+        \\tru::1:1759600000:0:3:1:5
+        \\pub:-:4096:1:3056513887B78AEB:1580000000:::-:::scESC::::::23::0:
+        \\fpr:::::::::3056513887B78AEB8FCE3F7FB3E6E1D73056A9E0:
+        \\uid:-::::1580000000::AAAA::chaotic aur <a@b>::::::::::0:
+        \\sig:::1:3056513887B78AEB:1580000000::::chaotic aur <a@b>:13x::::::8:
+        \\sub:-:4096:1:1111111111111111:1580000000::::::e::::::23:
+        \\sig:::1:3056513887B78AEB:1580000000::::chaotic aur <a@b>:18x::::::8:
+        \\
+    ;
+    try std.testing.expect(!locallySigned(listing));
+    const signed = listing ++ "sig:::1:ABCDEF0123456789:1759600000::::pacman keyring master key:10l::::::8:\n";
+    try std.testing.expect(locallySigned(signed));
+    try std.testing.expect(!locallySigned(""));
 }
 
 /// pacman's database directory under `root`: in /usr on the rollback rung,

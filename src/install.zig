@@ -36,6 +36,9 @@ pub const Found = struct {
     whole: bool,
     /// something on it is mounted.
     mounted: bool,
+    /// devices that hold it or one of its partitions without a mount,
+    /// like lvm's, md's, or an open luks device's: dm-0, md127.
+    holders: []const []const u8 = &.{},
     uefi: bool,
     /// the url the config came from, without credentials, or null when
     /// it's a directory on this system.
@@ -149,9 +152,19 @@ pub fn plan(a: Allocator, f: Found) !Plan {
     });
     try checks.append(a, .{
         .what = "disk",
-        .ok = f.whole and !f.mounted and f.size >= min_bytes,
-        .found = try std.fmt.allocPrint(a, "{s}, {d} GiB{s}{s}", .{ f.disk, f.size >> 30, if (f.whole) "" else ", a partition", if (f.mounted) ", in use" else "" }),
-        .fix = "name a whole disk of 16 GiB or more that nothing has mounted, like /dev/nvme0n1. everything on it is erased.",
+        .ok = f.whole and !f.mounted and f.holders.len == 0 and f.size >= min_bytes,
+        .found = try std.fmt.allocPrint(a, "{s}, {d} GiB{s}{s}{s}{s}", .{
+            f.disk,
+            f.size >> 30,
+            if (f.whole) "" else ", a partition",
+            if (f.mounted) ", in use" else "",
+            if (f.holders.len > 0) ", held by " else "",
+            try std.mem.join(a, ", ", f.holders),
+        }),
+        .fix = if (f.holders.len > 0)
+            "lvm, md, or an open luks device holds it, so it can't be erased. stop them first, like `vgchange -an <group>`, `mdadm --stop /dev/<md>`, or `cryptsetup close <name>`, or name another disk."
+        else
+            "name a whole disk of 16 GiB or more that nothing has mounted, like /dev/nvme0n1. everything on it is erased.",
     });
     if (f.host_flag) try checks.append(a, .{
         .what = "hostname",
@@ -362,6 +375,13 @@ test "what stops an install" {
     try testing.expect(!p.ready());
     try testing.expectEqualStrings("/dev/vdb, 20 GiB, in use", p.checks[2].found);
     f.mounted = false;
+    // lvm's volumes on it, active but not mounted.
+    f.holders = &.{ "dm-0", "dm-1" };
+    const held = try plan(a, f);
+    try testing.expect(!held.ready());
+    try testing.expectEqualStrings("/dev/vdb, 20 GiB, held by dm-0, dm-1", held.checks[2].found);
+    try testing.expect(std.mem.indexOf(u8, held.checks[2].fix.?, "vgchange -an") != null);
+    f.holders = &.{};
     f.missing = &.{"mkfs.btrfs"};
     const q = try plan(a, f);
     try testing.expect(!q.ready());

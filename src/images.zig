@@ -104,7 +104,7 @@ fn signInto(m: *const Machine, src: []const u8, dest: []const u8) !?[]const u8 {
 /// they're unsigned.
 pub fn signLoader(m: *const Machine, work: []const u8) !?[]const u8 {
     return switch (m.loader) {
-        .grub => signGrub(m),
+        .grub => signGrub(m, work),
         .refind => signRefindDriver(m, work),
         else => null,
     };
@@ -114,26 +114,42 @@ pub fn signLoader(m: *const Machine, work: []const u8) !?[]const u8 {
 /// signed last. one signed with your key by hand may still be a grub
 /// that can't start under secure boot, like one from before yos built
 /// grub for it (see bootmenu.grubInstallAt), so a signature alone
-/// isn't enough. grub-install writes straight to the esp, so its binary
-/// is signed there, just after: it comes from grub's package, never
-/// from what was on the esp.
-fn signGrub(m: *const Machine) !?[]const u8 {
+/// isn't enough. grub-install writes into a directory of its own on the
+/// esp, never over the grub that boots now, and its binary is signed in
+/// `work`, then renamed into place: it comes from grub's package, never
+/// from what was on the esp. one that can't be signed leaves the old
+/// one there.
+fn signGrub(m: *const Machine, work: []const u8) !?[]const u8 {
     const esp = m.boot.esp orelse return null;
     const where = try bootmenu.grubEfiPath(m.a, m.io, esp);
     const binary = try bootmenu.grubBinary(m.a, esp, where);
-    if (!rootfs.pathExists(m.io, binary) or untrustedKeys(m)) return null;
+    // without a tpm 2.0, the grub yos builds stops at its rescue prompt
+    // under secure boot (E0136), so the one there stays.
+    if (!rootfs.pathExists(m.io, binary) or untrustedKeys(m) or m.boot.tpm2 == false) return null;
     if (try signedNow(m, binary) and grubRecorded(m, binary)) return null;
-    const args = try bootmenu.grubInstallAt(m.a, esp, esp, where);
+    const stage = try std.fs.path.join(m.a, &.{ esp, grub_stage });
+    if (try freshDir(m, stage)) |w| return w;
+    defer removeDir(m, stage);
+    const args = try bootmenu.grubInstallAt(m.a, stage, esp, where);
     if (try m.run(try std.mem.concat(m.a, []const u8, &.{ m.grub_install, args[1..], &.{"--no-nvram"} }))) |w| return w;
-    switch (try trySign(m, binary, binary)) {
+    if (try freshDir(m, work)) |w| return w;
+    defer removeDir(m, work);
+    const copy = try std.fs.path.join(m.a, &.{ work, std.fs.path.basename(binary) });
+    if (try m.run(&.{ "cp", try bootmenu.grubBinary(m.a, stage, where), copy })) |w| return w;
+    switch (try trySign(m, copy, binary)) {
         .failed => |w| return w,
         .unsigned => return null,
         .signed => {},
     }
-    const bytes = std.Io.Dir.cwd().readFileAlloc(m.io, binary, m.a, .limited(64 << 20)) catch return "can't read grub's binary after signing it";
+    const bytes = std.Io.Dir.cwd().readFileAlloc(m.io, copy, m.a, .limited(64 << 20)) catch return "can't read grub's binary after signing it";
+    if (try bootfiles.replaceFile(m, copy, binary)) |w| return w;
     rootfs.writeAtomic(m.io, m.grub_signed, &facts.sha256Hex(bytes), null) catch return "can't write " ++ generation.grub_signed_path;
     return null;
 }
+
+/// where grub-install puts grub before it's signed: on the esp, since
+/// grub-install wants a fat directory, beside the grub that boots.
+const grub_stage = "yos-grub-new";
 
 /// whether grub's binary at `path` is the one yos signed last.
 fn grubRecorded(m: *const Machine, path: []const u8) bool {
@@ -929,6 +945,7 @@ test "grub is installed again and signed, unless it's the one yos signed last" {
         \\for arg; do
         \\    case $arg in --efi-directory=*) esp=${arg#*=} ;; --bootloader-id=*) id=${arg#*=} ;; esac
         \\done
+        \\mkdir -p "$esp/EFI/$id"
         \\printf grub > "$esp/EFI/$id/grubx64.efi"
         \\echo "$@" >> "$(dirname "$0")/grub-install.log"
         \\
@@ -953,6 +970,10 @@ test "grub is installed again and signed, unless it's the one yos signed last" {
     try std.testing.expectEqualStrings("grub signed", try tmp.dir.readFileAlloc(io, "esp/EFI/GRUB/grubx64.efi", a, .limited(64)));
     const log = try tmp.dir.readFileAlloc(io, "grub-install.log", a, .limited(4096));
     try std.testing.expect(std.mem.indexOf(u8, log, "--modules=tpm --disable-shim-lock --bootloader-id=GRUB --no-nvram") != null);
+    // grub-install wrote beside the grub that boots, not over it, and
+    // what it wrote is gone again.
+    try std.testing.expect(std.mem.indexOf(u8, log, try std.fmt.allocPrint(a, "--efi-directory={s}/esp/{s} --boot-directory={s}/esp ", .{ base, grub_stage, base })) != null);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "esp/" ++ grub_stage, .{}));
     try std.testing.expectEqualStrings(&facts.sha256Hex("grub signed"), try tmp.dir.readFileAlloc(io, "grub-signed", a, .limited(128)));
 
     // the one yos signed last stays as it is.
@@ -962,14 +983,24 @@ test "grub is installed again and signed, unless it's the one yos signed last" {
     try std.testing.expectEqualSlices(u8, &signed_pe, try tmp.dir.readFileAlloc(io, "esp/EFI/GRUB/grubx64.efi", a, .limited(4096)));
     try std.testing.expectEqualStrings(log, try tmp.dir.readFileAlloc(io, "grub-install.log", a, .limited(4096)));
 
-    // a signer that fails stops an apply, and a way back goes on.
-    m.signer = &.{"false"};
+    // without a tpm 2.0, grub built again couldn't start, so it isn't.
     try tmp.dir.writeFile(io, .{ .sub_path = "grub-signed", .data = "" });
+    m.boot.tpm2 = false;
+    try std.testing.expectEqual(null, try bootfiles.writeOnEsp(&m, &entries, &.{}, testPut, null));
+    try std.testing.expectEqualStrings(log, try tmp.dir.readFileAlloc(io, "grub-install.log", a, .limited(4096)));
+    m.boot.tpm2 = true;
+
+    // a signer that fails stops an apply, and a way back goes on, both
+    // with the grub that was there.
+    m.signer = &.{"false"};
     try std.testing.expect(std.mem.startsWith(u8, (try bootfiles.writeOnEsp(&m, &entries, &.{}, testPut, null)).?, "can't sign "));
+    try std.testing.expectEqualSlices(u8, &signed_pe, try tmp.dir.readFileAlloc(io, "esp/EFI/GRUB/grubx64.efi", a, .limited(4096)));
     var left: std.ArrayList([]const u8) = .empty;
     m.left_unsigned = &left;
     try std.testing.expectEqual(null, try bootfiles.writeOnEsp(&m, &entries, &.{}, testPut, null));
     try std.testing.expectEqual(1, left.items.len);
+    try std.testing.expectEqualSlices(u8, &signed_pe, try tmp.dir.readFileAlloc(io, "esp/EFI/GRUB/grubx64.efi", a, .limited(4096)));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "esp/" ++ grub_stage, .{}));
 }
 
 /// a stand-in for chroot running ukify or mkinitcpio in a test's root:

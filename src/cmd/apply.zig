@@ -543,19 +543,41 @@ fn targetFor(ctx: *Context, w: *cli.Work, c: *const config.Config, l: *const loc
         .dbpath = try observe.pacmanDb(a, ctx.io, ctx.root),
         .dbs = try sync.withServers(a, dbs, if (old) try sync.pastServers(a, pc.repos, l.sync_date) else rs),
         .cachedir = try cli.machinePath(ctx, a, "/var/cache/yos/pkg"),
-        .gpgdir = try keyring(ctx, a),
+        .gpgdir = if (ctx.unchecked_signatures) null else keyring(ctx.io, try cli.machinePath(ctx, a, keyring_dir), keyring_dir) orelse {
+            try w.diags.add(.apply_failed, null, "there's no pacman keyring to check package signatures with", .{}, "run `pacman-key --init` and `pacman-key --populate`, then apply again");
+            return null;
+        },
         .download_user = pc.download_user,
         .sandbox = pc.sandbox,
     };
 }
 
-/// pacman's keyring, to check package signatures. the running machine
-/// always has its signatures checked. another root without a keyring, like
-/// a test's, doesn't.
-fn keyring(ctx: *Context, a: Allocator) !?[]const u8 {
-    const dir = try cli.machinePath(ctx, a, "/etc/pacman.d/gnupg");
-    if (cli.eql(ctx.root, "/")) return dir;
-    return if (rootfs.pathExists(ctx.io, dir)) dir else null;
+const keyring_dir = "/etc/pacman.d/gnupg";
+
+/// pacman's keyring, to check package signatures: the root's own, at
+/// `dir`, or for a root without one, this machine's, at `host`, as
+/// `pacman -r` and pacstrap use. null when neither is there, and nothing
+/// installs then.
+fn keyring(io: std.Io, dir: []const u8, host: []const u8) ?[]const u8 {
+    if (rootfs.pathExists(io, dir)) return dir;
+    return if (rootfs.pathExists(io, host)) host else null;
+}
+
+test "packages are checked with the root's keyring, or this machine's" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    const dir = try std.fmt.allocPrint(a, "{s}/root{s}", .{ base, keyring_dir });
+    const host = try std.fmt.allocPrint(a, "{s}/host{s}", .{ base, keyring_dir });
+    try std.testing.expectEqual(null, keyring(io, dir, host));
+    try tmp.dir.createDirPath(io, "host" ++ keyring_dir);
+    try std.testing.expectEqualStrings(host, keyring(io, dir, host).?);
+    try tmp.dir.createDirPath(io, "root" ++ keyring_dir);
+    try std.testing.expectEqualStrings(dir, keyring(io, dir, host).?);
 }
 
 // -- tests --
